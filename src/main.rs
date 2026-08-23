@@ -236,6 +236,18 @@ enum Commands {
         /// `<memory-context>` block for agent prompt injection.
         #[arg(short, long, default_value = "text")]
         format: String,
+
+        /// Rerank results through the hierarchical topic tree
+        #[arg(long, default_value = "false")]
+        hierarchical: bool,
+
+        /// Print the retrieval trajectory (with --hierarchical)
+        #[arg(long, default_value = "false")]
+        trace: bool,
+
+        /// Token budget for context assembly (with --hierarchical)
+        #[arg(long)]
+        budget_tokens: Option<usize>,
     },
 
     /// Warm up memory context for the next agent turn (fire-and-forget recall).
@@ -513,6 +525,9 @@ async fn main() -> Result<()> {
             min_importance,
             tags,
             format,
+            hierarchical,
+            trace,
+            budget_tokens,
         }) => {
             cli::recall::handle(
                 query,
@@ -522,6 +537,9 @@ async fn main() -> Result<()> {
                 tags,
                 format,
                 cli.db_path.clone(),
+                hierarchical,
+                trace,
+                budget_tokens,
             )
             .await
         }
