@@ -102,12 +102,15 @@ pub use evolution::{
     ImportanceRecalibrator, JobConfig, JobReport, LinkDecayJob,
 };
 pub use mcp::{EventSink, McpServer, ToolHandler};
-pub use memory_manager::{build_memory_context_block, MemoryConfig, MemoryManager};
+pub use memory_manager::{
+    build_memory_context_block, DEFAULT_ABSTENTION_THRESHOLD, MemoryConfig, MemoryManager,
+    RecallDecision,
+};
 pub use namespace::{NamespaceDetector, ProjectMetadata};
 pub use orchestration::{AgentEvent, OrchestrationEngine, SupervisionConfig, WorkItem, WorkQueue};
 pub use services::{LlmConfig, LlmService};
 pub use storage::{
-    libsql::{ConnectionMode, LibsqlStorage},
+    libsql::{ConnectionMode, LibsqlStorage, PurgeReport},
     StorageBackend,
 };
 pub use types::{

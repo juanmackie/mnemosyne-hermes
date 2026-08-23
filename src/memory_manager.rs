@@ -41,12 +41,34 @@ use tokio::sync::Mutex;
 
 use crate::{
     error::{MnemosyneError, Result},
-    storage::{libsql::ConnectionMode, MemorySortOrder, StorageBackend},
+    storage::{libsql::ConnectionMode, libsql::PurgeReport, MemorySortOrder, StorageBackend},
     types::{MemoryId, MemoryNote, Namespace, SearchResult},
 };
 
 /// Re-export so consumers can write `MemoryConfig::tags(vec![MemoryType::Feature])`.
 pub use crate::types::MemoryType;
+
+/// Explicit decision from a recall attempt: either ranked evidence to
+/// answer with, or a principled abstention.
+///
+/// Evidence principle: *sparse memory abstains free* — eager retrieval must
+/// buy an explicit "I don't know" discipline instead of over-answering on
+/// weak matches.
+#[derive(Debug, Clone)]
+pub enum RecallDecision {
+    /// Confident-enough matches; `confidence` is the top normalized score.
+    Answer {
+        results: Vec<SearchResult>,
+        confidence: f32,
+    },
+    /// No result met the threshold — the caller should say "I don't know".
+    Abstain { reason: String, best_score: f32 },
+}
+
+/// Default abstention threshold for [`MemoryManager::recall_decided`].
+/// Hybrid scores are weighted sums (max ≈ 1.0); below this the store is
+/// effectively guessing.
+pub const DEFAULT_ABSTENTION_THRESHOLD: f32 = 0.30;
 
 /// Per-operation configuration for [`MemoryManager`].
 #[derive(Debug, Clone, Default)]
@@ -232,6 +254,74 @@ impl MemoryManager {
         Ok(results)
     }
 
+    /// Recall with confidence-gated abstention.
+    ///
+    /// Returns [`RecallDecision::Abstain`] when nothing scores above
+    /// `threshold` rather than serving weak matches that invite over-answering.
+    /// A threshold of `0.0` degrades to plain [`recall`](Self::recall).
+    pub async fn recall_decided(
+        &self,
+        query: impl Into<String>,
+        limit: usize,
+        config: MemoryConfig,
+        threshold: f32,
+    ) -> Result<RecallDecision> {
+        let results = self.recall_with_config(query, limit * 2, config).await?;
+        let best = results.iter().map(|r| r.score).fold(0.0_f32, f32::max);
+        if results.is_empty() {
+            return Ok(RecallDecision::Abstain {
+                reason: "no memories matched the query".to_string(),
+                best_score: 0.0,
+            });
+        }
+        if best < threshold {
+            return Ok(RecallDecision::Abstain {
+                reason: format!(
+                    "best match score {:.2} below abstention threshold {:.2}",
+                    best, threshold
+                ),
+                best_score: best,
+            });
+        }
+        let mut results = results;
+        results.truncate(limit);
+        // Confidence is clamped top score (hybrid weights sum to ~1.0).
+        let confidence = best.min(1.0);
+        Ok(RecallDecision::Answer {
+            results,
+            confidence,
+        })
+    }
+
+    /// Temporal supersession query: "what was true as of `as_of`?"
+    ///
+    /// Recalls normally, then filters through the supersedence timeline:
+    /// - memories created after `as_of` are excluded (not yet true),
+    /// - a memory superseded by another one created at or before `as_of` is
+    ///   excluded (the newer fact was already in force),
+    /// - a memory whose superseding memory did not exist yet at `as_of`
+    ///   is kept (the old fact was still current then).
+    pub async fn recall_as_of(
+        &self,
+        query: impl Into<String>,
+        as_of: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+        config: MemoryConfig,
+    ) -> Result<Vec<SearchResult>> {
+        let ns = config
+            .namespace
+            .unwrap_or_else(|| self.default_namespace.clone());
+        let mut results = {
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            inner
+                .keyword_search_as_of(&query.into(), &ns, as_of, limit)
+                .await?
+        };
+        results.truncate(limit);
+        Ok(results)
+    }
+
     /// List memories sorted by recency, importance, or access count.
     pub async fn list(&self, limit: usize, sort_by: MemorySortOrder) -> Result<Vec<MemoryNote>> {
         self.list_with_config(limit, sort_by, MemoryConfig::new())
@@ -397,6 +487,49 @@ impl MemoryManager {
         <crate::storage::libsql::LibsqlStorage as StorageBackend>::archive_memory(inner, *id)
             .await?;
         Ok(())
+    }
+
+    /// True delete: purge a memory from the store, embeddings, link graph,
+    /// FTS index, and audit trail. Unrecoverable — unlike [`forget`](Self::forget).
+    /// Returns a report of exactly what was removed ("forget X cascades and
+    /// reports what was removed").
+    pub async fn forget_purge(&self, id: &MemoryId) -> Result<PurgeReport> {
+        let guard = self.storage.lock().await;
+        let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+        inner.purge_memory(id).await
+    }
+
+    /// Record that `new` supersedes `old` (archives the old fact and links the
+    /// successor). Enables temporal queries — history is versioned, not erased.
+    pub async fn supersede(&self, old: &MemoryId, new: &MemoryId) -> Result<()> {
+        let guard = self.storage.lock().await;
+        let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+        inner.mark_superseded(old, new).await
+    }
+
+    /// "Forget X" cascade: find all memories in the namespace matching the
+    /// given text (content/summary/keywords/tags/context, including archived)
+    /// and truly delete them. Returns a per-memory removal report.
+    pub async fn forget_matching(
+        &self,
+        needle: impl Into<String>,
+        limit: usize,
+        config: MemoryConfig,
+    ) -> Result<Vec<PurgeReport>> {
+        let ns = config
+            .namespace
+            .unwrap_or_else(|| self.default_namespace.clone());
+        let ids = {
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            inner.find_purge_candidates(&ns, &needle.into(), limit)
+                .await?
+        };
+        let mut reports = Vec::with_capacity(ids.len());
+        for id in &ids {
+            reports.push(self.forget_purge(id).await?);
+        }
+        Ok(reports)
     }
 }
 
