@@ -66,6 +66,13 @@ pub struct SearchConfig {
 
     /// Maximum graph traversal depth
     pub max_graph_depth: usize,
+
+    /// Fail-closed retrieval: when a ranking signal (e.g. query embedding
+    /// generation) fails mid-search, refuse to serve silently-unranked results.
+    /// Evidence: an eval measured 295 rows served unranked because the reranker
+    /// failed open — degradation must be loud, not silent.
+    /// When `false`, embedding failures degrade to keyword-only search with a warning.
+    pub fail_closed: bool,
 }
 
 impl Default for SearchConfig {
@@ -81,6 +88,8 @@ impl Default for SearchConfig {
             enable_vector_search: true,
             enable_graph_expansion: true,
             max_graph_depth: 2,
+            // Fail closed by default: never serve silently-unranked results.
+            fail_closed: true,
         }
     }
 }

@@ -3,7 +3,7 @@
 //! Provides persistent storage using Turso/libSQL with native vector search,
 //! FTS5 for keyword search, and efficient indexing for graph traversal.
 
-use crate::embeddings::{EmbeddingService, LocalEmbeddingService};
+use crate::embeddings::EmbeddingService;
 use crate::error::{MnemosyneError, Result};
 use crate::storage::StorageBackend;
 use crate::types::{MemoryId, MemoryLink, MemoryNote, Namespace, SearchResult};
@@ -249,10 +249,27 @@ pub enum SchemaType {
     LibSQL,
 }
 
+/// Report of what was removed by a true-delete purge ([`LibsqlStorage::purge_memory`]).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct PurgeReport {
+    /// The memory that was purged
+    pub memory_id: String,
+    /// Number of links (both directions) removed from the graph
+    pub links_removed: u64,
+    /// Whether a vector embedding row was removed from `memory_vectors`
+    pub embedding_removed: bool,
+    /// Whether the FTS index entry was removed (implicit via row delete trigger)
+    pub fts_removed: bool,
+    /// Number of audit-trail rows removed for this memory
+    pub audit_rows_removed: u64,
+    /// Number of `superseded_by` back-references cleared on other memories
+    pub supersession_refs_cleared: u64,
+}
+
 /// LibSQL storage backend
 pub struct LibsqlStorage {
     db: Database,
-    embedding_service: Option<Arc<LocalEmbeddingService>>,
+    embedding_service: Option<Arc<dyn EmbeddingService>>,
     search_config: crate::config::SearchConfig,
     schema_type: SchemaType,
     db_path: String,
@@ -1481,7 +1498,7 @@ impl LibsqlStorage {
     }
 
     /// Set the embedding service for this storage backend
-    pub fn set_embedding_service(&mut self, service: Arc<LocalEmbeddingService>) {
+    pub fn set_embedding_service(&mut self, service: Arc<dyn EmbeddingService>) {
         self.embedding_service = Some(service);
     }
 
@@ -1606,6 +1623,229 @@ impl LibsqlStorage {
     /// Set the search configuration
     pub fn set_search_config(&mut self, config: crate::config::SearchConfig) {
         self.search_config = config;
+    }
+
+    /// True delete: purge a memory from the store, embeddings, link graph,
+    /// FTS index, and audit trail. Unlike [`archive_memory`](Self::archive_memory)
+    /// this is unrecoverable — "your memory is yours" means forget must mean forget.
+    pub async fn purge_memory(&self, memory_id: &MemoryId) -> Result<PurgeReport> {
+        let id_str = memory_id.to_string();
+        debug!("Purging memory {} (true delete)", id_str);
+        let conn = self.get_conn()?;
+        let mut report = PurgeReport {
+            memory_id: id_str.clone(),
+            ..Default::default()
+        };
+
+        // 1. Remove vector embeddings (sqlite-vec table; libsql-schema stores the
+        //    blob inline in the memories row which disappears with step 5).
+        match conn
+            .execute(
+                "DELETE FROM memory_vectors WHERE memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await
+        {
+            Ok(n) => report.embedding_removed = n > 0,
+            Err(_) => report.embedding_removed = false, // table may not exist in this schema
+        }
+
+        // 2. Remove link-graph edges in both directions.
+        report.links_removed = conn
+            .execute(
+                "DELETE FROM memory_links WHERE source_id = ? OR target_id = ?",
+                params![id_str.as_str(), id_str.as_str()],
+            )
+            .await?;
+
+        // 3. Clear supersession back-references so no dangling pointers remain.
+        report.supersession_refs_cleared = conn
+            .execute(
+                "UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+
+        // 4. Remove audit-trail rows referencing this memory (they may contain content).
+        report.audit_rows_removed = conn
+            .execute("DELETE FROM audit_log WHERE memory_id = ?", params![id_str.as_str()])
+            .await?;
+
+        // 5. Delete the row itself. The memories_ad trigger removes the FTS entry;
+        //    ON DELETE CASCADE handles memory_embeddings and any remaining links.
+        let deleted = conn
+            .execute("DELETE FROM memories WHERE id = ?", params![id_str.as_str()])
+            .await?;
+        if deleted == 0 {
+            return Err(MnemosyneError::MemoryNotFound(id_str));
+        }
+        report.fts_removed = true;
+
+        info!(
+            "Purged memory {}: {} links, {} audit rows, embedding={}, fts=true",
+            id_str, report.links_removed, report.audit_rows_removed, report.embedding_removed
+        );
+        Ok(report)
+    }
+
+    /// Temporal retrieval: keyword search that returns what was true as of
+    /// `as_of`, using the supersedence timeline instead of the archive flag.
+    ///
+    /// A memory is valid at `as_of` when:
+    /// - it existed then (`created_at <= as_of`),
+    /// - it was not superseded by a successor already in force at `as_of`,
+    /// - it was not soft-archived before `as_of` (`archived_at`).
+    /// Unlike [`StorageBackend::keyword_search`] this deliberately includes
+    /// archived/superseded rows — history must stay queryable.
+    pub async fn keyword_search_as_of(
+        &self,
+        query: &str,
+        namespace: &Namespace,
+        as_of: chrono::DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let ns_json = serde_json::to_string(namespace)
+            .map_err(|e| MnemosyneError::Database(format!("Failed to serialize namespace: {}", e)))?;
+        let conn = self.get_conn()?;
+
+        // The LibSQL schema lacks `archived_at` (added by sqlite migration 007);
+        // degrade gracefully by dropping the archive-time condition there.
+        let has_archived_at = match conn
+            .query(
+                "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='archived_at'",
+                (),
+            )
+            .await
+        {
+            Ok(mut rows) => match rows.next().await {
+                Ok(Some(row)) => row.get::<i64>(0).unwrap_or(0) > 0,
+                _ => false,
+            },
+            Err(_) => false,
+        };
+
+        let fts_filter = if query.trim().is_empty() {
+            String::new()
+        } else {
+            let fts_query = if query.contains(' ') {
+                query
+                    .split_whitespace()
+                    .map(Self::escape_fts5_query)
+                    .collect::<Vec<String>>()
+                    .join(" OR ")
+            } else {
+                Self::escape_fts5_query(query)
+            };
+            format!(
+                "AND m.rowid IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH '{}') ",
+                fts_query.replace('\'', "''")
+            )
+        };
+
+        let archive_filter = if has_archived_at {
+            "AND (m.archived_at IS NULL OR m.archived_at > ?) "
+        } else {
+            ""
+        };
+        let sql = format!(
+            r#"
+            SELECT m.* FROM memories m
+            WHERE m.namespace = ?
+            {fts_filter}
+              AND m.created_at <= ?
+              AND (
+                    m.superseded_by IS NULL
+                    OR EXISTS (
+                        SELECT 1 FROM memories s
+                        WHERE s.id = m.superseded_by AND s.created_at > ?
+                    )
+                  )
+              {archive_filter}
+            ORDER BY m.importance DESC, m.created_at DESC
+            LIMIT {}
+            "#,
+            limit as i64
+        );
+
+        let params_vec: Vec<libsql::Value> = if has_archived_at {
+            vec![
+                ns_json.clone().into(),
+                as_of.to_rfc3339().into(),
+                as_of.to_rfc3339().into(),
+                as_of.timestamp().into(),
+            ]
+        } else {
+            vec![
+                ns_json.clone().into(),
+                as_of.to_rfc3339().into(),
+                as_of.to_rfc3339().into(),
+            ]
+        };
+
+        let mut rows = conn.query(&sql, params_vec).await?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let memory = self.row_to_memory(&row).await?;
+            results.push(SearchResult {
+                memory,
+                score: 0.8,
+                match_reason: "keyword_match_as_of".to_string(),
+            });
+        }
+        Ok(results)
+    }
+
+    /// Find candidate memories for a "forget X" cascade: case-insensitive
+    /// substring match against content/summary/keywords/tags/context within a
+    /// namespace, INCLUDING archived and superseded rows — forgetting is about
+    /// removal, not just hiding.
+    pub async fn find_purge_candidates(
+        &self,
+        namespace: &Namespace,
+        needle: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryId>> {
+        if needle.trim().is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.get_conn()?;
+        // Namespace is stored as its JSON serialization (see store_memory).
+        let ns_json = serde_json::to_string(namespace)
+            .map_err(|e| MnemosyneError::Database(format!("Failed to serialize namespace: {}", e)))?;
+        let pattern = format!("%{}%", needle.replace('%', "\\%").replace('_', "\\_"));
+        let sql = format!(
+            r#"
+            SELECT id FROM memories
+            WHERE namespace = ?
+              AND (content LIKE ? ESCAPE '\'
+                   OR summary LIKE ? ESCAPE '\'
+                   OR keywords LIKE ? ESCAPE '\'
+                   OR tags LIKE ? ESCAPE '\'
+                   OR context LIKE ? ESCAPE '\')
+            ORDER BY created_at DESC
+            LIMIT {}
+            "#,
+            limit as i64
+        );
+        let mut rows = conn
+            .query(
+                &sql,
+                params![
+                    ns_json.as_str(),
+                    pattern.as_str(),
+                    pattern.as_str(),
+                    pattern.as_str(),
+                    pattern.as_str(),
+                    pattern.as_str(),
+                ],
+            )
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let id: String = row.get(0)?;
+            ids.push(MemoryId::from_string(&id)?);
+        }
+        Ok(ids)
     }
 
     /// Perform vector similarity search
@@ -2960,7 +3200,18 @@ impl StorageBackend for LibsqlStorage {
                         }
                     }
                     Err(e) => {
-                        warn!("Failed to generate query embedding: {}", e);
+                        // Fail-closed retrieval: if a ranking signal fails, do not
+                        // silently serve keyword-only (unranked) results.
+                        if self.search_config.fail_closed {
+                            return Err(MnemosyneError::Database(format!(
+                                "fail-closed retrieval: query embedding generation failed: {}",
+                                e
+                            )));
+                        }
+                        warn!(
+                            "Failed to generate query embedding (fail-open degradation): {}",
+                            e
+                        );
                     }
                 }
             }
@@ -3387,7 +3638,7 @@ impl StorageBackend for LibsqlStorage {
             })?;
 
         let row = stmt
-            .query_row(params![id_str])
+            .query_row(params![id_str.as_str()])
             .await
             .map_err(|e| MnemosyneError::NotFound(format!("Work item not found: {}", e)))?;
 
@@ -4094,7 +4345,7 @@ impl StorageBackend for LibsqlStorage {
 
         let id_str = id.to_string();
 
-        conn.execute("DELETE FROM work_items WHERE id = ?", params![id_str])
+        conn.execute("DELETE FROM work_items WHERE id = ?", params![id_str.as_str()])
             .await
             .map_err(|e| MnemosyneError::Database(format!("Failed to delete work item: {}", e)))?;
 

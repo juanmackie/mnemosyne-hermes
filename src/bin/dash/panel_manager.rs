@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn test_panel_visibility_default() {
         let vis = PanelVisibility::default();
-        assert_eq!(vis.visible_count(), 4);
+        assert_eq!(vis.visible_count(), 5);
         assert!(vis.is_visible(PanelId::SystemOverview));
     }
 
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn test_panel_manager_creation() {
         let manager = PanelManager::new();
-        assert_eq!(manager.visible_count(), 4);
+        assert_eq!(manager.visible_count(), 5);
         assert_eq!(manager.current_preset_name(), Some("All Panels"));
     }
 
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(manager.visible_count(), 0);
 
         manager.show_all();
-        assert_eq!(manager.visible_count(), 4);
+        assert_eq!(manager.visible_count(), 5);
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
         let manager = PanelManager::new();
         let constraints = manager.layout_constraints(80);
 
-        assert_eq!(constraints.len(), 4);
+        assert_eq!(constraints.len(), 5);
     }
 
     #[test]
@@ -446,7 +446,7 @@ mod tests {
         // Very limited space should compress to minimums
         let constraints = manager.layout_constraints(30);
 
-        assert_eq!(constraints.len(), 4);
+        assert_eq!(constraints.len(), 5);
         // Should use minimum heights or compressed
         for c in constraints {
             match c {
