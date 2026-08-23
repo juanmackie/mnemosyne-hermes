@@ -1,0 +1,18 @@
+{"query":"If the same fact is remembered twice, when may consolidation combine it?","relevant":["Memory consolidation should merge duplicates only when the durable meaning is preserved and provenance remains visible."]}
+{"query":"What should happen to old low-value memories before removal?","relevant":["The user wants stale memories reviewed before archival rather than silently deleted."]}
+{"query":"How should a personal automation recover after a timeout?","relevant":["A recurring personal-agent job should be idempotent so retrying after a timeout does not duplicate side effects."]}
+{"query":"What must every scheduled automation provide?","relevant":["Cron automations should include a timeout, a delivery target, and a way to disable the job without editing code."]}
+{"query":"What boundaries apply to delegated work?","relevant":["Delegated agent tasks should have a bounded scope, a written deliverable, and an explicit timeout."]}
+{"query":"When can workers safely edit in parallel?","relevant":["Parallel agent work is safe only when each worker has an isolated worktree or disjoint files."]}
+{"query":"How should MCP server output be split between logs and protocol responses?","relevant":["The MCP server logs diagnostics to stderr and reserves stdout exclusively for JSON-RPC responses."]}
+{"query":"What is the safe default for MCP tools?","relevant":["MCP tools should be enabled using an explicit allowlist rather than exposing every server tool by default."]}
+{"query":"What should research notes distinguish?","relevant":["The user prefers research answers to separate verified facts, reasonable inferences, and open questions."]}
+{"query":"What metadata should web research capture?","relevant":["Web research should record publication dates and distinguish primary sources from summaries."]}
+{"query":"How should a broken automation be investigated first?","relevant":["The user's preferred first step for a broken automation is to inspect recent logs before changing configuration."]}
+{"query":"When does a script need a dry-run?","relevant":["The user prefers a dry-run mode for scripts that could modify more than ten records."]}
+{"query":"How should secrets and sensitive values appear in logs?","relevant":["Personal-agent logs should redact API keys, tokens, email addresses, and full file paths when exported."]}
+{"query":"What should the agent do when a task has several plausible meanings?","relevant":["The agent should ask one focused clarification question when a task has multiple plausible interpretations."]}
+{"query":"What progress-update cadence does the user prefer for long work?","relevant":["For long-running work, the agent should provide a progress update at meaningful checkpoints instead of frequent noise."]}
+{"query":"What should an error explanation include?","relevant":["The user prefers failures to include the command that failed, the likely cause, and the next recovery step."]}
+{"query":"What personal information should be retained from an emergency contact?","relevant":["The user keeps an emergency contact named Morgan and does not want that contact exposed in public outputs."]}
+{"query":"What should a session summary leave out?","relevant":["A session summary should omit transient greetings, repeated tool output, and credentials."]}

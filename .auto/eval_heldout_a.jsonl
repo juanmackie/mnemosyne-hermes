@@ -1,0 +1,20 @@
+{"query":"What is the preferred strategy for connecting flights?","relevant":["The user prefers travel itineraries that include buffer time between connections rather than the shortest possible route."]}
+{"query":"Can restaurant suggestions include meat?","relevant":["The user is vegetarian but eats eggs and dairy; restaurant recommendations should respect this."]}
+{"query":"How should groceries be organized for shopping?","relevant":["The user prefers grocery lists grouped by store section instead of sorted alphabetically."]}
+{"query":"Which channel is for non-urgent digest messages?","relevant":["The user prefers notifications on Signal for urgent personal matters and email for non-urgent summaries."]}
+{"query":"When is the user unavailable for meetings during the workday?","relevant":["The user blocks focused work from 09:00 to 11:30 on weekdays and does not want meetings scheduled there."]}
+{"query":"What is the home lab network and operating system?","relevant":["The user's home lab runs Debian hosts and uses Tailscale for private access between machines."]}
+{"query":"Describe the backup retention schedule.","relevant":["The backup policy retains seven daily snapshots and four weekly snapshots before pruning older data."]}
+{"query":"How are home services deployed?","relevant":["Home lab services are deployed with Docker Compose and backed up nightly to an encrypted external disk."]}
+{"query":"What financial action always needs current confirmation?","relevant":["The agent must never approve a bank transfer or financial purchase without explicit confirmation in the current conversation."]}
+{"query":"Where are tax files kept?","relevant":["Tax documents are stored in a local encrypted folder organized by tax year."]}
+{"query":"What is the running schedule?","relevant":["The user's preferred running days are Tuesday, Thursday, and Saturday mornings."]}
+{"query":"What is the training plan's recovery pattern?","relevant":["The user is training for a half marathon and prefers gradual mileage increases with a recovery week every fourth week."]}
+{"query":"What seat does the user usually select on flights?","relevant":["For flights, the user prefers an aisle seat and avoids overnight departures when alternatives are reasonable."]}
+{"query":"What should be saved from hotel bookings, and what must not be saved?","relevant":["The agent should save hotel booking confirmation numbers but not store full payment card details."]}
+{"query":"What kind of podcast fits a weekday morning?","relevant":["The user prefers podcast recommendations under forty-five minutes on weekday mornings."]}
+{"query":"How should the lights behave at sunset?","relevant":["The user's smart-home lights should turn on gradually at sunset and turn off at the household bedtime."]}
+{"query":"What temperature settings does the thermostat use?","relevant":["The smart thermostat target is 20 degrees Celsius during the day and 17 degrees Celsius overnight."]}
+{"query":"What smart-home action is forbidden from a text request?","relevant":["The agent should not unlock doors or disarm the home alarm from a text-only request."]}
+{"query":"When should quiet-hour notifications be suppressed?","relevant":["The user prefers quiet hours from 22:00 to 07:00 and does not want non-urgent agent notifications then."]}
+{"query":"How early should important deadlines be surfaced?","relevant":["The user wants important deadlines surfaced three days ahead and again on the morning they are due."]}

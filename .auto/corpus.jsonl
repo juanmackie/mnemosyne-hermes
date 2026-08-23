@@ -1,0 +1,115 @@
+{"content":"The user prefers concise answers first, with optional detail only when it helps make a decision.","memory_type":"preference","importance":8,"tags":"communication,style"}
+{"content":"The user prefers code examples that are complete and runnable rather than abbreviated pseudocode.","memory_type":"preference","importance":8,"tags":"communication,coding"}
+{"content":"The user prefers planning before implementation for changes that touch more than one module.","memory_type":"preference","importance":7,"tags":"workflow,planning"}
+{"content":"The user does not want AI attribution in commit messages unless explicitly requested.","memory_type":"constraint","importance":9,"tags":"git,workflow"}
+{"content":"The user prefers uv for Python dependency management and does not want pip or poetry used in this repository.","memory_type":"preference","importance":9,"tags":"python,tooling"}
+{"content":"The user prefers feature branches and does not commit directly to the main branch.","memory_type":"constraint","importance":9,"tags":"git,workflow"}
+{"content":"For Rust builds in this repository, use the rebuild-and-update-install script instead of cargo install directly.","memory_type":"procedure","importance":8,"tags":"rust,build"}
+{"content":"The user wants tests run after a logical commit so failures can be tied to a known checkpoint.","memory_type":"workflow","importance":8,"tags":"testing,git"}
+{"content":"The user prefers local-first tools for personal data and wants cloud services to be opt-in.","memory_type":"preference","importance":9,"tags":"privacy,personal-agent"}
+{"content":"The user wants destructive operations to show a clear confirmation step and a recovery path.","memory_type":"constraint","importance":9,"tags":"safety,ux"}
+{"content":"The personal agent should ask before sending messages, deleting files, or making purchases.","memory_type":"constraint","importance":10,"tags":"safety,automation"}
+{"content":"The user prefers dates in ISO 8601 format when they are used in logs or exported data.","memory_type":"preference","importance":6,"tags":"dates,formatting"}
+{"content":"The user prefers Markdown documentation with short headings and command examples.","memory_type":"preference","importance":7,"tags":"documentation,style"}
+{"content":"The user dislikes recurring notifications that do not include a concrete action or decision.","memory_type":"preference","importance":7,"tags":"notifications,automation"}
+{"content":"The agent should distinguish durable personal facts from temporary session context before saving memory.","memory_type":"decision","importance":9,"tags":"memory,personal-agent"}
+{"content":"The agent should store a user's stable preference in the global namespace rather than a project namespace.","memory_type":"decision","importance":8,"tags":"memory,namespaces"}
+{"content":"Project-specific implementation decisions belong in the project namespace and should include the project name.","memory_type":"procedure","importance":8,"tags":"memory,namespaces"}
+{"content":"The user prefers the assistant to state uncertainty instead of inventing missing details.","memory_type":"constraint","importance":10,"tags":"safety,accuracy"}
+{"content":"The user prefers a short daily briefing at 08:00 local time on weekdays only.","memory_type":"preference","importance":7,"tags":"schedule,briefing"}
+{"content":"The user's timezone for personal reminders is America/New_York.","memory_type":"fact","importance":8,"tags":"timezone,calendar"}
+{"content":"The user blocks focused work from 09:00 to 11:30 on weekdays and does not want meetings scheduled there.","memory_type":"constraint","importance":9,"tags":"calendar,focus"}
+{"content":"The user prefers travel itineraries that include buffer time between connections rather than the shortest possible route.","memory_type":"preference","importance":7,"tags":"travel,planning"}
+{"content":"The user is vegetarian but eats eggs and dairy; restaurant recommendations should respect this.","memory_type":"fact","importance":8,"tags":"food,health"}
+{"content":"The user prefers metric units for cooking and weather, but accepts miles for running routes.","memory_type":"preference","importance":6,"tags":"units,food,fitness"}
+{"content":"The user wants health-related reminders phrased as options and never as diagnoses.","memory_type":"constraint","importance":10,"tags":"health,safety"}
+{"content":"The user prefers grocery lists grouped by store section instead of sorted alphabetically.","memory_type":"preference","importance":6,"tags":"food,organization"}
+{"content":"The user keeps an emergency contact named Morgan and does not want that contact exposed in public outputs.","memory_type":"constraint","importance":10,"tags":"privacy,contacts"}
+{"content":"The user prefers notifications on Signal for urgent personal matters and email for non-urgent summaries.","memory_type":"preference","importance":8,"tags":"messaging,notifications"}
+{"content":"The user's weekly review happens on Sunday evening and covers calendar, finances, and open tasks.","memory_type":"procedure","importance":7,"tags":"routine,planning"}
+{"content":"The user wants the agent to summarize long email threads before asking which action to take.","memory_type":"preference","importance":7,"tags":"email,workflow"}
+{"content":"The user decided that Redis is the session cache with a five-minute TTL for the personal-agent gateway.","memory_type":"decision","importance":8,"tags":"redis,caching,gateway"}
+{"content":"The personal-agent gateway uses SQLite for local configuration and LibSQL for memory storage.","memory_type":"architecture","importance":8,"tags":"sqlite,libsql,storage"}
+{"content":"The memory service exposes standard MCP JSON-RPC over stdio so Hermes can start it as a subprocess.","memory_type":"architecture","importance":9,"tags":"mcp,hermes,integration"}
+{"content":"Hermes should call the memory context tool at the start of a session before attempting a multi-step task.","memory_type":"procedure","importance":9,"tags":"hermes,memory,context"}
+{"content":"Durable decisions are saved only after the agent has separated them from conversational filler.","memory_type":"decision","importance":8,"tags":"memory,extraction"}
+{"content":"A memory recall response should include source identifiers so the agent can cite or update the original entry.","memory_type":"requirement","importance":8,"tags":"memory,api"}
+{"content":"The MCP server logs diagnostics to stderr and reserves stdout exclusively for JSON-RPC responses.","memory_type":"constraint","importance":10,"tags":"mcp,protocol,logging"}
+{"content":"The personal agent runs without an Anthropic API key for core remember, recall, list, and graph operations.","memory_type":"decision","importance":9,"tags":"hermes,keyless,offline"}
+{"content":"Optional LLM enrichment may use an OpenAI-compatible endpoint, but storage must degrade gracefully when it is unavailable.","memory_type":"constraint","importance":9,"tags":"llm,degradation,offline"}
+{"content":"The default personal-agent namespace is global for stable preferences and project:personal-agent for system decisions.","memory_type":"configuration","importance":8,"tags":"namespace,configuration"}
+{"content":"The agent should use a bounded context budget when injecting memories into a Hermes prompt.","memory_type":"constraint","importance":8,"tags":"context,tokens,hermes"}
+{"content":"Context assembly should prefer a small number of high-confidence memories over filling every available token.","memory_type":"decision","importance":8,"tags":"context,retrieval"}
+{"content":"Chit-chat such as greetings and thanks should skip the memory retrieval round trip.","memory_type":"decision","importance":7,"tags":"intent,latency"}
+{"content":"Questions about the user's preferences should be rewritten with explicit user-context wording before retrieval.","memory_type":"procedure","importance":7,"tags":"intent,preferences"}
+{"content":"Procedural questions beginning with how should be treated as skill-oriented retrieval requests.","memory_type":"decision","importance":7,"tags":"intent,skills"}
+{"content":"The agent should prefer a held-out retrieval set when evaluating ranking changes instead of trusting one development set.","memory_type":"constraint","importance":9,"tags":"evaluation,anti-overfitting"}
+{"content":"Memory evaluation queries must not be embedded as special cases or copied into production ranking logic.","memory_type":"constraint","importance":10,"tags":"evaluation,integrity"}
+{"content":"The retrieval benchmark reports both Hit@k and mean reciprocal rank so one lucky top result is not enough.","memory_type":"decision","importance":8,"tags":"evaluation,metrics"}
+{"content":"A retrieval experiment is kept only when correctness checks pass and held-out quality does not regress materially.","memory_type":"procedure","importance":9,"tags":"evaluation,workflow"}
+{"content":"The user chose local fastembed models for semantic search to keep personal memories on the machine.","memory_type":"decision","importance":8,"tags":"embeddings,privacy,local"}
+{"content":"The embedding model cache lives under the user's local cache directory and should not be committed to git.","memory_type":"configuration","importance":6,"tags":"embeddings,git,storage"}
+{"content":"Keyword search uses FTS5 with stemming so related word forms can match without a network service.","memory_type":"architecture","importance":7,"tags":"fts5,search,offline"}
+{"content":"Graph expansion is useful for connected project decisions but should not overwhelm a direct semantic match.","memory_type":"decision","importance":8,"tags":"graph,retrieval"}
+{"content":"Recent memories may break ties, but recency must not outrank a strong semantic match solely because it is new.","memory_type":"constraint","importance":8,"tags":"recency,retrieval"}
+{"content":"Importance scores are a tie-breaker that reflect durable value, not a substitute for query relevance.","memory_type":"constraint","importance":8,"tags":"importance,retrieval"}
+{"content":"A failed embedding request should be visible to the caller rather than silently returning unranked keyword results.","memory_type":"decision","importance":9,"tags":"embeddings,reliability"}
+{"content":"The retrieval API returns an empty result for an empty namespace rather than falling back to unrelated projects.","memory_type":"constraint","importance":8,"tags":"namespaces,retrieval"}
+{"content":"Memory records are grouped into topic directories with L0 abstracts, L1 overviews, and L2 details.","memory_type":"architecture","importance":8,"tags":"hierarchy,memory"}
+{"content":"L0 memory abstracts are capped at 256 characters so they are cheap to use during hierarchical navigation.","memory_type":"configuration","importance":6,"tags":"hierarchy,tokens"}
+{"content":"L1 memory overviews are used for reranking and planning while L2 content is loaded on demand.","memory_type":"decision","importance":8,"tags":"hierarchy,context"}
+{"content":"The context assembler fills breadth-first tiers under a token budget and keeps the final prompt deterministic.","memory_type":"architecture","importance":8,"tags":"context,hierarchy,tokens"}
+{"content":"The hierarchy uses deterministic topic paths so rebuilding the same memories does not create noisy rewrites.","memory_type":"constraint","importance":7,"tags":"hierarchy,determinism"}
+{"content":"The agent should record retrieval trajectories when debugging why a hierarchical result was selected.","memory_type":"procedure","importance":6,"tags":"hierarchy,debugging"}
+{"content":"The user keeps source code for personal automations in a private GitHub repository with protected main.","memory_type":"fact","importance":6,"tags":"github,privacy,git"}
+{"content":"Pull requests for personal automations need a summary, test evidence, and a rollback note.","memory_type":"procedure","importance":7,"tags":"github,review"}
+{"content":"The user's home lab runs Debian hosts and uses Tailscale for private access between machines.","memory_type":"fact","importance":6,"tags":"homelab,debian,tailscale"}
+{"content":"Home lab services are deployed with Docker Compose and backed up nightly to an encrypted external disk.","memory_type":"procedure","importance":7,"tags":"homelab,docker,backup"}
+{"content":"The backup policy retains seven daily snapshots and four weekly snapshots before pruning older data.","memory_type":"configuration","importance":7,"tags":"backup,retention"}
+{"content":"The user wants backup failures reported immediately, but successful backup notifications batched into the daily briefing.","memory_type":"preference","importance":7,"tags":"backup,notifications"}
+{"content":"The user tracks household spending by category and reviews subscriptions once per month.","memory_type":"routine","importance":6,"tags":"finance,household"}
+{"content":"The agent must never approve a bank transfer or financial purchase without explicit confirmation in the current conversation.","memory_type":"constraint","importance":10,"tags":"finance,safety"}
+{"content":"Tax documents are stored in a local encrypted folder organized by tax year.","memory_type":"procedure","importance":7,"tags":"finance,documents,privacy"}
+{"content":"The user prefers a plain-text export of financial reminders rather than a spreadsheet attachment.","memory_type":"preference","importance":5,"tags":"finance,formatting"}
+{"content":"The user's preferred running days are Tuesday, Thursday, and Saturday mornings.","memory_type":"preference","importance":6,"tags":"fitness,schedule"}
+{"content":"The user is training for a half marathon and prefers gradual mileage increases with a recovery week every fourth week.","memory_type":"fact","importance":7,"tags":"fitness,running"}
+{"content":"The user wants exercise reminders skipped when the calendar has a full-day travel event.","memory_type":"constraint","importance":7,"tags":"fitness,calendar"}
+{"content":"The user plans international trips around one carry-on bag and prefers trains over short regional flights.","memory_type":"preference","importance":6,"tags":"travel,packing"}
+{"content":"For flights, the user prefers an aisle seat and avoids overnight departures when alternatives are reasonable.","memory_type":"preference","importance":6,"tags":"travel,flights"}
+{"content":"The agent should save hotel booking confirmation numbers but not store full payment card details.","memory_type":"constraint","importance":9,"tags":"travel,privacy"}
+{"content":"The user enjoys science fiction novels, documentary podcasts, and cooperative strategy games.","memory_type":"fact","importance":5,"tags":"media,hobbies"}
+{"content":"Book recommendations should avoid books the user has already marked as finished in the reading log.","memory_type":"procedure","importance":6,"tags":"books,recommendations"}
+{"content":"The user prefers podcast recommendations under forty-five minutes on weekday mornings.","memory_type":"preference","importance":5,"tags":"podcasts,recommendations"}
+{"content":"The user's smart-home lights should turn on gradually at sunset and turn off at the household bedtime.","memory_type":"configuration","importance":5,"tags":"home-automation,lights"}
+{"content":"The smart thermostat target is 20 degrees Celsius during the day and 17 degrees Celsius overnight.","memory_type":"configuration","importance":5,"tags":"home-automation,temperature"}
+{"content":"The agent should not unlock doors or disarm the home alarm from a text-only request.","memory_type":"constraint","importance":10,"tags":"home-automation,safety"}
+{"content":"The user keeps a small balcony herb garden with basil, mint, thyme, and rosemary.","memory_type":"fact","importance":4,"tags":"garden,home"}
+{"content":"Watering reminders for the herb garden should be postponed when the weather forecast predicts rain.","memory_type":"procedure","importance":5,"tags":"garden,weather"}
+{"content":"The user prefers quiet hours from 22:00 to 07:00 and does not want non-urgent agent notifications then.","memory_type":"constraint","importance":8,"tags":"notifications,schedule"}
+{"content":"The user wants important deadlines surfaced three days ahead and again on the morning they are due.","memory_type":"preference","importance":7,"tags":"deadlines,reminders"}
+{"content":"The user prefers task lists sorted by urgency first, then by estimated effort.","memory_type":"preference","importance":6,"tags":"tasks,organization"}
+{"content":"Tasks that require another person's response should be labeled waiting rather than repeatedly resurfaced as overdue.","memory_type":"decision","importance":7,"tags":"tasks,workflow"}
+{"content":"The agent should ask one focused clarification question when a task has multiple plausible interpretations.","memory_type":"constraint","importance":8,"tags":"conversation,workflow"}
+{"content":"For long-running work, the agent should provide a progress update at meaningful checkpoints instead of frequent noise.","memory_type":"preference","importance":7,"tags":"communication,automation"}
+{"content":"The user prefers failures to include the command that failed, the likely cause, and the next recovery step.","memory_type":"preference","importance":8,"tags":"errors,communication"}
+{"content":"The user wants secrets loaded from an encrypted store or environment variable and never printed in logs.","memory_type":"constraint","importance":10,"tags":"secrets,security"}
+{"content":"Personal-agent logs should redact API keys, tokens, email addresses, and full file paths when exported.","memory_type":"constraint","importance":10,"tags":"logging,privacy"}
+{"content":"The agent should use read-only access when researching a new service before it is allowed to mutate data.","memory_type":"procedure","importance":8,"tags":"security,tools"}
+{"content":"MCP tools should be enabled using an explicit allowlist rather than exposing every server tool by default.","memory_type":"constraint","importance":9,"tags":"mcp,security"}
+{"content":"Delegated agent tasks should have a bounded scope, a written deliverable, and an explicit timeout.","memory_type":"constraint","importance":8,"tags":"delegation,agents"}
+{"content":"Parallel agent work is safe only when each worker has an isolated worktree or disjoint files.","memory_type":"decision","importance":8,"tags":"delegation,git"}
+{"content":"The user prefers the primary agent to review delegated changes before merging them into the active branch.","memory_type":"procedure","importance":7,"tags":"delegation,review"}
+{"content":"Hermes Bot profiles should have separate memory namespaces when they represent different roles.","memory_type":"decision","importance":7,"tags":"hermes,bots,memory"}
+{"content":"Cron automations should include a timeout, a delivery target, and a way to disable the job without editing code.","memory_type":"constraint","importance":8,"tags":"cron,automation"}
+{"content":"A recurring personal-agent job should be idempotent so retrying after a timeout does not duplicate side effects.","memory_type":"constraint","importance":9,"tags":"cron,reliability"}
+{"content":"The user prefers browser automation to save a screenshot or URL evidence for important completed actions.","memory_type":"preference","importance":6,"tags":"browser,automation"}
+{"content":"Web research should record publication dates and distinguish primary sources from summaries.","memory_type":"procedure","importance":6,"tags":"research,web"}
+{"content":"The user prefers research answers to separate verified facts, reasonable inferences, and open questions.","memory_type":"preference","importance":8,"tags":"research,accuracy"}
+{"content":"When a source conflicts with an existing memory, the agent should keep both until the conflict is resolved explicitly.","memory_type":"decision","importance":7,"tags":"memory,conflicts"}
+{"content":"The user wants stale memories reviewed before archival rather than silently deleted.","memory_type":"constraint","importance":8,"tags":"memory,retention"}
+{"content":"Memory consolidation should merge duplicates only when the durable meaning is preserved and provenance remains visible.","memory_type":"constraint","importance":9,"tags":"memory,consolidation"}
+{"content":"The user's preferred first step for a broken automation is to inspect recent logs before changing configuration.","memory_type":"procedure","importance":7,"tags":"debugging,automation"}
+{"content":"The user prefers a dry-run mode for scripts that could modify more than ten records.","memory_type":"constraint","importance":8,"tags":"safety,scripts"}
+{"content":"The agent should preserve the original user wording when storing a nuanced preference or boundary.","memory_type":"decision","importance":7,"tags":"memory,preferences"}
+{"content":"The user wants session summaries to record decisions, unresolved questions, and next actions separately.","memory_type":"procedure","importance":8,"tags":"sessions,memory"}
+{"content":"A session summary should omit transient greetings, repeated tool output, and credentials.","memory_type":"constraint","importance":9,"tags":"sessions,privacy"}

@@ -1,0 +1,38 @@
+{"query":"What answer style does the user want from the personal agent?","relevant":["The user prefers concise answers first, with optional detail only when it helps make a decision."]}
+{"query":"How should code samples be presented to this user?","relevant":["The user prefers code examples that are complete and runnable rather than abbreviated pseudocode."]}
+{"query":"What is the user's stance on planning before changing several modules?","relevant":["The user prefers planning before implementation for changes that touch more than one module."]}
+{"query":"Should commits mention that an AI wrote them?","relevant":["The user does not want AI attribution in commit messages unless explicitly requested."]}
+{"query":"Which Python package manager is expected here?","relevant":["The user prefers uv for Python dependency management and does not want pip or poetry used in this repository."]}
+{"query":"What branch policy should I follow?","relevant":["The user prefers feature branches and does not commit directly to the main branch."]}
+{"query":"How should I build the Rust project?","relevant":["For Rust builds in this repository, use the rebuild-and-update-install script instead of cargo install directly."]}
+{"query":"When should tests be run relative to a commit?","relevant":["The user wants tests run after a logical commit so failures can be tied to a known checkpoint."]}
+{"query":"Does the user want cloud-first personal data services?","relevant":["The user prefers local-first tools for personal data and wants cloud services to be opt-in."]}
+{"query":"What must happen before the agent deletes or sends something?","relevant":["The personal agent should ask before sending messages, deleting files, or making purchases."]}
+{"query":"How should uncertainty be handled in an answer?","relevant":["The user prefers the assistant to state uncertainty instead of inventing missing details."]}
+{"query":"When is the weekday briefing delivered?","relevant":["The user prefers a short daily briefing at 08:00 local time on weekdays only."]}
+{"query":"What timezone should reminders use?","relevant":["The user's timezone for personal reminders is America/New_York."]}
+{"query":"When should meetings not be placed on the calendar?","relevant":["The user blocks focused work from 09:00 to 11:30 on weekdays and does not want meetings scheduled there."]}
+{"query":"What are the user's dietary restrictions?","relevant":["The user is vegetarian but eats eggs and dairy; restaurant recommendations should respect this."]}
+{"query":"How should urgent and routine notifications reach the user?","relevant":["The user prefers notifications on Signal for urgent personal matters and email for non-urgent summaries."]}
+{"query":"What happens in the Sunday weekly review?","relevant":["The user's weekly review happens on Sunday evening and covers calendar, finances, and open tasks."]}
+{"query":"What did we choose for the gateway session cache?","relevant":["The user decided that Redis is the session cache with a five-minute TTL for the personal-agent gateway."]}
+{"query":"Which databases back configuration and memory?","relevant":["The personal-agent gateway uses SQLite for local configuration and LibSQL for memory storage."]}
+{"query":"How does Hermes connect to the memory process?","relevant":["The memory service exposes standard MCP JSON-RPC over stdio so Hermes can start it as a subprocess."]}
+{"query":"What should Hermes do at the beginning of a task session?","relevant":["Hermes should call the memory context tool at the start of a session before attempting a multi-step task."]}
+{"query":"Can core memory operations work without an Anthropic key?","relevant":["The personal agent runs without an Anthropic API key for core remember, recall, list, and graph operations."]}
+{"query":"What should happen if optional LLM enrichment is unavailable?","relevant":["Optional LLM enrichment may use an OpenAI-compatible endpoint, but storage must degrade gracefully when it is unavailable."]}
+{"query":"How much context should be injected into a Hermes prompt?","relevant":["The agent should use a bounded context budget when injecting memories into a Hermes prompt."]}
+{"query":"What kind of memories should the context packer favor?","relevant":["Context assembly should prefer a small number of high-confidence memories over filling every available token."]}
+{"query":"Should a greeting trigger a database search?","relevant":["Chit-chat such as greetings and thanks should skip the memory retrieval round trip."]}
+{"query":"How are questions about personal preferences rewritten?","relevant":["Questions about the user's preferences should be rewritten with explicit user-context wording before retrieval."]}
+{"query":"What is the rule for procedural how-to questions?","relevant":["Procedural questions beginning with how should be treated as skill-oriented retrieval requests."]}
+{"query":"What embedding approach keeps personal data local?","relevant":["The user chose local fastembed models for semantic search to keep personal memories on the machine."]}
+{"query":"What does graph expansion need to avoid doing?","relevant":["Graph expansion is useful for connected project decisions but should not overwhelm a direct semantic match."]}
+{"query":"Can a new memory outrank a strong old semantic match just because it is recent?","relevant":["Recent memories may break ties, but recency must not outrank a strong semantic match solely because it is new."]}
+{"query":"How should an embedding failure be surfaced?","relevant":["A failed embedding request should be visible to the caller rather than silently returning unranked keyword results."]}
+{"query":"What are the three hierarchy resolutions used by memory?","relevant":["Memory records are grouped into topic directories with L0 abstracts, L1 overviews, and L2 details."]}
+{"query":"Which hierarchy layer is loaded only when needed?","relevant":["L1 memory overviews are used for reranking and planning while L2 content is loaded on demand."]}
+{"query":"What should a retrieval experiment report besides top-k hits?","relevant":["The retrieval benchmark reports both Hit@k and mean reciprocal rank so one lucky top result is not enough."]}
+{"query":"What is required before keeping an experiment?","relevant":["A retrieval experiment is kept only when correctness checks pass and held-out quality does not regress materially."]}
+{"query":"How should conflicts between sources and memories be handled?","relevant":["When a source conflicts with an existing memory, the agent should keep both until the conflict is resolved explicitly."]}
+{"query":"What should a stored session summary contain?","relevant":["The user wants session summaries to record decisions, unresolved questions, and next actions separately."]}
