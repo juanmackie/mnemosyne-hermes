@@ -505,13 +505,26 @@ impl ToolHandler {
             )
             .await?;
 
-        // Phase 2: Vector similarity search
-        debug!("Generating query embedding for vector search");
-        let query_embedding = self.embeddings.generate_embedding(&params.query).await?;
-        let vector_results = self
-            .storage
-            .vector_search(&query_embedding, max_results * 2, namespace.clone())
-            .await?;
+        // Phase 2: Vector similarity search (degrade loudly if unavailable)
+        let mut degraded = false;
+        let vector_results = match self.embeddings.generate_embedding(&params.query).await {
+            Ok(query_embedding) => self
+                .storage
+                .vector_search(&query_embedding, max_results * 2, namespace.clone())
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("Vector search unavailable ({}); serving keyword+graph results", e);
+                    degraded = true;
+                    Vec::new()
+                }),
+            Err(e) => {
+                warn!(
+                    "Query embedding failed ({}); serving keyword+graph results", e
+                );
+                degraded = true;
+                Vec::new()
+            }
+        };
 
         // Phase 3: Merge and re-rank results
         let mut memory_scores = std::collections::HashMap::new();
@@ -593,7 +606,15 @@ impl ToolHandler {
             "results": results,
             "query": params.query,
             "count": results.len(),
-            "method": "hybrid_search (keyword 40% + vector 30% + graph)"
+            "method": "hybrid_search (keyword 40% + vector 30% + graph)",
+            // Loud degradation flag: true means the ranking signal was
+            // unavailable and scores are keyword/graph-only. Callers should
+            // treat confidence accordingly.
+            "degraded": degraded,
+            // Recommended abstention threshold: recall responses whose top
+            // score is below this are weak matches — answer "I don't know"
+            // rather than hallucinating from them.
+            "abstention_threshold": 0.30
         }))
     }
 
@@ -747,7 +768,9 @@ impl ToolHandler {
         #[derive(Deserialize)]
         struct RememberParams {
             content: String,
-            namespace: String,
+            /// Optional — a small local model WILL omit this. Defaults to the
+            /// shared `global` scope so a malformed call still stores safely.
+            namespace: Option<String>,
             importance: Option<u8>,
             context: Option<String>,
         }
@@ -763,8 +786,8 @@ impl ToolHandler {
             Self::validate_importance(importance)?;
         }
 
-        // Parse namespace
-        let namespace = self.parse_namespace(&params.namespace)?;
+        // Parse namespace (default: global)
+        let namespace = self.parse_namespace(params.namespace.as_deref().unwrap_or("global"))?;
 
         // Enrich with LLM when available; degrade gracefully otherwise
         // (local-first personal agents often run without any cloud LLM key)
@@ -1025,6 +1048,10 @@ impl ToolHandler {
             ["global"] => Ok(Namespace::Global),
             ["project", name] => Ok(Namespace::Project {
                 name: name.to_string(),
+            }),
+            // Hermes profile (persona) — maps onto the per-agent private scope.
+            ["profile", name] => Ok(Namespace::Agent {
+                agent_id: name.to_string(),
             }),
             ["session", project, session_id] => Ok(Namespace::Session {
                 project: project.to_string(),
