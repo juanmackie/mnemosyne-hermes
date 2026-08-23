@@ -1482,6 +1482,7 @@ impl LibsqlStorage {
             || term.contains('(')
             || term.contains(')')
             || term.contains('"')
+            || term.contains('\'')
             || term.contains('?')
             || term.contains('*')
             || term.to_lowercase().contains(" not ")
@@ -4351,6 +4352,21 @@ impl StorageBackend for LibsqlStorage {
 
         debug!("Work item deleted successfully: {:?}", id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fts_query_tests {
+    use super::LibsqlStorage;
+
+    #[test]
+    fn quotes_apostrophes_for_fts5() {
+        assert_eq!(LibsqlStorage::escape_fts5_query("user's"), "\"user's\"");
+    }
+
+    #[test]
+    fn leaves_plain_terms_unquoted() {
+        assert_eq!(LibsqlStorage::escape_fts5_query("memory"), "memory");
     }
 }
 
