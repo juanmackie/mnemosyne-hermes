@@ -1,5 +1,10 @@
 # Mnemosyne
 
+> **Fork notice**: This is a community-maintained fork of [rand/mnemosyne](https://github.com/rand/mnemosyne),
+> optimized for the [Hermes](docs/HERMES_INTEGRATION.md) agent runtime — keyless personal-agent operation,
+> graceful degradation without OS keyrings or cloud LLMs, Hermes MCP stdio contract compliance, and
+> OpenViking-inspired hierarchical memory. All changes are released under the same MIT license.
+
 **High-performance agentic memory system for Claude Code's multi-agent orchestration**
 
 Mnemosyne provides persistent semantic memory with sub-millisecond retrieval, built in Rust with LibSQL vector search and PyO3 Python bindings.
