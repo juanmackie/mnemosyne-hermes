@@ -15,11 +15,11 @@ fi
 
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
-python3 .auto/evaluate.py --binary "$ROOT/target/release/mnemosyne" --db .auto/data/memory.db --dataset .auto/eval_dev.jsonl --mode both --workers 4 >"$TMP"
+python3 .auto/evaluate.py --binary "$ROOT/target/release/mnemosyne" --db .auto/data/memory.db --dataset .auto/eval_dev.jsonl --mode both --workers 1 >"$TMP"
 DEV_JSON="$(cat "$TMP")"
-python3 .auto/evaluate.py --binary "$ROOT/target/release/mnemosyne" --db .auto/data/memory.db --dataset .auto/eval_heldout_a.jsonl --mode both --workers 4 >"$TMP"
+python3 .auto/evaluate.py --binary "$ROOT/target/release/mnemosyne" --db .auto/data/memory.db --dataset .auto/eval_heldout_a.jsonl --mode both --workers 1 >"$TMP"
 HOLDOUT_A_JSON="$(cat "$TMP")"
-python3 .auto/evaluate.py --binary "$ROOT/target/release/mnemosyne" --db .auto/data/memory.db --dataset .auto/eval_heldout_b.jsonl --mode both --workers 4 >"$TMP"
+python3 .auto/evaluate.py --binary "$ROOT/target/release/mnemosyne" --db .auto/data/memory.db --dataset .auto/eval_heldout_b.jsonl --mode both --workers 1 >"$TMP"
 HOLDOUT_B_JSON="$(cat "$TMP")"
 
 python3 - "$DEV_JSON" "$HOLDOUT_A_JSON" "$HOLDOUT_B_JSON" <<'PY'
