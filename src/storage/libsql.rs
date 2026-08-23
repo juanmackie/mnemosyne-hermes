@@ -1467,35 +1467,16 @@ impl LibsqlStorage {
         Ok(())
     }
 
-    /// Escape FTS5 query string to handle special characters
+    /// Escape one FTS5 query token as a literal term.
     ///
-    /// FTS5 treats certain characters as operators:
-    /// - Hyphen (-) is treated as MINUS operator
-    /// - NOT, OR, AND are boolean operators
-    /// - Parentheses affect query parsing
-    ///
-    /// To treat these literally, we wrap terms in double quotes.
-    /// Internal quotes are escaped by doubling them.
+    /// FTS5 treats punctuation and words such as `AND`, `OR`, and `NOT` as
+    /// syntax. Quoting every token both preserves natural-language queries
+    /// (including apostrophes and trailing punctuation) and prevents query
+    /// text from injecting FTS operators. FTS5 still tokenizes quoted text,
+    /// so the configured porter tokenizer can stem the term normally.
     fn escape_fts5_query(term: &str) -> String {
-        // Check if term contains FTS5 special characters
-        let needs_escaping = term.contains('-')
-            || term.contains('(')
-            || term.contains(')')
-            || term.contains('"')
-            || term.contains('\'')
-            || term.contains('?')
-            || term.contains('*')
-            || term.to_lowercase().contains(" not ")
-            || term.to_lowercase().contains(" and ")
-            || term.to_lowercase().contains(" or ");
-
-        if needs_escaping {
-            // Escape internal quotes by doubling them
-            let escaped = term.replace('"', "\"\"");
-            format!("\"{}\"", escaped)
-        } else {
-            term.to_string()
-        }
+        let escaped = term.replace('"', "\"\"");
+        format!("\"{}\"", escaped)
     }
 
     /// Set the embedding service for this storage backend
@@ -4365,8 +4346,17 @@ mod fts_query_tests {
     }
 
     #[test]
-    fn leaves_plain_terms_unquoted() {
-        assert_eq!(LibsqlStorage::escape_fts5_query("memory"), "memory");
+    fn quotes_plain_terms_too() {
+        assert_eq!(LibsqlStorage::escape_fts5_query("memory"), "\"memory\"");
+    }
+
+    #[test]
+    fn quotes_punctuation_and_boolean_words() {
+        assert_eq!(
+            LibsqlStorage::escape_fts5_query("schedule."),
+            "\"schedule.\""
+        );
+        assert_eq!(LibsqlStorage::escape_fts5_query("OR"), "\"OR\"");
     }
 }
 
