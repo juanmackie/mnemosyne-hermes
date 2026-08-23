@@ -63,6 +63,13 @@ impl EmbeddingService {
     pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
         debug!("Generating embedding for text ({} chars)", text.len());
 
+        // Keyless mode: never touch the network. Personal agents run fully
+        // local — a missing API key must mean deterministic offline behavior,
+        // not a doomed HTTP call with a fallback on the other side.
+        if self.api_key.is_empty() {
+            return Ok(Self::simple_embedding(text));
+        }
+
         // For very short text, use simpler approach
         if text.len() < 50 {
             return Ok(Self::simple_embedding(text));
