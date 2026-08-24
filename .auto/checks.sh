@@ -13,7 +13,7 @@ else
   echo "rustfmt component unavailable; skipping format check" >&2
 fi
 
-for filter in 'storage::' 'hierarchy::' 'intent::'; do
+for filter in 'storage::' 'hierarchy::' 'intent::' 'mcp::'; do
   log="/tmp/mnemosyne-autoresearch-${filter//:/_}.log"
   cargo test --release --lib "$filter" -- --test-threads=2 >"$log" 2>&1 || {
     tail -80 "$log"
