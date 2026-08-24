@@ -548,8 +548,12 @@ WITH RECURSIVE memory_graph(id, depth) AS (
 )
 SELECT DISTINCT m.* FROM memories m
 JOIN memory_graph mg ON m.memory_id = mg.id
-ORDER BY mg.depth;
+ORDER BY mg.depth
+LIMIT :max_results;
 ```
+
+Agent-facing graph/context retrieval uses bounded variants: MCP requests cap
+hop depth, seed/input counts, and returned rows before serializing results.
 
 ---
 

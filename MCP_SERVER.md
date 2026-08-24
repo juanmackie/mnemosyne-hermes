@@ -167,7 +167,7 @@ Get memory graph from seed IDs.
 }
 ```
 
-**Status:** ✅ **Implemented** - Uses storage backend graph traversal
+**Status:** ✅ **Implemented** - Uses bounded storage-backend graph traversal. `max_hops` is capped at 8 and `max_results` defaults to 100 (maximum 1000); truncated responses are marked explicitly.
 
 ##### 4. mnemosyne.context
 Get full context for memory IDs.
@@ -188,7 +188,7 @@ Get full context for memory IDs.
 }
 ```
 
-**Status:** ✅ **Implemented** - Fetches memories from storage
+**Status:** ✅ **Implemented** - Fetches memories from storage and optionally expands links. `max_results` defaults to 100 (maximum 1000), and oversized input/link expansions are rejected or marked as truncated.
 
 #### DECIDE Tools
 

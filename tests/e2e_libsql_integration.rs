@@ -358,16 +358,16 @@ async fn test_e2e_vector_search_with_embeddings() {
         .expect("Vector search failed");
 
     println!("\nVector search results:");
-    for (i, (memory_id, score)) in results.iter().enumerate() {
+    for (i, result) in results.iter().enumerate() {
         // Fetch memory to display content
         let mem = storage
-            .get_memory(*memory_id)
+            .get_memory(result.memory.id)
             .await
             .expect("Should get memory");
         println!(
             "{}. [Score: {:.3}] {}",
             i + 1,
-            score,
+            result.score,
             &mem.content[..mem.content.len().min(50)]
         );
     }
@@ -375,9 +375,9 @@ async fn test_e2e_vector_search_with_embeddings() {
     assert_eq!(results.len(), 3, "Should return 3 results");
 
     // The most similar should be mem1 or mem2 (closer embeddings)
-    let (top_memory_id, _score) = &results[0];
+    let top_memory_id = results[0].memory.id;
     assert!(
-        *top_memory_id == mem1.id || *top_memory_id == mem2.id,
+        top_memory_id == mem1.id || top_memory_id == mem2.id,
         "Top result should be ML-related memory"
     );
 
