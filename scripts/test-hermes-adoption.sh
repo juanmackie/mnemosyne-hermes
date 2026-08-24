@@ -264,6 +264,15 @@ conn.close()
 PY
 sha256sum "$source" | awk '{print $1}' >"$TMP/source.sha256"
 
+# A partial/corrupt source must fail closed before a target is created.
+printf 'not-a-sqlite-database' >"$TMP/corrupt.db"
+if MNEMOSYNE_DB_PATH="$TMP/corrupt-target.db" RUST_LOG=error "$BIN" import \
+  --from "$TMP/corrupt.db" --namespace agent:hermes --dry-run --format json \
+  >"$TMP/import-corrupt.json" 2>/dev/null; then
+  return 1
+fi
+touch "$TMP/import-corrupt.ok"
+
 # Dry-run must inspect the source without creating the target database.
 MNEMOSYNE_DB_PATH="$dry_target" RUST_LOG=error "$BIN" import --from "$source" \
   --namespace agent:hermes --dry-run --format json >"$TMP/import-dry-run.json" 2>/dev/null || return 1
@@ -300,6 +309,10 @@ import_source_is_unchanged() {
 
 import_dry_run_is_non_destructive() {
   [[ -f "$TMP/import-dry-run.ok" && ! -e "$TMP/dry-run.db" ]]
+}
+
+import_corrupt_source_is_rejected() {
+  [[ -f "$TMP/import-corrupt.ok" && ! -e "$TMP/corrupt-target.db" ]]
 }
 
 import_duplicate_is_skipped() {
@@ -390,6 +403,7 @@ else
 fi
 check importer_source_readonly import_source_is_unchanged
 check importer_dry_run import_dry_run_is_non_destructive
+check importer_corrupt import_corrupt_source_is_rejected
 check importer_duplicate import_duplicate_is_skipped
 check importer_invalid import_invalid_rows_are_reported
 check importer_audit import_report_is_auditable
