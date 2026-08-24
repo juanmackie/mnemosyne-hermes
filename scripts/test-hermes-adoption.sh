@@ -2,6 +2,7 @@
 # Black-box adoption smoke tests for a built Mnemosyne binary.
 # This intentionally uses the public CLI/MCP surfaces only.
 set -euo pipefail
+export PATH="$HOME/.cargo/bin:$PATH"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${MNEMOSYNE_BIN:-${ROOT}/target/release/mnemosyne}"
@@ -43,6 +44,10 @@ has_release_installer() {
 
 default_features_are_local() {
   grep -Eq '^default = \[\]$' "$ROOT/Cargo.toml"
+}
+
+locked_manifest_is_current() {
+  cargo metadata --locked --no-deps --format-version 1 >/dev/null 2>&1
 }
 
 mcp_command_works() {
@@ -182,6 +187,7 @@ MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" list --namespace agent:hermes 
 check release_workflow has_release_workflow
 check release_installer has_release_installer
 check default_features default_features_are_local
+check locked_manifest locked_manifest_is_current
 check mcp_command mcp_command_works
 if mcp_aliases_work; then
   echo "CHECK mcp_aliases=2"

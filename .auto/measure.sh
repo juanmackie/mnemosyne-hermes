@@ -7,7 +7,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export RUSTFLAGS="${RUSTFLAGS:-}"
 
 # Build the candidate before measuring so stale binaries cannot pass.
-cargo build --release --bin mnemosyne >/dev/null
+cargo build --release --locked --bin mnemosyne >/dev/null
 
 ./scripts/test-hermes-adoption.sh
 
