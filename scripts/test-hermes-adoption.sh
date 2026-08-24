@@ -41,6 +41,10 @@ has_release_installer() {
     grep -Eq 'github.com/.*/releases|releases/download' "$ROOT/install.sh"
 }
 
+default_features_are_local() {
+  grep -Eq '^default = \[\]$' "$ROOT/Cargo.toml"
+}
+
 mcp_command_works() {
   "$BIN" mcp --help >/dev/null 2>&1
 }
@@ -177,6 +181,7 @@ MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" list --namespace agent:hermes 
 # Phase 1 gates. The alias surface counts two independent provider names.
 check release_workflow has_release_workflow
 check release_installer has_release_installer
+check default_features default_features_are_local
 check mcp_command mcp_command_works
 if mcp_aliases_work; then
   echo "CHECK mcp_aliases=2"

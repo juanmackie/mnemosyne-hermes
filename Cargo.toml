@@ -161,7 +161,9 @@ tonic-reflection = { version = "0.12", optional = true }
 tonic-health = { version = "0.12", optional = true }
 
 [features]
-default = ["keyring-fallback"]
+# Keep the default personal-agent build keyless and local. OS keyring support
+# remains available explicitly with `--features keyring-fallback`.
+default = []
 python = ["pyo3"]
 keyring-fallback = ["keyring"]
 distributed = ["ractor_cluster"]
