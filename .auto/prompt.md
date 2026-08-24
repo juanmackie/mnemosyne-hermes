@@ -81,5 +81,20 @@ public CLI/MCP surface and never mutate the source database used for imports.
 - Existing retrieval autoresearch established a clean isolated harness and a
   graph-neighbor improvement. Those results remain historical quality context;
   this session optimizes adoption, not benchmark labels.
-- Phase 0 plan and black-box adoption harness are now in place. Establish the
-  first baseline before changing production code.
+- Phase 0 baseline was `hermes_phase1_gates=1` with a 55.70 MiB release
+  binary; release assets, installer, MCP aliases, importer, and Hermes docs
+  were absent.
+- Phase 1 now passes 12 independent gates: four-target release workflow,
+  checksum-verifying installer, `mcp` command, dotted plus underscore aliases,
+  persona/canonical/triples discovery and round-trip, idempotent Python SQLite
+  import, keyless CLI memory, and the Hermes-first docs front door. Current
+  release binary is ~55.84 MiB.
+- Importer debugging found that libsql `Row` handles become an all-NULL view
+  after cursor advancement; the importer now materializes `libsql::Value`
+  values while iterating. It also had to resolve the target through the common
+  `MNEMOSYNE_DB_PATH` helper so the write and verification stores match.
+- A release integration-test link exceeded the per-iteration timeout, so the
+  black-box public MCP round-trip is the fast backpressure gate; full
+  integration validation is deferred to release CI.
+- Next structurally different work is Phase 2 default feature-gating and
+  binary-size/build-time measurement. Deferred ideas are in `.auto/ideas.md`.
