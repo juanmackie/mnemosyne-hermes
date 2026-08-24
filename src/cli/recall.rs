@@ -126,21 +126,30 @@ pub async fn handle(
                         }
                     }
                 }
-                let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
-                match emb_svc.embed(&query).await {
-                    Ok(query_embedding) => (&storage as &dyn StorageBackend)
-                        .vector_search(&query_embedding, limit * 2, ns.clone())
-                        .await
-                        .unwrap_or_default(),
-                    Err(e) => {
-                        debug!("Local embedding generation failed: {}", e);
-                        if format != "json" {
-                            eprintln!(
-                                "{} Local embedding failed, vector search skipped",
-                                mnemosyne_core::icons::status::warning()
-                            );
+                // Hash fallback vectors preserve the API shape but are not
+                // semantic embeddings: collisions can pull unrelated rows
+                // above a strong lexical match. Keep deterministic offline
+                // recall on the ranked FTS signal until a model-backed local
+                // embedding is available.
+                if !emb.uses_model_backed_embeddings() {
+                    Vec::new()
+                } else {
+                    let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
+                    match emb_svc.embed(&query).await {
+                        Ok(query_embedding) => (&storage as &dyn StorageBackend)
+                            .vector_search(&query_embedding, limit * 2, ns.clone())
+                            .await
+                            .unwrap_or_default(),
+                        Err(e) => {
+                            debug!("Local embedding generation failed: {}", e);
+                            if format != "json" {
+                                eprintln!(
+                                    "{} Local embedding failed, vector search skipped",
+                                    mnemosyne_core::icons::status::warning()
+                                );
+                            }
+                            Vec::new()
                         }
-                        Vec::new()
                     }
                 }
             }
