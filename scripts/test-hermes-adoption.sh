@@ -214,6 +214,7 @@ offline_recall_works() {
 has_import_command() {
   local source="$TMP/python-memory.db"
   local target="$TMP/imported.db"
+  local project_target="$TMP/project-import.db"
   local dry_target="$TMP/dry-run.db"
   local first="$TMP/import-first.json"
   local second="$TMP/import-second.json"
@@ -293,6 +294,11 @@ MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" import --from "$source" \
   --namespace agent:hermes --format json >"$first" 2>/dev/null || return 1
 MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" import --from "$source" \
   --namespace agent:hermes --format json >"$second" 2>/dev/null || return 1
+MNEMOSYNE_DB_PATH="$project_target" RUST_LOG=error "$BIN" import --from "$source" \
+  --namespace project:hermes --format json >"$TMP/import-project.json" 2>/dev/null || return 1
+MNEMOSYNE_DB_PATH="$project_target" RUST_LOG=error "$BIN" list --namespace project:hermes \
+  --format json 2>/dev/null | grep -q 'local-only storage' || return 1
+touch "$TMP/import-project.ok"
 python3 - "$first" "$second" <<'PY'
 import json
 import sys
@@ -317,6 +323,10 @@ import_source_is_unchanged() {
 
 import_dry_run_is_non_destructive() {
   [[ -f "$TMP/import-dry-run.ok" && ! -e "$TMP/dry-run.db" ]]
+}
+
+import_project_namespace_is_preserved() {
+  [[ -f "$TMP/import-project.ok" ]]
 }
 
 import_dry_run_report_is_complete() {
@@ -433,6 +443,7 @@ fi
 check importer_source_readonly import_source_is_unchanged
 check importer_dry_run import_dry_run_is_non_destructive
 check importer_dry_report import_dry_run_report_is_complete
+check importer_namespace import_project_namespace_is_preserved
 check importer_corrupt import_corrupt_source_is_rejected
 check importer_same_path import_same_path_is_rejected
 check importer_duplicate import_duplicate_is_skipped
