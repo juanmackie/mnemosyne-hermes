@@ -215,6 +215,12 @@ for table, columns, row in [
     conn.execute(f"CREATE TABLE {table} ({', '.join(f'{column} TEXT' for column in columns.split(', '))})")
     placeholders = ', '.join('?' for _ in row)
     conn.execute(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", row)
+# Same logical memory in a legacy table: the importer should report it as a
+# duplicate rather than creating a second target record.
+conn.execute(
+    "INSERT INTO memories (id, text, source, created_at) VALUES (?, ?, ?, ?)",
+    ("hermes-memory-1", "The user prefers local-only storage.", "preference", "2026-01-02T03:04:05+00:00"),
+)
 conn.commit()
 conn.close()
 PY
@@ -240,7 +246,7 @@ first = json.load(open(sys.argv[1], encoding="utf-8"))
 second = json.load(open(sys.argv[2], encoding="utf-8"))
 raise SystemExit(
     0
-    if first["scanned"] == 7 and first["imported"] == 7 and second["imported"] == 0
+    if first["scanned"] == 8 and first["imported"] == 7 and second["imported"] == 0
     else 1
 )
 PY
@@ -256,6 +262,16 @@ import_source_is_unchanged() {
 
 import_dry_run_is_non_destructive() {
   [[ -f "$TMP/import-dry-run.ok" && ! -e "$TMP/dry-run.db" ]]
+}
+
+import_duplicate_is_skipped() {
+  python3 - "$TMP/import-first.json" <<'PY'
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+raise SystemExit(0 if report["skipped"] >= 1 else 1)
+PY
 }
 
 import_report_is_auditable() {
@@ -320,6 +336,7 @@ else
 fi
 check importer_source_readonly import_source_is_unchanged
 check importer_dry_run import_dry_run_is_non_destructive
+check importer_duplicate import_duplicate_is_skipped
 check importer_audit import_report_is_auditable
 check offline_core offline_core_works
 check offline_recall offline_recall_works
