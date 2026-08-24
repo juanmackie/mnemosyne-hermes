@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
-#   ./install.sh --version 2.3.2 --bin-dir "$HOME/.local/bin"
+#   ./install.sh --version 2.3.3 --bin-dir "$HOME/.local/bin"
 #
 # Source builds remain available from a checkout with:
 #   ./scripts/install/install.sh --skip-api-key --no-mcp

@@ -20,7 +20,7 @@ For a pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh \
-  | bash -s -- --version 2.3.2
+  | bash -s -- --version 2.3.3
 ```
 
 A source checkout remains available when developing the project:
