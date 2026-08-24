@@ -84,6 +84,11 @@ full_feature_profile_is_documented() {
     grep -q -- '--features full' "$ROOT/docs/HERMES_INTEGRATION.md"
 }
 
+distributed_network_is_opt_in() {
+  grep -Eq 'iroh = .*optional = true' "$ROOT/Cargo.toml" &&
+    grep -Eq '^distributed = .*dep:iroh' "$ROOT/Cargo.toml"
+}
+
 locked_manifest_is_current() {
   cargo metadata --locked --no-deps --format-version 1 >/dev/null 2>&1
 }
@@ -310,6 +315,7 @@ check local_embeddings local_embeddings_are_opt_in
 check ics_syntax ics_syntax_is_opt_in
 check client_configs client_config_examples_exist
 check full_feature_profile full_feature_profile_is_documented
+check distributed_network distributed_network_is_opt_in
 check locked_manifest locked_manifest_is_current
 check mcp_command mcp_command_works
 if mcp_aliases_work; then

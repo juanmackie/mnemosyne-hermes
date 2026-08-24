@@ -1,337 +1,56 @@
-//! Network Layer - Iroh P2P Communication
-//!
-//! Provides distributed agent communication using Iroh QUIC networking:
-//! - Agent endpoints with keypair identity
-//! - Protocol handlers for agent messages
-//! - Hybrid routing (local Ractor vs remote Iroh)
-//! - Peer discovery and connection management
+//! Network layer for optional distributed agent communication.
 
-pub mod endpoint;
-pub mod protocol;
 pub mod router;
+
+#[cfg(feature = "distributed")]
+pub mod endpoint;
+#[cfg(feature = "distributed")]
+pub mod protocol;
+#[cfg(feature = "distributed")]
 pub mod transport;
 
+#[cfg(feature = "distributed")]
 pub use endpoint::{AgentEndpoint, AgentKeypair};
+#[cfg(feature = "distributed")]
 pub use protocol::AgentProtocol;
 pub use router::MessageRouter;
 
-use crate::error::Result;
-use crate::launcher::agents::AgentRole;
-use iroh::net::endpoint::{Incoming, RecvStream, SendStream};
-use std::sync::Arc;
-use tokio::sync::RwLock;
+#[cfg(feature = "distributed")]
+mod distributed_layer;
+#[cfg(feature = "distributed")]
+pub use distributed_layer::NetworkLayer;
 
-/// Network layer managing all distributed communication
+#[cfg(not(feature = "distributed"))]
+/// Local-only network facade. Distributed Iroh transport is opt-in.
 pub struct NetworkLayer {
-    /// Local agent endpoint
-    endpoint: Arc<RwLock<Option<AgentEndpoint>>>,
-
-    /// Message router (WIP)
-    #[allow(dead_code)]
-    router: Arc<MessageRouter>,
-
-    /// Whether network layer is started
-    started: Arc<RwLock<bool>>,
-
-    /// Shared secret for authentication
-    cluster_secret: Option<String>,
+    router: std::sync::Arc<MessageRouter>,
 }
 
+#[cfg(not(feature = "distributed"))]
 impl NetworkLayer {
-    /// Get the message router
-    pub fn router(&self) -> Arc<MessageRouter> {
-        self.router.clone()
-    }
-
-    /// Create a new network layer
-    pub async fn new() -> Result<Self> {
-        let cluster_secret = std::env::var("MNEMOSYNE_CLUSTER_SECRET").ok();
-        if cluster_secret.is_some() {
-            tracing::info!("Cluster secret configured, authentication enabled");
-        }
-
+    pub async fn new() -> crate::error::Result<Self> {
         Ok(Self {
-            endpoint: Arc::new(RwLock::new(None)),
-            router: Arc::new(MessageRouter::new()),
-            started: Arc::new(RwLock::new(false)),
-            cluster_secret,
+            router: std::sync::Arc::new(MessageRouter::new()),
         })
     }
 
-    /// Start the network layer
-    ///
-    /// Note: the Iroh QUIC endpoint is created lazily on first use (via
-    /// `ensure_endpoint`) rather than eagerly here. This avoids expensive
-    /// crypto key generation and UDP socket binding when the network layer
-    /// is started but never used for peer communication — a common case for
-    /// local-only personal agents that don't need P2P networking.
-    pub async fn start(&self) -> Result<()> {
-        let mut started = self.started.write().await;
-        if *started {
-            return Ok(());
-        }
+    pub fn router(&self) -> std::sync::Arc<MessageRouter> {
+        self.router.clone()
+    }
 
-        tracing::debug!("Starting network layer (lazy endpoint)");
-
-        // Initialize and register transport (endpoint will be created on first use)
-        let transport = Arc::new(transport::IrohTransport::new(
-            self.endpoint.clone(),
-            self.cluster_secret.clone(),
-        ));
-        self.router.set_transport(transport).await;
-
-        *started = true;
-
-        tracing::debug!("Network layer started (endpoint will be created on demand)");
+    pub async fn start(&self) -> crate::error::Result<()> {
+        tracing::debug!("Distributed transport disabled; using local-only network facade");
         Ok(())
     }
 
-    /// Lazily create the Iroh endpoint if it doesn't exist yet.
-    /// This defers expensive crypto key generation and UDP socket binding
-    /// until the network layer is actually used for peer communication.
-    async fn ensure_endpoint(&self) -> Result<()> {
-        {
-            let ep = self.endpoint.read().await;
-            if ep.is_some() {
-                return Ok(());
-            }
-        }
-
-        tracing::debug!("Creating Iroh endpoint (lazy)");
-        let endpoint = AgentEndpoint::new().await?;
-        tracing::debug!("Agent endpoint created: {}", endpoint.node_id());
-
-        {
-            let mut ep = self.endpoint.write().await;
-            if ep.is_none() {
-                *ep = Some(endpoint.clone());
-            }
-        }
-
-        // Start listener loop on first endpoint creation
-        let listener_endpoint = endpoint.clone();
-        let listener_router = self.router.clone();
-        let secret = self.cluster_secret.clone();
-
-        tokio::spawn(async move {
-            run_listener_loop(listener_endpoint, listener_router, secret).await;
-        });
-
+    pub async fn stop(&self) -> crate::error::Result<()> {
         Ok(())
     }
-
-    /// Stop the network layer
-    pub async fn stop(&self) -> Result<()> {
-        let mut started = self.started.write().await;
-        if !*started {
-            return Ok(());
-        }
-
-        tracing::debug!("Stopping network layer");
-
-        // Close endpoint
-        // Note: Iroh may log warnings about closed channels during shutdown.
-        // These are expected and harmless (background STUN probes being cancelled).
-        {
-            let mut ep = self.endpoint.write().await;
-            if let Some(endpoint) = ep.take() {
-                endpoint.close().await?;
-            }
-        }
-
-        *started = false;
-
-        tracing::debug!("Network layer stopped");
-        Ok(())
-    }
-
-    /// Get endpoint node ID
-    pub async fn node_id(&self) -> Option<String> {
-        if self.ensure_endpoint().await.is_err() {
-            return None;
-        }
-        let ep = self.endpoint.read().await;
-        ep.as_ref().map(|e| e.node_id())
-    }
-
-    /// Create an invite ticket for this node
-    pub async fn create_invite(&self) -> Result<String> {
-        self.ensure_endpoint().await?;
-        let ep = self.endpoint.read().await;
-        if let Some(endpoint) = ep.as_ref() {
-            endpoint.create_ticket().await
-        } else {
-            Err(crate::error::MnemosyneError::NetworkError(
-                "Network layer not started".to_string(),
-            ))
-        }
-    }
-
-    /// Get local addresses
-    pub async fn local_addrs(&self) -> Result<Vec<String>> {
-        if self.ensure_endpoint().await.is_err() {
-            return Ok(vec![]);
-        }
-        let ep = self.endpoint.read().await;
-        if let Some(endpoint) = ep.as_ref() {
-            endpoint.local_addrs()
-        } else {
-            Ok(vec![])
-        }
-    }
-
-    /// Join a peer using an invite ticket
-    pub async fn join_peer(&self, ticket: &str) -> Result<String> {
-        self.ensure_endpoint().await?;
-        let ep = self.endpoint.read().await;
-        if let Some(endpoint) = ep.as_ref() {
-            let peer_node_id = endpoint.add_peer(ticket).await?;
-
-            // Get our node ID
-            let my_node_id = endpoint.node_id();
-
-            // Announce our roles to the peer
-            if let Err(e) = self.router.announce_self(&peer_node_id, &my_node_id).await {
-                tracing::warn!("Failed to announce roles to peer {}: {}", peer_node_id, e);
-            }
-
-            Ok(peer_node_id)
-        } else {
-            Err(crate::error::MnemosyneError::NetworkError(
-                "Network layer not started".to_string(),
-            ))
-        }
-    }
 }
 
-/// Run the network listener loop
-async fn run_listener_loop(
-    endpoint: AgentEndpoint,
-    router: Arc<MessageRouter>,
-    secret: Option<String>,
-) {
-    tracing::info!("Network listener loop started");
-    loop {
-        match endpoint.accept().await {
-            Some(incoming) => {
-                let router = router.clone();
-                let secret = secret.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(incoming, router, secret).await {
-                        tracing::warn!("Connection error: {}", e);
-                    }
-                });
-            }
-            None => {
-                tracing::info!("Network listener loop stopped (endpoint closed)");
-                break;
-            }
-        }
-    }
-}
-
-/// Handle an incoming connection
-async fn handle_connection(
-    incoming: Incoming,
-    router: Arc<MessageRouter>,
-    secret: Option<String>,
-) -> Result<()> {
-    // Accept connection
-    let conn = incoming
-        .await
-        .map_err(|e| crate::error::MnemosyneError::NetworkError(e.to_string()))?;
-
-    // Note: remote_node_id() seems unavailable or requires different access in this Iroh version
-    // For now, we just log that we accepted a connection
-    tracing::debug!("Accepted connection from remote peer");
-
-    // Accept bidirectional streams
-    loop {
-        match conn.accept_bi().await {
-            Ok((send, recv)) => {
-                let router = router.clone();
-                let secret = secret.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_stream(send, recv, router, secret).await {
-                        tracing::warn!("Stream error: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-                // Connection closed or error
-                tracing::debug!("Connection closed: {}", e);
-                break;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle an incoming stream
-async fn handle_stream(
-    mut send: SendStream,
-    mut recv: RecvStream,
-    router: Arc<MessageRouter>,
-    secret: Option<String>,
-) -> Result<()> {
-    // Perform handshake
-    AgentProtocol::handshake_responder(&mut send, &mut recv, secret).await?;
-
-    // Read message
-    let msg = AgentProtocol::recv_message(&mut recv).await?;
-
-    match msg {
-        crate::orchestration::messages::AgentMessage::AnnounceRoles { roles, node_id } => {
-            tracing::info!("Received role announcement from {}: {:?}", node_id, roles);
-            for role in roles {
-                router.register_remote(role, node_id.clone()).await;
-            }
-        }
-        msg => {
-            // Determine destination role
-            let role = match &msg {
-                crate::orchestration::messages::AgentMessage::Orchestrator(_) => {
-                    AgentRole::Orchestrator
-                }
-                crate::orchestration::messages::AgentMessage::Optimizer(_) => AgentRole::Optimizer,
-                crate::orchestration::messages::AgentMessage::Reviewer(_) => AgentRole::Reviewer,
-                crate::orchestration::messages::AgentMessage::Executor(_) => AgentRole::Executor,
-                crate::orchestration::messages::AgentMessage::AnnounceRoles { .. } => {
-                    unreachable!()
-                }
-            };
-
-            // Route message
-            if let Err(e) = router.route(role, msg).await {
-                tracing::warn!("Failed to route message to {:?}: {}", role, e);
-                // We could send an error back, but for now just log it
-            }
-        }
-    }
-
-    // Close stream
-    // Note: finish() returns Result, not Future in some Iroh versions
-    // Check if we need await or not. The error said it's not a future.
-    if let Err(e) = send.finish() {
-        tracing::warn!("Failed to finish stream: {}", e);
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_network_layer_lifecycle() {
-        let layer = NetworkLayer::new().await.unwrap();
-
-        // Test start/stop
-        layer.start().await.unwrap();
-        assert!(layer.node_id().await.is_some());
-
-        layer.stop().await.unwrap();
-    }
-}
+#[cfg(not(feature = "distributed"))]
+pub struct AgentEndpoint;
+#[cfg(not(feature = "distributed"))]
+pub struct AgentKeypair;
+#[cfg(not(feature = "distributed"))]
+pub struct AgentProtocol;
