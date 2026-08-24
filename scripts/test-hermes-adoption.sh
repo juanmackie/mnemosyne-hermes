@@ -323,6 +323,15 @@ else
   echo "CHECK hermes_docs_frontdoor=0"
   fail=$((fail + 1))
 fi
+if [[ -f "$ROOT/docs/HERMES_INTEGRATION.md" ]] &&
+   grep -q 'deterministic fallback embeddings' "$ROOT/docs/HERMES_INTEGRATION.md" &&
+   grep -q -- '--features local-embeddings' "$ROOT/docs/HERMES_INTEGRATION.md"; then
+  echo "CHECK hermes_docs_embeddings=1"
+  pass=$((pass + 1))
+else
+  echo "CHECK hermes_docs_embeddings=0"
+  fail=$((fail + 1))
+fi
 
 # The primary metric is deliberately a small, behavior-oriented score rather
 # than a retrieval benchmark. It cannot pass by changing labels or answers.

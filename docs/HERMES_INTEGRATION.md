@@ -121,9 +121,12 @@ MNEMOSYNE_DB_PATH="$HOME/.local/share/mnemosyne/mnemosyne.db" \
   --namespace agent:hermes --format json
 ```
 
-Core storage, keyword search, import, list, graph, and MCP discovery do not
-require an API key. Local embeddings may be downloaded on first use; if they are
-unavailable, the command reports the degraded path instead of inventing a result.
+Core storage, keyword search, import, list, graph, MCP discovery, and the
+release binary's deterministic fallback embeddings do not require an API key or
+network access. The default release intentionally excludes the ONNX model
+runtime; it uses a deterministic hash embedding for local remember/recall. A
+source build can opt into the larger model-backed path with
+`cargo build --release --features local-embeddings`.
 
 ## Configuration and namespaces
 
@@ -146,7 +149,7 @@ clients that expose provider tools as native commands.
 | Hermes cannot start the server | Run `mnemosyne mcp --help`; use an absolute command path in Hermes config. |
 | Memories are in the wrong store | Set `MNEMOSYNE_DB_PATH` in the MCP server `env` block and in CLI commands. |
 | Import reports zero rows | Run `--dry-run --format json`; inspect source table presence and keep the original DB unchanged. |
-| No vector model is available | Continue with keyword recall or install local embedding support; core storage remains usable. |
+| No vector model is available | The release uses deterministic fallback embeddings; build with `--features local-embeddings` only when model-backed vectors are needed. |
 
 For protocol details, see [MCP_SERVER.md](../MCP_SERVER.md). For retrieval
 quality methodology, see [benchmark/retrieval/README.md](../benchmark/retrieval/README.md).

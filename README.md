@@ -340,7 +340,8 @@ mnemosyne orchestrate --session-id dev-001 --work-items plan.json
 ### Storage Layer
 - **LibSQL**: SQLite-compatible with native vector search (sqlite-vec)
 - **Embeddings**:
-  - Local: fastembed (nomic-embed-text-v1.5, 768d)
+  - Default release: deterministic local hash embeddings (keyless, no model download)
+  - Optional source-build feature: fastembed/ONNX (`--features local-embeddings`)
   - Remote: Voyage AI (voyage-3-large, 1536d)
 - **Search Config**: Hybrid scoring (semantic 70%, FTS 20%, graph 10%)
 - **Performance**: 2.25ms avg operations, 0.88ms list, 1.61ms search
