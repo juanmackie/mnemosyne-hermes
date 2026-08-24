@@ -87,6 +87,30 @@ for line in open(sys.argv[1], encoding="utf-8"):
 required = {"mnemosyne_persona", "mnemosyne_canonical", "mnemosyne_triples"}
 raise SystemExit(0 if required <= names else 1)
 PY
+
+  local db="$TMP/provider.db"
+  local response="$TMP/provider.jsonl"
+  local requests
+  requests=$'{"jsonrpc":"2.0","method":"initialize","id":1}\n{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"mnemosyne_canonical","arguments":{"action":"remember","category":"identity","name":"name","body":"The user goes by Ada.","namespace":"global"}}}\n{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"mnemosyne_triples","arguments":{"action":"add","subject":"Ada","predicate":"uses","object":"Rust","namespace":"global"}}}\n{"jsonrpc":"2.0","method":"tools/call","id":4,"params":{"name":"mnemosyne_triples","arguments":{"action":"query","subject":"Ada","predicate":"uses","namespace":"global"}}}\n'
+  MNEMOSYNE_DB_PATH="$db" RUST_LOG=error bash -c "printf '%s' \"\$1\" | \"\$2\" mcp" bash "$requests" "$BIN" >"$response" 2>/dev/null
+  python3 - "$response" <<'PY'
+import json
+import sys
+
+stored = False
+triple_count = None
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        payload = json.loads(line)
+        text = payload["result"]["content"][0]["text"]
+        value = json.loads(text)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        continue
+    stored = stored or value.get("stored") is True
+    if "triples" in value:
+        triple_count = value.get("count")
+raise SystemExit(0 if stored and triple_count == 1 else 1)
+PY
 }
 
 offline_core_works() {
