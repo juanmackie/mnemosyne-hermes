@@ -87,3 +87,31 @@ jobs:
           files: |
             dist/mnemosyne-*.tar.gz
             dist/checksums.txt
+      - name: Smoke-test published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf smoke-dist
+          mkdir -p smoke-dist
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'mnemosyne-*.tar.gz' \
+            --pattern checksums.txt \
+            --dir smoke-dist
+          expected=(
+            mnemosyne-linux-x86_64.tar.gz
+            mnemosyne-linux-aarch64.tar.gz
+            mnemosyne-macos-x86_64.tar.gz
+            mnemosyne-macos-aarch64.tar.gz
+          )
+          for archive in "${expected[@]}"; do
+            test -s "smoke-dist/${archive}"
+            tar -tzf "smoke-dist/${archive}" | grep -Fx 'mnemosyne'
+          done
+          test "$(find smoke-dist -maxdepth 1 -name 'mnemosyne-*.tar.gz' -type f | wc -l)" -eq "${#expected[@]}"
+          (cd smoke-dist && sha256sum --check checksums.txt)
+          mkdir -p smoke-dist/native
+          tar -xzf smoke-dist/mnemosyne-linux-x86_64.tar.gz -C smoke-dist/native
+          smoke-dist/native/mnemosyne --version

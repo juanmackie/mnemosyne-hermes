@@ -42,6 +42,17 @@ has_release_installer() {
     grep -Eq 'github.com/.*/releases|releases/download' "$ROOT/install.sh"
 }
 
+has_release_smoke() {
+  local workflow="$ROOT/.github/workflows/release.yml"
+  [[ -f "$workflow" ]] &&
+    grep -Eq 'gh release download' "$workflow" &&
+    grep -Eq 'sha256sum --check' "$workflow" &&
+    grep -Eq 'mnemosyne-linux-x86_64\.tar\.gz' "$workflow" &&
+    grep -Eq 'mnemosyne-linux-aarch64\.tar\.gz' "$workflow" &&
+    grep -Eq 'mnemosyne-macos-x86_64\.tar\.gz' "$workflow" &&
+    grep -Eq 'mnemosyne-macos-aarch64\.tar\.gz' "$workflow"
+}
+
 default_features_are_local() {
   grep -Eq '^default = \[\]$' "$ROOT/Cargo.toml"
 }
@@ -186,6 +197,7 @@ MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" list --namespace agent:hermes 
 # Phase 1 gates. The alias surface counts two independent provider names.
 check release_workflow has_release_workflow
 check release_installer has_release_installer
+check release_smoke has_release_smoke
 check default_features default_features_are_local
 check locked_manifest locked_manifest_is_current
 check mcp_command mcp_command_works
