@@ -139,7 +139,9 @@ for the model-backed embeddings plus full ICS syntax grammars).
 
 For other MCP clients, use the same `mnemosyne mcp` stdio command and the
 standard `mcpServers` configuration shape. The underscore aliases are safe for
-clients that expose provider tools as native commands. See
+clients that expose provider tools as native commands. The release is local-only
+by default; distributed Iroh peer networking is an explicit source-build
+feature (`cargo build --release --features distributed`). See
 [MCP client configuration examples](MCP_CLIENT_CONFIGS.md) for Claude Code,
 Cursor, Codex, Windsurf, OpenClaw, and generic MCP clients.
 
