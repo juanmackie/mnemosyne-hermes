@@ -122,8 +122,6 @@ crossterm = "0.29"
 # ICS (Integrated Context Studio) dependencies
 # Text editing
 ropey = "1.6"
-tui-textarea = "0.4"
-
 # Parsing and lexing
 tree-sitter = { version = "~0.23", optional = true }
 tree-sitter-md = { version = "0.3", optional = true }  # Modern markdown parser (replaces tree-sitter-markdown)
@@ -138,22 +136,14 @@ tree-sitter-bash = { version = "~0.23", optional = true }
 tree-sitter-go = { version = "~0.23", optional = true }
 tree-sitter-c = { version = "~0.23", optional = true }
 tree-sitter-cpp = { version = "~0.23", optional = true }
-logos = "0.13"
-
 # Symbol completion and fuzzy matching
 nucleo = "0.5"
-fuzzy-matcher = "0.3"
 
 # Error reporting
 ariadne = "0.4"
-miette = "7.0"
 
 # PTY support
 portable-pty = "0.8"
-vte = "0.13"
-
-# TUI extensions
-tui-logger = "0.11"
 
 # gRPC server (optional, for RPC feature)
 tonic = { version = "0.12", features = ["transport", "tls"], optional = true }

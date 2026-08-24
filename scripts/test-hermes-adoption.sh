@@ -94,6 +94,10 @@ distributed_feature_is_documented() {
     grep -q -- '--features distributed' "$ROOT/docs/HERMES_INTEGRATION.md"
 }
 
+unused_ui_dependencies_removed() {
+  ! grep -Eq '^(tui-textarea|logos|fuzzy-matcher|miette|tui-logger|vte) = ' "$ROOT/Cargo.toml"
+}
+
 locked_manifest_is_current() {
   cargo metadata --locked --no-deps --format-version 1 >/dev/null 2>&1
 }
@@ -322,6 +326,7 @@ check client_configs client_config_examples_exist
 check full_feature_profile full_feature_profile_is_documented
 check distributed_network distributed_network_is_opt_in
 check distributed_docs distributed_feature_is_documented
+check unused_dependencies unused_ui_dependencies_removed
 check locked_manifest locked_manifest_is_current
 check mcp_command mcp_command_works
 if mcp_aliases_work; then
