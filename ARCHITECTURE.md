@@ -161,8 +161,8 @@ flowchart TD
 - Migration handling
 
 **Key Files**:
-- `sqlite.rs`: Storage implementation
-- `migrations/`: SQL schema migrations
+- `libsql.rs`: Storage implementation
+- `migrations/libsql/`: LibSQL schema migrations
 
 ### 4. Core Layer
 
@@ -383,7 +383,7 @@ sequenceDiagram
 
     Note over Store: Step 3: Hybrid Scoring
     Store->>Store: Calculate scores
-    Note right of Store: • 50% keyword match<br/>• 20% graph proximity<br/>• 20% importance<br/>• 10% recency
+    Note right of Store: • 40% keyword + graph<br/>• 30% vector similarity<br/>• 30% hierarchy/importance/recency signals
     Store->>Store: Sort by final score
     Store-->>-MCP: Ranked memory list
 

@@ -80,7 +80,7 @@ Before using the server, send an initialize request:
 }
 ```
 
-### 8 Core Tools (OODA Loop)
+### Memory Tools (OODA Loop)
 
 #### OBSERVE Tools
 
@@ -96,6 +96,7 @@ Search memories by query. Optionally provide `abstention_threshold` to return an
     "name": "mnemosyne.recall",
     "arguments": {
       "query": "database decisions",
+      "abstention_threshold": 0.30,
       "namespace": "project:myapp",
       "max_results": 10,
       "min_importance": 5
@@ -113,7 +114,7 @@ Search memories by query. Optionally provide `abstention_threshold` to return an
     "content": [
       {
         "type": "text",
-        "text": "{\"results\": [...], \"query\": \"database decisions\"}"
+        "text": "{\"results\": [...], \"query\": \"database decisions\", \"count\": 3, \"degraded\": false, \"abstained\": false}"
       }
     ]
   },
@@ -135,7 +136,8 @@ List recent memories in namespace. Supports `limit`, `offset`, `has_more`, and `
     "name": "mnemosyne.list",
     "arguments": {
       "namespace": "project:myapp",
-      "limit": 20
+      "limit": 20,
+      "offset": 0
     }
   },
   "id": 4
