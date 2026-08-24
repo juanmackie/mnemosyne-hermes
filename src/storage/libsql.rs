@@ -17,6 +17,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+const MAX_GRAPH_SEEDS: usize = 1_000;
+
 // ---------------------------------------------------------------------------
 // Migration SQL embedded at compile time via include_str!
 // Eliminates runtime file I/O during database initialization — critical for
@@ -2372,6 +2374,12 @@ impl LibsqlStorage {
         if seed_ids.is_empty() || max_hops == 0 || max_results == Some(0) {
             return Ok(vec![]);
         }
+        if seed_ids.len() > MAX_GRAPH_SEEDS {
+            return Err(MnemosyneError::ValidationError(format!(
+                "seed_ids must not contain more than {} IDs",
+                MAX_GRAPH_SEEDS
+            )));
+        }
 
         let seed_strings: Vec<String> = seed_ids.iter().map(|id| id.to_string()).collect();
         let placeholders = seed_strings
@@ -3278,10 +3286,11 @@ impl StorageBackend for LibsqlStorage {
             debug!("Expanding graph from {} seed memories", memory_scores.len());
             let seed_ids = Self::select_graph_seed_ids(&memory_scores, 5);
             let graph_memories = self
-                .graph_traverse(
+                .graph_traverse_bounded(
                     &seed_ids,
                     self.search_config.max_graph_depth,
                     namespace.clone(),
+                    max_results.min(1000),
                 )
                 .await?;
 

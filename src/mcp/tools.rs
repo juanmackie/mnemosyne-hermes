@@ -723,8 +723,12 @@ impl ToolHandler {
         // layer excludes seed memories and only returns depth>0 neighbors.
         let expand_graph = params.expand_graph.unwrap_or(true);
 
-        // Phase 1: Keyword + graph search
-        let keyword_results = self
+        // Phase 1: Keyword + graph search. If the storage backend refuses to
+        // serve unranked results because its vector signal failed, fall back
+        // to keyword search while making the degradation explicit below.
+        let mut degraded = false;
+        let mut degraded_reasons = Vec::new();
+        let keyword_results = match self
             .storage
             .hybrid_search(
                 &params.query,
@@ -732,7 +736,22 @@ impl ToolHandler {
                 max_results * 2,
                 expand_graph,
             )
-            .await?;
+            .await
+        {
+            Ok(results) => results,
+            Err(error) if error.to_string().contains("fail-closed retrieval") => {
+                warn!(
+                    "Storage hybrid search degraded ({}); serving keyword results",
+                    error
+                );
+                degraded = true;
+                degraded_reasons.push("hybrid_search_vector_unavailable");
+                self.storage
+                    .keyword_search(&params.query, namespace.clone())
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
 
         // Keyless release builds use deterministic hash embeddings. They still
         // provide a vector-shaped signal, but semantic quality can collapse as
@@ -759,9 +778,8 @@ impl ToolHandler {
         }
 
         // Phase 2: Vector similarity search (degrade loudly if unavailable)
-        let mut degraded = fallback_embeddings;
-        let mut degraded_reasons = Vec::new();
         if fallback_embeddings {
+            degraded = true;
             degraded_reasons.push("fallback_embeddings");
         }
         let vector_results = match self.embeddings.generate_embedding(&params.query).await {
