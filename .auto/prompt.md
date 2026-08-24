@@ -96,5 +96,14 @@ boundary change.
   MRR to 0.2691 and held-out MRR to 0.1579, with slower latency. Reverted;
   score-scale tuning is not promising without first inspecting component
   semantics.
+- Runs 7-8: deterministic graph seed selection reduced run-to-run noise but
+  did not improve quality because the seed itself was incorrectly boosted.
+- Runs 9-10: disabling graph expansion improved held-out MRR to about 0.61,
+  showing graph seed boosting was harmful for direct lookups.
+- Runs 11-12 / best `a04f7d0`: graph traversal now returns only depth>0
+  neighbors, while CLI and MCP retain graph expansion. Dev MRR is 0.5491 and
+  held-out average MRR 0.6334 on the repeat; this preserves connected-memory
+  behavior without boosting direct seeds. The MCP default and Hermes docs are
+  aligned with this behavior.
 - Do not repeat an idea already recorded in `.auto/log.jsonl` unless the new
   run changes an explicit assumption.

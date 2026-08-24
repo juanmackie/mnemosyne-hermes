@@ -120,6 +120,14 @@ You have persistent memory via the mnemosyne tools.
   personal facts.
 ```
 
+### Recall defaults for personal agents
+
+Recall prioritizes direct keyword and semantic matches. Graph expansion still
+supports connected-context exploration, but a direct seed memory is never
+boosted merely because it was selected as a graph seed; only depth-1+ neighbors
+receive graph-expansion scoring. This keeps ordinary preference and decision
+lookups precise while preserving relationship traversal for linked memories.
+
 ## Optional: Hermes as the LLM backend
 
 Core memory works without any LLM API. If you want LLM-enhanced review and
