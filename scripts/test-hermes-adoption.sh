@@ -319,6 +319,23 @@ import_dry_run_is_non_destructive() {
   [[ -f "$TMP/import-dry-run.ok" && ! -e "$TMP/dry-run.db" ]]
 }
 
+import_dry_run_report_is_complete() {
+  python3 - "$TMP/import-dry-run.json" <<'PY'
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+raise SystemExit(
+    0
+    if report["dry_run"] is True
+    and report["scanned"] == 9
+    and report["imported"] == 7
+    and report["skipped"] >= 2
+    else 1
+)
+PY
+}
+
 import_corrupt_source_is_rejected() {
   [[ -f "$TMP/import-corrupt.ok" && ! -e "$TMP/corrupt-target.db" ]]
 }
@@ -415,6 +432,7 @@ else
 fi
 check importer_source_readonly import_source_is_unchanged
 check importer_dry_run import_dry_run_is_non_destructive
+check importer_dry_report import_dry_run_report_is_complete
 check importer_corrupt import_corrupt_source_is_rejected
 check importer_same_path import_same_path_is_rejected
 check importer_duplicate import_duplicate_is_skipped
