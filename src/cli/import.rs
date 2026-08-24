@@ -5,7 +5,7 @@
 //! mapping is presence-based instead of assuming one exact schema revision.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use libsql::{Builder, Connection, Row};
+use libsql::{Builder, Connection, Row, Value};
 use mnemosyne_core::{
     error::{MnemosyneError, Result},
     MemoryId, MemoryNote, MemoryType, Namespace, StorageBackend,
@@ -238,18 +238,22 @@ fn column_index(columns: &[String], names: &[&str]) -> Option<usize> {
 
 fn text_at(row: &Row, columns: &[String], names: &[&str]) -> Option<String> {
     let index = i32::try_from(column_index(columns, names)?).ok()?;
-    row.get::<String>(index)
-        .ok()
-        .or_else(|| row.get::<i64>(index).ok().map(|value| value.to_string()))
-        .or_else(|| row.get::<f64>(index).ok().map(|value| value.to_string()))
+    match row.get_value(index).ok()? {
+        Value::Text(value) => Some(value),
+        Value::Integer(value) => Some(value.to_string()),
+        Value::Real(value) => Some(value.to_string()),
+        Value::Null | Value::Blob(_) => None,
+    }
 }
 
 fn float_at(row: &Row, columns: &[String], names: &[&str]) -> Option<f64> {
     let index = i32::try_from(column_index(columns, names)?).ok()?;
-    row.get::<f64>(index)
-        .ok()
-        .or_else(|| row.get::<i64>(index).ok().map(|value| value as f64))
-        .or_else(|| row.get::<String>(index).ok()?.parse::<f64>().ok())
+    match row.get_value(index).ok()? {
+        Value::Real(value) => Some(value),
+        Value::Integer(value) => Some(value as f64),
+        Value::Text(value) => value.parse::<f64>().ok(),
+        Value::Null | Value::Blob(_) => None,
+    }
 }
 
 fn parse_timestamp(value: Option<String>) -> DateTime<Utc> {
