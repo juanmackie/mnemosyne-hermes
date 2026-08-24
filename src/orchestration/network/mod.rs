@@ -46,6 +46,18 @@ impl NetworkLayer {
     pub async fn stop(&self) -> crate::error::Result<()> {
         Ok(())
     }
+
+    pub async fn create_invite(&self) -> crate::error::Result<String> {
+        Err(crate::error::MnemosyneError::Other(
+            "Distributed networking is disabled; rebuild with --features distributed".into(),
+        ))
+    }
+
+    pub async fn join_peer(&self, _ticket: &str) -> crate::error::Result<String> {
+        Err(crate::error::MnemosyneError::Other(
+            "Distributed networking is disabled; rebuild with --features distributed".into(),
+        ))
+    }
 }
 
 #[cfg(not(feature = "distributed"))]
