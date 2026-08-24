@@ -275,6 +275,42 @@ async fn test_list_rejects_zero_limit() {
 }
 
 #[tokio::test]
+async fn test_recall_abstains_when_no_result_meets_threshold() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let params = serde_json::json!({
+        "query": "no matching memory exists",
+        "namespace": "global",
+        "abstention_threshold": 0.01
+    });
+
+    let result = handler.execute("mnemosyne.recall", params).await.unwrap();
+    assert_eq!(result["abstained"], true);
+    assert_eq!(result["abstention_enabled"], true);
+    assert_eq!(result["count"], 0);
+    assert!(result["best_score"].is_number());
+    assert!(result["abstention_reason"].is_string());
+}
+
+#[tokio::test]
+async fn test_list_returns_pagination_metadata() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let params = serde_json::json!({
+        "namespace": "global",
+        "limit": 1,
+        "offset": 0
+    });
+
+    let result = handler.execute("mnemosyne.list", params).await.unwrap();
+    assert_eq!(result["count"], 0);
+    assert_eq!(result["offset"], 0);
+    assert_eq!(result["limit"], 1);
+    assert_eq!(result["has_more"], false);
+    assert!(result["next_offset"].is_null());
+}
+
+#[tokio::test]
 async fn test_recall_invalid_min_importance() {
     let (handler, _temp) = create_test_handler().await;
 
