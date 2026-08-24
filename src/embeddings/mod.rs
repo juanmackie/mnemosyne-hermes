@@ -5,6 +5,20 @@
 pub mod local;
 pub mod remote;
 
+/// Active-memory count above which deterministic fallback embeddings can
+/// materially reduce semantic retrieval quality.
+pub const FALLBACK_EMBEDDING_WARNING_THRESHOLD: usize = 1_000;
+
+/// Explain the retrieval risk of deterministic hash embeddings for large stores.
+pub fn fallback_embedding_warning(memory_count: usize) -> Option<String> {
+    (memory_count > FALLBACK_EMBEDDING_WARNING_THRESHOLD).then(|| {
+        format!(
+            "Semantic search is using deterministic hash fallback embeddings for {} active memories; retrieval quality may degrade at this scale. Build with `--features local-embeddings` and run `mnemosyne embed --all` to generate model-backed vectors.",
+            memory_count
+        )
+    })
+}
+
 pub use local::LocalEmbeddingService;
 pub use remote::{EmbeddingService, RemoteEmbeddingService, VOYAGE_EMBEDDING_DIM};
 
@@ -28,6 +42,12 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_warning_starts_above_threshold() {
+        assert!(fallback_embedding_warning(FALLBACK_EMBEDDING_WARNING_THRESHOLD).is_none());
+        assert!(fallback_embedding_warning(FALLBACK_EMBEDDING_WARNING_THRESHOLD + 1).is_some());
+    }
 
     #[test]
     fn test_cosine_similarity() {

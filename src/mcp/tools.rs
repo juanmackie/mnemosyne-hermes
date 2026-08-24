@@ -635,8 +635,32 @@ impl ToolHandler {
             )
             .await?;
 
+        // Keyless release builds use deterministic hash embeddings. They still
+        // provide a vector-shaped signal, but semantic quality can collapse as
+        // the store grows, so surface that degradation to both logs and clients.
+        let fallback_embeddings = self.embeddings.uses_fallback_embeddings();
+        let active_memory_count = if fallback_embeddings {
+            match self.storage.count_memories(namespace.clone()).await {
+                Ok(count) => count,
+                Err(error) => {
+                    warn!("Unable to count memories for embedding warning: {}", error);
+                    0
+                }
+            }
+        } else {
+            0
+        };
+        let fallback_warning = if fallback_embeddings {
+            crate::embeddings::fallback_embedding_warning(active_memory_count)
+        } else {
+            None
+        };
+        if let Some(warning) = &fallback_warning {
+            warn!("{}", warning);
+        }
+
         // Phase 2: Vector similarity search (degrade loudly if unavailable)
-        let mut degraded = false;
+        let mut degraded = fallback_embeddings;
         let vector_results = match self.embeddings.generate_embedding(&params.query).await {
             Ok(query_embedding) => self
                 .storage
@@ -765,10 +789,11 @@ impl ToolHandler {
                 "hybrid_search (keyword 40% + vector 30% + graph)"
             },
             "trajectory": trajectory_json,
-            // Loud degradation flag: true means the ranking signal was
-            // unavailable and scores are keyword/graph-only. Callers should
-            // treat confidence accordingly.
+            // Loud degradation flag: true means the ranking signal is
+            // unavailable or relies on deterministic fallback embeddings.
             "degraded": degraded,
+            "embedding_mode": self.embeddings.embedding_mode(),
+            "fallback_warning": fallback_warning,
             // Recommended abstention threshold: recall responses whose top
             // score is below this are weak matches — answer "I don't know"
             // rather than hallucinating from them.

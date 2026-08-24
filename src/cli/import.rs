@@ -7,6 +7,7 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use libsql::{Builder, Connection, Value as SqlValue};
 use mnemosyne_core::{
+    embeddings::fallback_embedding_warning,
     error::{MnemosyneError, Result},
     MemoryId, MemoryNote, MemoryType, Namespace, StorageBackend,
 };
@@ -38,6 +39,8 @@ struct ImportReport {
     scanned: usize,
     imported: usize,
     skipped: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding_warning: Option<String>,
     errors: Vec<String>,
 }
 
@@ -156,6 +159,11 @@ pub async fn handle(
             }
             report.imported += 1;
         }
+    }
+
+    report.embedding_warning = fallback_embedding_warning(report.imported);
+    if let Some(warning) = &report.embedding_warning {
+        eprintln!("Warning: {}", warning);
     }
 
     emit_report(&report, &format);

@@ -233,7 +233,12 @@ pub async fn handle(
             let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
             if let Ok(embedding) = emb_svc.embed(&memory.content).await {
                 memory.embedding = Some(embedding);
-                memory.embedding_model = "local".to_string();
+                memory.embedding_model = if emb.uses_model_backed_embeddings() {
+                    "local-model"
+                } else {
+                    "deterministic-hash-fallback"
+                }
+                .to_string();
             }
         }
     }

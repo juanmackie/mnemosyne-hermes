@@ -11,7 +11,7 @@ It detects Linux x86_64/aarch64 and macOS x86_64/arm64, verifies the SHA-256
 checksum, and installs to `~/.local/bin`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
 export PATH="$HOME/.local/bin:$PATH"
 mnemosyne --version
 ```
@@ -20,7 +20,7 @@ For a pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh \
-  | sh -s -- --version 2.3.1
+  | bash -s -- --version 2.3.2
 ```
 
 A source checkout remains available when developing the project:
@@ -124,11 +124,13 @@ MNEMOSYNE_DB_PATH="$HOME/.local/share/mnemosyne/mnemosyne.db" \
 Core storage, keyword search, import, list, graph, MCP discovery, and the
 release binary's deterministic fallback embeddings do not require an API key or
 network access. The default release intentionally excludes the ONNX model
-runtime; it uses a deterministic hash embedding for local remember/recall. A
-source build can opt into the larger model-backed path with
+runtime; it uses a deterministic hash embedding for local remember/recall. On
+stores larger than 1,000 active memories, import and recall report a warning
+because fallback vectors can materially reduce semantic recall. For higher
+retrieval quality, build with the model-backed path using
 `cargo build --release --features local-embeddings` (or `--features full`
-for the model-backed embeddings, full ICS syntax grammars, and companion
-TUI/dashboard binaries).
+for model-backed embeddings, full ICS syntax grammars, and companion
+TUI/dashboard binaries), then run `mnemosyne embed --all`.
 
 ## Configuration and namespaces
 
@@ -155,7 +157,7 @@ Cursor, Codex, Windsurf, OpenClaw, and generic MCP clients.
 | Hermes cannot start the server | Run `mnemosyne mcp --help`; use an absolute command path in Hermes config. |
 | Memories are in the wrong store | Set `MNEMOSYNE_DB_PATH` in the MCP server `env` block and in CLI commands. |
 | Import reports zero rows | Run `--dry-run --format json`; inspect source table presence and keep the original DB unchanged. |
-| No vector model is available | The release uses deterministic fallback embeddings; build with `--features local-embeddings` only when model-backed vectors are needed. |
+| No vector model is available | The release uses deterministic fallback embeddings; stores over 1,000 active memories emit a retrieval-quality warning. Build with `--features local-embeddings`, then run `mnemosyne embed --all` for model-backed vectors. |
 
 For protocol details, see [MCP_SERVER.md](../MCP_SERVER.md). For retrieval
 quality methodology, see [benchmark/retrieval/README.md](../benchmark/retrieval/README.md).

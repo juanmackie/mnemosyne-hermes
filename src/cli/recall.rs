@@ -2,6 +2,7 @@
 
 use mnemosyne_core::{build_memory_context_block, is_trivial_prompt};
 use mnemosyne_core::{
+    embeddings::fallback_embedding_warning,
     orchestration::events::AgentEvent, utils::string::truncate_at_char_boundary, ConnectionMode,
     EmbeddingConfig, EmbeddingService, LibsqlStorage, LlmConfig, LocalEmbeddingService, Namespace,
     RemoteEmbeddingService, StorageBackend,
@@ -79,6 +80,9 @@ pub async fn handle(
         .hybrid_search(&query, ns.clone(), limit * 2, true)
         .await?;
 
+    let mut embedding_mode = if has_api_key { "llm-concept" } else { "unavailable" };
+    let mut embedding_warning = None;
+
     // Vector search (optional - only if API key available).
     // Dispatch through the StorageBackend trait so this path returns full
     // SearchResult objects and avoids the per-ID fetch that the inherent
@@ -107,6 +111,17 @@ pub async fn handle(
         };
         match LocalEmbeddingService::new(local_config).await {
             Ok(emb) => {
+                if emb.uses_model_backed_embeddings() {
+                    embedding_mode = "local-model";
+                } else {
+                    embedding_mode = "deterministic-hash-fallback";
+                    if let Ok(memory_count) = storage.count_memories(ns.clone()).await {
+                        embedding_warning = fallback_embedding_warning(memory_count);
+                        if let Some(warning) = &embedding_warning {
+                            tracing::warn!("{}", warning);
+                        }
+                    }
+                }
                 let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
                 match emb_svc.embed(&query).await {
                     Ok(query_embedding) => (&storage as &dyn StorageBackend)
@@ -127,6 +142,7 @@ pub async fn handle(
             }
             Err(e) => {
                 debug!("Local embedding service unavailable: {}", e);
+                embedding_mode = "unavailable";
                 if format != "json" {
                     eprintln!(
                         "{} Local embeddings unavailable, using keyword search only",
@@ -310,6 +326,8 @@ pub async fn handle(
                 "results": json_results,
                 "count": json_results.len(),
                 "trajectory": trajectory_json,
+                "embedding_mode": embedding_mode,
+                "fallback_warning": embedding_warning,
                 "assembled_context": assembled,
             })
         );

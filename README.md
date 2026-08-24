@@ -16,7 +16,7 @@ Windsurf, and custom agents.
 
 ```bash
 # No Rust or Python required: downloads and verifies a native release binary.
-curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
 export PATH="$HOME/.local/bin:$PATH"
 hermes config set memory.provider mnemosyne
 
@@ -179,7 +179,7 @@ See [src/rpc/README.md](src/rpc/README.md) for complete API documentation, deplo
 **Release Installation** (Recommended):
 ```bash
 # Downloads a checksum-verified native binary; no Rust toolchain required.
-curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
 export PATH="$HOME/.local/bin:$PATH"
 mnemosyne --version
 ```
@@ -341,6 +341,7 @@ mnemosyne orchestrate --session-id dev-001 --work-items plan.json
 - **LibSQL**: SQLite-compatible with native vector search (sqlite-vec)
 - **Embeddings**:
   - Default release: deterministic local hash embeddings (keyless, no model download)
+  - Large stores (>1,000 active memories) report when fallback embeddings may reduce semantic recall
   - Optional source-build feature: fastembed/ONNX (`--features local-embeddings`)
   - Remote: Voyage AI (voyage-3-large, 1536d)
 - **Search Config**: Hybrid scoring (semantic 70%, FTS 20%, graph 10%)

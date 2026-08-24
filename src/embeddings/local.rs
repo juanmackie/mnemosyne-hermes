@@ -32,6 +32,15 @@ pub struct LocalEmbeddingService {
 }
 
 impl LocalEmbeddingService {
+    /// Whether this build uses a model-backed local embedding runtime.
+    pub fn uses_model_backed_embeddings(&self) -> bool {
+        Self::model_backed_build()
+    }
+
+    fn model_backed_build() -> bool {
+        cfg!(feature = "local-embeddings")
+    }
+
     /// Create a new local embedding service with the given configuration
     ///
     /// This will download the model if not already cached (may take 30-120 seconds
@@ -288,6 +297,14 @@ mod tests {
 
         // Invalid model
         assert!(LocalEmbeddingService::model_name_to_enum("invalid-model").is_err());
+    }
+
+    #[test]
+    fn model_backed_status_matches_build_feature() {
+        assert_eq!(
+            LocalEmbeddingService::model_backed_build(),
+            cfg!(feature = "local-embeddings")
+        );
     }
 
     #[tokio::test]

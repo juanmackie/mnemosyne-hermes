@@ -46,6 +46,20 @@ struct ContentBlock {
 }
 
 impl EmbeddingService {
+    /// Return true when the keyless deterministic hash fallback is active.
+    pub fn uses_fallback_embeddings(&self) -> bool {
+        self.api_key.is_empty()
+    }
+
+    /// Name the embedding mode exposed to retrieval clients.
+    pub fn embedding_mode(&self) -> &'static str {
+        if self.uses_fallback_embeddings() {
+            "deterministic-hash-fallback"
+        } else {
+            "llm-concept"
+        }
+    }
+
     /// Create a new embedding service
     pub fn new(api_key: String, config: LlmConfig) -> Self {
         Self {
@@ -231,6 +245,21 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_mode_is_keyless_only() {
+        let config = LlmConfig {
+            api_key: String::new(),
+            ..LlmConfig::default()
+        };
+        let keyless = EmbeddingService::new(String::new(), config.clone());
+        assert!(keyless.uses_fallback_embeddings());
+        assert_eq!(keyless.embedding_mode(), "deterministic-hash-fallback");
+
+        let configured = EmbeddingService::new("configured".to_string(), config);
+        assert!(!configured.uses_fallback_embeddings());
+        assert_eq!(configured.embedding_mode(), "llm-concept");
+    }
 
     #[test]
     fn test_simple_embedding() {
