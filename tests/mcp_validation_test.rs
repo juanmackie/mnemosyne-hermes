@@ -446,6 +446,25 @@ async fn test_remember_invalid_importance() {
 }
 
 #[tokio::test]
+async fn test_context_rejects_excessive_memory_ids() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let params = serde_json::json!({
+        "memory_ids": vec!["not-an-id"; 1_001]
+    });
+
+    let result = handler.execute("mnemosyne.context", params).await;
+
+    match result {
+        Err(MnemosyneError::ValidationError(msg)) => {
+            assert!(msg.contains("memory_ids"));
+            assert!(msg.contains("1000"));
+        }
+        _ => panic!("Expected ValidationError for excessive context IDs"),
+    }
+}
+
+#[tokio::test]
 async fn test_context_empty_memory_ids() {
     let (handler, _temp) = create_test_handler().await;
 
