@@ -37,3 +37,10 @@ cargo check --release --locked --features distributed --bin mnemosyne \
   tail -80 /tmp/mnemosyne-autoresearch-distributed.log
   exit 1
 }
+# Ensure optional capabilities compose for source builds that need both local
+# model embeddings and distributed transport.
+cargo check --release --locked --features full,distributed --bin mnemosyne \
+  >/tmp/mnemosyne-autoresearch-combined.log 2>&1 || {
+  tail -80 /tmp/mnemosyne-autoresearch-combined.log
+  exit 1
+}
