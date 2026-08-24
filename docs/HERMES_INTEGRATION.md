@@ -138,7 +138,9 @@ source build can opt into the larger model-backed path with
 
 For other MCP clients, use the same `mnemosyne mcp` stdio command and the
 standard `mcpServers` configuration shape. The underscore aliases are safe for
-clients that expose provider tools as native commands.
+clients that expose provider tools as native commands. See
+[MCP client configuration examples](MCP_CLIENT_CONFIGS.md) for Claude Code,
+Cursor, Codex, Windsurf, OpenClaw, and generic MCP clients.
 
 ## Troubleshooting
 

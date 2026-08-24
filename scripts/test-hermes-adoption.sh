@@ -68,6 +68,17 @@ ics_syntax_is_opt_in() {
     grep -Eq 'tree-sitter-cpp = .*optional = true' "$ROOT/Cargo.toml"
 }
 
+client_config_examples_exist() {
+  local docs="$ROOT/docs/MCP_CLIENT_CONFIGS.md"
+  [[ -f "$docs" ]] &&
+    grep -q 'Claude Code' "$docs" &&
+    grep -q 'Cursor' "$docs" &&
+    grep -q 'Codex' "$docs" &&
+    grep -q 'Windsurf' "$docs" &&
+    grep -q 'OpenClaw' "$docs" &&
+    grep -q 'mnemosyne.*mcp' "$docs"
+}
+
 locked_manifest_is_current() {
   cargo metadata --locked --no-deps --format-version 1 >/dev/null 2>&1
 }
@@ -276,6 +287,7 @@ check release_smoke has_release_smoke
 check default_features default_features_are_local
 check local_embeddings local_embeddings_are_opt_in
 check ics_syntax ics_syntax_is_opt_in
+check client_configs client_config_examples_exist
 check locked_manifest locked_manifest_is_current
 check mcp_command mcp_command_works
 if mcp_aliases_work; then
