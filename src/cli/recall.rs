@@ -3,10 +3,9 @@
 use mnemosyne_core::{build_memory_context_block, is_trivial_prompt};
 use mnemosyne_core::{
     orchestration::events::AgentEvent, utils::string::truncate_at_char_boundary, ConnectionMode,
-    EmbeddingConfig, EmbeddingService, LibsqlStorage, LlmConfig, LocalEmbeddingService, Namespace,
-    RemoteEmbeddingService, StorageBackend,
+    EmbeddingConfig, LibsqlStorage, LlmConfig, LocalEmbeddingService, Namespace,
+    RemoteEmbeddingService,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -38,7 +37,7 @@ pub async fn handle(
 
     // Initialize storage and services
     let db_path = get_db_path(global_db_path);
-    let storage = LibsqlStorage::new(ConnectionMode::Local(db_path.clone())).await?;
+    let mut storage = LibsqlStorage::new(ConnectionMode::Local(db_path.clone())).await?;
 
     // Check if API key is available for vector search
     let embedding_service_config = LlmConfig::default();
@@ -74,56 +73,27 @@ pub async fn handle(
         }
     });
 
-    // Perform hybrid search (keyword + vector + graph)
-    let keyword_results = storage
-        .hybrid_search(&query, ns.clone(), limit * 2, true)
-        .await?;
-
-    // Vector search (optional - only if API key available).
-    // Dispatch through the StorageBackend trait so this path returns full
-    // SearchResult objects and avoids the per-ID fetch that the inherent
-    // LibsqlStorage::vector_search would trigger.
-    let vector_results: Vec<mnemosyne_core::types::SearchResult> = if has_api_key {
-        match RemoteEmbeddingService::new(
+    // Configure one embedding service and let the storage backend combine
+    // keyword, vector, graph, importance, and recency signals consistently.
+    // The previous CLI path ran hybrid search and vector search separately,
+    // then applied fixed multipliers that did not match SearchConfig.
+    if has_api_key {
+        if let Ok(embedding_service) = RemoteEmbeddingService::new(
             embedding_service_config.api_key.clone(),
-            None, // Use default model
-            None, // Use default base URL
+            None,
+            None,
         ) {
-            Ok(embedding_service) => match embedding_service.embed(&query).await {
-                Ok(query_embedding) => (&storage as &dyn StorageBackend)
-                    .vector_search(&query_embedding, limit * 2, ns.clone())
-                    .await
-                    .unwrap_or_default(),
-                Err(_) => Vec::new(),
-            },
-            Err(_) => Vec::new(),
+            storage.set_embedding_service(Arc::new(embedding_service));
         }
     } else {
-        // No remote API key — try local embeddings for personal agents working offline.
-        debug!("No API key — attempting local embedding for vector search");
+        debug!("No API key — attempting local embedding for hybrid search");
         let local_config = EmbeddingConfig {
             show_download_progress: false,
             ..EmbeddingConfig::default()
         };
         match LocalEmbeddingService::new(local_config).await {
-            Ok(emb) => {
-                let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
-                match emb_svc.embed(&query).await {
-                    Ok(query_embedding) => (&storage as &dyn StorageBackend)
-                        .vector_search(&query_embedding, limit * 2, ns.clone())
-                        .await
-                        .unwrap_or_default(),
-                    Err(e) => {
-                        debug!("Local embedding generation failed: {}", e);
-                        if format != "json" {
-                            eprintln!(
-                                "{} Local embedding failed, vector search skipped",
-                                mnemosyne_core::icons::status::warning()
-                            );
-                        }
-                        Vec::new()
-                    }
-                }
+            Ok(embedding_service) => {
+                storage.set_embedding_service(Arc::new(embedding_service));
             }
             Err(e) => {
                 debug!("Local embedding service unavailable: {}", e);
@@ -133,39 +103,16 @@ pub async fn handle(
                         mnemosyne_core::icons::status::warning()
                     );
                 }
-                Vec::new()
             }
         }
-    };
-
-    // Merge results
-    let mut memory_scores = HashMap::new();
-
-    for result in keyword_results {
-        memory_scores
-            .entry(result.memory.id)
-            .or_insert((result.memory.clone(), vec![]))
-            .1
-            .push(result.score * 0.4);
     }
 
-    for result in vector_results {
-        memory_scores
-            .entry(result.memory.id)
-            .or_insert((result.memory.clone(), vec![]))
-            .1
-            .push(result.score * 0.3);
-    }
-
-    let mut results: Vec<_> = memory_scores
+    let mut results: Vec<_> = storage
+        .hybrid_search(&query, ns.clone(), limit * 2, true)
+        .await?
         .into_iter()
-        .map(|(_, (memory, scores))| {
-            let total_score: f32 = scores.iter().sum();
-            (memory, total_score)
-        })
+        .map(|result| (result.memory, result.score))
         .collect();
-
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     // Hierarchical reranking through the topic tree (OpenViking-style)
     let mut trajectory_json: Option<String> = None;
