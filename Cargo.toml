@@ -125,19 +125,19 @@ ropey = "1.6"
 tui-textarea = "0.4"
 
 # Parsing and lexing
-tree-sitter = "~0.23"
-tree-sitter-md = "0.3"  # Modern markdown parser (replaces tree-sitter-markdown)
-tree-sitter-rust = "~0.23"
-tree-sitter-python = "~0.23"
-tree-sitter-typescript = "~0.23"
-tree-sitter-javascript = "~0.23"
-tree-sitter-json = "~0.23"
-tree-sitter-toml-ng = "0.7"    # Modern TOML parser (replaces tree-sitter-toml)
-tree-sitter-yaml = "0.7"       # Separate versioning scheme
-tree-sitter-bash = "~0.23"
-tree-sitter-go = "~0.23"
-tree-sitter-c = "~0.23"
-tree-sitter-cpp = "~0.23"
+tree-sitter = { version = "~0.23", optional = true }
+tree-sitter-md = { version = "0.3", optional = true }  # Modern markdown parser (replaces tree-sitter-markdown)
+tree-sitter-rust = { version = "~0.23", optional = true }
+tree-sitter-python = { version = "~0.23", optional = true }
+tree-sitter-typescript = { version = "~0.23", optional = true }
+tree-sitter-javascript = { version = "~0.23", optional = true }
+tree-sitter-json = { version = "~0.23", optional = true }
+tree-sitter-toml-ng = { version = "0.7", optional = true }    # Modern TOML parser (replaces tree-sitter-toml)
+tree-sitter-yaml = { version = "0.7", optional = true }       # Separate versioning scheme
+tree-sitter-bash = { version = "~0.23", optional = true }
+tree-sitter-go = { version = "~0.23", optional = true }
+tree-sitter-c = { version = "~0.23", optional = true }
+tree-sitter-cpp = { version = "~0.23", optional = true }
 logos = "0.13"
 
 # Symbol completion and fuzzy matching
@@ -169,6 +169,15 @@ default = []
 python = ["pyo3"]
 keyring-fallback = ["keyring"]
 local-embeddings = ["dep:fastembed"]
+# Tree-sitter grammars remain available for the full ICS editor, but are not
+# shipped in the default memory-provider binary.
+ics-syntax = [
+    "dep:tree-sitter", "dep:tree-sitter-md", "dep:tree-sitter-rust",
+    "dep:tree-sitter-python", "dep:tree-sitter-typescript",
+    "dep:tree-sitter-javascript", "dep:tree-sitter-json", "dep:tree-sitter-toml-ng",
+    "dep:tree-sitter-yaml", "dep:tree-sitter-bash", "dep:tree-sitter-go",
+    "dep:tree-sitter-c", "dep:tree-sitter-cpp",
+]
 distributed = ["ractor_cluster"]
 profiling = ["tikv-jemallocator"]
 rpc = ["tonic", "prost", "prost-types"]

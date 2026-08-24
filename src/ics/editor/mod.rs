@@ -6,6 +6,10 @@ mod buffer;
 mod completion;
 mod crdt_buffer;
 mod cursor;
+#[cfg(feature = "ics-syntax")]
+mod highlight;
+#[cfg(not(feature = "ics-syntax"))]
+#[path = "highlight_plain.rs"]
 mod highlight;
 mod sync;
 mod syntax;

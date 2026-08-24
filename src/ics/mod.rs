@@ -24,6 +24,10 @@ pub mod editor;
 pub mod holes;
 pub mod input;
 pub mod layout;
+#[cfg(feature = "ics-syntax")]
+pub mod markdown_highlight;
+#[cfg(not(feature = "ics-syntax"))]
+#[path = "markdown_highlight_plain.rs"]
 pub mod markdown_highlight;
 pub mod memory_panel;
 pub mod proposals;
