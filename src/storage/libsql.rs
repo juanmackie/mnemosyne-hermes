@@ -1399,27 +1399,28 @@ impl LibsqlStorage {
         // vector_search() puts the `distance` REAL there instead. Reading a
         // non-BLOB column as Vec<u8> panics inside libsql, so check the
         // column type first.
-        let embedding: Option<Vec<f32>> = if matches!(row.column_type(20), Ok(libsql::ValueType::Blob)) {
-            row.get::<Option<Vec<u8>>>(20)
-                .ok()
-                .flatten()
-                .and_then(|bytes| {
-                    // F32_BLOB is stored as raw f32 bytes in little-endian
-                    if bytes.len() % 4 != 0 {
-                        return None;
-                    }
-                    Some(
-                        bytes
-                            .chunks_exact(4)
-                            .map(|chunk| {
-                                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                            })
-                            .collect(),
-                    )
-                })
-        } else {
-            None
-        };
+        let embedding: Option<Vec<f32>> =
+            if matches!(row.column_type(20), Ok(libsql::ValueType::Blob)) {
+                row.get::<Option<Vec<u8>>>(20)
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| {
+                        // F32_BLOB is stored as raw f32 bytes in little-endian
+                        if bytes.len() % 4 != 0 {
+                            return None;
+                        }
+                        Some(
+                            bytes
+                                .chunks_exact(4)
+                                .map(|chunk| {
+                                    f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                                })
+                                .collect(),
+                        )
+                    })
+            } else {
+                None
+            };
 
         Ok(MemoryNote {
             id,
@@ -1679,13 +1680,19 @@ impl LibsqlStorage {
 
         // 4. Remove audit-trail rows referencing this memory (they may contain content).
         report.audit_rows_removed = conn
-            .execute("DELETE FROM audit_log WHERE memory_id = ?", params![id_str.as_str()])
+            .execute(
+                "DELETE FROM audit_log WHERE memory_id = ?",
+                params![id_str.as_str()],
+            )
             .await?;
 
         // 5. Delete the row itself. The memories_ad trigger removes the FTS entry;
         //    ON DELETE CASCADE handles memory_embeddings and any remaining links.
         let deleted = conn
-            .execute("DELETE FROM memories WHERE id = ?", params![id_str.as_str()])
+            .execute(
+                "DELETE FROM memories WHERE id = ?",
+                params![id_str.as_str()],
+            )
             .await?;
         if deleted == 0 {
             return Err(MnemosyneError::MemoryNotFound(id_str));
@@ -1715,8 +1722,9 @@ impl LibsqlStorage {
         as_of: chrono::DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let ns_json = serde_json::to_string(namespace)
-            .map_err(|e| MnemosyneError::Database(format!("Failed to serialize namespace: {}", e)))?;
+        let ns_json = serde_json::to_string(namespace).map_err(|e| {
+            MnemosyneError::Database(format!("Failed to serialize namespace: {}", e))
+        })?;
         let conn = self.get_conn()?;
 
         // The LibSQL schema lacks `archived_at` (added by sqlite migration 007);
@@ -1821,8 +1829,9 @@ impl LibsqlStorage {
         }
         let conn = self.get_conn()?;
         // Namespace is stored as its JSON serialization (see store_memory).
-        let ns_json = serde_json::to_string(namespace)
-            .map_err(|e| MnemosyneError::Database(format!("Failed to serialize namespace: {}", e)))?;
+        let ns_json = serde_json::to_string(namespace).map_err(|e| {
+            MnemosyneError::Database(format!("Failed to serialize namespace: {}", e))
+        })?;
         let pattern = format!("%{}%", needle.replace('%', "\\%").replace('_', "\\_"));
         let sql = format!(
             r#"
@@ -2343,6 +2352,104 @@ impl LibsqlStorage {
         } else {
             Err(MnemosyneError::MemoryNotFound(memory_id.to_string()))
         }
+    }
+
+    async fn graph_traverse_with_limit(
+        &self,
+        seed_ids: &[MemoryId],
+        max_hops: usize,
+        namespace: Option<Namespace>,
+        max_results: Option<usize>,
+    ) -> Result<Vec<MemoryNote>> {
+        debug!(
+            "Graph traverse from {} seeds, max {} hops, namespace: {:?}, result limit: {:?}",
+            seed_ids.len(),
+            max_hops,
+            namespace,
+            max_results
+        );
+
+        if seed_ids.is_empty() || max_hops == 0 || max_results == Some(0) {
+            return Ok(vec![]);
+        }
+
+        let seed_strings: Vec<String> = seed_ids.iter().map(|id| id.to_string()).collect();
+        let placeholders = seed_strings
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let limit_clause = if max_results.is_some() { "LIMIT ?" } else { "" };
+        let traversal_limit_clause = if max_results.is_some() { "LIMIT ?" } else { "" };
+
+        let namespace_filter = if namespace.is_some() {
+            "AND m.namespace = ?"
+        } else {
+            ""
+        };
+
+        let sql = format!(
+            r#"
+            WITH RECURSIVE graph_walk(memory_id, depth) AS (
+                SELECT id, 0 FROM memories WHERE id IN ({placeholders})
+                UNION
+                SELECT
+                    CASE
+                        WHEN ml.source_id = gw.memory_id THEN ml.target_id
+                        ELSE ml.source_id
+                    END as memory_id,
+                    gw.depth + 1
+                FROM graph_walk gw
+                JOIN memory_links ml ON (
+                    ml.source_id = gw.memory_id OR ml.target_id = gw.memory_id
+                )
+                WHERE gw.depth < ?
+                {traversal_limit_clause}
+            )
+            SELECT DISTINCT m.*
+            FROM memories m
+            JOIN graph_walk gw ON m.id = gw.memory_id
+            WHERE gw.depth > 0
+              AND m.is_archived = 0 {namespace_filter}
+            ORDER BY gw.depth, m.importance DESC
+            {limit_clause}
+            "#,
+            placeholders = placeholders,
+            namespace_filter = namespace_filter,
+            limit_clause = limit_clause,
+            traversal_limit_clause = traversal_limit_clause
+        );
+
+        let conn = self.get_conn()?;
+        let mut param_values: Vec<libsql::Value> = seed_strings
+            .iter()
+            .map(|s| libsql::Value::Text(s.clone()))
+            .collect();
+        param_values.push(libsql::Value::Integer(max_hops as i64));
+        if let Some(limit) = max_results {
+            let traversal_budget = limit.saturating_mul(max_hops.saturating_add(1)).min(10_000);
+            param_values.push(libsql::Value::Integer(traversal_budget as i64));
+        }
+
+        if let Some(ns) = namespace {
+            let ns_json = serde_json::to_string(&ns)?;
+            param_values.push(libsql::Value::Text(ns_json));
+        }
+        if let Some(limit) = max_results {
+            param_values.push(libsql::Value::Integer(limit.min(1000) as i64));
+        }
+
+        let mut rows = conn
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            results.push(self.row_to_memory(&row).await?);
+        }
+
+        debug!("Graph traversal found {} memories", results.len());
+        Ok(results)
     }
 }
 
@@ -2975,83 +3082,19 @@ impl StorageBackend for LibsqlStorage {
         max_hops: usize,
         namespace: Option<Namespace>,
     ) -> Result<Vec<MemoryNote>> {
-        debug!(
-            "Graph traverse from {} seeds, max {} hops, namespace: {:?}",
-            seed_ids.len(),
-            max_hops,
-            namespace
-        );
+        self.graph_traverse_with_limit(seed_ids, max_hops, namespace, None)
+            .await
+    }
 
-        if seed_ids.is_empty() || max_hops == 0 {
-            return Ok(vec![]);
-        }
-
-        let seed_strings: Vec<String> = seed_ids.iter().map(|id| id.to_string()).collect();
-        let placeholders = seed_strings
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
-
-        // Add namespace filter if provided
-        let namespace_filter = if namespace.is_some() {
-            "AND m.namespace = ?"
-        } else {
-            ""
-        };
-
-        let sql = format!(
-            r#"
-            WITH RECURSIVE graph_walk(memory_id, depth) AS (
-                SELECT id, 0 FROM memories WHERE id IN ({placeholders})
-                UNION
-                SELECT
-                    CASE
-                        WHEN ml.source_id = gw.memory_id THEN ml.target_id
-                        ELSE ml.source_id
-                    END as memory_id,
-                    gw.depth + 1
-                FROM graph_walk gw
-                JOIN memory_links ml ON (
-                    ml.source_id = gw.memory_id OR ml.target_id = gw.memory_id
-                )
-                WHERE gw.depth < ?
-            )
-            SELECT DISTINCT m.*
-            FROM memories m
-            JOIN graph_walk gw ON m.id = gw.memory_id
-            WHERE gw.depth > 0
-              AND m.is_archived = 0 {namespace_filter}
-            ORDER BY gw.depth, m.importance DESC
-            "#,
-            placeholders = placeholders,
-            namespace_filter = namespace_filter
-        );
-
-        let conn = self.get_conn()?;
-        let mut param_values: Vec<libsql::Value> = seed_strings
-            .iter()
-            .map(|s| libsql::Value::Text(s.clone()))
-            .collect();
-        param_values.push(libsql::Value::Integer(max_hops as i64));
-
-        // Add namespace parameter if provided
-        if let Some(ns) = namespace {
-            let ns_json = serde_json::to_string(&ns)?;
-            param_values.push(libsql::Value::Text(ns_json));
-        }
-
-        let mut rows = conn
-            .query(&sql, libsql::params_from_iter(param_values))
-            .await?;
-
-        let mut results = Vec::new();
-        while let Some(row) = rows.next().await? {
-            results.push(self.row_to_memory(&row).await?);
-        }
-
-        debug!("Graph traversal found {} memories", results.len());
-        Ok(results)
+    async fn graph_traverse_bounded(
+        &self,
+        seed_ids: &[MemoryId],
+        max_hops: usize,
+        namespace: Option<Namespace>,
+        max_results: usize,
+    ) -> Result<Vec<MemoryNote>> {
+        self.graph_traverse_with_limit(seed_ids, max_hops, namespace, Some(max_results))
+            .await
     }
 
     async fn find_consolidation_candidates(
@@ -4357,9 +4400,12 @@ impl StorageBackend for LibsqlStorage {
 
         let id_str = id.to_string();
 
-        conn.execute("DELETE FROM work_items WHERE id = ?", params![id_str.as_str()])
-            .await
-            .map_err(|e| MnemosyneError::Database(format!("Failed to delete work item: {}", e)))?;
+        conn.execute(
+            "DELETE FROM work_items WHERE id = ?",
+            params![id_str.as_str()],
+        )
+        .await
+        .map_err(|e| MnemosyneError::Database(format!("Failed to delete work item: {}", e)))?;
 
         debug!("Work item deleted successfully: {:?}", id);
         Ok(())

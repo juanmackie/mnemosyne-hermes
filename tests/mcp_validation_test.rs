@@ -235,6 +235,45 @@ async fn test_recall_invalid_abstention_threshold() {
 }
 
 #[tokio::test]
+async fn test_graph_rejects_excessive_seed_ids() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let params = serde_json::json!({
+        "seed_ids": vec!["not-an-id"; 1_001]
+    });
+
+    let result = handler.execute("mnemosyne.graph", params).await;
+
+    match result {
+        Err(MnemosyneError::ValidationError(msg)) => {
+            assert!(msg.contains("seed_ids"));
+            assert!(msg.contains("1000"));
+        }
+        _ => panic!("Expected ValidationError for excessive graph seeds"),
+    }
+}
+
+#[tokio::test]
+async fn test_graph_rejects_excessive_hops() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let params = serde_json::json!({
+        "seed_ids": [],
+        "max_hops": 9
+    });
+
+    let result = handler.execute("mnemosyne.graph", params).await;
+
+    match result {
+        Err(MnemosyneError::ValidationError(msg)) => {
+            assert!(msg.contains("max_hops"));
+            assert!(msg.contains("8"));
+        }
+        _ => panic!("Expected ValidationError for excessive graph hops"),
+    }
+}
+
+#[tokio::test]
 async fn test_list_rejects_excessive_offset() {
     let (handler, _temp) = create_test_handler().await;
 

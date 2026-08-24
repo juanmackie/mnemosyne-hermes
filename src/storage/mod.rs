@@ -63,6 +63,23 @@ pub trait StorageBackend: Send + Sync {
         namespace: Option<Namespace>,
     ) -> Result<Vec<MemoryNote>>;
 
+    /// Bounded graph traversal for agent-facing result surfaces.
+    ///
+    /// Backends can override this to push the bound into the query. The
+    /// default preserves compatibility for alternate backends while ensuring
+    /// callers never receive more than the requested number of memories.
+    async fn graph_traverse_bounded(
+        &self,
+        seed_ids: &[MemoryId],
+        max_hops: usize,
+        namespace: Option<Namespace>,
+        max_results: usize,
+    ) -> Result<Vec<MemoryNote>> {
+        let mut memories = self.graph_traverse(seed_ids, max_hops, namespace).await?;
+        memories.truncate(max_results);
+        Ok(memories)
+    }
+
     /// Find consolidation candidates (similar memories)
     async fn find_consolidation_candidates(
         &self,

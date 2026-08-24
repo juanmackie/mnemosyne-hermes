@@ -80,6 +80,9 @@ pub struct Tool {
 const MAX_PAGE_OFFSET: usize = 100_000;
 const DEFAULT_CONTEXT_MAX_RESULTS: usize = 100;
 const DEFAULT_GRAPH_MAX_RESULTS: usize = 100;
+const MAX_CONTEXT_INPUT_IDS: usize = 1_000;
+const MAX_GRAPH_SEEDS: usize = 1_000;
+const MAX_GRAPH_HOPS: usize = 8;
 const RECOMMENDED_ABSTENTION_THRESHOLD: f32 = 0.30;
 
 #[derive(Debug, Clone, Copy)]
@@ -622,6 +625,16 @@ impl ToolHandler {
             return Ok(1000);
         }
         Ok(max_results)
+    }
+
+    fn validate_graph_hops(max_hops: usize) -> Result<usize> {
+        if max_hops > MAX_GRAPH_HOPS {
+            return Err(crate::error::MnemosyneError::ValidationError(format!(
+                "max_hops must not exceed {}",
+                MAX_GRAPH_HOPS
+            )));
+        }
+        Ok(max_hops)
     }
 
     fn validate_offset(offset: usize) -> Result<usize> {
@@ -1304,6 +1317,12 @@ impl ToolHandler {
         }
 
         let params: GraphParams = serde_json::from_value(params)?;
+        if params.seed_ids.len() > MAX_GRAPH_SEEDS {
+            return Err(crate::error::MnemosyneError::ValidationError(format!(
+                "seed_ids must not contain more than {} IDs",
+                MAX_GRAPH_SEEDS
+            )));
+        }
 
         // Parse seed IDs
         let seed_ids: Result<Vec<MemoryId>> = params
@@ -1316,7 +1335,7 @@ impl ToolHandler {
             .collect();
 
         let seed_ids = seed_ids?;
-        let max_hops = params.max_hops.unwrap_or(2);
+        let max_hops = Self::validate_graph_hops(params.max_hops.unwrap_or(2))?;
         let max_results =
             Self::validate_max_results(params.max_results.unwrap_or(DEFAULT_GRAPH_MAX_RESULTS))?;
 
@@ -1324,7 +1343,7 @@ impl ToolHandler {
         // Note: MCP graph tool doesn't filter by namespace for exploratory traversal
         let memories = self
             .storage
-            .graph_traverse(&seed_ids, max_hops, None)
+            .graph_traverse_bounded(&seed_ids, max_hops, None, max_results)
             .await?;
         let (memories, page) = paginate(memories, 0, max_results);
 
@@ -1346,11 +1365,18 @@ impl ToolHandler {
 
         let params: ContextParams = serde_json::from_value(params)?;
 
-        // Validate memory_ids is not empty
+        // Validate memory_ids is not empty and prevent an oversized fan-out
+        // before fetching the requested memories or expanding their links.
         if params.memory_ids.is_empty() {
             return Err(crate::error::MnemosyneError::ValidationError(
                 "memory_ids cannot be empty".to_string(),
             ));
+        }
+        if params.memory_ids.len() > MAX_CONTEXT_INPUT_IDS {
+            return Err(crate::error::MnemosyneError::ValidationError(format!(
+                "memory_ids must not contain more than {} IDs",
+                MAX_CONTEXT_INPUT_IDS
+            )));
         }
 
         // Parse memory IDs
@@ -1381,7 +1407,11 @@ impl ToolHandler {
         if include_links && !memories.is_empty() {
             // Use graph traversal to get linked memories (1-hop)
             let seed_ids: Vec<MemoryId> = memories.iter().map(|m| m.id).collect();
-            match self.storage.graph_traverse(&seed_ids, 1, None).await {
+            match self
+                .storage
+                .graph_traverse_bounded(&seed_ids, 1, None, max_results)
+                .await
+            {
                 Ok(linked) => {
                     // Add linked memories that aren't already in the result set
                     for linked_memory in linked {
