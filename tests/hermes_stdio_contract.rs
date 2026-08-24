@@ -58,10 +58,13 @@ async fn rpc(
     stdin.flush().await.expect("flush");
 
     let mut response_line = String::new();
-    timeout(Duration::from_secs(30), reader.read_line(&mut response_line))
-        .await
-        .expect("response within 30s (server must not hang)")
-        .expect("server closed stdout unexpectedly");
+    timeout(
+        Duration::from_secs(30),
+        reader.read_line(&mut response_line),
+    )
+    .await
+    .expect("response within 30s (server must not hang)")
+    .expect("server closed stdout unexpectedly");
 
     // Contract: stdout lines are single-line JSON objects — no logs, no banners.
     serde_json::from_str(&response_line)
@@ -73,7 +76,8 @@ fn tool_payload(resp: &Value) -> Value {
     let text = resp["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_else(|| panic!("tools/call response missing content[0].text: {resp}"));
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("content[0].text is not JSON ({e}): {text}"))
+    serde_json::from_str(text)
+        .unwrap_or_else(|e| panic!("content[0].text is not JSON ({e}): {text}"))
 }
 
 #[tokio::test]
@@ -90,7 +94,10 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
     .await;
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 1);
-    assert!(resp["result"]["protocolVersion"].is_string(), "handshake must return protocolVersion");
+    assert!(
+        resp["result"]["protocolVersion"].is_string(),
+        "handshake must return protocolVersion"
+    );
     assert_eq!(resp["result"]["serverInfo"]["name"], "mnemosyne");
 
     // ---- 2. tools/list ------------------------------------------------
@@ -101,12 +108,17 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
     )
     .await;
     let tools = resp["result"]["tools"].as_array().expect("tools array");
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
-    for expected in ["mnemosyne.remember", "mnemosyne.recall", "mnemosyne.update", "mnemosyne.delete"] {
-        assert!(names.contains(&expected), "missing tool {expected}: {names:?}");
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    for expected in [
+        "mnemosyne.remember",
+        "mnemosyne.recall",
+        "mnemosyne.update",
+        "mnemosyne.delete",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "missing tool {expected}: {names:?}"
+        );
     }
 
     // ---- 3. remember with namespace OMITTED (malformed-tolerant) ------
@@ -122,9 +134,15 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
         }),
     )
     .await;
-    assert!(resp.get("error").is_none(), "remember without namespace must succeed: {resp}");
+    assert!(
+        resp.get("error").is_none(),
+        "remember without namespace must succeed: {resp}"
+    );
     let payload = tool_payload(&resp);
-    let memory_id = payload["memory_id"].as_str().expect("memory_id").to_string();
+    let memory_id = payload["memory_id"]
+        .as_str()
+        .expect("memory_id")
+        .to_string();
 
     // ---- 4. recall finds it -------------------------------------------
     let resp = rpc(
@@ -139,12 +157,20 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
     let payload = tool_payload(&resp);
     let results = payload["results"].as_array().expect("results array");
     assert!(
-        results.iter().any(|r| r["memory"]["id"] == json!(memory_id)),
+        results
+            .iter()
+            .any(|r| r["memory"]["id"] == json!(memory_id)),
         "recall must find the stored memory"
     );
     // Per-result confidence + abstention guidance present.
-    assert!(results[0]["score"].is_number(), "results carry confidence scores");
-    assert!(payload["abstention_threshold"].is_number(), "abstention guidance must be documented in responses");
+    assert!(
+        results[0]["score"].is_number(),
+        "results carry confidence scores"
+    );
+    assert!(
+        payload["abstention_threshold"].is_number(),
+        "abstention guidance must be documented in responses"
+    );
 
     // ---- 5. update ------------------------------------------------------
     let resp = rpc(
@@ -186,7 +212,9 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
     let payload = tool_payload(&resp);
     let results = payload["results"].as_array().expect("results array");
     assert!(
-        !results.iter().any(|r| r["memory"]["id"] == json!(memory_id)),
+        !results
+            .iter()
+            .any(|r| r["memory"]["id"] == json!(memory_id)),
         "deleted memory must not be recalled"
     );
 
@@ -199,7 +227,10 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
         .expect("parse-error response within 10s")
         .expect("stream open");
     let resp: Value = serde_json::from_str(&bad).expect("even parse errors are JSON");
-    assert!(resp.get("error").is_some(), "invalid JSON must yield JSON-RPC error");
+    assert!(
+        resp.get("error").is_some(),
+        "invalid JSON must yield JSON-RPC error"
+    );
 
     // Valid envelope, missing tool name.
     let resp = rpc(
@@ -220,8 +251,10 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
         }),
     )
     .await;
-    assert!(resp.get("error").is_some() || resp["result"].is_object(),
-        "wrong-type args must produce an error response, not a crash");
+    assert!(
+        resp.get("error").is_some() || resp["result"].is_object(),
+        "wrong-type args must produce an error response, not a crash"
+    );
 
     // Unknown method.
     let resp = rpc(
@@ -242,13 +275,20 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
         }),
     )
     .await;
-    assert!(resp.get("error").is_some() || resp["result"].is_object(),
-        "empty args must produce a response, not a crash");
+    assert!(
+        resp.get("error").is_some() || resp["result"].is_object(),
+        "empty args must produce a response, not a crash"
+    );
 
     // Every remaining tool tolerates empty/malformed args with a response.
-    for (i, tool) in ["mnemosyne.list", "mnemosyne.graph", "mnemosyne.context", "mnemosyne.consolidate"]
-        .iter()
-        .enumerate()
+    for (i, tool) in [
+        "mnemosyne.list",
+        "mnemosyne.graph",
+        "mnemosyne.context",
+        "mnemosyne.consolidate",
+    ]
+    .iter()
+    .enumerate()
     {
         let id = 100 + i as i64;
         let resp = rpc(

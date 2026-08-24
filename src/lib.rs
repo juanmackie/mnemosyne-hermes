@@ -59,8 +59,8 @@ pub mod evolution;
 pub mod health; // Health check system
 pub mod hierarchy; // Topic-tree memory organization + hierarchical retrieval
 pub mod icons; // Nerd Font icons with ASCII fallbacks
-pub mod intent; // Typed query planning / chit-chat detection
 pub mod ics; // Integrated Context Studio
+pub mod intent; // Typed query planning / chit-chat detection
 pub mod launcher;
 pub mod mcp;
 pub mod memory_manager; // High-level agent memory API
@@ -107,8 +107,8 @@ pub use evolution::{
 };
 pub use mcp::{EventSink, McpServer, ToolHandler};
 pub use memory_manager::{
-    build_memory_context_block, DEFAULT_ABSTENTION_THRESHOLD, MemoryConfig, MemoryManager,
-    RecallDecision,
+    build_memory_context_block, MemoryConfig, MemoryManager, RecallDecision,
+    DEFAULT_ABSTENTION_THRESHOLD,
 };
 pub use namespace::{NamespaceDetector, ProjectMetadata};
 pub use orchestration::{AgentEvent, OrchestrationEngine, SupervisionConfig, WorkItem, WorkQueue};

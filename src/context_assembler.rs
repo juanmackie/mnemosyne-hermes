@@ -49,7 +49,14 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    pub fn new(id: impl Into<String>, title: impl Into<String>, abstract_text: impl Into<String>, overview: impl Into<String>, detail: impl Into<String>, score: f32) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        abstract_text: impl Into<String>,
+        overview: impl Into<String>,
+        detail: impl Into<String>,
+        score: f32,
+    ) -> Self {
         Self {
             id: id.into(),
             title: title.into(),
@@ -132,7 +139,11 @@ pub fn assemble(candidates: &[Candidate], budget_tokens: usize) -> BudgetPlan {
 
     // Sort candidates best-first
     let mut ordered: Vec<&Candidate> = candidates.iter().collect();
-    ordered.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    ordered.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Phase 1: place every candidate at Abstract (shallowest available),
     // best-first; once the budget is exhausted, remaining candidates are
@@ -171,7 +182,11 @@ pub fn assemble(candidates: &[Candidate], budget_tokens: usize) -> BudgetPlan {
             .map(|(idx, target)| {
                 let c = ordered[*idx];
                 let (new_cost, _) = tier_cost(c, *target);
-                let cur = kept.iter().find(|(i, _)| i == idx).map(|(_, t)| *t).unwrap();
+                let cur = kept
+                    .iter()
+                    .find(|(i, _)| i == idx)
+                    .map(|(_, t)| *t)
+                    .unwrap();
                 let (cur_cost, _) = tier_cost(c, cur);
                 new_cost.saturating_sub(cur_cost)
             })
@@ -194,7 +209,11 @@ pub fn assemble(candidates: &[Candidate], budget_tokens: usize) -> BudgetPlan {
             let mut any_promoted = false;
             for (idx, target) in promotions {
                 let c = ordered[idx];
-                let cur_tier = kept.iter().find(|(i, _)| *i == idx).map(|(_, t)| *t).unwrap();
+                let cur_tier = kept
+                    .iter()
+                    .find(|(i, _)| *i == idx)
+                    .map(|(_, t)| *t)
+                    .unwrap();
                 let (cur_cost, _) = tier_cost(c, cur_tier);
                 let (new_cost, _) = tier_cost(c, target);
                 let delta = new_cost.saturating_sub(cur_cost);
@@ -247,7 +266,12 @@ pub fn assemble(candidates: &[Candidate], budget_tokens: usize) -> BudgetPlan {
 pub fn render_markdown(plan: &BudgetPlan, header: &str) -> String {
     let mut out = format!("# {}\n\n", header);
     for e in &plan.entries {
-        out.push_str(&format!("## {} `{}` [{}]\n\n", e.title, e.id, format!("{:?}", e.tier)));
+        out.push_str(&format!(
+            "## {} `{}` [{}]\n\n",
+            e.title,
+            e.id,
+            format!("{:?}", e.tier)
+        ));
         if !e.text.is_empty() {
             out.push_str(&e.text);
             out.push_str("\n\n");
@@ -255,7 +279,9 @@ pub fn render_markdown(plan: &BudgetPlan, header: &str) -> String {
     }
     out.push_str(&format!(
         "---\n*Context budget: {}/{} tokens across {} entries*\n",
-        plan.ledger.spent_tokens, plan.ledger.budget_tokens, plan.entries.len()
+        plan.ledger.spent_tokens,
+        plan.ledger.budget_tokens,
+        plan.entries.len()
     ));
     out
 }
@@ -284,7 +310,10 @@ mod tests {
 
     #[test]
     fn test_all_fit_at_abstract_when_budget_tiny() {
-        let cands = vec![cand("a", 0.9, 400, 4000, 20000), cand("b", 0.5, 400, 4000, 20000)];
+        let cands = vec![
+            cand("a", 0.9, 400, 4000, 20000),
+            cand("b", 0.5, 400, 4000, 20000),
+        ];
         let plan = assemble(&cands, 500);
         assert_eq!(plan.entries.len(), 2);
         assert_eq!(plan.ledger.entries_abstract, 2);
@@ -312,10 +341,7 @@ mod tests {
 
     #[test]
     fn test_top_gets_deeper_when_all_maxed() {
-        let cands = vec![
-            cand("top", 1.0, 20, 80, 200),
-            cand("low", 0.5, 20, 80, 200),
-        ];
+        let cands = vec![cand("top", 1.0, 20, 80, 200), cand("low", 0.5, 20, 80, 200)];
         // Everything deep: 2*(1+5+~20+50+50)... give generous budget
         let plan = assemble(&cands, 1000);
         assert!(plan

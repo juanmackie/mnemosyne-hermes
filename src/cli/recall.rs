@@ -216,13 +216,12 @@ pub async fn handle(
             results.iter().map(|(m, _)| m).collect();
         let raw_scores: Vec<f32> = results.iter().map(|(_, s)| *s).collect();
         let config = mnemosyne_core::hierarchy::RetrieverConfig::default();
-        let (ranked, trajectory) = mnemosyne_core::hierarchy::rerank_results(
-            &note_refs,
-            &raw_scores,
-            config,
-            true,
-        );
-        results = ranked.into_iter().filter_map(|(i, s)| results.get(i).map(|(m, _)| (m.clone(), s))).collect();
+        let (ranked, trajectory) =
+            mnemosyne_core::hierarchy::rerank_results(&note_refs, &raw_scores, config, true);
+        results = ranked
+            .into_iter()
+            .filter_map(|(i, s)| results.get(i).map(|(m, _)| (m.clone(), s)))
+            .collect();
         if trace {
             trajectory_json = Some(trajectory.to_json());
             eprintln!("Retrieval trajectory:\n{}", trajectory.to_json());

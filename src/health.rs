@@ -643,10 +643,7 @@ fn check_api_key_resolution() -> CheckResult {
         .map(|k| !k.is_empty())
         .unwrap_or(false)
     {
-        return CheckResult::pass(
-            "API Key",
-            "ANTHROPIC_API_KEY set via environment variable",
-        );
+        return CheckResult::pass("API Key", "ANTHROPIC_API_KEY set via environment variable");
     }
     match crate::config::ConfigManager::new() {
         Ok(manager) => match manager.get_api_key() {
@@ -682,7 +679,10 @@ fn check_disk_space() -> CheckResult {
         }
         Err(e) => CheckResult::warn(
             "Disk Space",
-            format!("Cannot write to {:?}: {} (disk full or permissions?)", probe_dir, e),
+            format!(
+                "Cannot write to {:?}: {} (disk full or permissions?)",
+                probe_dir, e
+            ),
         ),
     }
 }

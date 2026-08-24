@@ -167,7 +167,10 @@ fn split_sentences(text: &str) -> Vec<String> {
 }
 
 fn normalize_for_dedup(s: &str) -> String {
-    s.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    s.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -204,10 +207,14 @@ pub fn resolve_candidate(
             return CandidateResolution::SkipAll(DedupDecision::Skip { existing_id: *id });
         }
     }
-    let best = existing.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let best = existing
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     if let Some((id, sim)) = best {
         if *sim >= MERGE_THRESHOLD {
-            return CandidateResolution::ResolveExisting(vec![DedupDecision::Merge { existing_id: *id }]);
+            return CandidateResolution::ResolveExisting(vec![DedupDecision::Merge {
+                existing_id: *id,
+            }]);
         }
     }
     let _ = lexical_similarity(candidate_content, ""); // keep fn referenced for API stability
@@ -228,15 +235,17 @@ pub fn resolve_with_policy(
     for (id, sim, old_len) in existing_with_lengths {
         if *sim >= SKIP_THRESHOLD {
             if cand_len > *old_len * 5 / 4 {
-                return CandidateResolution::ResolveExisting(vec![
-                    DedupDecision::Delete { existing_id: *id },
-                ]);
+                return CandidateResolution::ResolveExisting(vec![DedupDecision::Delete {
+                    existing_id: *id,
+                }]);
             }
             return CandidateResolution::SkipAll(DedupDecision::Skip { existing_id: *id });
         }
     }
-    let pairs: Vec<(MemoryId, f32)> =
-        existing_with_lengths.iter().map(|(id, s, _)| (*id, *s)).collect();
+    let pairs: Vec<(MemoryId, f32)> = existing_with_lengths
+        .iter()
+        .map(|(id, s, _)| (*id, *s))
+        .collect();
     resolve_candidate(candidate_content, &pairs)
 }
 
@@ -283,19 +292,28 @@ impl MemoryDiff {
     }
 
     pub fn summary(&self) -> (usize, usize, usize) {
-        let adds = self.operations.iter().filter(|o| matches!(o, DiffOperation::Add { .. })).count();
-        let updates = self.operations.iter().filter(|o| matches!(o, DiffOperation::Update { .. })).count();
-        let deletes = self.operations.iter().filter(|o| matches!(o, DiffOperation::Delete { .. })).count();
+        let adds = self
+            .operations
+            .iter()
+            .filter(|o| matches!(o, DiffOperation::Add { .. }))
+            .count();
+        let updates = self
+            .operations
+            .iter()
+            .filter(|o| matches!(o, DiffOperation::Update { .. }))
+            .count();
+        let deletes = self
+            .operations
+            .iter()
+            .filter(|o| matches!(o, DiffOperation::Delete { .. }))
+            .count();
         (adds, updates, deletes)
     }
 
     /// Persist to `<dir>/memory_diff_<timestamp>.json`
     pub fn write_to_dir(&self, dir: &Path) -> std::io::Result<std::path::PathBuf> {
         std::fs::create_dir_all(dir)?;
-        let filename = format!(
-            "memory_diff_{}.json",
-            Utc::now().format("%Y%m%d_%H%M%S%3f")
-        );
+        let filename = format!("memory_diff_{}.json", Utc::now().format("%Y%m%d_%H%M%S%3f"));
         let path = dir.join(filename);
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -336,7 +354,8 @@ pub fn archive_messages(
     let path = archive_dir.join(format!("{}_messages.jsonl", sanitize(session_id)));
     let mut out = String::new();
     for m in messages {
-        let line = serde_json::json!({"role": m.role, "text": m.text, "ts": Utc::now().to_rfc3339()});
+        let line =
+            serde_json::json!({"role": m.role, "text": m.text, "ts": Utc::now().to_rfc3339()});
         out.push_str(&line.to_string());
         out.push('\n');
     }
@@ -346,7 +365,13 @@ pub fn archive_messages(
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -356,8 +381,14 @@ mod tests {
 
     #[test]
     fn test_lexical_similarity_identical_and_disjoint() {
-        assert!((lexical_similarity("use redis for caching", "use redis for caching") - 1.0).abs() < 1e-6);
-        assert_eq!(lexical_similarity("redis caching layer", "quantum entanglement physics"), 0.0);
+        assert!(
+            (lexical_similarity("use redis for caching", "use redis for caching") - 1.0).abs()
+                < 1e-6
+        );
+        assert_eq!(
+            lexical_similarity("redis caching layer", "quantum entanglement physics"),
+            0.0
+        );
     }
 
     #[test]
@@ -372,7 +403,10 @@ mod tests {
     #[test]
     fn test_extract_preferences_from_user_messages() {
         let msgs = vec![
-            SessionMessage::new("user", "I prefer tabs over spaces. Also I like dark themes."),
+            SessionMessage::new(
+                "user",
+                "I prefer tabs over spaces. Also I like dark themes.",
+            ),
             SessionMessage::new("assistant", "Sure thing."),
         ];
         let cands = extract_candidates(&msgs);
@@ -383,7 +417,10 @@ mod tests {
     #[test]
     fn test_extract_decisions_from_any_role() {
         let msgs = vec![
-            SessionMessage::new("assistant", "The fix was to bump the timeout. We decided to retry twice."),
+            SessionMessage::new(
+                "assistant",
+                "The fix was to bump the timeout. We decided to retry twice.",
+            ),
             SessionMessage::new("user", "great"),
         ];
         let cands = extract_candidates(&msgs);
@@ -413,14 +450,20 @@ mod tests {
     fn test_resolve_skip_on_high_similarity() {
         let id = MemoryId(uuid::Uuid::new_v4());
         let res = resolve_candidate("use redis caching layer", &[(id, 0.95)]);
-        assert_eq!(res, CandidateResolution::SkipAll(DedupDecision::Skip { existing_id: id }));
+        assert_eq!(
+            res,
+            CandidateResolution::SkipAll(DedupDecision::Skip { existing_id: id })
+        );
     }
 
     #[test]
     fn test_resolve_merge_on_medium_similarity() {
         let id = MemoryId(uuid::Uuid::new_v4());
         let res = resolve_candidate("postgres storage choice", &[(id, 0.8)]);
-        assert_eq!(res, CandidateResolution::ResolveExisting(vec![DedupDecision::Merge { existing_id: id }]));
+        assert_eq!(
+            res,
+            CandidateResolution::ResolveExisting(vec![DedupDecision::Merge { existing_id: id }])
+        );
     }
 
     #[test]
@@ -428,7 +471,10 @@ mod tests {
         let id = MemoryId(uuid::Uuid::new_v4());
         let res = resolve_candidate("totally unrelated topic about kernels", &[(id, 0.1)]);
         assert_eq!(res, CandidateResolution::Create);
-        assert_eq!(resolve_candidate("anything", &[]), CandidateResolution::Create);
+        assert_eq!(
+            resolve_candidate("anything", &[]),
+            CandidateResolution::Create
+        );
     }
 
     #[test]
@@ -487,7 +533,10 @@ mod tests {
     #[test]
     fn test_archive_messages_writes_jsonl() {
         let dir = std::env::temp_dir().join(format!("mnemo_arch_test_{}", uuid::Uuid::new_v4()));
-        let msgs = vec![SessionMessage::new("user", "hello"), SessionMessage::new("assistant", "hi")];
+        let msgs = vec![
+            SessionMessage::new("user", "hello"),
+            SessionMessage::new("assistant", "hi"),
+        ];
         let path = archive_messages("sess/1", &msgs, &dir).unwrap();
         assert!(path.exists());
         let contents = std::fs::read_to_string(path).unwrap();

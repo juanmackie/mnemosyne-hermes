@@ -139,7 +139,11 @@ const RESOURCE_MARKERS: &[&str] = &[
 fn is_chit_chat(input: &str) -> Option<String> {
     let normalized = input.trim().to_lowercase();
     let stripped = normalized.trim_end_matches(|c: char| "!?., ".contains(c));
-    if stripped.len() <= 40 && CHIT_CHAT_PATTERNS.iter().any(|p| stripped == *p || stripped.starts_with(p)) {
+    if stripped.len() <= 40
+        && CHIT_CHAT_PATTERNS
+            .iter()
+            .any(|p| stripped == *p || stripped.starts_with(p))
+    {
         Some(stripped.to_string())
     } else {
         None
@@ -239,8 +243,9 @@ pub fn plan_queries(input: &str) -> QueryPlan {
             continue;
         }
         let t = classify(&part_lower);
-        if t != primary_type || normalize_whitespace(&part).to_lowercase()
-            != normalize_whitespace(trimmed).to_lowercase()
+        if t != primary_type
+            || normalize_whitespace(&part).to_lowercase()
+                != normalize_whitespace(trimmed).to_lowercase()
         {
             queries.push(TypedQuery {
                 query: rewrite(&part, t),

@@ -3041,24 +3041,29 @@ impl StorageBackend for LibsqlStorage {
                 conn.query(sql, params![]).await?
             }
         } else {
-            // Non-empty query: use FTS5 full-text search with OR logic
+            // Non-empty query: use FTS5 full-text search with OR logic. Keep
+            // bm25's relevance signal instead of returning rowid order; the
+            // latter makes common terms and unrelated early memories outrank
+            // a memory matching several query terms.
             let sql = if namespace_filter.is_some() {
                 r#"
-                SELECT m.* FROM memories m
-                WHERE m.rowid IN (
-                    SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?
-                )
+                SELECT m.*, bm25(memories_fts) AS fts_rank
+                FROM memories m
+                JOIN memories_fts ON memories_fts.rowid = m.rowid
+                WHERE memories_fts MATCH ?
                 AND m.namespace = ?
                 AND m.is_archived = 0
+                ORDER BY fts_rank ASC
                 LIMIT 20
                 "#
             } else {
                 r#"
-                SELECT m.* FROM memories m
-                WHERE m.rowid IN (
-                    SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?
-                )
+                SELECT m.*, bm25(memories_fts) AS fts_rank
+                FROM memories m
+                JOIN memories_fts ON memories_fts.rowid = m.rowid
+                WHERE memories_fts MATCH ?
                 AND m.is_archived = 0
+                ORDER BY fts_rank ASC
                 LIMIT 20
                 "#
             };
@@ -3071,12 +3076,38 @@ impl StorageBackend for LibsqlStorage {
         };
 
         let mut results = Vec::new();
+        let mut bm25_rows = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = self.row_to_memory(&row).await?;
+            if query.trim().is_empty() {
+                results.push(SearchResult {
+                    memory,
+                    score: 0.8,
+                    match_reason: "keyword_match".to_string(),
+                });
+            } else {
+                let rank: f64 = row.get(21)?;
+                bm25_rows.push((memory, (-rank).max(0.0) as f32));
+            }
+        }
+
+        // bm25 returns lower (usually negative) values for better matches.
+        // Normalize per query so keyword relevance remains a bounded signal
+        // compatible with the hybrid scorer's other components.
+        let best_rank = bm25_rows
+            .iter()
+            .map(|(_, rank)| *rank)
+            .fold(0.0_f32, f32::max);
+        for (memory, rank) in bm25_rows {
+            let score = if best_rank > 0.0 {
+                rank / best_rank
+            } else {
+                0.0
+            };
             results.push(SearchResult {
                 memory,
-                score: 0.8,
-                match_reason: "keyword_match".to_string(),
+                score,
+                match_reason: format!("keyword_match ({:.2})", score),
             });
         }
 
@@ -3237,7 +3268,7 @@ impl StorageBackend for LibsqlStorage {
         debug!("Keyword search found {} results", keyword_results.len());
 
         for result in &keyword_results {
-            memory_scores.insert(result.memory.id, (1.0, 0.0, 0.0, 0.0));
+            memory_scores.insert(result.memory.id, (result.score, 0.0, 0.0, 0.0));
         }
 
         // 2. Vector search (if embedding service available and query non-empty)
@@ -4453,10 +4484,7 @@ mod fts_query_tests {
         scores.insert(low, (0.2, 0.1, 0.0, 0.0));
         scores.insert(high, (0.8, 0.7, 0.0, 0.0));
 
-        assert_eq!(
-            LibsqlStorage::select_graph_seed_ids(&scores, 1),
-            vec![high]
-        );
+        assert_eq!(LibsqlStorage::select_graph_seed_ids(&scores, 1), vec![high]);
     }
 }
 

@@ -74,9 +74,9 @@ pub async fn handle(
         .build()
         .await
         .map_err(|e| MnemosyneError::Database(format!("Failed to open source database: {}", e)))?;
-    let source_conn = source_db
-        .connect()
-        .map_err(|e| MnemosyneError::Database(format!("Failed to connect to source database: {}", e)))?;
+    let source_conn = source_db.connect().map_err(|e| {
+        MnemosyneError::Database(format!("Failed to connect to source database: {}", e))
+    })?;
     // Defense in depth: keep the source connection read-only even if a future
     // importer path accidentally issues a mutating statement.
     source_conn.execute("PRAGMA query_only = ON", ()).await?;
@@ -100,7 +100,8 @@ pub async fn handle(
             .unwrap_or_else(|_| target_path.clone());
         if target_canonical == source {
             return Err(MnemosyneError::ValidationError(
-                "Source and target database are the same file; choose a separate target.".to_string(),
+                "Source and target database are the same file; choose a separate target."
+                    .to_string(),
             ));
         }
         let storage = mnemosyne_core::LibsqlStorage::new_with_validation(
@@ -123,7 +124,10 @@ pub async fn handle(
             report.scanned += 1;
             let converted = convert_row(table, &columns, &row, &source, &target_namespace);
             let Some(memory) = converted else {
-                debug!("Skipping source row from {}: columns={:?}, row={:?}", table, columns, row);
+                debug!(
+                    "Skipping source row from {}: columns={:?}, row={:?}",
+                    table, columns, row
+                );
                 report.errors.push(format!(
                     "Skipped {} row {}: no supported id/content fields",
                     table, report.scanned
@@ -242,7 +246,11 @@ async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
     Ok(columns)
 }
 
-async fn read_table(conn: &Connection, table: &str, columns: &[String]) -> Result<Vec<Vec<SqlValue>>> {
+async fn read_table(
+    conn: &Connection,
+    table: &str,
+    columns: &[String],
+) -> Result<Vec<Vec<SqlValue>>> {
     let quoted = format!("\"{}\"", table.replace('"', "\"\""));
     let sql = format!("SELECT * FROM {}", quoted);
     let mut rows = conn.query(&sql, ()).await?;
@@ -344,19 +352,19 @@ fn convert_row(
             )
         }
         "canonical_facts" => (
-            text_at(row, columns, &["body", "content", "value"])? ,
+            text_at(row, columns, &["body", "content", "value"])?,
             MemoryType::Preference,
             vec!["canonical".to_string(), "persona".to_string()],
         ),
         "annotations" => (
-            text_at(row, columns, &["value", "content", "body"])? ,
+            text_at(row, columns, &["value", "content", "body"])?,
             MemoryType::Insight,
             vec!["annotation".to_string()],
         ),
         _ => {
             let content = text_at(row, columns, &["content", "body", "text"])?;
-            let kind = text_at(row, columns, &["memory_type", "type", "category"])
-                .unwrap_or_default();
+            let kind =
+                text_at(row, columns, &["memory_type", "type", "category"]).unwrap_or_default();
             (content, memory_type_from_source(&kind), Vec::new())
         }
     };
@@ -375,10 +383,7 @@ fn convert_row(
     }
     .clamp(1, 10);
 
-    let mut tags = vec![
-        "imported".to_string(),
-        format!("source-table:{}", table),
-    ];
+    let mut tags = vec!["imported".to_string(), format!("source-table:{}", table)];
     tags.extend(extra_tags);
     if let Some(category) = text_at(row, columns, &["category", "kind", "memory_type"]) {
         if !category.trim().is_empty() {
@@ -392,10 +397,7 @@ fn convert_row(
             "source_database".to_string(),
             Value::String(source.display().to_string()),
         );
-        object.insert(
-            "source_table".to_string(),
-            Value::String(table.to_string()),
-        );
+        object.insert("source_table".to_string(), Value::String(table.to_string()));
         if let Some(valid_until) = text_at(row, columns, &["valid_until"]) {
             object.insert("valid_until".to_string(), Value::String(valid_until));
         }

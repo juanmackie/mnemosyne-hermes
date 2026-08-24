@@ -218,7 +218,11 @@ fn fallback_embedding(text: &str, dimensions: usize) -> Vec<f32> {
         let index = (hasher.finish() as usize) % dimensions.max(1);
         embedding[index] += 1.0;
     }
-    let magnitude = embedding.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let magnitude = embedding
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
     if magnitude > 0.0 {
         for value in &mut embedding {
             *value /= magnitude;

@@ -72,9 +72,15 @@ impl MarkdownHighlighter {
                 .map(|pos| idx + pos)
                 .unwrap_or(text.len());
             let style = match ch {
-                '#' => Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
-                '@' => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                '?' => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                '#' => Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+                '@' => Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+                '?' => Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
                 _ => Style::default(),
             };
             spans.push(Span::styled(text[idx..end].to_string(), style));

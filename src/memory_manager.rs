@@ -522,7 +522,8 @@ impl MemoryManager {
         let ids = {
             let guard = self.storage.lock().await;
             let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
-            inner.find_purge_candidates(&ns, &needle.into(), limit)
+            inner
+                .find_purge_candidates(&ns, &needle.into(), limit)
                 .await?
         };
         let mut reports = Vec::with_capacity(ids.len());

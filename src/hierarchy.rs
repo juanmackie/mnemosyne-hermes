@@ -19,7 +19,7 @@
 
 use crate::types::{MemoryNote, MemoryType, Namespace};
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, BTreeMap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
 /// Maximum characters for an L0 abstract body
 pub const ABSTRACT_MAX_CHARS: usize = 256;
@@ -101,7 +101,6 @@ pub fn slugify(s: &str) -> String {
     }
     out
 }
-
 
 /// Truncate a string to at most `max` characters **including** any ellipsis
 /// suffix appended by `truncate_at_char_boundary`.
@@ -268,10 +267,7 @@ pub fn build_tree(notes: &[&MemoryNote]) -> Vec<TreeNode> {
     // Group notes by topic path
     let mut by_path: BTreeMap<String, Vec<&MemoryNote>> = BTreeMap::new();
     for note in notes {
-        by_path
-            .entry(topic_path_for(note))
-            .or_default()
-            .push(note);
+        by_path.entry(topic_path_for(note)).or_default().push(note);
     }
 
     // Collect all ancestor directories
@@ -293,10 +289,10 @@ pub fn build_tree(notes: &[&MemoryNote]) -> Vec<TreeNode> {
     for (path, group) in &by_path {
         let note = group[0];
         let (parent, name) = split_parent(path);
-        dir_children.entry(parent.clone()).or_default().push((
-            true,
-            l0_abstract_for(note),
-        ));
+        dir_children
+            .entry(parent.clone())
+            .or_default()
+            .push((true, l0_abstract_for(note)));
         nodes.push(TreeNode {
             path: path.clone(),
             parent,
@@ -334,7 +330,10 @@ pub fn build_tree(notes: &[&MemoryNote]) -> Vec<TreeNode> {
         // Track changed-but-unsampled children via pending count
         let freshness = Freshness::compute(total, sampled.len(), 0);
         dir_l0.insert(dir.clone(), l0.clone());
-        dir_children.entry(parent.clone()).or_default().push((false, l0.clone()));
+        dir_children
+            .entry(parent.clone())
+            .or_default()
+            .push((false, l0.clone()));
         nodes.push(TreeNode {
             path: dir,
             parent,
@@ -348,7 +347,9 @@ pub fn build_tree(notes: &[&MemoryNote]) -> Vec<TreeNode> {
 
     // Order: directories breadth-first-ish by depth then leaves — simple sort by depth then path
     nodes.sort_by(|a, b| {
-        a.path.split('/').count()
+        a.path
+            .split('/')
+            .count()
             .cmp(&b.path.split('/').count())
             .then_with(|| a.path.cmp(&b.path))
     });
@@ -388,11 +389,7 @@ fn directory_abstract(l1_body: &str) -> String {
         .strip_prefix("# ")
         .and_then(|rest| rest.find('\n').map(|i| &rest[i + 1..]))
         .unwrap_or(l1_body);
-    let brief = after_title
-        .split("##")
-        .next()
-        .unwrap_or(after_title)
-        .trim();
+    let brief = after_title.split("##").next().unwrap_or(after_title).trim();
     truncate_total(brief, ABSTRACT_MAX_CHARS)
 }
 
@@ -525,14 +522,14 @@ impl HierarchicalRetriever {
             .collect();
 
         // Index nodes
-        let by_path: HashMap<&str, &TreeNode> = tree
-            .iter()
-            .map(|n| (n.path.as_str(), n))
-            .collect();
+        let by_path: HashMap<&str, &TreeNode> = tree.iter().map(|n| (n.path.as_str(), n)).collect();
         let mut children_of: HashMap<&str, Vec<&TreeNode>> = HashMap::new();
         for node in tree {
             if !node.parent.is_empty() {
-                children_of.entry(node.parent.as_str()).or_default().push(node);
+                children_of
+                    .entry(node.parent.as_str())
+                    .or_default()
+                    .push(node);
             }
         }
 
@@ -552,7 +549,10 @@ impl HierarchicalRetriever {
             .collect();
         scored_roots.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        for (score, dir) in scored_roots.into_iter().take(self.config.global_search_topk) {
+        for (score, dir) in scored_roots
+            .into_iter()
+            .take(self.config.global_search_topk)
+        {
             trajectory.steps.push(TrajectoryStep {
                 uri: dir.path.clone(),
                 parent_score: 0.0,
@@ -582,7 +582,10 @@ impl HierarchicalRetriever {
                 None => continue,
             };
 
-            let children = children_of.get(node.path.as_str()).cloned().unwrap_or_default();
+            let children = children_of
+                .get(node.path.as_str())
+                .cloned()
+                .unwrap_or_default();
             if children.is_empty() {
                 // Leaf reached: collect
                 if entry.score >= self.config.score_threshold {
@@ -667,8 +670,11 @@ impl HierarchicalRetriever {
                     .partial_cmp(&a.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            let current_topk: Vec<String> =
-                collected.iter().take(self.config.global_search_topk).map(|m| m.uri.clone()).collect();
+            let current_topk: Vec<String> = collected
+                .iter()
+                .take(self.config.global_search_topk)
+                .map(|m| m.uri.clone())
+                .collect();
             if current_topk == last_topk {
                 unchanged_rounds += 1;
                 if unchanged_rounds >= self.config.max_convergence_rounds {
@@ -803,7 +809,7 @@ pub fn rerank_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{MemoryNote, MemoryId};
+    use crate::types::{MemoryId, MemoryNote};
     use chrono::Utc;
     use uuid::Uuid;
 
@@ -849,10 +855,7 @@ mod tests {
             "content",
         );
         assert_eq!(topic_path_for(&n1), topic_path_for(&n2));
-        assert_eq!(
-            topic_path_for(&n1),
-            "project:app/decisions/caching-layer"
-        );
+        assert_eq!(topic_path_for(&n1), "project:app/decisions/caching-layer");
     }
 
     #[test]
@@ -902,16 +905,33 @@ mod tests {
     fn test_build_tree_creates_directories_and_sidecars() {
         let ns = Namespace::Project { name: "app".into() };
         let notes = vec![
-            note(ns.clone(), MemoryType::ArchitectureDecision, &["caching"], "Use Redis for caching"),
-            note(ns.clone(), MemoryType::ArchitectureDecision, &["auth"], "Use JWT tokens"),
-            note(ns.clone(), MemoryType::CodePattern, &["errors"], "Error handling pattern"),
+            note(
+                ns.clone(),
+                MemoryType::ArchitectureDecision,
+                &["caching"],
+                "Use Redis for caching",
+            ),
+            note(
+                ns.clone(),
+                MemoryType::ArchitectureDecision,
+                &["auth"],
+                "Use JWT tokens",
+            ),
+            note(
+                ns.clone(),
+                MemoryType::CodePattern,
+                &["errors"],
+                "Error handling pattern",
+            ),
         ];
         let refs: Vec<&MemoryNote> = notes.iter().collect();
         let tree = build_tree(&refs);
 
         // Roots exist: project:app, project:app/decisions, project:app/patterns
         assert!(tree.iter().any(|n| n.path == "project:app" && !n.is_leaf));
-        assert!(tree.iter().any(|n| n.path == "project:app/decisions" && !n.is_leaf));
+        assert!(tree
+            .iter()
+            .any(|n| n.path == "project:app/decisions" && !n.is_leaf));
 
         // Directory abstract extracted from L1 brief paragraph
         let root = tree.iter().find(|n| n.path == "project:app").unwrap();
@@ -919,7 +939,9 @@ mod tests {
         assert!(root.abstract_text.chars().count() <= ABSTRACT_MAX_CHARS);
 
         // Leaves present
-        assert!(tree.iter().any(|n| n.is_leaf && n.path.contains("decisions/caching")));
+        assert!(tree
+            .iter()
+            .any(|n| n.is_leaf && n.path.contains("decisions/caching")));
     }
 
     #[test]
@@ -948,7 +970,11 @@ mod tests {
             mk("project:app", "", false),
             mk("project:app/decisions", "project:app", false),
             mk("project:app/patterns", "project:app", false),
-            mk("project:app/decisions/caching", "project:app/decisions", true),
+            mk(
+                "project:app/decisions/caching",
+                "project:app/decisions",
+                true,
+            ),
             mk("project:app/decisions/auth", "project:app/decisions", true),
             mk("project:app/patterns/errors", "project:app/patterns", true),
         ]
@@ -1015,19 +1041,29 @@ mod tests {
     fn test_rerank_results_maps_back_and_preserves_all() {
         let ns = Namespace::Project { name: "app".into() };
         let notes = vec![
-            note(ns.clone(), MemoryType::ArchitectureDecision, &["caching"], "Redis cache decision"),
-            note(ns.clone(), MemoryType::ArchitectureDecision, &["auth"], "JWT auth decision"),
-            note(ns.clone(), MemoryType::CodePattern, &["errors"], "Error pattern"),
+            note(
+                ns.clone(),
+                MemoryType::ArchitectureDecision,
+                &["caching"],
+                "Redis cache decision",
+            ),
+            note(
+                ns.clone(),
+                MemoryType::ArchitectureDecision,
+                &["auth"],
+                "JWT auth decision",
+            ),
+            note(
+                ns.clone(),
+                MemoryType::CodePattern,
+                &["errors"],
+                "Error pattern",
+            ),
         ];
         let refs: Vec<&MemoryNote> = notes.iter().collect();
         let raw: Vec<f32> = vec![0.9, 0.5, 0.1];
 
-        let (ranked, traj) = rerank_results(
-            &refs,
-            &raw,
-            RetrieverConfig::default(),
-            true,
-        );
+        let (ranked, traj) = rerank_results(&refs, &raw, RetrieverConfig::default(), true);
 
         // All original indices present exactly once
         let mut idxs: Vec<usize> = ranked.iter().map(|(i, _)| *i).collect();
@@ -1053,12 +1089,7 @@ mod tests {
         // Equal raw scores; different paths so no aggregation interference.
         // (Different tags => different topic dirs under same type segment.)
         let refs = vec![&cold, &hot];
-        let (ranked, _) = rerank_results(
-            &refs,
-            &[0.5, 0.5],
-            RetrieverConfig::default(),
-            true,
-        );
+        let (ranked, _) = rerank_results(&refs, &[0.5, 0.5], RetrieverConfig::default(), true);
         assert_eq!(ranked[0].0, 1, "accessed-hot memory should rank first");
     }
 }

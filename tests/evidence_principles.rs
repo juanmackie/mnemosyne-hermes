@@ -170,11 +170,17 @@ async fn abstention_gates_weak_and_empty_matches() {
 #[tokio::test]
 async fn fail_closed_retrieval_refuses_silent_degradation() {
     let path = temp_db("failclosed");
-    let mut storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(path.clone()), true).await.expect("storage");
+    let mut storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(path.clone()), true)
+        .await
+        .expect("storage");
 
     let ns = agent_ns("failclosed");
     storage
-        .store_memory(&note("The launch code is stored in the vault.", chrono::Utc::now(), &ns))
+        .store_memory(&note(
+            "The launch code is stored in the vault.",
+            chrono::Utc::now(),
+            &ns,
+        ))
         .await
         .expect("store");
 
@@ -184,7 +190,9 @@ async fn fail_closed_retrieval_refuses_silent_degradation() {
     cfg.fail_closed = true;
     storage.set_search_config(cfg);
 
-    let result = storage.hybrid_search("vault", Some(ns.clone()), 5, false).await;
+    let result = storage
+        .hybrid_search("vault", Some(ns.clone()), 5, false)
+        .await;
     let err = result.expect_err("fail-closed must error, not degrade silently");
     assert!(
         err.to_string().contains("fail-closed"),
@@ -200,7 +208,11 @@ async fn fail_closed_retrieval_refuses_silent_degradation() {
         .hybrid_search("vault", Some(ns), 5, false)
         .await
         .expect("fail-open degradation allowed");
-    assert_eq!(results.len(), 1, "keyword-only fallback still finds content");
+    assert_eq!(
+        results.len(),
+        1,
+        "keyword-only fallback still finds content"
+    );
 }
 
 // --------------------------------------------------- 3. true forgetting + PII
@@ -208,7 +220,9 @@ async fn fail_closed_retrieval_refuses_silent_degradation() {
 #[tokio::test]
 async fn true_purge_removes_row_embedding_links_and_audit() {
     let path = temp_db("purge");
-    let storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(path.clone()), true).await.expect("storage");
+    let storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(path.clone()), true)
+        .await
+        .expect("storage");
     let ns = agent_ns("purge");
     let now = chrono::Utc::now();
 
@@ -221,7 +235,10 @@ async fn true_purge_removes_row_embedding_links_and_audit() {
     // back-reference on b must be cleared.
     let c = note("carol@example.com is the new emergency contact", now, &ns);
     storage.store_memory(&c).await.expect("store c");
-    storage.mark_superseded(&b.id, &c.id).await.expect("supersede");
+    storage
+        .mark_superseded(&b.id, &c.id)
+        .await
+        .expect("supersede");
 
     // Purging c must clear b.superseded_by back-reference.
     let report_c: PurgeReport = storage.purge_memory(&c.id).await.expect("purge c");
@@ -258,7 +275,10 @@ async fn true_purge_removes_row_embedding_links_and_audit() {
 
     // Audit trail for the purged memory is gone too.
     let audit = storage.get_audit_trail(a.id).await.expect("audit query");
-    assert!(audit.is_empty(), "audit rows must be purged with the memory");
+    assert!(
+        audit.is_empty(),
+        "audit rows must be purged with the memory"
+    );
 
     // Purge again → clean MemoryNotFound, idempotent-ish failure semantics.
     let again = storage.purge_memory(&a.id).await;
@@ -278,8 +298,14 @@ async fn forget_matching_cascades_and_reports_removals() {
     .await
     .expect("manager");
 
-    let id1 = mgr.store("Acme Corp project kickoff notes").await.expect("s1");
-    let _id2 = mgr.store("Met with Acme Corp about pricing").await.expect("s2");
+    let id1 = mgr
+        .store("Acme Corp project kickoff notes")
+        .await
+        .expect("s1");
+    let _id2 = mgr
+        .store("Met with Acme Corp about pricing")
+        .await
+        .expect("s2");
     let keep = mgr.store("User prefers tea over coffee").await.expect("s3");
 
     // "Forget Acme Corp" cascade.
@@ -312,20 +338,28 @@ async fn forget_matching_cascades_and_reports_removals() {
 #[tokio::test]
 async fn temporal_as_of_recall_respects_supersedence_timeline() {
     let path = temp_db("asof");
-    let storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(path.clone()), true).await.expect("storage");
+    let storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(path.clone()), true)
+        .await
+        .expect("storage");
     let ns = agent_ns("asof");
     let now = chrono::Utc::now();
-    
 
     // Fact history: Paris (10 days ago) → Berlin (2 days ago).
     let paris = note("User lives in Paris", now - chrono::Duration::days(10), &ns);
     let berlin = note("User lives in Berlin", now - chrono::Duration::days(2), &ns);
     storage.store_memory(&paris).await.expect("paris");
     storage.store_memory(&berlin).await.expect("berlin");
-    storage.mark_superseded(&paris.id, &berlin.id).await.expect("supersede");
+    storage
+        .mark_superseded(&paris.id, &berlin.id)
+        .await
+        .expect("supersede");
 
     // A brand-new fact that post-dates our historical queries.
-    let lisbon = note("User dreams of Lisbon", now - chrono::Duration::days(1), &ns);
+    let lisbon = note(
+        "User dreams of Lisbon",
+        now - chrono::Duration::days(1),
+        &ns,
+    );
     storage.store_memory(&lisbon).await.expect("lisbon");
 
     // As of today: Berlin is current, Paris superseded.
@@ -363,8 +397,14 @@ async fn temporal_as_of_recall_respects_supersedence_timeline() {
     )
     .await
     .expect("manager");
-    let old = mgr.store("Project uses Postgres for storage").await.expect("old");
-    let new = mgr.store("Project uses SQLite for storage").await.expect("new");
+    let old = mgr
+        .store("Project uses Postgres for storage")
+        .await
+        .expect("old");
+    let new = mgr
+        .store("Project uses SQLite for storage")
+        .await
+        .expect("new");
     mgr.supersede(&old, &new).await.expect("supersede");
     let hits_now = mgr
         .recall_as_of("storage engine", chrono::Utc::now(), 5, MemoryConfig::new())
