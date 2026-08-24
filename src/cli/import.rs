@@ -13,6 +13,7 @@ use mnemosyne_core::{
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tracing::info;
 use uuid::Uuid;
@@ -397,7 +398,16 @@ fn memory_type_from_source(value: &str) -> MemoryType {
 
 fn deterministic_id(source: &Path, table: &str, source_id: &str) -> MemoryId {
     let key = format!("{}\0{}\0{}", source.display(), table, source_id);
-    MemoryId(Uuid::new_v5(&Uuid::NAMESPACE_URL, key.as_bytes()))
+    let digest = Sha256::digest(key.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // Mark the truncated digest as a UUID-shaped, deterministic identifier.
+    // UUIDv5 is not enabled because this repository's existing lockfile has a
+    // deliberately broad dependency graph; the collision-resistant namespace
+    // key above provides the same rerun/idempotence property here.
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    MemoryId(Uuid::from_bytes(bytes))
 }
 
 fn to_memory_note(id: MemoryId, memory: SourceMemory, namespace: Namespace) -> MemoryNote {
