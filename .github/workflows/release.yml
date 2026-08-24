@@ -1,0 +1,89 @@
+name: Release Mnemosyne
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: mnemosyne-linux-x86_64
+            cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset: mnemosyne-linux-aarch64
+            cross: true
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset: mnemosyne-macos-x86_64
+            cross: false
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: mnemosyne-macos-aarch64
+            cross: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        if: matrix.cross
+        with:
+          tool: cross
+      - name: Build release binary
+        shell: bash
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release --locked --target "${{ matrix.target }}" --bin mnemosyne
+          else
+            cargo build --release --locked --target "${{ matrix.target }}" --bin mnemosyne
+          fi
+      - name: Package release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/mnemosyne" dist/mnemosyne
+          tar -C dist -czf "${{ matrix.asset }}.tar.gz" mnemosyne
+          rm -rf dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: mnemosyne-*
+          merge-multiple: true
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum mnemosyne-*.tar.gz > checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/mnemosyne-*.tar.gz
+            dist/checksums.txt
