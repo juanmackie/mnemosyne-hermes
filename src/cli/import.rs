@@ -72,6 +72,9 @@ pub async fn handle(
     let source_conn = source_db
         .connect()
         .map_err(|e| MnemosyneError::Database(format!("Failed to connect to source database: {}", e)))?;
+    // Defense in depth: keep the source connection read-only even if a future
+    // importer path accidentally issues a mutating statement.
+    source_conn.execute("PRAGMA query_only = ON", ()).await?;
 
     let target_namespace = parse_namespace(namespace.as_deref().unwrap_or("agent:hermes"));
     let mut report = ImportReport {
