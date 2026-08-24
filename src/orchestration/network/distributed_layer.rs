@@ -1,4 +1,4 @@
-use super::{AgentEndpoint, AgentProtocol, MessageRouter};
+use super::{transport, AgentEndpoint, AgentProtocol, MessageRouter};
 use crate::error::Result;
 use crate::launcher::agents::AgentRole;
 use iroh::net::endpoint::{Incoming, RecvStream, SendStream};
