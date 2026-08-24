@@ -273,6 +273,14 @@ if MNEMOSYNE_DB_PATH="$TMP/corrupt-target.db" RUST_LOG=error "$BIN" import \
 fi
 touch "$TMP/import-corrupt.ok"
 
+# Importing into the source path must be rejected rather than risking an
+# in-place rewrite of the user's original database.
+if MNEMOSYNE_DB_PATH="$source" RUST_LOG=error "$BIN" import --from "$source" \
+  --namespace agent:hermes --format json >"$TMP/import-same-path.json" 2>/dev/null; then
+  return 1
+fi
+touch "$TMP/import-same-path.ok"
+
 # Dry-run must inspect the source without creating the target database.
 MNEMOSYNE_DB_PATH="$dry_target" RUST_LOG=error "$BIN" import --from "$source" \
   --namespace agent:hermes --dry-run --format json >"$TMP/import-dry-run.json" 2>/dev/null || return 1
@@ -313,6 +321,10 @@ import_dry_run_is_non_destructive() {
 
 import_corrupt_source_is_rejected() {
   [[ -f "$TMP/import-corrupt.ok" && ! -e "$TMP/corrupt-target.db" ]]
+}
+
+import_same_path_is_rejected() {
+  [[ -f "$TMP/import-same-path.ok" ]]
 }
 
 import_duplicate_is_skipped() {
@@ -404,6 +416,7 @@ fi
 check importer_source_readonly import_source_is_unchanged
 check importer_dry_run import_dry_run_is_non_destructive
 check importer_corrupt import_corrupt_source_is_rejected
+check importer_same_path import_same_path_is_rejected
 check importer_duplicate import_duplicate_is_skipped
 check importer_invalid import_invalid_rows_are_reported
 check importer_audit import_report_is_auditable
