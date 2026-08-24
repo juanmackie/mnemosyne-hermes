@@ -216,6 +216,28 @@ import_source_is_unchanged() {
   [[ ! -e "$TMP/python-memory.db-wal" && ! -e "$TMP/python-memory.db-shm" ]]
 }
 
+import_report_is_auditable() {
+  python3 - "$TMP/import-first.json" "$TMP/import-second.json" <<'PY'
+import json
+import re
+import sys
+
+first = json.load(open(sys.argv[1], encoding="utf-8"))
+second = json.load(open(sys.argv[2], encoding="utf-8"))
+expected_tables = {
+    "working_memory", "episodic_memory", "memories", "canonical_facts",
+    "triples", "facts", "annotations",
+}
+valid_hash = re.fullmatch(r"[0-9a-f]{64}", first.get("source_sha256", ""))
+raise SystemExit(
+    0
+    if valid_hash and first["source_sha256"] == second["source_sha256"]
+    and set(first.get("tables", [])) == expected_tables
+    else 1
+)
+PY
+}
+
 # Phase 1 gates. The alias surface counts two independent provider names.
 check release_workflow has_release_workflow
 check release_installer has_release_installer
@@ -252,6 +274,7 @@ else
   fail=$((fail + 2))
 fi
 check importer_source_readonly import_source_is_unchanged
+check importer_audit import_report_is_auditable
 check offline_core offline_core_works
 
 # The front door is part of adoption: a working binary without an accurate

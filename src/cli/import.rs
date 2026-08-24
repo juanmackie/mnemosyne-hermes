@@ -12,8 +12,9 @@ use mnemosyne_core::{
 };
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -31,6 +32,7 @@ const SOURCE_TABLES: &[&str] = &[
 #[derive(Debug, Default, Serialize)]
 struct ImportReport {
     source: String,
+    source_sha256: String,
     dry_run: bool,
     tables: Vec<String>,
     scanned: usize,
@@ -76,9 +78,11 @@ pub async fn handle(
     // importer path accidentally issues a mutating statement.
     source_conn.execute("PRAGMA query_only = ON", ()).await?;
 
+    let source_sha256 = file_sha256(&source)?;
     let target_namespace = parse_namespace(namespace.as_deref().unwrap_or("agent:hermes"));
     let mut report = ImportReport {
         source: source.display().to_string(),
+        source_sha256,
         dry_run,
         ..Default::default()
     };
@@ -160,6 +164,20 @@ pub async fn handle(
         report.imported, report.scanned, report.source
     );
     Ok(())
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn canonical_source_path(path: &str) -> Result<PathBuf> {
