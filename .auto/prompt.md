@@ -110,5 +110,8 @@ boundary change.
   0.5338, held-out average MRR 0.6222, dev p50/p95 1611.2/1738.8 ms. This is
   the current accepted candidate; compare future work against the clean
   baseline and rerun both held-out sets.
+- Run 15: disabling hotness blending for hierarchical reranking reduced dev
+  MRR to 0.5167 and held-out average to 0.6086. Reverted; keep the existing
+  bounded hotness blend unless a more targeted change is proposed.
 - Do not repeat an idea already recorded in `.auto/log.jsonl` unless the new
   run changes an explicit assumption.
