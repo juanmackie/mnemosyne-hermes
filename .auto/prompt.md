@@ -96,14 +96,19 @@ boundary change.
   MRR to 0.2691 and held-out MRR to 0.1579, with slower latency. Reverted;
   score-scale tuning is not promising without first inspecting component
   semantics.
-- Runs 7-8: deterministic graph seed selection reduced run-to-run noise but
-  did not improve quality because the seed itself was incorrectly boosted.
-- Runs 9-10: disabling graph expansion improved held-out MRR to about 0.61,
-  showing graph seed boosting was harmful for direct lookups.
-- Runs 11-12 / best `a04f7d0`: graph traversal now returns only depth>0
-  neighbors, while CLI and MCP retain graph expansion. Dev MRR is 0.5491 and
-  held-out average MRR 0.6334 on the repeat; this preserves connected-memory
-  behavior without boosting direct seeds. The MCP default and Hermes docs are
-  aligned with this behavior.
+- Runs 7-12 used a database whose access hotness leaked between queries;
+  their combined flat+hierarchical metrics are invalidated for acceptance.
+  They still motivated the structural graph diagnosis, but are not evidence
+  for the final score.
+- Harness correction at `42f99de`: every measurement rebuilds a pristine
+  template and evaluates each query on its own database copy, preventing
+  hierarchical hotness or query order from leaking between examples.
+- Clean baseline at `acc55e3`: dev MRR 0.4708, held-out average MRR 0.4036,
+  dev p50/p95 latency 1511.0/1648.8 ms.
+- Clean candidate at `42f99de` / restored as `3829f54`: graph traversal returns
+  only depth>0 neighbors while CLI and MCP retain graph expansion. Dev MRR
+  0.5338, held-out average MRR 0.6222, dev p50/p95 1611.2/1738.8 ms. This is
+  the current accepted candidate; compare future work against the clean
+  baseline and rerun both held-out sets.
 - Do not repeat an idea already recorded in `.auto/log.jsonl` unless the new
   run changes an explicit assumption.
