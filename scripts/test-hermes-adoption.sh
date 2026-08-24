@@ -215,6 +215,7 @@ has_import_command() {
   local source="$TMP/python-memory.db"
   local target="$TMP/imported.db"
   local project_target="$TMP/project-import.db"
+  local session_target="$TMP/session-import.db"
   local dry_target="$TMP/dry-run.db"
   local first="$TMP/import-first.json"
   local second="$TMP/import-second.json"
@@ -299,6 +300,11 @@ MNEMOSYNE_DB_PATH="$project_target" RUST_LOG=error "$BIN" import --from "$source
 MNEMOSYNE_DB_PATH="$project_target" RUST_LOG=error "$BIN" list --namespace project:hermes \
   --format json 2>/dev/null | grep -q 'local-only storage' || return 1
 touch "$TMP/import-project.ok"
+MNEMOSYNE_DB_PATH="$session_target" RUST_LOG=error "$BIN" import --from "$source" \
+  --namespace session:hermes:session-1 --format json >"$TMP/import-session.json" 2>/dev/null || return 1
+MNEMOSYNE_DB_PATH="$session_target" RUST_LOG=error "$BIN" list --namespace session:hermes:session-1 \
+  --format json 2>/dev/null | grep -q 'local-only storage' || return 1
+touch "$TMP/import-session.ok"
 python3 - "$first" "$second" <<'PY'
 import json
 import sys
@@ -327,6 +333,10 @@ import_dry_run_is_non_destructive() {
 
 import_project_namespace_is_preserved() {
   [[ -f "$TMP/import-project.ok" ]]
+}
+
+import_session_namespace_is_preserved() {
+  [[ -f "$TMP/import-session.ok" ]]
 }
 
 import_dry_run_report_is_complete() {
@@ -444,6 +454,7 @@ check importer_source_readonly import_source_is_unchanged
 check importer_dry_run import_dry_run_is_non_destructive
 check importer_dry_report import_dry_run_report_is_complete
 check importer_namespace import_project_namespace_is_preserved
+check importer_session import_session_namespace_is_preserved
 check importer_corrupt import_corrupt_source_is_rejected
 check importer_same_path import_same_path_is_rejected
 check importer_duplicate import_duplicate_is_skipped
