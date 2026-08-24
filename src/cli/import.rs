@@ -5,7 +5,7 @@
 //! mapping is presence-based instead of assuming one exact schema revision.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use libsql::{Builder, Connection, Row, Value};
+use libsql::{Builder, Connection, Row, Value as SqlValue};
 use mnemosyne_core::{
     error::{MnemosyneError, Result},
     MemoryId, MemoryNote, MemoryType, Namespace, StorageBackend,
@@ -239,20 +239,20 @@ fn column_index(columns: &[String], names: &[&str]) -> Option<usize> {
 fn text_at(row: &Row, columns: &[String], names: &[&str]) -> Option<String> {
     let index = i32::try_from(column_index(columns, names)?).ok()?;
     match row.get_value(index).ok()? {
-        Value::Text(value) => Some(value),
-        Value::Integer(value) => Some(value.to_string()),
-        Value::Real(value) => Some(value.to_string()),
-        Value::Null | Value::Blob(_) => None,
+        SqlValue::Text(value) => Some(value),
+        SqlValue::Integer(value) => Some(value.to_string()),
+        SqlValue::Real(value) => Some(value.to_string()),
+        SqlValue::Null | SqlValue::Blob(_) => None,
     }
 }
 
 fn float_at(row: &Row, columns: &[String], names: &[&str]) -> Option<f64> {
     let index = i32::try_from(column_index(columns, names)?).ok()?;
     match row.get_value(index).ok()? {
-        Value::Real(value) => Some(value),
-        Value::Integer(value) => Some(value as f64),
-        Value::Text(value) => value.parse::<f64>().ok(),
-        Value::Null | Value::Blob(_) => None,
+        SqlValue::Real(value) => Some(value),
+        SqlValue::Integer(value) => Some(value as f64),
+        SqlValue::Text(value) => value.parse::<f64>().ok(),
+        SqlValue::Null | SqlValue::Blob(_) => None,
     }
 }
 
