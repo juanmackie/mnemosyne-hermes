@@ -214,6 +214,67 @@ async fn test_recall_excessive_max_results() {
 }
 
 #[tokio::test]
+async fn test_recall_invalid_abstention_threshold() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let params = serde_json::json!({
+        "query": "test",
+        "namespace": "global",
+        "abstention_threshold": 1.5
+    });
+
+    let result = handler.execute("mnemosyne.recall", params).await;
+
+    match result {
+        Err(MnemosyneError::ValidationError(msg)) => {
+            assert!(msg.contains("abstention_threshold"));
+            assert!(msg.contains("between 0 and 1"));
+        }
+        _ => panic!("Expected ValidationError for invalid abstention threshold"),
+    }
+}
+
+#[tokio::test]
+async fn test_list_rejects_excessive_offset() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let params = serde_json::json!({
+        "namespace": "global",
+        "offset": 100_001
+    });
+
+    let result = handler.execute("mnemosyne.list", params).await;
+
+    match result {
+        Err(MnemosyneError::ValidationError(msg)) => {
+            assert!(msg.contains("offset"));
+            assert!(msg.contains("100000"));
+        }
+        _ => panic!("Expected ValidationError for excessive list offset"),
+    }
+}
+
+#[tokio::test]
+async fn test_list_rejects_zero_limit() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let params = serde_json::json!({
+        "namespace": "global",
+        "limit": 0
+    });
+
+    let result = handler.execute("mnemosyne.list", params).await;
+
+    match result {
+        Err(MnemosyneError::ValidationError(msg)) => {
+            assert!(msg.contains("max_results"));
+            assert!(msg.contains("at least 1"));
+        }
+        _ => panic!("Expected ValidationError for zero list limit"),
+    }
+}
+
+#[tokio::test]
 async fn test_recall_invalid_min_importance() {
     let (handler, _temp) = create_test_handler().await;
 

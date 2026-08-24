@@ -75,8 +75,9 @@ pub trait StorageBackend: Send + Sync {
     /// Get memory count by namespace
     async fn count_memories(&self, namespace: Option<Namespace>) -> Result<usize>;
 
-    /// Hybrid search combining keyword + graph traversal
-    /// (vector similarity deferred to v2.0)
+    /// Hybrid search combining keyword matching, graph traversal, and the
+    /// backend's available ranking signals. The MCP layer may add vector
+    /// results separately when an embedding service is configured.
     async fn hybrid_search(
         &self,
         query: &str,

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Mnemosyne MCP (Model Context Protocol) server provides JSON-RPC 2.0 interface over stdio for Claude Code integration. It implements 8 core memory tools organized around the OODA loop.
+The Mnemosyne MCP (Model Context Protocol) server provides a JSON-RPC 2.0 interface over stdio for Claude Code integration. It exposes memory tools organized around the OODA loop, including hierarchical retrieval and bounded result surfaces.
 
 ## Running the Server
 
@@ -85,7 +85,7 @@ Before using the server, send an initialize request:
 #### OBSERVE Tools
 
 ##### 1. mnemosyne.recall
-Search memories by query.
+Search memories by query. Optionally provide `abstention_threshold` to return an explicit abstention when the best score is too weak.
 
 **Request:**
 ```json
@@ -121,10 +121,10 @@ Search memories by query.
 }
 ```
 
-**Status:** Phase 5 (Hybrid Search) - Currently returns placeholder
+**Status:** ✅ Implemented - Hybrid keyword, vector, graph, and optional hierarchical search. Supports explicit abstention and degraded-result metadata.
 
 ##### 2. mnemosyne.list
-List recent memories in namespace.
+List recent memories in namespace. Supports `limit`, `offset`, `has_more`, and `next_offset` pagination metadata.
 
 **Request:**
 ```json
@@ -142,7 +142,7 @@ List recent memories in namespace.
 }
 ```
 
-**Status:** Phase 5 - Currently returns placeholder
+**Status:** ✅ Implemented - Namespace-aware listing with offset pagination and `has_more` metadata.
 
 #### ORIENT Tools
 
@@ -385,8 +385,8 @@ python3 scripts/testing/test_server.py
 
 | Tool | Status | Phase | Notes |
 |------|--------|-------|-------|
-| mnemosyne.recall | ⏳ Pending | Phase 5 | Hybrid search implementation |
-| mnemosyne.list | ⏳ Pending | Phase 5 | Namespace-based listing |
+| mnemosyne.recall | ✅ Complete | Current | Hybrid search, optional abstention, degraded-result metadata |
+| mnemosyne.list | ✅ Complete | Current | Namespace-based listing with offset pagination |
 | mnemosyne.graph | ✅ Complete | Phase 4 | Storage backend integration |
 | mnemosyne.context | ✅ Complete | Phase 4 | Memory retrieval |
 | mnemosyne.remember | ✅ Complete | Phase 4 | LLM enrichment working |
@@ -412,7 +412,7 @@ flowchart TD
         Router[Tool Router<br/>8 OODA Tools]
 
         subgraph Services["Core Services"]
-            Storage[(Storage<br/>SQLite + FTS5)]
+            Storage[(Storage<br/>LibSQL + FTS5 + vectors)]
             LLM[LLM Service<br/>Claude Haiku]
             Config[Config Manager<br/>OS Keychain]
             NS[Namespace<br/>Git-aware]
@@ -420,7 +420,7 @@ flowchart TD
     end
 
     API[/Anthropic API\]
-    DB[(Database<br/>FTS5 + Graph)]
+    DB[(LibSQL<br/>FTS5 + Graph + vectors)]
 
     User --> UI
     UI --> Client
@@ -440,7 +440,7 @@ flowchart TD
 
 **Communication**: JSON-RPC 2.0 over stdin/stdout for seamless integration with Claude Code.
 
-**8 OODA-Aligned Tools**:
+**OODA-Aligned Tools**:
 
 | Phase | Tool | Purpose |
 |-------|------|---------|
@@ -455,8 +455,7 @@ flowchart TD
 
 ## Next Steps
 
-**Phase 5: Hybrid Search & Consolidation**
-1. Implement vector embeddings
-2. Build hybrid search (vector + keyword + graph)
-3. Implement memory consolidation
-4. Complete `recall`, `list`, and `consolidate` tools
+**Remaining work**
+1. Continue improving consolidation quality and safety
+2. Expand protocol-level contract tests
+3. Add further bounded context surfaces as retrieval features grow

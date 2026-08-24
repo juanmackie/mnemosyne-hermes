@@ -77,6 +77,37 @@ pub struct Tool {
     pub input_schema: Value,
 }
 
+const MAX_PAGE_OFFSET: usize = 100_000;
+const DEFAULT_CONTEXT_MAX_RESULTS: usize = 100;
+const DEFAULT_GRAPH_MAX_RESULTS: usize = 100;
+const RECOMMENDED_ABSTENTION_THRESHOLD: f32 = 0.30;
+
+#[derive(Debug, Clone, Copy)]
+struct PageInfo {
+    offset: usize,
+    limit: usize,
+    count: usize,
+    has_more: bool,
+}
+
+fn paginate<T>(mut items: Vec<T>, offset: usize, limit: usize) -> (Vec<T>, PageInfo) {
+    let total = items.len();
+    let start = offset.min(total);
+    let end = start.saturating_add(limit).min(total);
+    let has_more = end < total;
+    let page = items.drain(start..end).collect();
+
+    (
+        page,
+        PageInfo {
+            offset,
+            limit,
+            count: end.saturating_sub(start),
+            has_more,
+        },
+    )
+}
+
 /// Tool handler that dispatches to appropriate implementation
 pub struct ToolHandler {
     storage: Arc<dyn StorageBackend>,
@@ -161,6 +192,12 @@ impl ToolHandler {
                         "min_importance": {
                             "type": "integer",
                             "description": "Minimum importance threshold (1-10)"
+                        },
+                        "abstention_threshold": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                            "description": "Optional minimum score required to return results. Below this threshold the tool abstains explicitly."
                         }
                     },
                     "required": ["query"]
@@ -180,6 +217,12 @@ impl ToolHandler {
                             "type": "integer",
                             "description": "Maximum number of memories to return",
                             "default": 20
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Number of memories to skip before returning the page",
+                            "default": 0
                         }
                     }
                 }),
@@ -200,6 +243,12 @@ impl ToolHandler {
                             "type": "integer",
                             "description": "Maximum link hops from seed nodes",
                             "default": 2
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum memories returned (default 100)",
+                            "default": 100
                         }
                     },
                     "required": ["seed_ids"]
@@ -220,6 +269,12 @@ impl ToolHandler {
                             "type": "boolean",
                             "description": "Whether to include linked memories",
                             "default": true
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum memories returned after optional link expansion (default 100)",
+                            "default": 100
                         }
                     },
                     "required": ["memory_ids"]
@@ -415,11 +470,18 @@ impl ToolHandler {
         let aliased_tools: Vec<Tool> = aliases
             .into_iter()
             .filter_map(|(canonical, alias)| {
-                tools.iter().find(|tool| tool.name == canonical).cloned().map(|mut tool| {
-                    tool.name = alias.to_string();
-                    tool.description = format!("Hermes-compatible alias for {}. {}", canonical, tool.description);
-                    tool
-                })
+                tools
+                    .iter()
+                    .find(|tool| tool.name == canonical)
+                    .cloned()
+                    .map(|mut tool| {
+                        tool.name = alias.to_string();
+                        tool.description = format!(
+                            "Hermes-compatible alias for {}. {}",
+                            canonical, tool.description
+                        );
+                        tool
+                    })
             })
             .collect();
         tools.extend(aliased_tools);
@@ -562,6 +624,25 @@ impl ToolHandler {
         Ok(max_results)
     }
 
+    fn validate_offset(offset: usize) -> Result<usize> {
+        if offset > MAX_PAGE_OFFSET {
+            return Err(crate::error::MnemosyneError::ValidationError(format!(
+                "offset must not exceed {}",
+                MAX_PAGE_OFFSET
+            )));
+        }
+        Ok(offset)
+    }
+
+    fn validate_abstention_threshold(threshold: f32) -> Result<f32> {
+        if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "abstention_threshold must be a finite number between 0 and 1".to_string(),
+            ));
+        }
+        Ok(threshold)
+    }
+
     /// Validate non-empty string
     fn validate_non_empty(value: &str, field_name: &str) -> Result<()> {
         if value.trim().is_empty() {
@@ -598,6 +679,7 @@ impl ToolHandler {
             expand_graph: Option<bool>,
             hierarchical: Option<bool>,
             budget_tokens: Option<usize>,
+            abstention_threshold: Option<f32>,
         }
 
         let params: RecallParams = serde_json::from_value(params)?;
@@ -611,6 +693,10 @@ impl ToolHandler {
         // Validate min_importance if provided
         if let Some(min_imp) = params.min_importance {
             Self::validate_importance(min_imp)?;
+        }
+
+        if let Some(threshold) = params.abstention_threshold {
+            Self::validate_abstention_threshold(threshold)?;
         }
 
         // Parse namespace
@@ -661,21 +747,31 @@ impl ToolHandler {
 
         // Phase 2: Vector similarity search (degrade loudly if unavailable)
         let mut degraded = fallback_embeddings;
+        let mut degraded_reasons = Vec::new();
+        if fallback_embeddings {
+            degraded_reasons.push("fallback_embeddings");
+        }
         let vector_results = match self.embeddings.generate_embedding(&params.query).await {
             Ok(query_embedding) => self
                 .storage
                 .vector_search(&query_embedding, max_results * 2, namespace.clone())
                 .await
                 .unwrap_or_else(|e| {
-                    warn!("Vector search unavailable ({}); serving keyword+graph results", e);
+                    warn!(
+                        "Vector search unavailable ({}); serving keyword+graph results",
+                        e
+                    );
                     degraded = true;
+                    degraded_reasons.push("vector_search_unavailable");
                     Vec::new()
                 }),
             Err(e) => {
                 warn!(
-                    "Query embedding failed ({}); serving keyword+graph results", e
+                    "Query embedding failed ({}); serving keyword+graph results",
+                    e
                 );
                 degraded = true;
+                degraded_reasons.push("query_embedding_unavailable");
                 Vec::new()
             }
         };
@@ -735,6 +831,15 @@ impl ToolHandler {
             results.retain(|r| r.memory.importance >= min_importance);
         }
 
+        let best_score = results.first().map(|result| result.score).unwrap_or(0.0);
+        let abstention_threshold = params.abstention_threshold;
+        let abstained = abstention_threshold
+            .map(|threshold| best_score < threshold)
+            .unwrap_or(false);
+        if abstained {
+            results.clear();
+        }
+
         // Optional hierarchical reranking through the topic tree
         let mut trajectory_json: Option<serde_json::Value> = None;
         if params.hierarchical.unwrap_or(false) {
@@ -750,11 +855,13 @@ impl ToolHandler {
             trajectory_json = serde_json::from_str(&trajectory.to_json()).ok();
             results = ranked
                 .into_iter()
-                .filter_map(|(i, s)| results.get(i).cloned().map(|mut r| {
-                    r.score = s;
-                    r.match_reason = format!("{} [hierarchical]", r.match_reason);
-                    r
-                }))
+                .filter_map(|(i, s)| {
+                    results.get(i).cloned().map(|mut r| {
+                        r.score = s;
+                        r.match_reason = format!("{} [hierarchical]", r.match_reason);
+                        r
+                    })
+                })
                 .collect();
         }
 
@@ -792,12 +899,21 @@ impl ToolHandler {
             // Loud degradation flag: true means the ranking signal is
             // unavailable or relies on deterministic fallback embeddings.
             "degraded": degraded,
+            "degraded_reasons": degraded_reasons,
             "embedding_mode": self.embeddings.embedding_mode(),
             "fallback_warning": fallback_warning,
-            // Recommended abstention threshold: recall responses whose top
-            // score is below this are weak matches — answer "I don't know"
-            // rather than hallucinating from them.
-            "abstention_threshold": 0.30
+            "best_score": best_score,
+            "abstained": abstained,
+            "abstention_enabled": abstention_threshold.is_some(),
+            // Preserve the documented recommendation for callers that do not
+            // opt into abstention, while returning the requested threshold
+            // when one was supplied.
+            "abstention_threshold": abstention_threshold.unwrap_or(RECOMMENDED_ABSTENTION_THRESHOLD),
+            "abstention_reason": if abstained {
+                Some("best result score was below abstention_threshold")
+            } else {
+                None::<&str>
+            }
         }))
     }
 
@@ -815,14 +931,17 @@ impl ToolHandler {
             match MemoryId::from_string(id_str) {
                 Ok(id) => match self.storage.increment_access(id).await {
                     Ok(()) => confirmed.push(id_str.clone()),
-                    Err(e) => failed.push(serde_json::json!({"id": id_str, "error": e.to_string()})),
+                    Err(e) => {
+                        failed.push(serde_json::json!({"id": id_str, "error": e.to_string()}))
+                    }
                 },
                 Err(e) => failed.push(serde_json::json!({"id": id_str, "error": e.to_string()})),
             }
         }
 
         // Emit usage feedback event for the online relevance learner
-        let event = crate::api::Event::memory_recalled("used-feedback".to_string(), confirmed.len());
+        let event =
+            crate::api::Event::memory_recalled("used-feedback".to_string(), confirmed.len());
         if let Err(e) = self.event_sink.emit(event).await {
             warn!("Failed to emit used feedback event: {}", e);
         }
@@ -854,22 +973,34 @@ impl ToolHandler {
         } else {
             None
         };
-        let max_nodes = params.max_nodes.unwrap_or(200).min(2000);
+        let max_nodes = Self::validate_max_results(params.max_nodes.unwrap_or(200))?;
 
-        let notes = self.storage.list_memories(namespace, max_nodes * 4, crate::storage::MemorySortOrder::Recent).await?;
+        let notes = self
+            .storage
+            .list_memories(
+                namespace,
+                max_nodes.saturating_mul(4),
+                crate::storage::MemorySortOrder::Recent,
+            )
+            .await?;
         let refs: Vec<&crate::types::MemoryNote> = notes.iter().collect();
         let tree = crate::hierarchy::build_tree(&refs);
+        let node_count = tree.len();
+        let truncated = node_count > max_nodes;
 
         info!(
             "{} MCP hierarchy: {} nodes over {} memories",
             crate::icons::action::search(),
-            tree.len(),
+            node_count,
             notes.len()
         );
 
         Ok(serde_json::json!({
             "nodes": tree.into_iter().take(max_nodes).collect::<Vec<_>>(),
-            "memory_count": notes.len()
+            "memory_count": notes.len(),
+            "count": node_count.min(max_nodes),
+            "max_nodes": max_nodes,
+            "truncated": truncated
         }))
     }
 
@@ -889,14 +1020,21 @@ impl ToolHandler {
         let limit = params.limit.unwrap_or(50).clamp(1, 1000);
         let memories = self
             .storage
-            .list_memories(namespace, limit * 4, crate::storage::MemorySortOrder::Importance)
+            .list_memories(
+                namespace,
+                limit * 4,
+                crate::storage::MemorySortOrder::Importance,
+            )
             .await?
             .into_iter()
             .filter(|memory| {
                 matches!(
                     memory.memory_type,
                     MemoryType::Preference | MemoryType::Constraint
-                ) || memory.tags.iter().any(|tag| tag == "persona" || tag == "canonical")
+                ) || memory
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "persona" || tag == "canonical")
             })
             .take(limit)
             .collect::<Vec<_>>();
@@ -1103,6 +1241,7 @@ impl ToolHandler {
         struct ListParams {
             namespace: Option<String>,
             limit: Option<usize>,
+            offset: Option<usize>,
             sort_by: Option<String>,
         }
 
@@ -1123,18 +1262,29 @@ impl ToolHandler {
             _ => MemorySortOrder::Recent, // Default
         };
 
-        let limit = params.limit.unwrap_or(20);
+        let limit = Self::validate_max_results(params.limit.unwrap_or(20))?;
+        let offset = Self::validate_offset(params.offset.unwrap_or(0))?;
+        let window_end = offset.checked_add(limit).ok_or_else(|| {
+            crate::error::MnemosyneError::ValidationError(
+                "pagination window is too large".to_string(),
+            )
+        })?;
 
-        // Get memories
+        // Fetch one sentinel row so callers can reliably determine whether a
+        // subsequent page exists without requiring a separate COUNT query.
         let memories = self
             .storage
-            .list_memories(namespace, limit, sort_by)
+            .list_memories(namespace, window_end.saturating_add(1), sort_by)
             .await?;
+        let (memories, page) = paginate(memories, offset, limit);
 
         Ok(serde_json::json!({
             "memories": memories,
-            "count": memories.len(),
-            "limit": limit,
+            "count": page.count,
+            "offset": page.offset,
+            "limit": page.limit,
+            "has_more": page.has_more,
+            "next_offset": if page.has_more { Some(page.offset + page.count) } else { None },
             "sort_by": match sort_by {
                 MemorySortOrder::Recent => "recent",
                 MemorySortOrder::Importance => "importance",
@@ -1150,6 +1300,7 @@ impl ToolHandler {
         struct GraphParams {
             seed_ids: Vec<String>,
             max_hops: Option<usize>,
+            max_results: Option<usize>,
         }
 
         let params: GraphParams = serde_json::from_value(params)?;
@@ -1166,6 +1317,8 @@ impl ToolHandler {
 
         let seed_ids = seed_ids?;
         let max_hops = params.max_hops.unwrap_or(2);
+        let max_results =
+            Self::validate_max_results(params.max_results.unwrap_or(DEFAULT_GRAPH_MAX_RESULTS))?;
 
         // Call storage graph traversal
         // Note: MCP graph tool doesn't filter by namespace for exploratory traversal
@@ -1173,10 +1326,13 @@ impl ToolHandler {
             .storage
             .graph_traverse(&seed_ids, max_hops, None)
             .await?;
+        let (memories, page) = paginate(memories, 0, max_results);
 
         Ok(serde_json::json!({
             "memories": memories,
-            "count": memories.len()
+            "count": page.count,
+            "max_results": page.limit,
+            "truncated": page.has_more
         }))
     }
 
@@ -1185,6 +1341,7 @@ impl ToolHandler {
         struct ContextParams {
             memory_ids: Vec<String>,
             include_links: Option<bool>,
+            max_results: Option<usize>,
         }
 
         let params: ContextParams = serde_json::from_value(params)?;
@@ -1208,6 +1365,8 @@ impl ToolHandler {
 
         let memory_ids = memory_ids?;
         let include_links = params.include_links.unwrap_or(true);
+        let max_results =
+            Self::validate_max_results(params.max_results.unwrap_or(DEFAULT_CONTEXT_MAX_RESULTS))?;
 
         // Fetch memories
         let mut memories = Vec::new();
@@ -1236,9 +1395,13 @@ impl ToolHandler {
             }
         }
 
+        let (memories, page) = paginate(memories, 0, max_results);
+
         Ok(serde_json::json!({
             "memories": memories,
-            "count": memories.len()
+            "count": page.count,
+            "max_results": page.limit,
+            "truncated": page.has_more
         }))
     }
 
@@ -1278,7 +1441,8 @@ impl ToolHandler {
             Ok(m) => m,
             Err(e) => {
                 warn!(
-                    "LLM enrichment unavailable ({}); storing memory without enrichment", e
+                    "LLM enrichment unavailable ({}); storing memory without enrichment",
+                    e
                 );
                 Self::memory_without_enrichment(&params.content, &context)?
             }
@@ -1541,5 +1705,30 @@ impl ToolHandler {
                 namespace_str.to_string(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paginate;
+
+    #[test]
+    fn paginate_reports_following_page() {
+        let (page, info) = paginate(vec![1, 2, 3, 4, 5], 2, 2);
+
+        assert_eq!(page, vec![3, 4]);
+        assert_eq!(info.offset, 2);
+        assert_eq!(info.limit, 2);
+        assert_eq!(info.count, 2);
+        assert!(info.has_more);
+    }
+
+    #[test]
+    fn paginate_handles_offset_past_end() {
+        let (page, info) = paginate(vec![1, 2], 10, 2);
+
+        assert!(page.is_empty());
+        assert_eq!(info.count, 0);
+        assert!(!info.has_more);
     }
 }

@@ -52,7 +52,7 @@ flowchart TD
         MCP[MCP Server<br/>Tool Router]
 
         subgraph Core["Core Services"]
-            Storage[(Storage<br/>SQLite + FTS5)]
+            Storage[(Storage<br/>LibSQL + FTS5 + vectors)]
             LLM[LLM Service<br/>Claude Haiku]
             NS[Namespace<br/>Git-aware]
         end
@@ -79,7 +79,7 @@ flowchart TD
 - **Mnemosyne Skills**: Project-specific knowledge and patterns (5 atomic skills)
 - **MCP Protocol**: JSON-RPC 2.0 communication over stdio
 - **MCP Server**: Routes 8 OODA-aligned tools, handles requests
-- **Core Services**: Storage (SQLite + FTS5), LLM enrichment (Claude Haiku), namespace detection (Git)
+- **Core Services**: Storage (LibSQL + FTS5 + vector search), LLM enrichment, namespace detection (Git)
 - **Database**: Persistent storage with full-text search and graph capabilities
 
 ### Skills Integration
@@ -153,8 +153,9 @@ flowchart TD
 **Location**: `src/storage/`
 
 **Responsibilities**:
-- SQLite database operations
+- LibSQL database operations
 - FTS5 keyword search
+- Native vector search
 - Graph traversal (recursive CTE)
 - Transaction management
 - Migration handling
@@ -440,7 +441,7 @@ sequenceDiagram
 
 ## Storage Architecture
 
-### SQLite Schema
+### LibSQL Schema (SQLite-compatible)
 
 #### memories table
 ```sql
@@ -1199,13 +1200,13 @@ Mnemosyne Storage (Rust)
 4. **Reliability**: Comprehensive error handling via `Result`
 5. **Ecosystem**: Excellent crates (sqlx, tokio, serde, etc.)
 
-### Why SQLite?
+### Why LibSQL?
 
-1. **Simplicity**: Single-file database, no server required
-2. **Performance**: Excellent for read-heavy workloads
-3. **FTS5**: Built-in full-text search with stemming
-4. **Portability**: Works everywhere, easy backups
-5. **Reliability**: Battle-tested, ACID compliant
+1. **Compatibility**: SQLite-compatible SQL and migration workflow
+2. **Simplicity**: Local single-file operation with optional Turso deployment
+3. **Performance**: FTS5 plus native vector search for hybrid retrieval
+4. **Portability**: Works locally and can synchronize with remote LibSQL
+5. **Reliability**: Battle-tested SQLite foundations with ACID semantics
 
 ### Why Claude Haiku?
 
@@ -1222,22 +1223,14 @@ Mnemosyne Storage (Rust)
 4. **Auditability**: System logs and access controls
 5. **Platform Support**: macOS, Windows, Linux via libsecret
 
-### Why Deferred Vector Search?
+### Vector Search
 
-**Original Plan**: Local embeddings via fastembed + onnxruntime
+Mnemosyne supports local embeddings through `fastembed` and stores vectors in
+LibSQL for semantic retrieval. Hybrid recall combines keyword, vector, and
+graph signals and degrades explicitly when embeddings are unavailable.
 
-**Issues Encountered**:
-- `onnxruntime` compilation failures on macOS
-- Large binary size (100+ MB with embeddings)
-- Complexity vs benefit for v1.0
-
-**Decision**: Defer to v2.0, use FTS5 keyword search
-
-**Benefits**:
-- Faster implementation timeline
-- Smaller binary size
-- Sufficient accuracy for initial use
-- Can add later without breaking changes
+The embedding service remains optional so local installs can retain a
+keyword-only fallback without losing core memory functionality.
 
 ---
 
@@ -1268,7 +1261,7 @@ Mnemosyne Storage (Rust)
 - Respects umask for group/other
 
 **Content**:
-- No automatic encryption (add via SQLite extensions if needed)
+- No automatic encryption (use encrypted storage or filesystem controls when needed)
 - Sensitive content should be avoided or explicitly encrypted
 - Audit trail prevents accidental data loss
 
@@ -1306,7 +1299,7 @@ Mnemosyne Storage (Rust)
 ### Optimizations
 
 **Zero-Copy Reads**:
-- SQLite row data mapped directly to Rust structs
+- LibSQL row data mapped directly to Rust structs
 - No intermediate allocations for large result sets
 - Streaming responses for large queries
 
@@ -1321,7 +1314,7 @@ Mnemosyne Storage (Rust)
 - Covering indexes for common queries
 
 **Connection Pooling**:
-- SQLite connection pool (size: 5)
+- LibSQL connection management sized for local and remote deployments
 - Reuse connections across requests
 - Automatic health checks
 
