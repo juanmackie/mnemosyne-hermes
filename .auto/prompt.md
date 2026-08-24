@@ -79,7 +79,13 @@ boundary change.
    generalization, not just the best dev score.
 
 ## What's Been Tried
-- Baseline: pending. The initial corpus and three-dataset harness are fixed
-  before production optimization begins.
+- Harness run 0: concurrent evaluation crashed with SQLite locks because
+  recall updates access metadata. The harness now serializes public CLI calls.
+- Harness runs 1-2: ordinary apostrophes and trailing punctuation exposed FTS5
+  syntax errors. The production query escaper now quotes every token literally,
+  with a focused unit test; checks pass.
+- Run 3 / ranking baseline at `5fc93d0`: dev MRR 0.4763, held-out average MRR
+  0.4357, dev p50/p95 latency 1550.9/1757.8 ms. These are baseline numbers
+  after correctness hardening, not an optimization claim.
 - Do not repeat an idea already recorded in `.auto/log.jsonl` unless the new
   run changes an explicit assumption.
