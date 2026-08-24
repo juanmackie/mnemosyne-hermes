@@ -5,7 +5,7 @@
 //! mapping is presence-based instead of assuming one exact schema revision.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use libsql::{Builder, Connection, Row, Value as SqlValue};
+use libsql::{Builder, Connection, Value as SqlValue};
 use mnemosyne_core::{
     error::{MnemosyneError, Result},
     MemoryId, MemoryNote, MemoryType, Namespace, StorageBackend,
@@ -220,15 +220,19 @@ async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
     Ok(columns)
 }
 
-async fn read_table(conn: &Connection, table: &str, columns: &[String]) -> Result<Vec<Row>> {
+async fn read_table(conn: &Connection, table: &str, columns: &[String]) -> Result<Vec<Vec<SqlValue>>> {
     let quoted = format!("\"{}\"", table.replace('"', "\"\""));
     let sql = format!("SELECT * FROM {}", quoted);
     let mut rows = conn.query(&sql, ()).await?;
     let mut result = Vec::new();
     while let Some(row) = rows.next().await? {
-        // A libsql Row owns its values, so collecting rows before conversion
-        // keeps the source connection borrow simple and deterministic.
-        result.push(row);
+        // Materialize values while the cursor is alive. Retaining Row handles
+        // after advancing the cursor produces an all-NULL view in libsql.
+        let mut values = Vec::with_capacity(row.column_count() as usize);
+        for index in 0..row.column_count() {
+            values.push(row.get_value(index)?);
+        }
+        result.push(values);
     }
     let _ = columns;
     Ok(result)
@@ -242,21 +246,21 @@ fn column_index(columns: &[String], names: &[&str]) -> Option<usize> {
     })
 }
 
-fn text_at(row: &Row, columns: &[String], names: &[&str]) -> Option<String> {
-    let index = i32::try_from(column_index(columns, names)?).ok()?;
-    match row.get_value(index).ok()? {
-        SqlValue::Text(value) => Some(value),
+fn text_at(row: &[SqlValue], columns: &[String], names: &[&str]) -> Option<String> {
+    let index = column_index(columns, names)?;
+    match row.get(index)? {
+        SqlValue::Text(value) => Some(value.clone()),
         SqlValue::Integer(value) => Some(value.to_string()),
         SqlValue::Real(value) => Some(value.to_string()),
         SqlValue::Null | SqlValue::Blob(_) => None,
     }
 }
 
-fn float_at(row: &Row, columns: &[String], names: &[&str]) -> Option<f64> {
-    let index = i32::try_from(column_index(columns, names)?).ok()?;
-    match row.get_value(index).ok()? {
-        SqlValue::Real(value) => Some(value),
-        SqlValue::Integer(value) => Some(value as f64),
+fn float_at(row: &[SqlValue], columns: &[String], names: &[&str]) -> Option<f64> {
+    let index = column_index(columns, names)?;
+    match row.get(index)? {
+        SqlValue::Real(value) => Some(*value),
+        SqlValue::Integer(value) => Some(*value as f64),
         SqlValue::Text(value) => value.parse::<f64>().ok(),
         SqlValue::Null | SqlValue::Blob(_) => None,
     }
@@ -292,7 +296,7 @@ fn parse_metadata(value: Option<String>) -> Value {
 fn convert_row(
     table: &str,
     columns: &[String],
-    row: &Row,
+    row: &[SqlValue],
     source: &Path,
     _namespace: &Namespace,
 ) -> Option<SourceMemory> {
