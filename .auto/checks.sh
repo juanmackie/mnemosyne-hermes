@@ -15,13 +15,9 @@ else
   echo "rustfmt component unavailable; skipping format check" >&2
 fi
 
-# Phase 1 changes are concentrated in the CLI/MCP boundary. Keep the
-# backpressure check focused enough to run on every iteration; the full suite
-# remains a release-validation job rather than a per-experiment timeout.
-cargo check --release --bin mnemosyne >/tmp/mnemosyne-autoresearch-check.log 2>&1 || {
-  tail -80 /tmp/mnemosyne-autoresearch-check.log
-  exit 1
-}
+# The measure step already built the release binary. Avoid rebuilding the
+# same target in a second cargo check; the focused MCP test still compiles the
+# library/test harness, while the full suite remains release validation.
 cargo test --release --lib mcp::server::tests -- --test-threads=1 \
   >/tmp/mnemosyne-autoresearch-mcp.log 2>&1 || {
   tail -80 /tmp/mnemosyne-autoresearch-mcp.log
