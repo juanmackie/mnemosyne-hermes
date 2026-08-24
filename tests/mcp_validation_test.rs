@@ -34,6 +34,26 @@ async fn create_test_handler() -> (ToolHandler, TempDir) {
 }
 
 #[tokio::test]
+async fn test_hermes_aliases_are_advertised_and_dispatched() {
+    let (handler, _temp) = create_test_handler().await;
+    let names: std::collections::HashSet<_> = handler
+        .list_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    assert!(names.contains("mnemosyne.recall"));
+    assert!(names.contains("mnemosyne_remember"));
+    assert!(names.contains("mnemosyne_recall"));
+    assert!(names.contains("mnemosyne_forget"));
+
+    let result = handler
+        .execute("mnemosyne_recall", serde_json::json!({"query": ""}))
+        .await;
+    assert!(matches!(result, Err(MnemosyneError::ValidationError(_))));
+}
+
+#[tokio::test]
 async fn test_recall_empty_query() {
     let (handler, _temp) = create_test_handler().await;
 

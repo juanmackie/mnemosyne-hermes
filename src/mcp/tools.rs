@@ -137,7 +137,7 @@ impl ToolHandler {
 
     /// Get list of all available tools
     pub fn list_tools(&self) -> Vec<Tool> {
-        vec![
+        let mut tools = vec![
             // OBSERVE tools
             Tool {
                 name: "mnemosyne.recall".to_string(),
@@ -349,15 +349,58 @@ impl ToolHandler {
                     }
                 }),
             },
-        ]
+        ];
+
+        // Hermes exposes provider tools as underscore-separated names, while
+        // older MCP clients use the dotted names above. Publish both names
+        // with identical schemas so clients can migrate without a config or
+        // prompt rewrite. Keeping this as a generated alias list prevents the
+        // two surfaces from drifting apart.
+        let aliases = [
+            ("mnemosyne.recall", "mnemosyne_recall"),
+            ("mnemosyne.list", "mnemosyne_list"),
+            ("mnemosyne.used", "mnemosyne_used"),
+            ("mnemosyne.hierarchy", "mnemosyne_hierarchy"),
+            ("mnemosyne.graph", "mnemosyne_graph"),
+            ("mnemosyne.context", "mnemosyne_context"),
+            ("mnemosyne.remember", "mnemosyne_remember"),
+            ("mnemosyne.consolidate", "mnemosyne_consolidate"),
+            ("mnemosyne.update", "mnemosyne_update"),
+            ("mnemosyne.delete", "mnemosyne_forget"),
+        ];
+        let aliased_tools: Vec<Tool> = aliases
+            .into_iter()
+            .filter_map(|(canonical, alias)| {
+                tools.iter().find(|tool| tool.name == canonical).cloned().map(|mut tool| {
+                    tool.name = alias.to_string();
+                    tool.description = format!("Hermes-compatible alias for {}. {}", canonical, tool.description);
+                    tool
+                })
+            })
+            .collect();
+        tools.extend(aliased_tools);
+        tools
     }
 
     /// Execute a tool call
     pub async fn execute(&self, tool_name: &str, params: Value) -> Result<Value> {
+        let canonical_name = match tool_name {
+            "mnemosyne_recall" => "mnemosyne.recall",
+            "mnemosyne_list" => "mnemosyne.list",
+            "mnemosyne_used" => "mnemosyne.used",
+            "mnemosyne_hierarchy" => "mnemosyne.hierarchy",
+            "mnemosyne_graph" => "mnemosyne.graph",
+            "mnemosyne_context" => "mnemosyne.context",
+            "mnemosyne_remember" => "mnemosyne.remember",
+            "mnemosyne_consolidate" => "mnemosyne.consolidate",
+            "mnemosyne_update" => "mnemosyne.update",
+            "mnemosyne_forget" => "mnemosyne.delete",
+            other => other,
+        };
         info!("🔧 MCP tool called: {} (external process)", tool_name);
         debug!("MCP tool params: {:?}", params);
 
-        let result = match tool_name {
+        let result = match canonical_name {
             "mnemosyne.recall" => self.recall(params).await,
             "mnemosyne.list" => self.list(params).await,
             "mnemosyne.used" => self.used(params).await,

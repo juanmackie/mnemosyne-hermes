@@ -42,6 +42,8 @@ enum Commands {
     ///
     /// Automatically starts API server on port 3000 (owner mode) or connects
     /// to existing API server (client mode) for dashboard observability.
+    /// `mcp` is the Hermes-friendly alias; `serve` remains supported.
+    #[command(visible_alias = "mcp")]
     Serve,
 
     /// Start HTTP API server for event streaming and state coordination
