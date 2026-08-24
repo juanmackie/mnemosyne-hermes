@@ -409,7 +409,7 @@ flowchart TD
 
     subgraph Server["Mnemosyne MCP Server"]
         Handler[Protocol Handler]
-        Router[Tool Router<br/>8 OODA Tools]
+        Router[Tool Router<br/>10 Memory Tools]
 
         subgraph Services["Core Services"]
             Storage[(Storage<br/>LibSQL + FTS5 + vectors)]
@@ -452,6 +452,8 @@ flowchart TD
 | **Decide** | `consolidate` | Merge/supersede duplicate memories |
 | **Act** | `update` | Modify existing memory |
 | **Act** | `delete` | Archive memory (soft delete) |
+| **Observe** | `used` | Report which recalled memories were helpful |
+| **Observe** | `hierarchy` | Browse the hierarchical topic tree |
 
 ## Next Steps
 

@@ -78,7 +78,7 @@ flowchart TD
 - **Multi-Agent System**: Orchestrates work, optimizes context, validates quality, executes tasks
 - **Mnemosyne Skills**: Project-specific knowledge and patterns (5 atomic skills)
 - **MCP Protocol**: JSON-RPC 2.0 communication over stdio
-- **MCP Server**: Routes 8 OODA-aligned tools, handles requests
+- **MCP Server**: Routes 10 memory tools, handles requests
 - **Core Services**: Storage (LibSQL + FTS5 + vector search), LLM enrichment, namespace detection (Git)
 - **Database**: Persistent storage with full-text search and graph capabilities
 
@@ -132,7 +132,7 @@ flowchart TD
 **Key Files**:
 - `protocol.rs`: JSON-RPC types and structures
 - `server.rs`: Async server implementation
-- `tools.rs`: 8 OODA-aligned tool implementations
+- `tools.rs`: Memory tool implementations, including recall, hierarchy, graph, and context surfaces
 
 ### 2. Service Layer
 
@@ -780,7 +780,7 @@ Default: Start narrow (session), expand as needed.
 - **Concurrency**: Async/await (Tokio)
 - **Logging**: Stderr only (no stdout pollution)
 
-### 8 OODA-Aligned Tools
+### Memory Tools
 
 #### OBSERVE Phase
 
