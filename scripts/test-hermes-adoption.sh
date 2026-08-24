@@ -80,8 +80,15 @@ client_config_examples_exist() {
 }
 
 full_feature_profile_is_documented() {
-  grep -Eq '^full = \["local-embeddings", "ics-syntax"\]$' "$ROOT/Cargo.toml" &&
+  grep -Eq '^full = \["local-embeddings", "ics-syntax", "dashboard"\]$' "$ROOT/Cargo.toml" &&
     grep -q -- '--features full' "$ROOT/docs/HERMES_INTEGRATION.md"
+}
+
+companion_bins_are_opt_in() {
+  grep -A2 -Eq '^name = "mnemosyne-ics"$' "$ROOT/Cargo.toml" &&
+    grep -A2 -Eq '^name = "mnemosyne-dash"$' "$ROOT/Cargo.toml" &&
+    grep -q 'required-features = \["ics-syntax"\]' "$ROOT/Cargo.toml" &&
+    grep -q 'required-features = \["dashboard"\]' "$ROOT/Cargo.toml"
 }
 
 distributed_network_is_opt_in() {
@@ -324,6 +331,7 @@ check local_embeddings local_embeddings_are_opt_in
 check ics_syntax ics_syntax_is_opt_in
 check client_configs client_config_examples_exist
 check full_feature_profile full_feature_profile_is_documented
+check companion_bins companion_bins_are_opt_in
 check distributed_network distributed_network_is_opt_in
 check distributed_docs distributed_feature_is_documented
 check unused_dependencies unused_ui_dependencies_removed

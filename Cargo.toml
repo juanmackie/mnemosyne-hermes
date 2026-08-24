@@ -13,10 +13,12 @@ path = "src/main.rs"
 [[bin]]
 name = "mnemosyne-ics"
 path = "src/bin/ics.rs"
+required-features = ["ics-syntax"]
 
 [[bin]]
 name = "mnemosyne-dash"
 path = "src/bin/dash/main.rs"
+required-features = ["dashboard"]
 
 [[bin]]
 name = "mnemosyne-rpc"
@@ -170,7 +172,8 @@ ics-syntax = [
 ]
 # Convenience profile for source builds that want every currently optional
 # local feature without changing the minimal release default.
-full = ["local-embeddings", "ics-syntax"]
+full = ["local-embeddings", "ics-syntax", "dashboard"]
+dashboard = []
 distributed = ["ractor_cluster", "dep:iroh"]
 profiling = ["tikv-jemallocator"]
 rpc = ["tonic", "prost", "prost-types"]

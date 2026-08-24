@@ -25,7 +25,7 @@ cargo test --release --lib mcp::server::tests -- --test-threads=1 \
 }
 # Keep the documented full source-build profile compilable as optional
 # compatibility coverage; the shipped default remains the minimal build.
-cargo check --release --locked --features full --bin mnemosyne \
+cargo check --release --locked --features full --bins \
   >/tmp/mnemosyne-autoresearch-full.log 2>&1 || {
   tail -80 /tmp/mnemosyne-autoresearch-full.log
   exit 1
