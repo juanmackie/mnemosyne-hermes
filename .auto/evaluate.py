@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -34,9 +36,13 @@ def relevant(result: dict, targets: list[str]) -> bool:
     return False
 
 
-def one_query(binary: Path, db: Path, namespace: str, item: dict, limit: int, hierarchical: bool) -> dict:
+def one_query(binary: Path, db: Path, namespace: str, item: dict, limit: int, hierarchical: bool, query_index: int, temp_dir: Path) -> dict:
+    # Recall increments access counts. Isolate every query so hierarchical
+    # hotness cannot leak from earlier queries or from flat evaluation.
+    query_db = temp_dir / f"query-{query_index}.db"
+    shutil.copy2(db, query_db)
     cmd = [
-        str(binary), "--db-path", str(db), "recall",
+        str(binary), "--db-path", str(query_db), "recall",
         "--query", item["query"], "--namespace", namespace,
         "--limit", str(limit), "--format", "json",
     ]
@@ -90,10 +96,15 @@ def main() -> int:
     for hierarchical in modes:
         label = "hierarchical" if hierarchical else "flat"
         rows: list[dict] = []
-        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-            futures = [pool.submit(one_query, args.binary, args.db, args.namespace, item, args.limit, hierarchical) for item in items]
-            for future in as_completed(futures):
-                rows.append(future.result())
+        with tempfile.TemporaryDirectory(prefix="mnemosyne-eval-") as temp_name:
+            temp_dir = Path(temp_name)
+            with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+                futures = [
+                    pool.submit(one_query, args.binary, args.db, args.namespace, item, args.limit, hierarchical, index, temp_dir)
+                    for index, item in enumerate(items)
+                ]
+                for future in as_completed(futures):
+                    rows.append(future.result())
         output["modes"][label] = summarize(rows)
     print(json.dumps(output, sort_keys=True))
     return 0

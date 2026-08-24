@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "target" / "release" / "mnemosyne"
 DATA_DIR = ROOT / ".auto" / "data"
-DB = DATA_DIR / "memory.db"
+DB = DATA_DIR / "template.db"
 CORPUS = ROOT / ".auto" / "corpus.jsonl"
 NAMESPACE = "project:personal-agent-eval"
 
