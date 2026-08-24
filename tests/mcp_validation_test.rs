@@ -65,6 +65,69 @@ async fn test_hermes_aliases_are_advertised_and_dispatched() {
 }
 
 #[tokio::test]
+async fn test_canonical_and_triples_round_trip() {
+    let (handler, _temp) = create_test_handler().await;
+
+    let stored = handler
+        .execute(
+            "mnemosyne_canonical",
+            serde_json::json!({
+                "action": "remember",
+                "category": "identity",
+                "name": "name",
+                "body": "The user goes by Ada.",
+                "namespace": "global"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stored["stored"], true);
+
+    let recalled = handler
+        .execute(
+            "mnemosyne_canonical",
+            serde_json::json!({
+                "action": "recall",
+                "category": "identity",
+                "name": "name",
+                "namespace": "global"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(recalled["found"], true);
+    assert_eq!(recalled["memory"]["content"], "The user goes by Ada.");
+
+    handler
+        .execute(
+            "mnemosyne_triples",
+            serde_json::json!({
+                "action": "add",
+                "subject": "Ada",
+                "predicate": "uses",
+                "object": "Rust",
+                "namespace": "global"
+            }),
+        )
+        .await
+        .unwrap();
+    let triples = handler
+        .execute(
+            "mnemosyne_triples",
+            serde_json::json!({
+                "action": "query",
+                "subject": "Ada",
+                "predicate": "uses",
+                "namespace": "global"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(triples["count"], 1);
+    assert_eq!(triples["triples"][0]["content"], "Ada uses Rust");
+}
+
+#[tokio::test]
 async fn test_recall_empty_query() {
     let (handler, _temp) = create_test_handler().await;
 
