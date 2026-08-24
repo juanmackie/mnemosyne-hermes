@@ -61,8 +61,17 @@ native remember/recall tools without a cloud key, and verify the imported fact.
 
 ### Phase 2 — Adoptable
 
-- Make the minimal memory daemon the default feature set; move RPC, P2P,
-  orchestration, dashboard/TUI, and ICS behind opt-in features or binaries.
+Current progress: the release default is now minimal and local-first. ONNX
+embeddings (`local-embeddings`), tree-sitter grammars (`ics-syntax`), Iroh P2P
+(`distributed`), and the standalone ICS/dashboard binaries are opt-in; the
+`full` source profile compiles all companion binaries. The default release is
+about 24.71 MiB, with default, full, distributed, and combined feature checks
+running in backpressure validation.
+
+Remaining work:
+
+- Move the remaining orchestration/TUI runtime dependencies behind opt-in
+  features or split binaries where compatibility stubs are safe.
 - Remove build-time dependencies from the default path where possible and publish
   binary size/build time as secondary metrics.
 - Rewrite README and `docs/HERMES_INTEGRATION.md` around install → configure →

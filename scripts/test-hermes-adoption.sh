@@ -105,6 +105,14 @@ unused_ui_dependencies_removed() {
   ! grep -Eq '^(tui-textarea|logos|fuzzy-matcher|miette|tui-logger|vte) = ' "$ROOT/Cargo.toml"
 }
 
+phase2_feature_progress_is_documented() {
+  local plan="$ROOT/docs/HERMES_GOTO_PLAN.md"
+  [[ -f "$plan" ]] &&
+    grep -q 'Current progress: the release default is now minimal and local-first' "$plan" &&
+    grep -q 'about 24.71 MiB' "$plan" &&
+    grep -q 'distributed' "$plan"
+}
+
 locked_manifest_is_current() {
   cargo metadata --locked --no-deps --format-version 1 >/dev/null 2>&1
 }
@@ -335,6 +343,7 @@ check companion_bins companion_bins_are_opt_in
 check distributed_network distributed_network_is_opt_in
 check distributed_docs distributed_feature_is_documented
 check unused_dependencies unused_ui_dependencies_removed
+check phase2_progress phase2_feature_progress_is_documented
 check locked_manifest locked_manifest_is_current
 check mcp_command mcp_command_works
 if mcp_aliases_work; then
