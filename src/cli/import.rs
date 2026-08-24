@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use tracing::info;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 const SOURCE_TABLES: &[&str] = &[
@@ -111,7 +111,9 @@ pub async fn handle(
         let rows = read_table(&source_conn, table, &columns).await?;
         for row in rows {
             report.scanned += 1;
-            let Some(memory) = convert_row(table, &columns, &row, &source, &target_namespace) else {
+            let converted = convert_row(table, &columns, &row, &source, &target_namespace);
+            let Some(memory) = converted else {
+                debug!("Skipping source row from {}: columns={:?}, row={:?}", table, columns, row);
                 report.skipped += 1;
                 continue;
             };
