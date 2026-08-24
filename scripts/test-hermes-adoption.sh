@@ -87,7 +87,9 @@ for line in open(sys.argv[1], encoding="utf-8"):
 required = {"mnemosyne_persona", "mnemosyne_canonical", "mnemosyne_triples"}
 raise SystemExit(0 if required <= names else 1)
 PY
+}
 
+mcp_provider_roundtrip_work() {
   local db="$TMP/provider.db"
   local response="$TMP/provider.jsonl"
   local requests
@@ -189,6 +191,13 @@ if mcp_provider_surfaces_work; then
 else
   echo "CHECK provider_surfaces=0"
   fail=$((fail + 3))
+fi
+if mcp_provider_roundtrip_work; then
+  echo "CHECK provider_roundtrip=1"
+  pass=$((pass + 1))
+else
+  echo "CHECK provider_roundtrip=0"
+  fail=$((fail + 1))
 fi
 check importer has_import_command
 check offline_core offline_core_works

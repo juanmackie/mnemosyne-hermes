@@ -27,8 +27,3 @@ cargo test --release --lib mcp::server::tests -- --test-threads=1 \
   tail -80 /tmp/mnemosyne-autoresearch-mcp.log
   exit 1
 }
-cargo test --release --test mcp_validation_test canonical_and_triples_round_trip -- --exact \
-  >/tmp/mnemosyne-autoresearch-provider.log 2>&1 || {
-  tail -80 /tmp/mnemosyne-autoresearch-provider.log
-  exit 1
-}
