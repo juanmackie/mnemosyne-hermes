@@ -481,6 +481,14 @@ async fn test_e2e_graph_traversal() {
     let ids: Vec<_> = graph_results.iter().map(|m| m.id).collect();
     assert!(ids.contains(&mem3.id), "Should include starting memory");
 
+    // The bounded variant pushes the result limit into the LibSQL query so
+    // MCP callers do not need to materialize an unbounded graph response.
+    let bounded_results = storage
+        .graph_traverse_bounded(&[mem3.id], 2, None, 1)
+        .await
+        .expect("Bounded graph traversal failed");
+    assert_eq!(bounded_results.len(), 1);
+
     println!("\n✓ Graph traversal working correctly");
 
     // Cleanup
