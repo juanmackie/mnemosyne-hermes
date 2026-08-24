@@ -66,7 +66,9 @@ bincode = "1.3"
 reqwest = { version = "0.11", features = ["json", "rustls-tls", "stream"] }
 
 # Local embeddings with ONNX Runtime (auto-downloads binaries)
-fastembed = { version = "5.2", features = ["ort-download-binaries"] }
+# Optional ONNX local embeddings; the default keeps deterministic keyword/hash
+# embeddings so a personal-agent install has no model runtime or download.
+fastembed = { version = "5.2", features = ["ort-download-binaries"], optional = true }
 
 # Utilities
 anyhow = "1.0"
@@ -166,6 +168,7 @@ tonic-health = { version = "0.12", optional = true }
 default = []
 python = ["pyo3"]
 keyring-fallback = ["keyring"]
+local-embeddings = ["dep:fastembed"]
 distributed = ["ractor_cluster"]
 profiling = ["tikv-jemallocator"]
 rpc = ["tonic", "prost", "prost-types"]

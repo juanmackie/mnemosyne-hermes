@@ -57,6 +57,11 @@ default_features_are_local() {
   grep -Eq '^default = \[\]$' "$ROOT/Cargo.toml"
 }
 
+local_embeddings_are_opt_in() {
+  grep -Eq 'fastembed = .*optional = true' "$ROOT/Cargo.toml" &&
+    grep -Eq '^local-embeddings = \["dep:fastembed"\]$' "$ROOT/Cargo.toml"
+}
+
 locked_manifest_is_current() {
   cargo metadata --locked --no-deps --format-version 1 >/dev/null 2>&1
 }
@@ -263,6 +268,7 @@ check release_workflow has_release_workflow
 check release_installer has_release_installer
 check release_smoke has_release_smoke
 check default_features default_features_are_local
+check local_embeddings local_embeddings_are_opt_in
 check locked_manifest locked_manifest_is_current
 check mcp_command mcp_command_works
 if mcp_aliases_work; then

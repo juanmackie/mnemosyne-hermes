@@ -10,14 +10,20 @@ use crate::config::EmbeddingConfig;
 use crate::embeddings::EmbeddingService;
 use crate::error::{MnemosyneError, Result};
 use async_trait::async_trait;
+#[cfg(feature = "local-embeddings")]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+#[cfg(feature = "local-embeddings")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "local-embeddings")]
 use tokio::task;
 use tracing::{debug, info};
 
 /// Local embedding service using fastembed
 pub struct LocalEmbeddingService {
-    /// The underlying fastembed model (wrapped in Arc<Mutex> for thread-safe interior mutability)
+    /// The underlying fastembed model when the optional local model feature is enabled.
+    #[cfg(feature = "local-embeddings")]
     model: Arc<Mutex<TextEmbedding>>,
     /// Configuration
     config: EmbeddingConfig,
@@ -44,6 +50,18 @@ impl LocalEmbeddingService {
     /// let service = LocalEmbeddingService::new(config).await?;
     /// let embedding = service.embed("Hello world").await?;
     /// ```
+    #[cfg(not(feature = "local-embeddings"))]
+    pub async fn new(config: EmbeddingConfig) -> Result<Self> {
+        config.validate()?;
+        let dimensions = config.dimensions();
+        info!(
+            "Local embedding runtime disabled; using deterministic {}-dimensional fallback",
+            dimensions
+        );
+        Ok(Self { config, dimensions })
+    }
+
+    #[cfg(feature = "local-embeddings")]
     pub async fn new(config: EmbeddingConfig) -> Result<Self> {
         // Validate configuration first
         config.validate()?;
@@ -102,6 +120,7 @@ impl LocalEmbeddingService {
     }
 
     /// Map model name string to fastembed's EmbeddingModel enum
+    #[cfg(feature = "local-embeddings")]
     fn model_name_to_enum(model_name: &str) -> Result<EmbeddingModel> {
         match model_name {
             "nomic-embed-text-v1.5" => Ok(EmbeddingModel::NomicEmbedTextV15),
@@ -124,6 +143,7 @@ impl LocalEmbeddingService {
     ///
     /// This is the internal implementation that runs fastembed's synchronous
     /// embed function in a Tokio blocking task.
+    #[cfg(feature = "local-embeddings")]
     async fn embed_batch_internal(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -166,6 +186,36 @@ impl LocalEmbeddingService {
 
         Ok(embeddings)
     }
+
+    #[cfg(not(feature = "local-embeddings"))]
+    async fn embed_batch_internal(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        Ok(texts
+            .iter()
+            .map(|text| fallback_embedding(text, self.dimensions))
+            .collect())
+    }
+}
+
+#[cfg(not(feature = "local-embeddings"))]
+fn fallback_embedding(text: &str, dimensions: usize) -> Vec<f32> {
+    let mut embedding = vec![0.0; dimensions];
+    for token in text
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+    {
+        let mut hasher = DefaultHasher::new();
+        token.hash(&mut hasher);
+        let index = (hasher.finish() as usize) % dimensions.max(1);
+        embedding[index] += 1.0;
+    }
+    let magnitude = embedding.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if magnitude > 0.0 {
+        for value in &mut embedding {
+            *value /= magnitude;
+        }
+    }
+    embedding
 }
 
 #[async_trait]
@@ -228,6 +278,7 @@ impl EmbeddingService for LocalEmbeddingService {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "local-embeddings")]
     #[test]
     fn test_model_name_mapping() {
         // Valid models
