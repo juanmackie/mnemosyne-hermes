@@ -114,6 +114,10 @@ pub async fn handle(
             let converted = convert_row(table, &columns, &row, &source, &target_namespace);
             let Some(memory) = converted else {
                 debug!("Skipping source row from {}: columns={:?}, row={:?}", table, columns, row);
+                report.errors.push(format!(
+                    "Skipped {} row {}: no supported id/content fields",
+                    table, report.scanned
+                ));
                 report.skipped += 1;
                 continue;
             };
