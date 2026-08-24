@@ -4,6 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PATH="$HOME/.cargo/bin:$PATH"
 
+bash -n install.sh
 bash -n scripts/test-hermes-adoption.sh
 if rustup component list --installed 2>/dev/null | grep -q '^rustfmt'; then
   cargo fmt --check >/tmp/mnemosyne-autoresearch-fmt.log 2>&1 || {
