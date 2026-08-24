@@ -92,5 +92,9 @@ boundary change.
   average MRR to 0.1500. Reverted. The ad hoc CLI merge is currently the
   stronger baseline; future changes need measured evidence, not abstraction
   consistency alone.
+- Run 6: increasing the CLI keyword multiplier from 0.4 to 0.5 collapsed dev
+  MRR to 0.2691 and held-out MRR to 0.1579, with slower latency. Reverted;
+  score-scale tuning is not promising without first inspecting component
+  semantics.
 - Do not repeat an idea already recorded in `.auto/log.jsonl` unless the new
   run changes an explicit assumption.
