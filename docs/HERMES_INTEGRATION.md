@@ -126,7 +126,8 @@ release binary's deterministic fallback embeddings do not require an API key or
 network access. The default release intentionally excludes the ONNX model
 runtime; it uses a deterministic hash embedding for local remember/recall. A
 source build can opt into the larger model-backed path with
-`cargo build --release --features local-embeddings`.
+`cargo build --release --features local-embeddings` (or `--features full`
+for the model-backed embeddings plus full ICS syntax grammars).
 
 ## Configuration and namespaces
 

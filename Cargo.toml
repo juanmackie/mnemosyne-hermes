@@ -178,6 +178,9 @@ ics-syntax = [
     "dep:tree-sitter-yaml", "dep:tree-sitter-bash", "dep:tree-sitter-go",
     "dep:tree-sitter-c", "dep:tree-sitter-cpp",
 ]
+# Convenience profile for source builds that want every currently optional
+# local feature without changing the minimal release default.
+full = ["local-embeddings", "ics-syntax"]
 distributed = ["ractor_cluster"]
 profiling = ["tikv-jemallocator"]
 rpc = ["tonic", "prost", "prost-types"]

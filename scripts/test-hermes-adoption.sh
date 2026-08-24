@@ -79,6 +79,11 @@ client_config_examples_exist() {
     grep -q 'mnemosyne.*mcp' "$docs"
 }
 
+full_feature_profile_is_documented() {
+  grep -Eq '^full = \["local-embeddings", "ics-syntax"\]$' "$ROOT/Cargo.toml" &&
+    grep -q -- '--features full' "$ROOT/docs/HERMES_INTEGRATION.md"
+}
+
 locked_manifest_is_current() {
   cargo metadata --locked --no-deps --format-version 1 >/dev/null 2>&1
 }
@@ -304,6 +309,7 @@ check default_features default_features_are_local
 check local_embeddings local_embeddings_are_opt_in
 check ics_syntax ics_syntax_is_opt_in
 check client_configs client_config_examples_exist
+check full_feature_profile full_feature_profile_is_documented
 check locked_manifest locked_manifest_is_current
 check mcp_command mcp_command_works
 if mcp_aliases_work; then
