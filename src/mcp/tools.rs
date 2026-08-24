@@ -628,7 +628,7 @@ impl ToolHandler {
                 &note_refs,
                 &raw_scores,
                 crate::hierarchy::RetrieverConfig::default(),
-                false,
+                true,
             );
             trajectory_json = serde_json::from_str(&trajectory.to_json()).ok();
             results = ranked

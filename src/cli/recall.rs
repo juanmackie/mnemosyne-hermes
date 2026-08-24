@@ -200,7 +200,7 @@ pub async fn handle(
             &note_refs,
             &raw_scores,
             config,
-            false,
+            true,
         );
         results = ranked.into_iter().filter_map(|(i, s)| results.get(i).map(|(m, _)| (m.clone(), s))).collect();
         if trace {
