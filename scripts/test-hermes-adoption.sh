@@ -172,12 +172,24 @@ conn.execute(
     ("hermes-memory-1", "The user prefers local-only storage.", "preference",
      "2026-01-02T03:04:05+00:00", "session-1", 0.9, '{"tags":["privacy"]}'),
 )
+for table, columns, row in [
+    ("episodic_memory", "id, body, source, timestamp", ("episode-1", "Hermes used the local provider.", "episode", "2026-01-02T03:04:06+00:00")),
+    ("memories", "id, text, source, created_at", ("legacy-1", "Legacy memory remains importable.", "legacy", "2026-01-02T03:04:07+00:00")),
+    ("canonical_facts", "id, value, source, valid_from", ("canonical-1", "The user prefers Rust.", "canonical", "2026-01-02T03:04:08+00:00")),
+    ("triples", "id, subject, predicate, object", ("triple-1", "Ada", "uses", "Rust")),
+    ("facts", "id, subject, predicate, object", ("fact-1", "Hermes", "stores", "memory")),
+    ("annotations", "id, content, source, created_at", ("annotation-1", "Imported annotation.", "annotation", "2026-01-02T03:04:09+00:00")),
+]:
+    conn.execute(f"CREATE TABLE {table} ({', '.join(f'{column} TEXT' for column in columns.split(', '))})")
+    placeholders = ', '.join('?' for _ in row)
+    conn.execute(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", row)
 conn.commit()
 conn.close()
 PY
+sha256sum "$source" | awk '{print $1}' >"$TMP/source.sha256"
 
-# The first import writes one deterministic memory; the second is the
-# idempotence check and must not create a duplicate.
+# The first import writes one row from every supported source table; the
+# second is the idempotence check and must not create duplicates.
 MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" import --from "$source" \
   --namespace agent:hermes --format json >"$first" 2>/dev/null || return 1
 MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" import --from "$source" \
@@ -188,10 +200,20 @@ import sys
 
 first = json.load(open(sys.argv[1], encoding="utf-8"))
 second = json.load(open(sys.argv[2], encoding="utf-8"))
-raise SystemExit(0 if first["imported"] == 1 and second["imported"] == 0 else 1)
+raise SystemExit(
+    0
+    if first["scanned"] == 7 and first["imported"] == 7 and second["imported"] == 0
+    else 1
+)
 PY
 MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" list --namespace agent:hermes \
   --format json 2>/dev/null | grep -q 'local-only storage'
+}
+
+import_source_is_unchanged() {
+  [[ -f "$TMP/source.sha256" && -f "$TMP/python-memory.db" ]] || return 1
+  [[ "$(cat "$TMP/source.sha256")" == "$(sha256sum "$TMP/python-memory.db" | awk '{print $1}')" ]] || return 1
+  [[ ! -e "$TMP/python-memory.db-wal" && ! -e "$TMP/python-memory.db-shm" ]]
 }
 
 # Phase 1 gates. The alias surface counts two independent provider names.
@@ -222,7 +244,14 @@ else
   echo "CHECK provider_roundtrip=0"
   fail=$((fail + 1))
 fi
-check importer has_import_command
+if has_import_command; then
+  echo "CHECK importer=2"
+  pass=$((pass + 2))
+else
+  echo "CHECK importer=0"
+  fail=$((fail + 2))
+fi
+check importer_source_readonly import_source_is_unchanged
 check offline_core offline_core_works
 
 # The front door is part of adoption: a working binary without an accurate
