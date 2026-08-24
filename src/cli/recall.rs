@@ -2,10 +2,10 @@
 
 use mnemosyne_core::{build_memory_context_block, is_trivial_prompt};
 use mnemosyne_core::{
-    embeddings::fallback_embedding_warning,
-    orchestration::events::AgentEvent, utils::string::truncate_at_char_boundary, ConnectionMode,
-    EmbeddingConfig, EmbeddingService, LibsqlStorage, LlmConfig, LocalEmbeddingService, Namespace,
-    RemoteEmbeddingService, StorageBackend,
+    embeddings::fallback_embedding_warning, orchestration::events::AgentEvent,
+    utils::string::truncate_at_char_boundary, ConnectionMode, EmbeddingConfig, EmbeddingService,
+    LibsqlStorage, LlmConfig, LocalEmbeddingService, Namespace, RemoteEmbeddingService,
+    StorageBackend,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,7 +80,11 @@ pub async fn handle(
         .hybrid_search(&query, ns.clone(), limit * 2, true)
         .await?;
 
-    let mut embedding_mode = if has_api_key { "llm-concept" } else { "unavailable" };
+    let mut embedding_mode = if has_api_key {
+        "llm-concept"
+    } else {
+        "unavailable"
+    };
     let mut embedding_warning = None;
 
     // Vector search (optional - only if API key available).
