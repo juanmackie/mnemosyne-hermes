@@ -527,8 +527,10 @@ impl ToolHandler {
             None
         };
 
-        // Perform enhanced hybrid search (keyword + vector + graph)
-        let expand_graph = params.expand_graph.unwrap_or(true);
+        // Prefer direct keyword/vector precision for personal-agent recall.
+        // Graph expansion remains available as an explicit opt-in for callers
+        // that want connected-context exploration.
+        let expand_graph = params.expand_graph.unwrap_or(false);
 
         // Phase 1: Keyword + graph search
         let keyword_results = self
@@ -668,7 +670,7 @@ impl ToolHandler {
             "method": if params.hierarchical.unwrap_or(false) {
                 "hierarchical_hybrid_search"
             } else {
-                "hybrid_search (keyword 40% + vector 30% + graph)"
+                "hybrid_search (keyword 40% + vector 30%; graph opt-in)"
             },
             "trajectory": trajectory_json,
             // Loud degradation flag: true means the ranking signal was
