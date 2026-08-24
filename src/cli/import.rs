@@ -206,7 +206,7 @@ async fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
 
 async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
     let sql = format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\""));
-    let mut rows = conn.query(&sql, ()).await?
+    let mut rows = conn.query(&sql, ()).await?;
     let mut columns = Vec::new();
     while let Some(row) = rows.next().await? {
         columns.push(row.get::<String>(1)?);
@@ -217,7 +217,7 @@ async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
 async fn read_table(conn: &Connection, table: &str, columns: &[String]) -> Result<Vec<Row>> {
     let quoted = format!("\"{}\"", table.replace('"', "\"\""));
     let sql = format!("SELECT * FROM {}", quoted);
-    let mut rows = conn.query(&sql, ()).await?
+    let mut rows = conn.query(&sql, ()).await?;
     let mut result = Vec::new();
     while let Some(row) = rows.next().await? {
         // A libsql Row owns its values, so collecting rows before conversion
