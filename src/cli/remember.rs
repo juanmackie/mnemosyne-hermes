@@ -230,10 +230,11 @@ pub async fn handle(
             ..EmbeddingConfig::default()
         };
         if let Ok(emb) = LocalEmbeddingService::new(embed_config).await {
+            let model_backed = emb.uses_model_backed_embeddings();
             let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
             if let Ok(embedding) = emb_svc.embed(&memory.content).await {
                 memory.embedding = Some(embedding);
-                memory.embedding_model = if emb.uses_model_backed_embeddings() {
+                memory.embedding_model = if model_backed {
                     "local-model"
                 } else {
                     "deterministic-hash-fallback"
