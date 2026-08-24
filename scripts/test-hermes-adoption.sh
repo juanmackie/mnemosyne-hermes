@@ -146,6 +146,15 @@ offline_core_works() {
     RUST_LOG=error "$BIN" list --namespace agent:hermes --format json >/dev/null 2>&1
 }
 
+offline_recall_works() {
+  local db="$TMP/offline.db"
+  local output="$TMP/offline-recall.json"
+  env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY MNEMOSYNE_DB_PATH="$db" \
+    RUST_LOG=error "$BIN" recall --query "local first memory" \
+    --namespace agent:hermes --format json >"$output" 2>/dev/null || return 1
+  grep -q 'Hermes prefers local first memory' "$output"
+}
+
 has_import_command() {
   local source="$TMP/python-memory.db"
   local target="$TMP/imported.db"
@@ -288,6 +297,7 @@ check importer_source_readonly import_source_is_unchanged
 check importer_dry_run import_dry_run_is_non_destructive
 check importer_audit import_report_is_auditable
 check offline_core offline_core_works
+check offline_recall offline_recall_works
 
 # The front door is part of adoption: a working binary without an accurate
 # install/configure/import/verify guide still makes the project non-adoptable.
