@@ -5,9 +5,36 @@
 > graceful degradation without OS keyrings or cloud LLMs, Hermes MCP stdio contract compliance, and
 > OpenViking-inspired hierarchical memory. All changes are released under the same MIT license.
 
-**High-performance agentic memory system for Claude Code's multi-agent orchestration**
+**Local-first persistent memory for Hermes and every MCP-compatible personal agent**
 
-Mnemosyne provides persistent semantic memory with sub-millisecond retrieval, built in Rust with LibSQL vector search and PyO3 Python bindings.
+Mnemosyne provides private semantic memory with LibSQL vector search, full-text
+search, graph links, and hierarchical retrieval. It works without a cloud API
+key and keeps the standard MCP surface available for Claude Code, Cursor, Codex,
+Windsurf, and custom agents.
+
+## Hermes-first quickstart
+
+```bash
+# No Rust or Python required: downloads and verifies a native release binary.
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+hermes config set memory.provider mnemosyne
+
+# Optional: preserve an existing Python mnemosyne-memory store.
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
+  --namespace agent:hermes --dry-run --format json
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
+  --namespace agent:hermes --format json
+
+# Verify the local path without a cloud key.
+unset ANTHROPIC_API_KEY OPENAI_API_KEY
+mnemosyne remember --content "The user prefers local-only storage" \
+  --namespace agent:hermes --no-enrich --format json
+```
+
+Then register `mnemosyne` in Hermes' `~/.hermes/config.yaml` under `mcp.servers`
+with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configure
+→ import → verify path is [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md).
 
 ---
 
@@ -149,27 +176,27 @@ See [src/rpc/README.md](src/rpc/README.md) for complete API documentation, deplo
 
 ### Installation
 
-**Automated Installation** (Recommended):
+**Release Installation** (Recommended):
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/mnemosyne.git
-cd mnemosyne
-
-# Run installation script
-./scripts/install/install.sh
-
-# Installation will:
-# - Build release binary
-# - Install to ~/.local/bin
-# - Initialize database
-# - Configure MCP server
-# - Optionally set up API keys
-# - Detect and optionally install Nerd Fonts for icon support
+# Downloads a checksum-verified native binary; no Rust toolchain required.
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+mnemosyne --version
 ```
+
+**Source Installation** (development fallback):
+```bash
+git clone https://github.com/juanmackie/mnemosyne-hermes.git
+cd mnemosyne-hermes
+./install.sh --from-source
+```
+
+The release installer supports Linux x86_64/aarch64 and macOS x86_64/arm64,
+verifies SHA-256 checksums, and leaves MCP configuration to the agent runtime.
 
 **Icon System**: Mnemosyne uses Nerd Font icons (Font Awesome) for a polished CLI experience with automatic fallback to ASCII. For best results, install [JetBrainsMono Nerd Font](https://www.nerdfonts.com/). See [docs/ICONS.md](docs/ICONS.md) for details.
 
-**Manual Installation**:
+**Manual Source Build**:
 ```bash
 # Prerequisites: Rust 1.75+, Python 3.10-3.14, uv
 cargo build --release
@@ -182,6 +209,13 @@ mnemosyne init
 
 # Configure secrets (optional for LLM enrichment)
 mnemosyne secrets set --provider anthropic --key sk-ant-...
+```
+
+**Migration**:
+```bash
+# Preview, then import an existing Python mnemosyne-memory database.
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db --dry-run --format json
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db --namespace agent:hermes --format json
 ```
 
 **Uninstallation**:

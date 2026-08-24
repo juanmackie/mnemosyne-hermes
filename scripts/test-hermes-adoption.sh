@@ -142,13 +142,16 @@ fi
 check importer has_import_command
 check offline_core offline_core_works
 
-# Non-gating audience signal, useful while the docs are being rewritten.
+# The front door is part of adoption: a working binary without an accurate
+# install/configure/import/verify guide still makes the project non-adoptable.
 if [[ -f "$ROOT/docs/HERMES_INTEGRATION.md" ]] &&
    grep -q 'hermes config set memory.provider' "$ROOT/docs/HERMES_INTEGRATION.md" &&
    grep -q 'mnemosyne_remember' "$ROOT/docs/HERMES_INTEGRATION.md"; then
   echo "CHECK hermes_docs_frontdoor=1"
+  pass=$((pass + 1))
 else
   echo "CHECK hermes_docs_frontdoor=0"
+  fail=$((fail + 1))
 fi
 
 # The primary metric is deliberately a small, behavior-oriented score rather

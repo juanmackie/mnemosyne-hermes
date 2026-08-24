@@ -55,9 +55,9 @@ compiling Rust or configuring a cloud API.
      duplicate memories; preserve source metadata and report counts/skips.
    - Open the source read-only and never delete or rewrite it.
 
-**Phase 1 gate:** a clean machine with a downloaded binary can configure Hermes,
-import a fixture SQLite database, call the native remember/recall tools without a
-cloud key, and verify the imported fact.
+**Phase 1 gate:** a clean machine with a downloaded binary can follow the
+Hermes-first guide, configure Hermes, import a fixture SQLite database, call the
+native remember/recall tools without a cloud key, and verify the imported fact.
 
 ### Phase 2 — Adoptable
 

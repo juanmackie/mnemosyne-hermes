@@ -1,161 +1,149 @@
-# Hermes Agent Integration Guide
+# Mnemosyne + Hermes Agent
 
-Mnemosyne works with [Hermes](https://github.com/NousResearch)-powered personal
-agents out of the box. The MCP server is fully agent-agnostic — it speaks
-standard JSON-RPC 2.0 / Model Context Protocol over stdio, so any agent harness
-that supports MCP (or raw JSON-RPC subprocess tools) can use it as persistent
-semantic memory.
+This is the canonical setup guide for using Mnemosyne as a local memory layer
+for Hermes. It covers the shortest path from zero installation to a verified
+memory, then shows how to migrate an existing Python `mnemosyne-memory` store.
 
-This guide covers the recommended setup for a personal agent running a local
-Hermes model (Hermes 2/3/4 via Ollama, llama.cpp, vLLM, or any
-OpenAI-compatible server).
+## 1. Install a release
 
----
-
-## Why Mnemosyne for a Personal Agent
-
-| Capability | Personal-agent benefit |
-|---|---|
-| Semantic memory (LibSQL vector + FTS5 + graph) | Recall past decisions, preferences, and facts across sessions |
-| Project-aware namespaces | Separate memory scopes per project, or one `global` scope for the whole person |
-| Local-only storage | Privacy-first: memories never leave your machine |
-| OODA tool set (8 MCP tools) | Observe → Orient → Decide → Act loop maps naturally onto agent tool use |
-| Evolution system | Automatic consolidation/importance scoring keeps memory lean over time |
-
-## Prerequisites
+The release installer does not require Rust, Cargo, Python, or a cloud API key.
+It detects Linux x86_64/aarch64 and macOS x86_64/arm64, verifies the SHA-256
+checksum, and installs to `~/.local/bin`:
 
 ```bash
-# Build the binary (or use cargo install --path .)
-cargo build --release
-# Binary at target/release/mnemosyne
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+mnemosyne --version
 ```
 
-No `ANTHROPIC_API_KEY` is required for core memory operations (store, recall,
-list, graph). LLM-enhanced features (Reviewer agent, consolidation analysis)
-are optional and work with any OpenAI-compatible endpoint — see
-[Optional: Hermes as the LLM backend](#optional-hermes-as-the-llm-backend).
-
-## Step 1: Verify the MCP server
+For a pinned release:
 
 ```bash
-# Smoke test: initialize handshake
-echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | ./target/release/mnemosyne serve
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh \
+  | sh -s -- --version 2.3.1
 ```
 
-Expected: a JSON-RPC response with `serverInfo.name = "mnemosyne"`.
+A source checkout remains available when developing the project:
 
-## Step 2: Register with your Hermes agent
-
-### If your harness supports MCP config files
-
-Add mnemosyne as a stdio MCP server (equivalent of `claude_desktop_config.json` /
-`mcp_config.json` for other harnesses):
-
-```json
-{
-  "mcpServers": {
-    "mnemosyne": {
-      "command": "/absolute/path/to/mnemosyne/target/release/mnemosyne",
-      "args": ["serve"],
-      "env": {
-        "MNEMOSYNE_DB_PATH": "~/.local/share/mnemosyne/memory.db"
-      }
-    }
-  }
-}
+```bash
+./install.sh --from-source
+# equivalent: ./scripts/install/install.sh --skip-api-key --no-mcp
 ```
 
-A ready-to-use copy is in [`examples/hermes/mcp-config.json`](../examples/hermes/mcp-config.json).
+## 2. Connect Hermes
 
-### If your harness spawns raw subprocess tools
+Hermes can use the standard MCP stdio transport directly. Add this to the
+active Hermes configuration (usually `~/.hermes/config.yaml`):
 
-Wrap the same command: spawn `mnemosyne serve`, write newline-delimited JSON-RPC
-to stdin, read responses from stdout (logs go to stderr). See
-[`MCP_SERVER.md`](../MCP_SERVER.md) for the full wire protocol.
-
-## Step 3: Project metadata (optional)
-
-Mnemosyne auto-detects the current project by walking up to the nearest `.git`
-directory and reading the first metadata file it finds, in priority order:
-
-1. `CLAUDE.md` (backward compatibility)
-2. `AGENTS.md` (cross-agent standard)
-3. `HERMES.md` (Hermes-specific)
-
-For a personal-agent workspace, drop a `HERMES.md` (or `AGENTS.md`) at the
-repo root:
-
-```markdown
----
-project: my-personal-workspace
-description: "Tasks, preferences, and decisions for my Hermes agent"
----
-
-# My Personal Workspace
+```yaml
+mcp:
+  servers:
+    mnemosyne:
+      command: mnemosyne
+      args: ["mcp"]
+      env:
+        MNEMOSYNE_DB_PATH: "~/.local/share/mnemosyne/mnemosyne.db"
 ```
 
-Memories stored while inside that directory are automatically scoped to the
-`project:my-personal-workspace` namespace.
+If you are using Hermes' provider selector, enable the same local provider:
 
-## The 8 OODA Tools
+```bash
+hermes config set memory.provider mnemosyne
+hermes memory status
+```
 
-| Phase | Tool | Use it for |
+`mcp` and the legacy `serve` command are equivalent. MCP stdout is reserved for
+JSON-RPC; diagnostics are sent to stderr, so the process is safe for stdio
+clients.
+
+## 3. Tool surface
+
+Mnemosyne retains its original dotted MCP names and advertises Hermes-compatible
+underscore aliases with identical schemas:
+
+| Hermes tool | Compatibility name | Purpose |
 |---|---|---|
-| Observe | `mnemosyne.recall` | Semantic search over memories |
-| Observe | `mnemosyne.list` | Browse recent memories in a namespace |
-| Orient | `mnemosyne.graph` | Explore memory relationships |
-| Orient | `mnemosyne.context` | Load a context bundle for the current task |
-| Decide | `mnemosyne.remember` | Store a new memory (insight/decision/task/reference) |
-| Decide | `mnemosyne.consolidate` | Merge duplicates, recompute importance |
-| Act | `mnemosyne.update` | Amend an existing memory |
-| Act | `mnemosyne.delete` | Remove a memory |
+| `mnemosyne_remember` | `mnemosyne.remember` | Store durable memory |
+| `mnemosyne_recall` | `mnemosyne.recall` | Search ranked memories |
+| `mnemosyne_forget` | `mnemosyne.delete` | Archive a memory |
+| `mnemosyne_list` | `mnemosyne.list` | Browse recent memories |
+| `mnemosyne_context` | `mnemosyne.context` | Load linked context |
+| `mnemosyne_graph` | `mnemosyne.graph` | Traverse memory links |
+| `mnemosyne_hierarchy` | `mnemosyne.hierarchy` | Browse topic hierarchy |
+| `mnemosyne_update` | `mnemosyne.update` | Amend a memory |
+| `mnemosyne_consolidate` | `mnemosyne.consolidate` | Find/consolidate candidates |
+| `mnemosyne_used` | `mnemosyne.used` | Report useful recalls |
 
-Typical personal-agent system-prompt snippet:
+Persona, canonical-fact, and temporal-triple parity is intentionally not claimed
+by this fork yet. Imported canonical/triple rows are preserved as tagged memory
+records; dedicated APIs will land only with explicit semantics and migration
+tests.
 
-```text
-You have persistent memory via the mnemosyne tools.
-- At the start of a session, call mnemosyne.context to load relevant memories.
-- When the user states a durable preference or decision, call mnemosyne.remember.
-- Prefer project namespaces for work topics; use the global namespace for
-  personal facts.
-```
+## 4. Migrate an existing Python memory store
 
-### Recall defaults for personal agents
+Keep the original database as a backup. The importer reads the source and never
+writes to it. It supports the common Python provider tables when present:
+`working_memory`, `episodic_memory`, legacy `memories`, `canonical_facts`,
+`triples`, `facts`, and `annotations`.
 
-Recall prioritizes direct keyword and semantic matches. Graph expansion still
-supports connected-context exploration, but a direct seed memory is never
-boosted merely because it was selected as a graph seed; only depth-1+ neighbors
-receive graph-expansion scoring. This keeps ordinary preference and decision
-lookups precise while preserving relationship traversal for linked memories.
-
-## Optional: Hermes as the LLM backend
-
-Core memory works without any LLM API. If you want LLM-enhanced review and
-consolidation, point Mnemosyne at your local Hermes endpoint using the
-OpenAI-compatible API exposed by Ollama / vLLM / llama.cpp:
+Preview counts first:
 
 ```bash
-# Example: Ollama serving Hermes
-export OPENAI_API_BASE=http://localhost:11434/v1
-export OPENAI_MODEL=hermes3
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
+  --namespace agent:hermes --dry-run --format json
 ```
 
-If your Mnemosyne build requires an API key placeholder for these paths, set a
-dummy value — requests stay on localhost.
+Import into the default Rust store (or set `MNEMOSYNE_DB_PATH`):
 
-## Performance notes
+```bash
+MNEMOSYNE_DB_PATH="$HOME/.local/share/mnemosyne/mnemosyne.db" \
+  mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
+  --namespace agent:hermes --format json
+```
 
-- Release builds use full LTO + `codegen-units = 1` (see `.cargo/config.toml`);
-  retrieval is sub-millisecond on warm caches.
-- Use `cargo build --profile fast-release` for quicker iteration builds.
-- The `sccache` wrapper configured in `.cargo/config.toml` is optional; install
-  it or unset `RUSTC_WRAPPER` if you don't use it.
+Import IDs are deterministic. Running the same command again skips rows already
+present instead of duplicating them. The report includes scanned/imported/skipped
+counts and source-table metadata. Use a different `--namespace` for each Hermes
+profile or memory bank.
+
+## 5. Verify without a cloud key
+
+```bash
+unset ANTHROPIC_API_KEY OPENAI_API_KEY
+MNEMOSYNE_DB_PATH="$HOME/.local/share/mnemosyne/mnemosyne.db" \
+  mnemosyne remember --content "The user prefers local-only storage" \
+  --namespace agent:hermes --no-enrich --format json
+MNEMOSYNE_DB_PATH="$HOME/.local/share/mnemosyne/mnemosyne.db" \
+  mnemosyne recall --query "where should memory be stored" \
+  --namespace agent:hermes --format json
+```
+
+Core storage, keyword search, import, list, graph, and MCP discovery do not
+require an API key. Local embeddings may be downloaded on first use; if they are
+unavailable, the command reports the degraded path instead of inventing a result.
+
+## Configuration and namespaces
+
+- `MNEMOSYNE_DB_PATH` selects the local SQLite/LibSQL database.
+- `global` stores personal facts shared across projects.
+- `agent:hermes` isolates a Hermes identity.
+- `project:<name>` isolates a workspace.
+- `session:<project>:<id>` isolates temporary context.
+
+For other MCP clients, use the same `mnemosyne mcp` stdio command and the
+standard `mcpServers` configuration shape. The underscore aliases are safe for
+clients that expose provider tools as native commands.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `initialize` gets no response | Ensure you're writing to stdin of `mnemosyne serve` (not `mnemosyne` with no args on older builds) |
-| Memories land in the wrong namespace | Check which metadata file exists at the repo root; `CLAUDE.md` wins if multiple exist |
-| Build fails with `sccache` not found | `apt install sccache` or `unset RUSTC_WRAPPER` |
-| Build fails on `openssl-sys` | Install `pkg-config` and `libssl-dev` |
+| `mnemosyne: command not found` | Add `~/.local/bin` to `PATH` or pass `--bin-dir` during install. |
+| Release checksum fails | Delete the partial download and retry; do not bypass verification. |
+| Hermes cannot start the server | Run `mnemosyne mcp --help`; use an absolute command path in Hermes config. |
+| Memories are in the wrong store | Set `MNEMOSYNE_DB_PATH` in the MCP server `env` block and in CLI commands. |
+| Import reports zero rows | Run `--dry-run --format json`; inspect source table presence and keep the original DB unchanged. |
+| No vector model is available | Continue with keyword recall or install local embedding support; core storage remains usable. |
+
+For protocol details, see [MCP_SERVER.md](../MCP_SERVER.md). For retrieval
+quality methodology, see [benchmark/retrieval/README.md](../benchmark/retrieval/README.md).
