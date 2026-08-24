@@ -87,5 +87,10 @@ boundary change.
 - Run 3 / ranking baseline at `5fc93d0`: dev MRR 0.4763, held-out average MRR
   0.4357, dev p50/p95 latency 1550.9/1757.8 ms. These are baseline numbers
   after correctness hardening, not an optimization claim.
+- Runs 4-5: tried routing the CLI through one configured storage hybrid scorer;
+  it compiled after an import fix but regressed dev MRR to 0.3752 and held-out
+  average MRR to 0.1500. Reverted. The ad hoc CLI merge is currently the
+  stronger baseline; future changes need measured evidence, not abstraction
+  consistency alone.
 - Do not repeat an idea already recorded in `.auto/log.jsonl` unless the new
   run changes an explicit assumption.
