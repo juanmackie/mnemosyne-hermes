@@ -64,6 +64,25 @@ enum Commands {
         database: Option<String>,
     },
 
+    /// Import memories from a Python mnemosyne-memory SQLite database
+    Import {
+        /// Source SQLite database path
+        #[arg(long = "from", alias = "source")]
+        source: String,
+
+        /// Namespace for imported memories (default: agent:hermes)
+        #[arg(long)]
+        namespace: Option<String>,
+
+        /// Inspect and count rows without writing the target database
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+
+        /// Output format (text/json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
     /// Export memories to Markdown
     Export {
         /// Output path (prints to stdout if not specified)
@@ -463,6 +482,12 @@ async fn main() -> Result<()> {
             cli::api_server::handle(addr, capacity).await
         }
         Some(Commands::Init { database }) => cli::init::handle(database, cli.db_path.clone()).await,
+        Some(Commands::Import {
+            source,
+            namespace,
+            dry_run,
+            format,
+        }) => cli::import::handle(source, namespace, dry_run, format, cli.db_path.clone()).await,
         Some(Commands::Export { output, namespace }) => {
             cli::export::handle(output, namespace, cli.db_path.clone()).await
         }

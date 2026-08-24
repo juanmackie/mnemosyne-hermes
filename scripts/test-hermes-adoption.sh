@@ -81,7 +81,51 @@ offline_core_works() {
 }
 
 has_import_command() {
-  "$BIN" import --help >/dev/null 2>&1
+  local source="$TMP/python-memory.db"
+  local target="$TMP/imported.db"
+  local first="$TMP/import-first.json"
+  local second="$TMP/import-second.json"
+  python3 - "$source" <<'PY'
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("""
+    CREATE TABLE working_memory (
+      id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      source TEXT,
+      timestamp TEXT,
+      session_id TEXT,
+      importance REAL,
+      metadata_json TEXT
+    )
+""")
+conn.execute(
+    "INSERT INTO working_memory VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ("hermes-memory-1", "The user prefers local-only storage.", "preference",
+     "2026-01-02T03:04:05+00:00", "session-1", 0.9, '{"tags":["privacy"]}'),
+)
+conn.commit()
+conn.close()
+PY
+
+# The first import writes one deterministic memory; the second is the
+# idempotence check and must not create a duplicate.
+MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" import --from "$source" \
+  --namespace agent:hermes --format json >"$first" 2>/dev/null || return 1
+MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" import --from "$source" \
+  --namespace agent:hermes --format json >"$second" 2>/dev/null || return 1
+python3 - "$first" "$second" <<'PY'
+import json
+import sys
+
+first = json.load(open(sys.argv[1], encoding="utf-8"))
+second = json.load(open(sys.argv[2], encoding="utf-8"))
+raise SystemExit(0 if first["imported"] == 1 and second["imported"] == 0 else 1)
+PY
+MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" list --namespace agent:hermes \
+  --format json 2>/dev/null | grep -q 'local-only storage'
 }
 
 # Phase 1 gates. The alias surface counts two independent provider names.
