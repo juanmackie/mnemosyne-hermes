@@ -149,6 +149,7 @@ offline_core_works() {
 has_import_command() {
   local source="$TMP/python-memory.db"
   local target="$TMP/imported.db"
+  local dry_target="$TMP/dry-run.db"
   local first="$TMP/import-first.json"
   local second="$TMP/import-second.json"
   python3 - "$source" <<'PY'
@@ -188,6 +189,12 @@ conn.close()
 PY
 sha256sum "$source" | awk '{print $1}' >"$TMP/source.sha256"
 
+# Dry-run must inspect the source without creating the target database.
+MNEMOSYNE_DB_PATH="$dry_target" RUST_LOG=error "$BIN" import --from "$source" \
+  --namespace agent:hermes --dry-run --format json >"$TMP/import-dry-run.json" 2>/dev/null || return 1
+[[ ! -e "$dry_target" ]] || return 1
+touch "$TMP/import-dry-run.ok"
+
 # The first import writes one row from every supported source table; the
 # second is the idempotence check and must not create duplicates.
 MNEMOSYNE_DB_PATH="$target" RUST_LOG=error "$BIN" import --from "$source" \
@@ -214,6 +221,10 @@ import_source_is_unchanged() {
   [[ -f "$TMP/source.sha256" && -f "$TMP/python-memory.db" ]] || return 1
   [[ "$(cat "$TMP/source.sha256")" == "$(sha256sum "$TMP/python-memory.db" | awk '{print $1}')" ]] || return 1
   [[ ! -e "$TMP/python-memory.db-wal" && ! -e "$TMP/python-memory.db-shm" ]]
+}
+
+import_dry_run_is_non_destructive() {
+  [[ -f "$TMP/import-dry-run.ok" && ! -e "$TMP/dry-run.db" ]]
 }
 
 import_report_is_auditable() {
@@ -274,6 +285,7 @@ else
   fail=$((fail + 2))
 fi
 check importer_source_readonly import_source_is_unchanged
+check importer_dry_run import_dry_run_is_non_destructive
 check importer_audit import_report_is_auditable
 check offline_core offline_core_works
 
