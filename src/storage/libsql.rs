@@ -3020,7 +3020,8 @@ impl StorageBackend for LibsqlStorage {
             SELECT DISTINCT m.*
             FROM memories m
             JOIN graph_walk gw ON m.id = gw.memory_id
-            WHERE m.is_archived = 0 {namespace_filter}
+            WHERE gw.depth > 0
+              AND m.is_archived = 0 {namespace_filter}
             ORDER BY gw.depth, m.importance DESC
             "#,
             placeholders = placeholders,

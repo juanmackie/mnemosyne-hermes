@@ -76,7 +76,7 @@ pub async fn handle(
 
     // Perform hybrid search (keyword + vector + graph)
     let keyword_results = storage
-        .hybrid_search(&query, ns.clone(), limit * 2, false)
+        .hybrid_search(&query, ns.clone(), limit * 2, true)
         .await?;
 
     // Vector search (optional - only if API key available).
