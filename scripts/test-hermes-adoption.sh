@@ -255,6 +255,10 @@ conn.execute(
     "INSERT INTO memories (id, text, source, created_at) VALUES (?, ?, ?, ?)",
     ("hermes-memory-1", "The user prefers local-only storage.", "preference", "2026-01-02T03:04:05+00:00"),
 )
+conn.execute(
+    "INSERT INTO annotations (id, content, source, created_at) VALUES (?, ?, ?, ?)",
+    ("annotation-empty", "", "annotation", "2026-01-02T03:04:10+00:00"),
+)
 conn.commit()
 conn.close()
 PY
@@ -280,7 +284,7 @@ first = json.load(open(sys.argv[1], encoding="utf-8"))
 second = json.load(open(sys.argv[2], encoding="utf-8"))
 raise SystemExit(
     0
-    if first["scanned"] == 8 and first["imported"] == 7 and second["imported"] == 0
+    if first["scanned"] == 9 and first["imported"] == 7 and second["imported"] == 0
     else 1
 )
 PY
@@ -305,6 +309,16 @@ import sys
 
 report = json.load(open(sys.argv[1], encoding="utf-8"))
 raise SystemExit(0 if report["skipped"] >= 1 else 1)
+PY
+}
+
+import_invalid_rows_are_reported() {
+  python3 - "$TMP/import-first.json" <<'PY'
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+raise SystemExit(0 if report["skipped"] >= 2 and report["errors"] else 1)
 PY
 }
 
@@ -377,6 +391,7 @@ fi
 check importer_source_readonly import_source_is_unchanged
 check importer_dry_run import_dry_run_is_non_destructive
 check importer_duplicate import_duplicate_is_skipped
+check importer_invalid import_invalid_rows_are_reported
 check importer_audit import_report_is_auditable
 check offline_core offline_core_works
 check offline_recall offline_recall_works
