@@ -6,7 +6,7 @@
 //! - DECIDE: remember, consolidate
 //! - ACT: update, delete
 
-use crate::error::Result;
+use crate::error::{MnemosyneError, Result};
 use crate::services::{EmbeddingService, LlmService};
 use crate::storage::StorageBackend;
 use crate::types::{MemoryId, MemoryNote, MemoryType, Namespace};
@@ -349,6 +349,47 @@ impl ToolHandler {
                     }
                 }),
             },
+            Tool {
+                name: "mnemosyne.persona".to_string(),
+                description: "Read durable preference and constraint memories for a personal-agent persona.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string", "description": "Persona namespace (default global)"},
+                        "limit": {"type": "integer", "default": 50}
+                    }
+                }),
+            },
+            Tool {
+                name: "mnemosyne.canonical".to_string(),
+                description: "Store or recall one current canonical fact by category and name; prior values are updated in place and remain auditable in memory metadata.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["remember", "recall"]},
+                        "category": {"type": "string"},
+                        "name": {"type": "string"},
+                        "body": {"type": "string"},
+                        "namespace": {"type": "string", "default": "global"}
+                    },
+                    "required": ["action", "category", "name"]
+                }),
+            },
+            Tool {
+                name: "mnemosyne.triples".to_string(),
+                description: "Add or query subject-predicate-object knowledge triples stored as searchable, tagged memories.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["add", "query"]},
+                        "subject": {"type": "string"},
+                        "predicate": {"type": "string"},
+                        "object": {"type": "string"},
+                        "namespace": {"type": "string", "default": "global"}
+                    },
+                    "required": ["action", "subject", "predicate"]
+                }),
+            },
         ];
 
         // Hermes exposes provider tools as underscore-separated names, while
@@ -367,6 +408,9 @@ impl ToolHandler {
             ("mnemosyne.consolidate", "mnemosyne_consolidate"),
             ("mnemosyne.update", "mnemosyne_update"),
             ("mnemosyne.delete", "mnemosyne_forget"),
+            ("mnemosyne.persona", "mnemosyne_persona"),
+            ("mnemosyne.canonical", "mnemosyne_canonical"),
+            ("mnemosyne.triples", "mnemosyne_triples"),
         ];
         let aliased_tools: Vec<Tool> = aliases
             .into_iter()
@@ -395,6 +439,9 @@ impl ToolHandler {
             "mnemosyne_consolidate" => "mnemosyne.consolidate",
             "mnemosyne_update" => "mnemosyne.update",
             "mnemosyne_forget" => "mnemosyne.delete",
+            "mnemosyne_persona" => "mnemosyne.persona",
+            "mnemosyne_canonical" => "mnemosyne.canonical",
+            "mnemosyne_triples" => "mnemosyne.triples",
             other => other,
         };
         info!("🔧 MCP tool called: {} (external process)", tool_name);
@@ -411,6 +458,9 @@ impl ToolHandler {
             "mnemosyne.consolidate" => self.consolidate(params).await,
             "mnemosyne.update" => self.update(params).await,
             "mnemosyne.delete" => self.delete(params).await,
+            "mnemosyne.persona" => self.persona(params).await,
+            "mnemosyne.canonical" => self.canonical(params).await,
+            "mnemosyne.triples" => self.triples(params).await,
             _ => {
                 warn!(
                     "{} Unknown MCP tool: {}",
@@ -796,6 +846,231 @@ impl ToolHandler {
             "nodes": tree.into_iter().take(max_nodes).collect::<Vec<_>>(),
             "memory_count": notes.len()
         }))
+    }
+
+    async fn persona(&self, params: Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct PersonaParams {
+            namespace: Option<String>,
+            limit: Option<usize>,
+        }
+
+        let params: PersonaParams = serde_json::from_value(params)?;
+        let namespace = params
+            .namespace
+            .as_deref()
+            .map(|value| self.parse_namespace(value))
+            .transpose()?;
+        let limit = params.limit.unwrap_or(50).clamp(1, 1000);
+        let memories = self
+            .storage
+            .list_memories(namespace, limit * 4, crate::storage::MemorySortOrder::Importance)
+            .await?
+            .into_iter()
+            .filter(|memory| {
+                matches!(
+                    memory.memory_type,
+                    MemoryType::Preference | MemoryType::Constraint
+                ) || memory.tags.iter().any(|tag| tag == "persona" || tag == "canonical")
+            })
+            .take(limit)
+            .collect::<Vec<_>>();
+
+        Ok(serde_json::json!({
+            "memories": memories,
+            "count": memories.len(),
+            "surface": "persona"
+        }))
+    }
+
+    async fn canonical(&self, params: Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct CanonicalParams {
+            action: String,
+            category: String,
+            name: String,
+            body: Option<String>,
+            namespace: Option<String>,
+        }
+
+        let params: CanonicalParams = serde_json::from_value(params)?;
+        Self::validate_non_empty(&params.category, "category")?;
+        Self::validate_non_empty(&params.name, "name")?;
+        let namespace = self.parse_namespace(params.namespace.as_deref().unwrap_or("global"))?;
+        let category_tag = format!("canonical-category:{}", params.category);
+        let name_tag = format!("canonical-name:{}", params.name);
+        let mut existing = self
+            .storage
+            .list_memories(
+                Some(namespace.clone()),
+                1000,
+                crate::storage::MemorySortOrder::Recent,
+            )
+            .await?
+            .into_iter()
+            .find(|memory| {
+                memory.tags.iter().any(|tag| tag == &category_tag)
+                    && memory.tags.iter().any(|tag| tag == &name_tag)
+                    && memory.tags.iter().any(|tag| tag == "canonical")
+            });
+
+        match params.action.as_str() {
+            "recall" => Ok(serde_json::json!({
+                "found": existing.is_some(),
+                "memory": existing,
+                "category": params.category,
+                "name": params.name
+            })),
+            "remember" => {
+                let body = params.body.ok_or_else(|| {
+                    MnemosyneError::ValidationError(
+                        "body is required when action is remember".to_string(),
+                    )
+                })?;
+                Self::validate_non_empty(&body, "body")?;
+                Self::validate_content_length(&body)?;
+                let tags = vec![
+                    "canonical".to_string(),
+                    "persona".to_string(),
+                    category_tag,
+                    name_tag,
+                ];
+
+                let memory_id = if let Some(memory) = existing.as_mut() {
+                    memory.content = body.clone();
+                    memory.summary = body.chars().take(160).collect();
+                    memory.tags = tags;
+                    memory.memory_type = MemoryType::Preference;
+                    memory.context = format!("canonical:{}:{}", params.category, params.name);
+                    memory.updated_at = chrono::Utc::now();
+                    let id = memory.id;
+                    self.storage.update_memory(memory).await?;
+                    id
+                } else {
+                    let mut memory = Self::memory_without_enrichment(
+                        &body,
+                        &format!("canonical:{}:{}", params.category, params.name),
+                    )?;
+                    memory.namespace = namespace;
+                    memory.memory_type = MemoryType::Preference;
+                    memory.importance = 10;
+                    memory.tags = tags;
+                    let id = memory.id;
+                    self.storage.store_memory(&memory).await?;
+                    id
+                };
+
+                Ok(serde_json::json!({
+                    "stored": true,
+                    "memory_id": memory_id.to_string(),
+                    "category": params.category,
+                    "name": params.name
+                }))
+            }
+            action => Err(MnemosyneError::ValidationError(format!(
+                "Unsupported canonical action '{}'; use remember or recall",
+                action
+            ))),
+        }
+    }
+
+    async fn triples(&self, params: Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct TripleParams {
+            action: String,
+            subject: String,
+            predicate: String,
+            object: Option<String>,
+            namespace: Option<String>,
+        }
+
+        let params: TripleParams = serde_json::from_value(params)?;
+        Self::validate_non_empty(&params.subject, "subject")?;
+        Self::validate_non_empty(&params.predicate, "predicate")?;
+        let namespace = self.parse_namespace(params.namespace.as_deref().unwrap_or("global"))?;
+        let subject_tag = format!("triple-subject:{}", params.subject);
+        let predicate_tag = format!("triple-predicate:{}", params.predicate);
+        let memories = self
+            .storage
+            .list_memories(
+                Some(namespace.clone()),
+                1000,
+                crate::storage::MemorySortOrder::Recent,
+            )
+            .await?;
+
+        match params.action.as_str() {
+            "query" => {
+                let object_tag = params
+                    .object
+                    .as_deref()
+                    .map(|value| format!("triple-object:{}", value));
+                let matches = memories
+                    .into_iter()
+                    .filter(|memory| {
+                        memory.tags.iter().any(|tag| tag == "triple")
+                            && memory.tags.iter().any(|tag| tag == &subject_tag)
+                            && memory.tags.iter().any(|tag| tag == &predicate_tag)
+                            && object_tag.as_ref().map_or(true, |tag| {
+                                memory.tags.iter().any(|memory_tag| memory_tag == tag)
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({
+                    "triples": matches,
+                    "count": matches.len()
+                }))
+            }
+            "add" => {
+                let object = params.object.ok_or_else(|| {
+                    MnemosyneError::ValidationError(
+                        "object is required when action is add".to_string(),
+                    )
+                })?;
+                Self::validate_non_empty(&object, "object")?;
+                let object_tag = format!("triple-object:{}", object);
+                let mut memory = Self::memory_without_enrichment(
+                    &format!("{} {} {}", params.subject, params.predicate, object),
+                    "knowledge triple",
+                )?;
+                memory.namespace = namespace.clone();
+                memory.memory_type = MemoryType::Entity;
+                memory.importance = 8;
+                memory.tags = vec![
+                    "triple".to_string(),
+                    subject_tag,
+                    predicate_tag,
+                    object_tag,
+                ];
+
+                // A subject/predicate slot has one current object. Preserve
+                // the prior value as an archived superseded memory.
+                if let Some(mut prior) = memories.into_iter().find(|candidate| {
+                    candidate.tags.iter().any(|tag| tag == "triple")
+                        && candidate.tags.iter().any(|tag| tag == &subject_tag)
+                        && candidate.tags.iter().any(|tag| tag == &predicate_tag)
+                        && !candidate.is_archived
+                }) {
+                    prior.superseded_by = Some(memory.id);
+                    prior.is_archived = true;
+                    prior.updated_at = chrono::Utc::now();
+                    self.storage.update_memory(&prior).await?;
+                }
+                let id = memory.id;
+                self.storage.store_memory(&memory).await?;
+                Ok(serde_json::json!({
+                    "stored": true,
+                    "memory_id": id.to_string(),
+                    "subject": params.subject,
+                    "predicate": params.predicate,
+                    "object": object
+                }))
+            }
+            action => Err(MnemosyneError::ValidationError(format!(
+                "Unsupported triples action '{}'; use add or query",
+                action
+            ))),
+        }
     }
 
     async fn list(&self, params: Value) -> Result<Value> {
@@ -1230,7 +1505,7 @@ impl ToolHandler {
                 name: name.to_string(),
             }),
             // Hermes profile (persona) — maps onto the per-agent private scope.
-            ["profile", name] => Ok(Namespace::Agent {
+            ["profile", name] | ["agent", name] => Ok(Namespace::Agent {
                 agent_id: name.to_string(),
             }),
             ["session", project, session_id] => Ok(Namespace::Session {

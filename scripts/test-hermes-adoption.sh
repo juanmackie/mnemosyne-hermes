@@ -69,6 +69,26 @@ raise SystemExit(0 if required <= names else 1)
 PY
 }
 
+mcp_provider_surfaces_work() {
+  mcp_aliases_work || return 1
+  python3 - "$TMP/mcp.jsonl" <<'PY'
+import json
+import sys
+
+names = set()
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    for tool in payload.get("result", {}).get("tools", []):
+        if isinstance(tool, dict) and isinstance(tool.get("name"), str):
+            names.add(tool["name"])
+required = {"mnemosyne_persona", "mnemosyne_canonical", "mnemosyne_triples"}
+raise SystemExit(0 if required <= names else 1)
+PY
+}
+
 offline_core_works() {
   local db="$TMP/offline.db"
   local output="$TMP/offline.json"
@@ -138,6 +158,13 @@ if mcp_aliases_work; then
 else
   echo "CHECK mcp_aliases=0"
   fail=$((fail + 2))
+fi
+if mcp_provider_surfaces_work; then
+  echo "CHECK provider_surfaces=3"
+  pass=$((pass + 3))
+else
+  echo "CHECK provider_surfaces=0"
+  fail=$((fail + 3))
 fi
 check importer has_import_command
 check offline_core offline_core_works

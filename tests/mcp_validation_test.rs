@@ -46,11 +46,22 @@ async fn test_hermes_aliases_are_advertised_and_dispatched() {
     assert!(names.contains("mnemosyne_remember"));
     assert!(names.contains("mnemosyne_recall"));
     assert!(names.contains("mnemosyne_forget"));
+    assert!(names.contains("mnemosyne_persona"));
+    assert!(names.contains("mnemosyne_canonical"));
+    assert!(names.contains("mnemosyne_triples"));
 
     let result = handler
         .execute("mnemosyne_recall", serde_json::json!({"query": ""}))
         .await;
     assert!(matches!(result, Err(MnemosyneError::ValidationError(_))));
+
+    let canonical = handler
+        .execute(
+            "mnemosyne_canonical",
+            serde_json::json!({"action": "invalid", "category": "identity", "name": "name"}),
+        )
+        .await;
+    assert!(matches!(canonical, Err(MnemosyneError::ValidationError(_))));
 }
 
 #[tokio::test]

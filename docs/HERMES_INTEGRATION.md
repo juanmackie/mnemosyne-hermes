@@ -74,10 +74,13 @@ underscore aliases with identical schemas:
 | `mnemosyne_consolidate` | `mnemosyne.consolidate` | Find/consolidate candidates |
 | `mnemosyne_used` | `mnemosyne.used` | Report useful recalls |
 
-Persona, canonical-fact, and temporal-triple parity is intentionally not claimed
-by this fork yet. Imported canonical/triple rows are preserved as tagged memory
-records; dedicated APIs will land only with explicit semantics and migration
-tests.
+The provider surfaces also include `mnemosyne_persona`,
+`mnemosyne_canonical`, and `mnemosyne_triples`. Persona reads durable
+preference/constraint memories; canonical facts provide one current value per
+(category, name) slot; triples provide add/query operations with one current
+object per (subject, predicate) slot and archived superseded values. Imported
+canonical/triple rows remain tagged memory records, so the source data is still
+portable even when a provider version has extra columns.
 
 ## 4. Migrate an existing Python memory store
 
