@@ -146,7 +146,7 @@ pub async fn handle(
             .entry(result.memory.id)
             .or_insert((result.memory.clone(), vec![]))
             .1
-            .push(result.score * 0.4);
+            .push(result.score * 0.5);
     }
 
     for result in vector_results {
