@@ -30,3 +30,10 @@ cargo check --release --locked --features full --bin mnemosyne \
   tail -80 /tmp/mnemosyne-autoresearch-full.log
   exit 1
 }
+# Distributed Iroh remains an explicit compatibility path even though it is
+# excluded from the shipped local-first binary.
+cargo check --release --locked --features distributed --bin mnemosyne \
+  >/tmp/mnemosyne-autoresearch-distributed.log 2>&1 || {
+  tail -80 /tmp/mnemosyne-autoresearch-distributed.log
+  exit 1
+}
