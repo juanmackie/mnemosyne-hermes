@@ -527,8 +527,7 @@ impl ToolHandler {
             None
         };
 
-        // Graph expansion is safe for direct matches because the storage
-        // layer excludes seed memories and only returns depth>0 neighbors.
+        // Perform enhanced hybrid search (keyword + vector + graph)
         let expand_graph = params.expand_graph.unwrap_or(true);
 
         // Phase 1: Keyword + graph search

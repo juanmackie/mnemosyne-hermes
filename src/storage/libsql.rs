@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use chrono::Utc;
 use libsql::{params, Builder, Connection, Database};
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -1466,34 +1465,6 @@ impl LibsqlStorage {
         .await?;
 
         Ok(())
-    }
-
-    /// Select graph-expansion seeds in a stable order.
-    ///
-    /// HashMap iteration is intentionally randomized per process. Using its
-    /// first entries made the same query expand from different memories on
-    /// different CLI invocations, which is both noisy and incorrect. Direct
-    /// keyword/vector signal determines relevance; the ID tie-break makes
-    /// equal-score candidates deterministic.
-    fn select_graph_seed_ids(
-        memory_scores: &HashMap<MemoryId, (f32, f32, f32, f32)>,
-        limit: usize,
-    ) -> Vec<MemoryId> {
-        let mut candidates: Vec<(MemoryId, f32)> = memory_scores
-            .iter()
-            .map(|(id, (keyword, vector, _, _))| (*id, *keyword + *vector))
-            .collect();
-        candidates.sort_by(|(left_id, left_score), (right_id, right_score)| {
-            right_score
-                .partial_cmp(left_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left_id.to_string().cmp(&right_id.to_string()))
-        });
-        candidates
-            .into_iter()
-            .take(limit)
-            .map(|(id, _)| id)
-            .collect()
     }
 
     /// Escape one FTS5 query token as a literal term.
@@ -3020,8 +2991,7 @@ impl StorageBackend for LibsqlStorage {
             SELECT DISTINCT m.*
             FROM memories m
             JOIN graph_walk gw ON m.id = gw.memory_id
-            WHERE gw.depth > 0
-              AND m.is_archived = 0 {namespace_filter}
+            WHERE m.is_archived = 0 {namespace_filter}
             ORDER BY gw.depth, m.importance DESC
             "#,
             placeholders = placeholders,
@@ -3233,7 +3203,7 @@ impl StorageBackend for LibsqlStorage {
         let use_graph = expand_graph && self.search_config.enable_graph_expansion;
         if use_graph && !memory_scores.is_empty() {
             debug!("Expanding graph from {} seed memories", memory_scores.len());
-            let seed_ids = Self::select_graph_seed_ids(&memory_scores, 5);
+            let seed_ids: Vec<_> = memory_scores.keys().take(5).copied().collect();
             let graph_memories = self
                 .graph_traverse(
                     &seed_ids,
@@ -4368,8 +4338,7 @@ impl StorageBackend for LibsqlStorage {
 
 #[cfg(test)]
 mod fts_query_tests {
-    use super::{LibsqlStorage, MemoryId};
-    use std::collections::HashMap;
+    use super::LibsqlStorage;
 
     #[test]
     fn quotes_apostrophes_for_fts5() {
@@ -4388,20 +4357,6 @@ mod fts_query_tests {
             "\"schedule.\""
         );
         assert_eq!(LibsqlStorage::escape_fts5_query("OR"), "\"OR\"");
-    }
-
-    #[test]
-    fn graph_seeds_are_score_ordered_and_bounded() {
-        let high = MemoryId::new();
-        let low = MemoryId::new();
-        let mut scores = HashMap::new();
-        scores.insert(low, (0.2, 0.1, 0.0, 0.0));
-        scores.insert(high, (0.8, 0.7, 0.0, 0.0));
-
-        assert_eq!(
-            LibsqlStorage::select_graph_seed_ids(&scores, 1),
-            vec![high]
-        );
     }
 }
 
