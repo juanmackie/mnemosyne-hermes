@@ -84,7 +84,7 @@ pub async fn handle(
     if !dry_run {
         let target_path = target_db_path
             .map(PathBuf::from)
-            .unwrap_or_else(default_target_path);
+            .unwrap_or_else(|| PathBuf::from(super::helpers::get_db_path(None)));
         let target_canonical = target_path
             .canonicalize()
             .unwrap_or_else(|_| target_path.clone());
@@ -168,13 +168,6 @@ fn canonical_source_path(path: &str) -> Result<PathBuf> {
         )));
     }
     source.canonicalize().map_err(MnemosyneError::from)
-}
-
-fn default_target_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("mnemosyne")
-        .join("mnemosyne.db")
 }
 
 fn parse_namespace(value: &str) -> Namespace {
