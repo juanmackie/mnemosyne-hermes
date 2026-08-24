@@ -4,7 +4,7 @@ use mnemosyne_core::{build_memory_context_block, is_trivial_prompt};
 use mnemosyne_core::{
     orchestration::events::AgentEvent, utils::string::truncate_at_char_boundary, ConnectionMode,
     EmbeddingConfig, LibsqlStorage, LlmConfig, LocalEmbeddingService, Namespace,
-    RemoteEmbeddingService,
+    RemoteEmbeddingService, StorageBackend,
 };
 use std::sync::Arc;
 use tracing::debug;
