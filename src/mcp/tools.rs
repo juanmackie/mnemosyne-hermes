@@ -1038,8 +1038,8 @@ impl ToolHandler {
                 memory.importance = 8;
                 memory.tags = vec![
                     "triple".to_string(),
-                    subject_tag,
-                    predicate_tag,
+                    subject_tag.clone(),
+                    predicate_tag.clone(),
                     object_tag,
                 ];
 
