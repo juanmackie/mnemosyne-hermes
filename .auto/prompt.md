@@ -19,8 +19,8 @@ comparison against the Python stack.
   MRR across the two fixed held-out retrieval sets.
 - **Secondary**: `recall_dev_mrr`, held-out Hit@5, hierarchical held-out MRR,
   p95 recall latency, `hermes_phase1_gates`, and binary size in MiB.
-- **Current clean candidate**: held-out flat MRR 0.860648, dev MRR 0.871491,
-  held-out Hit@5 0.972222, hierarchical held-out MRR 0.832870, and 39 adoption
+- **Current clean candidate**: held-out flat MRR 0.889352, dev MRR 0.875877,
+  held-out Hit@5 0.972222, hierarchical held-out MRR 0.889352, and 39 adoption
   gates. These are measurements, not labels to optimize against.
 - **Quality guardrails**: the existing `.auto/eval_dev.jsonl`,
   `.auto/eval_heldout_a.jsonl`, and `.auto/eval_heldout_b.jsonl` are fixed
@@ -109,8 +109,10 @@ or their relevance labels.
   vector paths remain enabled. Held-out MRR rose to 0.815278 and p95 latency
   improved.
 - Generic function-word filtering before FTS5 improved held-out MRR to
-  0.860648 and dev MRR to 0.871491. Negations and temporal qualifiers remain
-  searchable; all-stopword queries fall back to their original terms.
+  0.860648 and dev MRR to 0.871491. Ignoring question verbs (`use`, `happen`,
+  `appear`) raised held-out MRR again to 0.889352. Negations and temporal
+  qualifiers remain searchable; all-stopword queries fall back to original
+  terms.
 - The default release remains keyless/local-first and all 39 adoption gates
   pass. Do not trade away that contract or add fixed-dataset query strings.
 - Deferred ideas are in `.auto/ideas.md`; feature-gating work is historical

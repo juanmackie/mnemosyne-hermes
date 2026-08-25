@@ -28,6 +28,7 @@ const FTS_STOP_WORDS: &[&str] = &[
     "its", "may", "might", "more", "most", "of", "on", "or", "should", "so", "than", "that", "the",
     "their", "then", "there", "these", "this", "to", "use", "was", "were", "what", "where",
     "which", "who", "why", "will", "with", "would", "you", "your", "user", "happen", "appear",
+    "must", "every", "provide",
 ];
 
 // ---------------------------------------------------------------------------
