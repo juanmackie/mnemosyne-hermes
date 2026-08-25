@@ -26,8 +26,8 @@ const FTS_STOP_WORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "can", "could", "did",
     "do", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "into", "is", "it",
     "its", "may", "might", "more", "most", "of", "on", "or", "should", "so", "than", "that", "the",
-    "their", "then", "there", "these", "this", "to", "was", "were", "what", "where", "which",
-    "who", "why", "will", "with", "would", "you", "your", "user",
+    "their", "then", "there", "these", "this", "to", "use", "was", "were", "what", "where",
+    "which", "who", "why", "will", "with", "would", "you", "your", "user", "happen", "appear",
 ];
 
 // ---------------------------------------------------------------------------
