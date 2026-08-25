@@ -5,10 +5,17 @@
 
 use crate::error::Result;
 use crate::services::llm::LlmConfig;
+#[cfg(feature = "local-embeddings")]
+use crate::{
+    config::EmbeddingConfig,
+    embeddings::{EmbeddingService as LocalEmbedding, LocalEmbeddingService},
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+#[cfg(feature = "local-embeddings")]
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 /// Embedding dimension (using 384 for compatibility with all-MiniLM-L6-v2)
@@ -19,6 +26,8 @@ pub struct EmbeddingService {
     client: Client,
     api_key: String,
     config: LlmConfig,
+    #[cfg(feature = "local-embeddings")]
+    local: Option<Arc<LocalEmbeddingService>>,
 }
 
 #[derive(Serialize)]
@@ -46,27 +55,64 @@ struct ContentBlock {
 }
 
 impl EmbeddingService {
+    /// Return true when a model-backed local embedding runtime is active.
+    pub fn uses_model_backed_embeddings(&self) -> bool {
+        #[cfg(feature = "local-embeddings")]
+        {
+            self.local
+                .as_ref()
+                .map(|local| local.uses_model_backed_embeddings())
+                .unwrap_or(false)
+        }
+        #[cfg(not(feature = "local-embeddings"))]
+        {
+            false
+        }
+    }
+
     /// Return true when the keyless deterministic hash fallback is active.
     pub fn uses_fallback_embeddings(&self) -> bool {
-        self.api_key.is_empty()
+        self.api_key.is_empty() && !self.uses_model_backed_embeddings()
     }
 
     /// Name the embedding mode exposed to retrieval clients.
     pub fn embedding_mode(&self) -> &'static str {
-        if self.uses_fallback_embeddings() {
+        if self.uses_model_backed_embeddings() {
+            "local-model"
+        } else if self.uses_fallback_embeddings() {
             "deterministic-hash-fallback"
         } else {
             "llm-concept"
         }
     }
 
-    /// Create a new embedding service
+    /// Create a new embedding service without loading optional local models.
     pub fn new(api_key: String, config: LlmConfig) -> Self {
         Self {
             client: Client::new(),
             api_key,
             config,
+            #[cfg(feature = "local-embeddings")]
+            local: None,
         }
+    }
+
+    /// Create an embedding service that uses the local model for keyless MCP
+    /// recall when this opt-in feature is compiled. Failure to initialize the
+    /// optional model preserves the deterministic no-network fallback.
+    #[cfg(feature = "local-embeddings")]
+    pub async fn new_with_local(api_key: String, config: LlmConfig) -> Self {
+        let mut service = Self::new(api_key.clone(), config);
+        if api_key.is_empty() {
+            let local_config = EmbeddingConfig {
+                show_download_progress: false,
+                ..EmbeddingConfig::default()
+            };
+            if let Ok(local) = LocalEmbeddingService::new(local_config).await {
+                service.local = Some(Arc::new(local));
+            }
+        }
+        service
     }
 
     /// Generate embedding vector for text
@@ -76,6 +122,11 @@ impl EmbeddingService {
     /// Can be upgraded to dedicated embedding models (Voyage AI, OpenAI, etc.) later.
     pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
         debug!("Generating embedding for text ({} chars)", text.len());
+
+        #[cfg(feature = "local-embeddings")]
+        if let Some(local) = &self.local {
+            return local.embed(text).await;
+        }
 
         // Keyless mode: never touch the network. Personal agents run fully
         // local — a missing API key must mean deterministic offline behavior,

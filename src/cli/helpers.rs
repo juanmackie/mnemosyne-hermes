@@ -198,10 +198,18 @@ pub async fn start_mcp_server(db_path_arg: Option<String>) -> Result<()> {
         }
     };
 
-    // Initialize embedding service (shares API key with LLM)
+    // Initialize embedding service (shares API key with LLM). The optional
+    // local profile wires model-backed embeddings into MCP as well as CLI.
     let embeddings = {
         let config = LlmConfig::default();
-        Arc::new(EmbeddingService::new(config.api_key.clone(), config))
+        #[cfg(feature = "local-embeddings")]
+        {
+            Arc::new(EmbeddingService::new_with_local(config.api_key.clone(), config).await)
+        }
+        #[cfg(not(feature = "local-embeddings"))]
+        {
+            Arc::new(EmbeddingService::new(config.api_key.clone(), config))
+        }
     };
 
     // Try to start API server for dashboard connectivity
@@ -329,7 +337,14 @@ pub async fn start_mcp_server_with_api(
     // Initialize embedding service
     let embeddings = {
         let config = LlmConfig::default();
-        Arc::new(EmbeddingService::new(config.api_key.clone(), config))
+        #[cfg(feature = "local-embeddings")]
+        {
+            Arc::new(EmbeddingService::new_with_local(config.api_key.clone(), config).await)
+        }
+        #[cfg(not(feature = "local-embeddings"))]
+        {
+            Arc::new(EmbeddingService::new(config.api_key.clone(), config))
+        }
     };
 
     // Parse API server address
