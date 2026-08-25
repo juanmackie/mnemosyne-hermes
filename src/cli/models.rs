@@ -33,7 +33,9 @@ pub async fn handle(action: ModelsAction) -> Result<()> {
                 println!("Available embedding models:");
                 println!();
                 println!("  nomic-embed-text-v1.5  (768 dims, recommended)");
+                println!("  nomic-embed-text-v1.5-q (768 dims, ~4x smaller download)");
                 println!("  nomic-embed-text-v1    (768 dims)");
+                println!("  embedding-gemma-300m   (768 dims, instruction-tuned)");
                 println!("  all-MiniLM-L6-v2       (384 dims)");
                 println!("  all-MiniLM-L12-v2      (384 dims)");
                 println!("  bge-small-en-v1.5      (384 dims)");
@@ -46,7 +48,7 @@ pub async fn handle(action: ModelsAction) -> Result<()> {
                 event_helpers::emit_domain_event(AgentEvent::ModelOperationCompleted {
                     operation: "list".to_string(),
                     model_name: None,
-                    result_summary: "7 models available".to_string(),
+                    result_summary: "9 models available".to_string(),
                 })
                 .await;
 
