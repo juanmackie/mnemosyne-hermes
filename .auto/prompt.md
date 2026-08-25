@@ -15,23 +15,28 @@ enterprise features and rewrites docs. Phase 3 publishes a fair retrieval
 comparison against the Python stack.
 
 ## Metrics
-- **Primary**: `recall_heldout_mrr` (unitless, higher is better) — mean flat
-  MRR across the two fixed held-out retrieval sets.
-- **Secondary**: `recall_dev_mrr`, held-out Hit@5, hierarchical held-out MRR,
-  p95 recall latency, `hermes_phase1_gates`, and binary size in MiB.
-- **Current clean candidate**: held-out flat MRR 0.889352, dev MRR 0.875877,
-  held-out Hit@5 0.972222, hierarchical held-out MRR 0.889352, and 39 adoption
-  gates. These are measurements, not labels to optimize against.
+- **Primary**: `recall_model_heldout_mrr` (unitless, higher is better) —
+  average flat held-out MRR through the opt-in model-backed local profile on
+  both CLI and MCP stdio.
+- **Secondary**: per-surface CLI/MCP MRR and Hit@5, `recall_dev_mrr`,
+  hierarchical held-out MRR, p95 recall latency, `hermes_phase1_gates`, and
+  binary size in MiB.
+- **Previous default baseline**: combined keyless held-out MRR 0.898611 (CLI
+  and MCP each 0.898611), dev MRR 0.875877, perfect held-out Hit@5,
+  hierarchical held-out MRR 0.903241, and 39 adoption gates. The new primary
+  intentionally measures the separate model-backed profile; do not mix its
+  downloaded-model results into the default adoption score.
 - **Quality guardrails**: the existing `.auto/eval_dev.jsonl`,
   `.auto/eval_heldout_a.jsonl`, and `.auto/eval_heldout_b.jsonl` are fixed
   datasets. Do not tune production code or labels to their questions.
 
 ## How to Run
-`./.auto/measure.sh` builds the release binary, runs the public adoption smoke
-suite, rebuilds the fixed corpus through the public CLI, and evaluates flat and
-hierarchical recall on dev plus both held-out sets. It emits structured
-`METRIC` lines. The smoke tests and evaluator never mutate the source datasets
-or their relevance labels.
+`./.auto/measure.sh` builds the opt-in `local-embeddings` release profile,
+runs the public adoption smoke suite, rebuilds the fixed corpus through the
+public CLI, and evaluates flat and hierarchical recall on dev plus both
+held-out sets through CLI and MCP stdio. It emits structured `METRIC` lines.
+The smoke tests and evaluators copy their source databases and never mutate the
+datasets or relevance labels.
 
 ## Files in Scope
 - `src/main.rs`, `src/cli/*` — public command aliases and import CLI.
@@ -68,11 +73,13 @@ or their relevance labels.
   simpler equal-quality code wins.
 
 ## Honest evaluation protocol
-1. Held-out flat MRR is the optimization target; the adoption smoke test remains
-   a hard compatibility gate. Never improve either by weakening a test.
+1. Combined public held-out MRR is the optimization target; the adoption smoke
+   test remains a hard compatibility gate. Never improve either by weakening a
+   test.
 2. When retrieval or storage code changes, run dev and both held-out evaluations
-   through `./.auto/measure.sh`, compare generalization, and monitor Hit@5,
-   hierarchical MRR, and latency. Do not add query-specific rules.
+   through `./.auto/measure.sh` on both public surfaces, compare generalization,
+   and monitor Hit@5, hierarchical MRR, and latency. Do not add query-specific
+   rules.
 3. Run `./.auto/checks.sh` after a passing candidate. Revert candidates that
    regress public contracts, fail tests, mutate source data, or add unverified
    compatibility claims.
@@ -100,8 +107,9 @@ or their relevance labels.
 - A release integration-test link exceeded the per-iteration timeout, so the
   black-box public MCP round-trip is the fast backpressure gate; full
   integration validation is deferred to release CI.
-- The recall segment reinitialized the primary metric to held-out flat MRR.
-  BM25-ranked FTS5 results replaced rowid-order keyword results, and the hybrid
+- The recall segment first reinitialized the primary metric to held-out flat
+  MRR, then added MCP stdio to the public combined workload. BM25-ranked FTS5
+  results replaced rowid-order keyword results, and the hybrid
   scorer now preserves normalized keyword relevance. This raised held-out MRR
   from 0.271898 to 0.662037.
 - Deterministic hash vectors are now excluded from offline CLI ranking because
@@ -114,6 +122,8 @@ or their relevance labels.
   qualifiers remain searchable; all-stopword queries fall back to original
   terms.
 - The default release remains keyless/local-first and all 39 adoption gates
-  pass. Do not trade away that contract or add fixed-dataset query strings.
+  pass. The evaluator now covers MCP stdio as well as CLI. The current
+  iteration measures the cached, opt-in model-backed profile only; preserve the
+  default fallback behavior and do not add fixed-dataset query strings.
 - Deferred ideas are in `.auto/ideas.md`; feature-gating work is historical
   context, not the current recall target.

@@ -3,3 +3,4 @@
 - Expand importer fixtures to cover Python `episodic_memory`, `canonical_facts`, `triples`, `facts`, and `annotations`, including a source SHA-256/sidecar fingerprint to prove read-only migration.
 - Run a fair held-out comparison against the Python Hermes provider using identical corpora, query sets, embedding settings, and hardware notes; publish Hit@1/Hit@5/MRR plus abstention and latency.
 - Add provider config examples for Claude Code, Cursor, Codex, Windsurf, OpenClaw, and generic MCP clients without duplicating protocol implementations.
+- Measure the opt-in model-backed local-embedding profile separately from the default keyless fallback; do not mix its downloaded-model results into the default adoption score.

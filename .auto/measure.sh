@@ -7,7 +7,10 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export RUSTFLAGS="${RUSTFLAGS:-}"
 
 # Build the candidate before measuring so stale binaries cannot pass.
-cargo build --release --locked --bin mnemosyne >/dev/null
+# Evaluate the opt-in model-backed local profile separately from the minimal
+# default release; this segment measures semantic recall without changing the
+# default adoption score or downloading anything during the smoke test.
+cargo build --release --locked --features local-embeddings --bin mnemosyne >/dev/null
 
 # Keep the adoption contract as a hard part of the recall workload: retrieval
 # improvements must not regress the public local-first provider surface.
@@ -64,6 +67,7 @@ mean = lambda key, items: statistics.mean(item[key] for item in items)
 cli_heldout = [cli_flat[name] for name in heldout_names]
 mcp_heldout = [mcp_flat[name] for name in heldout_names]
 # The primary measures the public adoption path, not only its CLI wrapper.
+print(f"METRIC recall_model_heldout_mrr={statistics.mean([mean('mrr', cli_heldout), mean('mrr', mcp_heldout)]):.6f}")
 print(f"METRIC recall_heldout_mrr={statistics.mean([mean('mrr', cli_heldout), mean('mrr', mcp_heldout)]):.6f}")
 print(f"METRIC recall_cli_heldout_mrr={mean('mrr', cli_heldout):.6f}")
 print(f"METRIC recall_mcp_heldout_mrr={mean('mrr', mcp_heldout):.6f}")
