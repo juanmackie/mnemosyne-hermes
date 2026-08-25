@@ -19,6 +19,17 @@ use tracing::{debug, info, warn};
 
 const MAX_GRAPH_SEEDS: usize = 1_000;
 
+// Function words add noise to natural-language OR queries, especially in
+// keyless mode where BM25 is the primary ranking signal. Keep negations and
+// temporal qualifiers so safety and scheduling questions retain their meaning.
+const FTS_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "can", "could", "did",
+    "do", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "into", "is", "it",
+    "its", "may", "might", "more", "most", "of", "on", "or", "should", "so", "than", "that", "the",
+    "their", "then", "there", "these", "this", "to", "was", "were", "what", "where", "which",
+    "who", "why", "will", "with", "would", "you", "your", "user",
+];
+
 // ---------------------------------------------------------------------------
 // Migration SQL embedded at compile time via include_str!
 // Eliminates runtime file I/O during database initialization — critical for
@@ -1497,6 +1508,32 @@ impl LibsqlStorage {
             .take(limit)
             .map(|(id, _)| id)
             .collect()
+    }
+
+    /// Build a safe, relevance-focused FTS5 query from natural language.
+    fn build_fts_query(query: &str) -> String {
+        let original_terms: Vec<&str> = query.split_whitespace().collect();
+        let filtered_terms: Vec<&str> = original_terms
+            .iter()
+            .copied()
+            .filter(|term| {
+                let normalized = term
+                    .trim_matches(|character: char| !character.is_alphanumeric())
+                    .to_ascii_lowercase();
+                let normalized = normalized.strip_suffix("'s").unwrap_or(&normalized);
+                !normalized.is_empty() && !FTS_STOP_WORDS.contains(&normalized)
+            })
+            .collect();
+        let terms = if filtered_terms.is_empty() {
+            &original_terms
+        } else {
+            &filtered_terms
+        };
+        terms
+            .iter()
+            .map(|term| Self::escape_fts5_query(term))
+            .collect::<Vec<String>>()
+            .join(" OR ")
     }
 
     /// Escape one FTS5 query token as a literal term.
@@ -3001,19 +3038,11 @@ impl StorageBackend for LibsqlStorage {
             None => None,
         };
 
-        // Convert multi-word queries to OR logic for FTS5
-        // "database architecture" -> "database OR architecture"
-        // This matches user expectations: show results containing ANY of the search terms
-        // Each term is escaped to handle hyphens and other FTS5 special characters
-        let fts_query = if query.contains(' ') {
-            query
-                .split_whitespace()
-                .map(Self::escape_fts5_query)
-                .collect::<Vec<String>>()
-                .join(" OR ")
-        } else {
-            Self::escape_fts5_query(query)
-        };
+        // Convert multi-word queries to OR logic for FTS5, dropping common
+        // function words that otherwise match many unrelated memories. If a
+        // query contains only stop words, retain the original terms rather
+        // than turning it into an invalid empty MATCH expression.
+        let fts_query = Self::build_fts_query(query);
 
         // Handle empty query - return all memories in namespace (no FTS5)
         let conn = self.get_conn()?;
