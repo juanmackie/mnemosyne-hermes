@@ -133,7 +133,9 @@ impl LocalEmbeddingService {
     fn model_name_to_enum(model_name: &str) -> Result<EmbeddingModel> {
         match model_name {
             "nomic-embed-text-v1.5" => Ok(EmbeddingModel::NomicEmbedTextV15),
+            "nomic-embed-text-v1.5-q" => Ok(EmbeddingModel::NomicEmbedTextV15Q),
             "nomic-embed-text-v1" => Ok(EmbeddingModel::NomicEmbedTextV1),
+            "embedding-gemma-300m" => Ok(EmbeddingModel::EmbeddingGemma300M),
             "all-MiniLM-L6-v2" => Ok(EmbeddingModel::AllMiniLML6V2),
             "all-MiniLM-L12-v2" => Ok(EmbeddingModel::AllMiniLML12V2),
             "bge-small-en-v1.5" => Ok(EmbeddingModel::BGESmallENV15),
@@ -296,6 +298,8 @@ mod tests {
     fn test_model_name_mapping() {
         // Valid models
         assert!(LocalEmbeddingService::model_name_to_enum("nomic-embed-text-v1.5").is_ok());
+        assert!(LocalEmbeddingService::model_name_to_enum("nomic-embed-text-v1.5-q").is_ok());
+        assert!(LocalEmbeddingService::model_name_to_enum("embedding-gemma-300m").is_ok());
         assert!(LocalEmbeddingService::model_name_to_enum("all-MiniLM-L6-v2").is_ok());
         assert!(LocalEmbeddingService::model_name_to_enum("bge-base-en-v1.5").is_ok());
 

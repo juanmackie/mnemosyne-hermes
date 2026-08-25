@@ -145,7 +145,11 @@ impl Default for EmbeddingConfig {
 
         Self {
             enabled: true,
-            model: "nomic-embed-text-v1.5".to_string(),
+            // Default model is fp32 nomic-embed-text-v1.5. MNEMOSYNE_EMBEDDING_MODEL
+            // provides a runtime override for evaluation/A-B testing without
+            // changing the shipped default.
+            model: std::env::var("MNEMOSYNE_EMBEDDING_MODEL")
+                .unwrap_or_else(|_| "nomic-embed-text-v1.5".to_string()),
             device: "cpu".to_string(),
             batch_size: 32,
             cache_dir,
@@ -172,7 +176,8 @@ impl EmbeddingConfig {
     /// Get the embedding dimensions for the configured model
     pub fn dimensions(&self) -> usize {
         match self.model.as_str() {
-            "nomic-embed-text-v1.5" | "nomic-embed-text-v1" => 768,
+            "nomic-embed-text-v1.5" | "nomic-embed-text-v1" | "nomic-embed-text-v1.5-q" => 768,
+            "embedding-gemma-300m" => 768,
             "all-MiniLM-L6-v2" => 384,
             "all-MiniLM-L12-v2" => 384,
             "bge-small-en-v1.5" => 384,
@@ -198,7 +203,9 @@ impl EmbeddingConfig {
         // Check if model is supported
         let supported_models = [
             "nomic-embed-text-v1.5",
+            "nomic-embed-text-v1.5-q",
             "nomic-embed-text-v1",
+            "embedding-gemma-300m",
             "all-MiniLM-L6-v2",
             "all-MiniLM-L12-v2",
             "bge-small-en-v1.5",
@@ -718,7 +725,9 @@ mod tests {
     fn test_embedding_config_all_supported_models() {
         let supported_models = vec![
             "nomic-embed-text-v1.5",
+            "nomic-embed-text-v1.5-q",
             "nomic-embed-text-v1",
+            "embedding-gemma-300m",
             "all-MiniLM-L6-v2",
             "all-MiniLM-L12-v2",
             "bge-small-en-v1.5",
