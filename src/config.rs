@@ -145,11 +145,14 @@ impl Default for EmbeddingConfig {
 
         Self {
             enabled: true,
-            // Default model is fp32 nomic-embed-text-v1.5. MNEMOSYNE_EMBEDDING_MODEL
-            // provides a runtime override for evaluation/A-B testing without
-            // changing the shipped default.
+            // Default model is EmbeddingGemma-300M, the quality winner of the
+            // recorded candidate evaluation (docs/EMBEDDING_CANDIDATE_EVALUATION.md:
+            // held-out MRR 0.958333 vs 0.933333 for fp32 nomic v1.5).
+            // MNEMOSYNE_EMBEDDING_MODEL provides a runtime override for
+            // footprint-sensitive setups (e.g. nomic-embed-text-v1.5-q at a
+            // ~4x smaller download) and for evaluation/A-B testing.
             model: std::env::var("MNEMOSYNE_EMBEDDING_MODEL")
-                .unwrap_or_else(|_| "nomic-embed-text-v1.5".to_string()),
+                .unwrap_or_else(|_| "embedding-gemma-300m".to_string()),
             device: "cpu".to_string(),
             batch_size: 32,
             cache_dir,

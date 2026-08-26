@@ -2749,13 +2749,9 @@ impl StorageBackend for LibsqlStorage {
             let target_id = MemoryId::from_string(&target_id_str)?;
 
             let link_type_str: String = link_row.get(1)?;
-            let link_type = match link_type_str.as_str() {
-                "extends" => crate::types::LinkType::Extends,
-                "contradicts" => crate::types::LinkType::Contradicts,
-                "implements" => crate::types::LinkType::Implements,
-                "references" => crate::types::LinkType::References,
-                "supersedes" => crate::types::LinkType::Supersedes,
-                _ => continue,
+            let link_type = match Self::parse_link_type(&link_type_str) {
+                Some(link_type) => link_type,
+                None => continue,
             };
 
             let strength: f64 = link_row.get(2)?;
@@ -3302,6 +3298,8 @@ impl StorageBackend for LibsqlStorage {
         }
 
         // 2. Vector search (if embedding service available and query non-empty)
+        // Ranked vector channel results, kept ordered best-first for fusion.
+        let mut vector_results: Vec<(MemoryId, f32)> = Vec::new();
         if !query.is_empty()
             && self.embedding_service.is_some()
             && self.search_config.enable_vector_search
@@ -3311,16 +3309,17 @@ impl StorageBackend for LibsqlStorage {
                 match service.embed(query).await {
                     Ok(query_embedding) => {
                         // Perform vector search
-                        let vector_results = self
+                        let fresh_vector_results = self
                             .vector_search(&query_embedding, max_results * 2, namespace.clone())
                             .await?;
-                        debug!("Vector search found {} results", vector_results.len());
+                        debug!("Vector search found {} results", fresh_vector_results.len());
 
-                        for (memory_id, similarity) in vector_results {
+                        vector_results = fresh_vector_results;
+                        for (memory_id, similarity) in &vector_results {
                             let entry = memory_scores
-                                .entry(memory_id)
+                                .entry(*memory_id)
                                 .or_insert((0.0, 0.0, 0.0, 0.0));
-                            entry.1 = similarity; // Update vector score
+                            entry.1 = *similarity; // Update vector score
                         }
                     }
                     Err(e) => {
@@ -3370,16 +3369,22 @@ impl StorageBackend for LibsqlStorage {
             return Ok(vec![]);
         }
 
-        // 4. Fetch all memories and compute final scores
+        // Fetch all candidates in a single batched read instead of one
+        // get_memory round trip per candidate (two SQL queries per candidate
+        // in the previous per-id loop).
+        let candidate_ids: Vec<MemoryId> = memory_scores.keys().copied().collect();
+        let memories = self.get_memories_batch(&candidate_ids).await?;
+
+        // Compute final scores
         let now = Utc::now();
         let mut scored_results = Vec::new();
 
         for (memory_id, (keyword_score, vector_score, graph_score, depth)) in memory_scores {
-            // Fetch full memory
-            let memory = match self.get_memory(memory_id).await {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!("Failed to fetch memory {}: {}", memory_id, e);
+            // Take the pre-fetched memory
+            let memory = match memories.get(&memory_id) {
+                Some(m) => m.clone(),
+                None => {
+                    warn!("Failed to fetch memory {}: not found in batch", memory_id);
                     continue;
                 }
             };
@@ -4520,6 +4525,105 @@ mod fts_query_tests {
 
 // Additional implementation methods for LibsqlStorage
 impl LibsqlStorage {
+    /// Fetch many memories in two round trips (one for rows, one for all
+    /// associated links) instead of two queries per id.
+    ///
+    /// Hybrid recall used to call [`Self::get_memory`] once per candidate,
+    /// which issued two SQL queries per candidate per recall and left most of
+    /// each query's time waiting on storage round trips. Missing ids are
+    /// simply absent from the returned map so callers can keep their
+    /// skip-and-warn behavior.
+    async fn get_memories_batch(&self, ids: &[MemoryId]) -> Result<HashMap<MemoryId, MemoryNote>> {
+        let mut memories: HashMap<MemoryId, MemoryNote> = HashMap::with_capacity(ids.len());
+        if ids.is_empty() {
+            return Ok(memories);
+        }
+
+        let conn = self.get_conn()?;
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let id_params: Vec<libsql::Value> = ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.to_string()))
+            .collect();
+
+        let sql = format!(
+            "SELECT * FROM memories WHERE id IN ({placeholders})",
+            placeholders = placeholders
+        );
+        let mut rows = conn
+            .query(&sql, libsql::params_from_iter(id_params.clone()))
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let memory = self.row_to_memory(&row).await?;
+            memories.insert(memory.id, memory);
+        }
+
+        // Attach semantic links in one additional grouped query.
+        let link_sql = format!(
+            "SELECT source_id, target_id, link_type, strength, reason, created_at \
+             FROM memory_links WHERE source_id IN ({placeholders})",
+            placeholders = placeholders
+        );
+        let mut link_rows = conn
+            .query(&link_sql, libsql::params_from_iter(id_params))
+            .await?;
+        while let Some(link_row) = link_rows.next().await? {
+            let source_id_str: String = link_row.get(0)?;
+            let source_id = match MemoryId::from_string(&source_id_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!("Invalid source_id in memory_links: {}", e);
+                    continue;
+                }
+            };
+            let Some(memory) = memories.get_mut(&source_id) else {
+                continue;
+            };
+            let target_id_str: String = link_row.get(1)?;
+            let target_id = match MemoryId::from_string(&target_id_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!("Invalid target_id in memory_links: {}", e);
+                    continue;
+                }
+            };
+            let Some(link_type) = Self::parse_link_type(link_row.get::<String>(2)?.as_str()) else {
+                continue;
+            };
+            let strength: f64 = link_row.get(3)?;
+            let reason: String = link_row.get(4)?;
+            let created_at_str: String = link_row.get(5)?;
+            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                .map_err(|e| MnemosyneError::Other(format!("Invalid timestamp: {}", e)))?
+                .with_timezone(&chrono::Utc);
+
+            memory.links.push(crate::types::MemoryLink {
+                target_id,
+                link_type,
+                strength: strength as f32,
+                reason,
+                created_at,
+                last_traversed_at: None,
+                user_created: false,
+            });
+        }
+
+        debug!("Batch-fetched {} memories", memories.len());
+        Ok(memories)
+    }
+
+    /// Map a stored link-type string to its typed representation.
+    fn parse_link_type(value: &str) -> Option<crate::types::LinkType> {
+        match value {
+            "extends" => Some(crate::types::LinkType::Extends),
+            "contradicts" => Some(crate::types::LinkType::Contradicts),
+            "implements" => Some(crate::types::LinkType::Implements),
+            "references" => Some(crate::types::LinkType::References),
+            "supersedes" => Some(crate::types::LinkType::Supersedes),
+            _ => None,
+        }
+    }
+
     /// Store version check cache entry
     pub async fn store_version_cache(
         &self,

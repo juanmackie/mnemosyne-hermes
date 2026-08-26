@@ -569,11 +569,15 @@ impl HierarchicalRetriever {
             }
         }
 
-        // Step 4: recursive search with convergence detection
+        // Step 4: recursive search. Termination is score-based: the queue is
+        // a max-heap, so once the best remaining entry falls below the
+        // collection threshold no remaining subtree can produce a result.
+        // The previous top-k-stability early break abandoned still-viable
+        // paths once the collected set looked stable, which tail-ranked whole
+        // candidate groups (score * 0.5) and dropped them out of small result
+        // windows entirely.
         let alpha = self.config.score_propagation_alpha.clamp(0.0, 1.0);
         let mut round = 0usize;
-        let mut unchanged_rounds = 0usize;
-        let mut last_topk: Vec<String> = Vec::new();
 
         while let Some(entry) = queue.pop() {
             round += 1;
@@ -581,7 +585,12 @@ impl HierarchicalRetriever {
                 Some(n) => *n,
                 None => continue,
             };
-
+            if node.is_leaf && entry.score < self.config.score_threshold {
+                // Max-heap: every remaining leaf is below threshold too.
+                // Directories may still carry unexpanded viable leaves.
+                trajectory.converged = true;
+                break;
+            }
             let children = children_of
                 .get(node.path.as_str())
                 .cloned()
@@ -663,27 +672,6 @@ impl HierarchicalRetriever {
                     });
                 }
             }
-
-            // Convergence check every round on the current collected top-k
-            collected.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let current_topk: Vec<String> = collected
-                .iter()
-                .take(self.config.global_search_topk)
-                .map(|m| m.uri.clone())
-                .collect();
-            if current_topk == last_topk {
-                unchanged_rounds += 1;
-                if unchanged_rounds >= self.config.max_convergence_rounds {
-                    break;
-                }
-            } else {
-                unchanged_rounds = 0;
-                last_topk = current_topk;
-            }
         }
 
         collected.sort_by(|a, b| {
@@ -693,7 +681,6 @@ impl HierarchicalRetriever {
         });
 
         trajectory.rounds_executed = round;
-        trajectory.converged = unchanged_rounds >= self.config.max_convergence_rounds;
         (collected, trajectory)
     }
 }
