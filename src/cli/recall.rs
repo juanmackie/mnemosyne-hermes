@@ -199,6 +199,29 @@ pub async fn handle(
 
     results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
+    // Coverage rescoring before truncation: promote candidates covering most
+    // of the query's content terms over single-token OR matches.
+    {
+        let mut rescored: Vec<mnemosyne_core::types::SearchResult> = results
+            .into_iter()
+            .map(|(memory, score)| mnemosyne_core::types::SearchResult {
+                memory,
+                score,
+                match_reason: "hybrid".to_string(),
+            })
+            .collect();
+        mnemosyne_core::utils::retrieval::apply_coverage_rescore(&query, &mut rescored);
+        rescored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results = rescored
+            .into_iter()
+            .map(|result| (result.memory, result.score))
+            .collect();
+    }
+
     // Hierarchical reranking through the topic tree (OpenViking-style)
     let mut trajectory_json: Option<String> = None;
     if hierarchical {

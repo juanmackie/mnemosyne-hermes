@@ -856,6 +856,15 @@ impl ToolHandler {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        // Coverage rescoring before truncation: promote candidates covering
+        // most of the query's content terms over single-token OR matches.
+        crate::utils::retrieval::apply_coverage_rescore(&params.query, &mut results);
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         // Limit results
         results.truncate(max_results);
 

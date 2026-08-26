@@ -29,6 +29,12 @@ const FTS_STOP_WORDS: &[&str] = &[
     "their", "then", "there", "these", "this", "to", "use", "was", "were", "what", "where",
     "which", "who", "why", "will", "with", "would", "you", "your", "user", "happen", "appear",
     "must", "every", "provide",
+    // Conversational meta-words from personal-agent questions: they match
+    // episodic chatter ("I already told you...", "you remember right?") far
+    // more often than the fact being asked for.
+    "again", "already", "asked", "back", "come", "exactly", "know", "like", "multiple", "remember",
+    "right", "said", "say", "still", "stuff", "sure", "tell", "told", "thing", "things", "times",
+    "well", "yes", "yet",
 ];
 
 // ---------------------------------------------------------------------------
@@ -3436,8 +3442,15 @@ impl StorageBackend for LibsqlStorage {
             });
         }
 
-        // Sort by score and limit results
+        // Sort by score, apply query-term coverage rescoring (one-token OR
+        // matches lose to multi-term coverage), then limit results.
         // Handle potential NaN values gracefully - treat them as lowest priority
+        scored_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Less)
+        });
+        crate::utils::retrieval::apply_coverage_rescore(query, &mut scored_results);
         scored_results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
