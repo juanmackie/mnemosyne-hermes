@@ -52,6 +52,16 @@ fn is_stop_word(candidate: &str) -> bool {
     QUERY_META_STOPS.contains(&candidate) || QUERY_FUNCTION_STOPS.contains(&candidate)
 }
 
+/// Canonicalize ordinary inflection/synonym variants for coverage. This is
+/// deliberately narrow: it joins only forms that name the same retrieval
+/// concept and does not attempt open-ended language understanding.
+fn canonical_alias(term: &str) -> &str {
+    match term {
+        "serv" | "serve" | "served" | "hosting" | "hosted" => "host",
+        _ => term,
+    }
+}
+
 /// Light normalization approximating porter-style stems for coverage
 /// counting. Conservative by design: it only strips common inflections so
 /// "passwords" counts for "password" without conflating unrelated words.
@@ -105,6 +115,7 @@ fn query_content_terms(query: &str) -> Vec<String> {
         if term.is_empty() || term.len() < 2 {
             continue;
         }
+        let term = canonical_alias(&term).to_string();
         if seen.insert(term.clone()) {
             terms.push(term);
         }
@@ -127,7 +138,7 @@ pub fn coverage_ratio(terms: &[String], memory: &MemoryNote) -> f32 {
         for raw in expanded.split_whitespace() {
             let token = normalize_term(raw);
             if !token.is_empty() {
-                doc_tokens.insert(token);
+                doc_tokens.insert(canonical_alias(&token).to_string());
             }
         }
     };
@@ -217,6 +228,13 @@ mod tests {
         let terms = query_content_terms("You remember where I keep passwords, yes?");
         // Function/meta words (you/remember/where/keep/yes/i) all filtered.
         assert_eq!(terms, vec!["password".to_string()]);
+    }
+
+    #[test]
+    fn coverage_joins_host_and_serve_variants() {
+        let terms = query_content_terms("how is the site hosted?");
+        let target = note("Personal site is served through Cloudflare Pages.");
+        assert!(coverage_ratio(&terms, &target) > 0.0);
     }
 
     #[test]
