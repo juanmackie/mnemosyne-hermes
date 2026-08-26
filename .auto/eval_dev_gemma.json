@@ -1,1 +1,0 @@
-{"dataset": ".auto/eval_dev.jsonl", "items": 38, "modes": {"flat": {"empty": 0, "hit1": 0.9210526315789473, "hit5": 1.0, "latency_p50_ms": 3792.8017055091914, "latency_p95_ms": 4292.124514545139, "mrr": 0.9539473684210527, "queries": 38}}}
