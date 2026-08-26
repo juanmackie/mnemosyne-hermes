@@ -1,0 +1,27 @@
+{"query": "which package manager should I use for hermes-dashboard?", "relevant": ["pnpm is the package manager there now"], "category": "correction"}
+{"query": "what's my email address again?", "relevant": ["alex@riveralabs.dev for everything personal"], "category": "correction"}
+{"query": "where does the dashboard get deployed these days?", "relevant": ["deploys to Fly.io now"], "category": "correction"}
+{"query": "what's my job title now?", "relevant": ["platform engineer since June"], "category": "correction"}
+{"query": "which OS version am I running on the laptop?", "relevant": ["Ubuntu 24.04 LTS on the laptop"], "category": "correction"}
+{"query": "what phone did I switch to?", "relevant": ["Pixel 9 Pro on GrapheneOS", "moved from iPhone 13 to Pixel 9 Pro"], "category": "correction"}
+{"query": "I told you my timezone before - what is it?", "relevant": ["My timezone is Europe/Lisbon", "timezone is Europe/Lisbon so schedule"], "category": "already_told"}
+{"query": "remind yourself what I can't eat - the allergy thing", "relevant": ["allergic to shellfish", "shellfish allergy - no prawns"], "category": "already_told"}
+{"query": "what editor do I use? I know I've said it multiple times", "relevant": ["Neovim with LazyVim distro", "Yes Neovim again", "Neovim nightly build is pinned"], "category": "already_told"}
+{"query": "dietary restrictions for the restaurant booking - remember?", "relevant": ["I am vegetarian", "keep a vegetarian diet", "Vegetarian since 2015"], "category": "already_told"}
+{"query": "who's my emergency contact? I mentioned it ages ago", "relevant": ["emergency contact is my sister Maya Rivera"], "category": "already_told"}
+{"query": "who manages DNS for my personal website?", "relevant": ["Cloudflare dashboard zone"], "category": "structured_current"}
+{"query": "what port is postgres running on at home?", "relevant": ["port 5433, not the default 5432"], "category": "structured_current"}
+{"query": "how do I sign my git commits nowadays?", "relevant": ["SSH key signing with the YubiKey"], "category": "structured_current"}
+{"query": "who is my electricity provider?", "relevant": ["Electricity provider switched to Galp"], "category": "structured_current"}
+{"query": "what building manager do I contact about apartment stuff?", "relevant": ["Senhor Joaquim, apartment 4-B"], "category": "structured_current"}
+{"query": "laptop specs - what machine do I have?", "relevant": ["ThinkPad X1 Carbon Gen 12 with 64GB"], "category": "entity_exact"}
+{"query": "which headphones do I own?", "relevant": ["Sony WH-1000XM5; firmware"], "category": "entity_exact"}
+{"query": "router model at home?", "relevant": ["Fritz!Box 7590 with guest WiFi disabled"], "category": "entity_exact"}
+{"query": "what monitor sits on my desk?", "relevant": ["Dell U2723QE connected over USB-C"], "category": "entity_exact"}
+{"query": "what car do I drive?", "relevant": ["2019 Volvo V40 diesel"], "category": "entity_exact"}
+{"query": "hotel booking reference for the Porto trip?", "relevant": ["Casa do Fado, booking reference CF-2841"], "category": "multi_constraint"}
+{"query": "when is my dentist appointment?", "relevant": ["Dentist appointment October 3"], "category": "multi_constraint"}
+{"query": "for RustConf - which hotel am I staying at in Amsterdam?", "relevant": ["Hotel V Nesplein"], "category": "multi_constraint"}
+{"query": "when does my next on-call window start?", "relevant": ["next window starts October 13"], "category": "multi_constraint"}
+{"query": "what PO number goes on the Northwind invoice?", "relevant": ["PO number NW-88231"], "category": "multi_constraint"}
+{"query": "car insurance - which company and policy number?", "relevant": ["policy FL-99120"], "category": "multi_constraint"}
