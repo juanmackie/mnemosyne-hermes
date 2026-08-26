@@ -115,6 +115,41 @@ delete the cached DB to force a clean rebuild: `rm -rf .auto/data`.
   this session's larger real-query-style sets exist to expose the residual
   failures (see per-category baselines once recorded).
 
-### Session findings (update as experiments accumulate)
+### Session findings
 
-- (baseline pending — record per-category numbers and pool-size sweep results here)
+- Baseline (run 1): held-out MRR 0.950617; Hit@5 0.9815; Hit@1 0.9259.
+  CLI and MCP were identical, confirming the shared storage pipeline dominates.
+  Weak categories were correction 0.875 and already_told 0.9167.
+- Keep (run 2): FTS candidate limit 20 -> 50 and vector fetch 10 -> 20 at
+  top_k=5. Held-out MRR 0.950617 -> 0.966667; Hit@5 became 1.0 and
+  correction rose to 0.9583. This is the useful candidate-pool win.
+- Discard (run 3): FTS 50 -> 100; no quality change. Discard (run 9):
+  vector 20 -> 50; MRR fell to 0.981481 and entity_exact to 0.95, with
+  p95 latency 3.47s. Discard (run 10): intermediate hybrid handoff 10 ->
+  50; no quality change. Do not widen pools further on this corpus without
+  better score normalization.
+- Keep (run 4): coverage-aware fusion, conversational FTS stopwords,
+  hyphen/slash compound tokenization, and `superseded_by` demotion. Held-out
+  MRR 0.966667 -> 0.990741; already_told and correction reached 1.0.
+  Coverage must be paired with supersession demotion: otherwise a stale
+  record containing more query words can be boosted above its replacement.
+- Discard (runs 5-8): coverage-only aliases, FTS aliases, structured type
+  priors, and a 0.35/0.35 keyword/vector rebalance did not improve the
+  protected suite. FTS aliases did improve a fresh 32-query paraphrase probe
+  (MRR 0.750 -> 0.829), showing candidate recall remains a real live-corpus
+  concern even when this small protected set is saturated.
+- Keep (run 11): generic `host`/`serve` coverage normalization fixed the last
+  protected structured-query miss; held-out CLI+MCP MRR and Hit@1/Hit@5 are
+  now 1.0. The fresh probe remains only MRR 0.713 / Hit@1 0.594, so this is
+  not evidence that the synthetic suite generalizes to live paraphrases.
+
+### Final implementation
+
+- `SearchConfig::fts_candidate_limit` defaults to 50.
+- Vector candidates use `limit * 4` (20 for top_k=5) in storage/CLI/MCP.
+- Shared retrieval rescoring applies light stemming, compound tokenization,
+  coverage factor 0.6-1.4, conversational query stopwords, host/serve
+  normalization, and a 0.35 factor for superseded records.
+- `benchmark/retrieval` remains untouched; the new `.auto` corpus/evals are
+  fixed artifacts and must be replaced or augmented with exported live Hermes
+  queries before further tuning.
