@@ -785,7 +785,9 @@ impl ToolHandler {
         let vector_results = match self.embeddings.generate_embedding(&params.query).await {
             Ok(query_embedding) => self
                 .storage
-                .vector_search(&query_embedding, max_results * 2, namespace.clone())
+                // Wide candidate pool: fusion sees deep vector matches
+                // instead of only max_results*2 nearest rows.
+                .vector_search(&query_embedding, max_results * 4, namespace.clone())
                 .await
                 .unwrap_or_else(|e| {
                     warn!(

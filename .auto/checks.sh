@@ -16,7 +16,7 @@ else
 fi
 
 # Storage-layer retrieval tests (keyword/hybrid/vector behavior lives there).
-cargo test --release --lib storage:: --test-threads=2 \
+cargo test --release --lib storage:: -- --test-threads=2 \
   >/tmp/mnemosyne-autoresearch-storage.log 2>&1 || {
   grep -E "^(test result|failures:|---- )" /tmp/mnemosyne-autoresearch-storage.log | head -40
   tail -40 /tmp/mnemosyne-autoresearch-storage.log

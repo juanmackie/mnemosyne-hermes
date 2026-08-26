@@ -67,6 +67,11 @@ pub struct SearchConfig {
     /// Maximum graph traversal depth
     pub max_graph_depth: usize,
 
+    /// Row cap for FTS5 keyword candidate retrieval before fusion. Larger
+    /// pools let coverage/supersession reranking see candidates that pure
+    /// BM25 position would discard, at linear scan cost per query.
+    pub fts_candidate_limit: usize,
+
     /// Fail-closed retrieval: when a ranking signal (e.g. query embedding
     /// generation) fails mid-search, refuse to serve silently-unranked results.
     /// Evidence: an eval measured 295 rows served unranked because the reranker
@@ -88,6 +93,10 @@ impl Default for SearchConfig {
             enable_vector_search: true,
             enable_graph_expansion: true,
             max_graph_depth: 2,
+            // Candidate pool for the FTS keyword channel. Relevant memories
+            // must survive candidate selection before fusion/reranking; a
+            // hard cap of 20 discarded deep BM25 matches on realistic stores.
+            fts_candidate_limit: 50,
             // Fail closed by default: never serve silently-unranked results.
             fail_closed: true,
         }

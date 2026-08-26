@@ -3043,36 +3043,44 @@ impl StorageBackend for LibsqlStorage {
 
         // Handle empty query - return all memories in namespace (no FTS5)
         let conn = self.get_conn()?;
+        let candidate_limit = self.search_config.fts_candidate_limit.max(1);
         let mut rows = if query.trim().is_empty() {
             // Empty query: list all memories (filtered by namespace if provided)
             let sql = if namespace_filter.is_some() {
-                r#"
+                format!(
+                    r#"
                 SELECT * FROM memories
                 WHERE namespace = ? AND is_archived = 0
                 ORDER BY importance DESC, created_at DESC
-                LIMIT 20
-                "#
+                LIMIT {}"#,
+                    candidate_limit
+                )
             } else {
-                r#"
+                format!(
+                    r#"
                 SELECT * FROM memories
                 WHERE is_archived = 0
                 ORDER BY importance DESC, created_at DESC
-                LIMIT 20
-                "#
+                LIMIT {}"#,
+                    candidate_limit
+                )
             };
 
             if let Some(ref ns) = namespace_filter {
-                conn.query(sql, params![ns.clone()]).await?
+                conn.query(&sql, params![ns.clone()]).await?
             } else {
-                conn.query(sql, params![]).await?
+                conn.query(&sql, params![]).await?
             }
         } else {
             // Non-empty query: use FTS5 full-text search with OR logic. Keep
             // bm25's relevance signal instead of returning rowid order; the
             // latter makes common terms and unrelated early memories outrank
-            // a memory matching several query terms.
+            // a memory matching several query terms. The row cap is a wide
+            // candidate pool, not the final result limit: deep BM25 matches
+            // must reach fusion so multi-signal reranking can rescue them.
             let sql = if namespace_filter.is_some() {
-                r#"
+                format!(
+                    r#"
                 SELECT m.*, bm25(memories_fts) AS fts_rank
                 FROM memories m
                 JOIN memories_fts ON memories_fts.rowid = m.rowid
@@ -3080,24 +3088,28 @@ impl StorageBackend for LibsqlStorage {
                 AND m.namespace = ?
                 AND m.is_archived = 0
                 ORDER BY fts_rank ASC
-                LIMIT 20
-                "#
+                LIMIT {}"#,
+                    candidate_limit
+                )
             } else {
-                r#"
+                format!(
+                    r#"
                 SELECT m.*, bm25(memories_fts) AS fts_rank
                 FROM memories m
                 JOIN memories_fts ON memories_fts.rowid = m.rowid
                 WHERE memories_fts MATCH ?
                 AND m.is_archived = 0
                 ORDER BY fts_rank ASC
-                LIMIT 20
-                "#
+                LIMIT {}"#,
+                    candidate_limit
+                )
             };
 
             if let Some(ref ns_json) = namespace_filter {
-                conn.query(sql, params![fts_query, ns_json.clone()]).await?
+                conn.query(&sql, params![fts_query, ns_json.clone()])
+                    .await?
             } else {
-                conn.query(sql, params![fts_query]).await?
+                conn.query(&sql, params![fts_query]).await?
             }
         };
 
@@ -3182,7 +3194,7 @@ impl StorageBackend for LibsqlStorage {
             let ns_json = serde_json::to_string(&ns)?;
             conn.query(sql, params![ns_json]).await?
         } else {
-            conn.query(sql, params![]).await?
+            conn.query(&sql, params![]).await?
         };
 
         let mut memories = Vec::new();
@@ -3263,7 +3275,7 @@ impl StorageBackend for LibsqlStorage {
         };
 
         let mut rows = if params_vec.is_empty() {
-            conn.query(sql, params![]).await?
+            conn.query(&sql, params![]).await?
         } else {
             conn.query(sql, params![params_vec[0].clone()]).await?
         };
@@ -3308,9 +3320,11 @@ impl StorageBackend for LibsqlStorage {
             if let Some(service) = &self.embedding_service {
                 match service.embed(query).await {
                     Ok(query_embedding) => {
-                        // Perform vector search
+                        // Perform vector search with a wide candidate pool:
+                        // fusion and later reranking can only rescue relevant
+                        // rows that survive candidate selection.
                         let fresh_vector_results = self
-                            .vector_search(&query_embedding, max_results * 2, namespace.clone())
+                            .vector_search(&query_embedding, max_results * 4, namespace.clone())
                             .await?;
                         debug!("Vector search found {} results", fresh_vector_results.len());
 

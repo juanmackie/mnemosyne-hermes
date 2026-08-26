@@ -99,7 +99,9 @@ pub async fn handle(
         ) {
             Ok(embedding_service) => match embedding_service.embed(&query).await {
                 Ok(query_embedding) => (&storage as &dyn StorageBackend)
-                    .vector_search(&query_embedding, limit * 2, ns.clone())
+                    // Wide candidate pool: fusion sees deep vector matches
+                    // instead of only limit*2 nearest rows.
+                    .vector_search(&query_embedding, limit * 4, ns.clone())
                     .await
                     .unwrap_or_default(),
                 Err(_) => Vec::new(),
@@ -137,7 +139,8 @@ pub async fn handle(
                     let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
                     match emb_svc.embed(&query).await {
                         Ok(query_embedding) => (&storage as &dyn StorageBackend)
-                            .vector_search(&query_embedding, limit * 2, ns.clone())
+                            // Wide candidate pool for local-model recall too.
+                            .vector_search(&query_embedding, limit * 4, ns.clone())
                             .await
                             .unwrap_or_default(),
                         Err(e) => {
