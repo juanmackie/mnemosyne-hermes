@@ -50,6 +50,8 @@ fn note(content: &str, created_at: chrono::DateTime<chrono::Utc>, ns: &Namespace
         superseded_by: None,
         embedding: None,
         embedding_model: "test-model".to_string(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     }
 }
 

@@ -47,6 +47,10 @@ impl NetworkLayer {
         Ok(())
     }
 
+    pub async fn node_id(&self) -> Option<String> {
+        None
+    }
+
     pub async fn create_invite(&self) -> crate::error::Result<String> {
         Err(crate::error::MnemosyneError::Other(
             "Distributed networking is disabled; rebuild with --features distributed".into(),

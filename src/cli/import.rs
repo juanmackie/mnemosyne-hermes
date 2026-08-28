@@ -492,6 +492,8 @@ fn to_memory_note(id: MemoryId, memory: SourceMemory, namespace: Namespace) -> M
         superseded_by: None,
         embedding: None,
         embedding_model: String::new(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     }
 }
 

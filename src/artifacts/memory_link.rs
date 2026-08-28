@@ -53,6 +53,8 @@ impl MemoryLinker {
             superseded_by: None,
             embedding: None,
             embedding_model: "none".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         self.storage.store_memory(&memory).await?;

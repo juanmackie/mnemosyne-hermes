@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS memories (
         'preference',
         'agent_event'
     )),
+    memory_class TEXT NOT NULL DEFAULT 'knowledge',
     importance INTEGER NOT NULL CHECK(importance BETWEEN 1 AND 10),
     confidence REAL NOT NULL CHECK(confidence BETWEEN 0.0 AND 1.0),
     related_files TEXT NOT NULL DEFAULT '[]',
@@ -261,6 +262,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         storage

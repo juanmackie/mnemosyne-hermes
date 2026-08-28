@@ -168,6 +168,7 @@ message RecallResponse {
   repeated SearchResult results = 1;
   string query = 2;                    // Echo back for confirmation
   uint32 total_matches = 3;            // Before max_results limit
+  repeated SearchResult response_guidance = 4; // Internal style guidance, never user facts
 }
 
 // ============================================================================

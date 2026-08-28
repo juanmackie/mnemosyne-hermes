@@ -284,6 +284,8 @@ impl<S: StorageBackend> MemoryAccessControl<S> {
             superseded_by: None,
             embedding: None,
             embedding_model: "none".to_string(), // Will be set by embedding service
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         // Store the memory

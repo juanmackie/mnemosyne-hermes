@@ -16,6 +16,7 @@
 //! detection) so the pipeline works offline; an LLM extractor can replace
 //! [`extract_candidates`] without changing downstream types.
 
+use crate::error::{MnemosyneError, Result};
 use crate::types::MemoryId;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -86,7 +87,14 @@ pub fn lexical_similarity(a: &str, b: &str) -> f32 {
     let sa = words(a);
     let sb = words(b);
     if sa.is_empty() && sb.is_empty() {
-        return 1.0;
+        // Empty token sets are not automatically identical: `Rust` and `Go`
+        // would otherwise look like duplicates because both are short. Keep
+        // exact normalized text at 1.0 and unrelated short text at 0.0.
+        return if normalize_for_dedup(a) == normalize_for_dedup(b) {
+            1.0
+        } else {
+            0.0
+        };
     }
     if sa.is_empty() || sb.is_empty() {
         return 0.0;
@@ -94,6 +102,273 @@ pub fn lexical_similarity(a: &str, b: &str) -> f32 {
     let intersection = sa.intersection(&sb).count() as f32;
     let union = (sa.len() + sb.len()) as f32 - intersection;
     intersection / union
+}
+
+// ---------------------------------------------------------------------------
+// Typed single-pass turn extraction
+// ---------------------------------------------------------------------------
+
+/// Version of the structured extraction contract. Bump when fields change.
+pub const EXTRACTION_SCHEMA_VERSION: &str = "turn-extraction.v1";
+const MAX_CANDIDATES: usize = 32;
+
+/// A bounded entity attached to an extracted candidate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractedEntity {
+    pub display_name: String,
+    pub normalized_key: String,
+    pub role: String,
+    pub confidence: f32,
+}
+
+/// A durable fact, preference, constraint, or decision from a completed turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractedMemoryCandidate {
+    pub content: String,
+    pub kind: String,
+    pub confidence: f32,
+    pub evidence_quote: String,
+    pub source_role: String,
+    pub entities: Vec<ExtractedEntity>,
+}
+
+/// Explicit response feedback. Generic sentiment is intentionally not enough.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractedResponseFeedback {
+    pub polarity: String,
+    pub guidance: String,
+    pub applicability: String,
+    pub signal: String,
+    pub confidence: f32,
+    pub evidence_quote: String,
+    pub source_role: String,
+    pub anchors: Vec<String>,
+}
+
+impl ExtractedResponseFeedback {
+    /// Conservative promotion gate: generic reactions are not policies.
+    pub fn is_actionable(&self) -> bool {
+        if self.source_role != "user" {
+            return false;
+        }
+        let guidance = self.guidance.trim().to_ascii_lowercase();
+        let quote = self.evidence_quote.trim().to_ascii_lowercase();
+        if guidance.is_empty()
+            || guidance.contains("the user")
+            || guidance.contains("user's personality")
+            || guidance.contains("user emotion")
+            || guidance.contains("the user feels")
+        {
+            return false;
+        }
+        // These are sentiment/task outcomes, not response characteristics.
+        // Require the extractor to name a characteristic before promotion.
+        let generic = [
+            "thanks",
+            "thank you",
+            "wrong",
+            "okay",
+            "ok",
+            "do better",
+            "answer differently",
+            "be more accurate",
+            "be correct",
+            "be helpful",
+            "improve",
+            "not good",
+            "bad response",
+            "i dislike this",
+        ];
+        if generic
+            .iter()
+            .any(|value| guidance == *value || quote == *value)
+        {
+            return false;
+        }
+        let characteristic = [
+            "concise",
+            "verbose",
+            "brief",
+            "detailed",
+            "bullets",
+            "bullet",
+            "format",
+            "structure",
+            "code",
+            "diff",
+            "example",
+            "explain",
+            "heading",
+            "step",
+            "tone",
+            "plain text",
+            "markdown",
+            "length",
+        ];
+        characteristic.iter().any(|value| guidance.contains(value)) && !self.anchors.is_empty()
+    }
+}
+
+/// Strict result returned by the one-call turn extractor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnExtraction {
+    pub schema_version: String,
+    pub candidates: Vec<ExtractedMemoryCandidate>,
+    pub response_feedback: Option<ExtractedResponseFeedback>,
+}
+
+/// Structured status for enhanced turn learning. Raw synchronization succeeds
+/// even when the optional derived extraction is retryable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum ExtractionStatus {
+    Succeeded,
+    FailedRetryable { error: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnLearningResult {
+    pub source_memory_id: MemoryId,
+    pub derived_ids: Vec<MemoryId>,
+    pub policy_ids: Vec<MemoryId>,
+    pub extraction_status: ExtractionStatus,
+}
+
+impl TurnExtraction {
+    /// Validate the complete batch before any derived memory is written.
+    pub fn validate(&self, messages: &[SessionMessage]) -> Result<()> {
+        if self.schema_version != EXTRACTION_SCHEMA_VERSION {
+            return Err(MnemosyneError::ValidationError(format!(
+                "unsupported extraction schema version: {}",
+                self.schema_version
+            )));
+        }
+        if self.candidates.len() > MAX_CANDIDATES {
+            return Err(MnemosyneError::ValidationError(
+                "too many extracted candidates".into(),
+            ));
+        }
+        let source = messages
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for candidate in &self.candidates {
+            validate_extracted_text(&candidate.content, "candidate content", 2_000)?;
+            validate_extracted_text(&candidate.kind, "candidate kind", 64)?;
+            if !matches!(
+                candidate.kind.as_str(),
+                "fact" | "preference" | "constraint" | "decision"
+            ) {
+                return Err(MnemosyneError::ValidationError(
+                    "candidate kind is not supported".into(),
+                ));
+            }
+            validate_extracted_text(&candidate.evidence_quote, "candidate evidence", 2_000)?;
+            validate_role(&candidate.source_role)?;
+            validate_confidence(candidate.confidence)?;
+            ensure_evidence(&source, &candidate.evidence_quote)?;
+            ensure_role_evidence(messages, &candidate.source_role, &candidate.evidence_quote)?;
+            if candidate.entities.len() > 16 {
+                return Err(MnemosyneError::ValidationError(
+                    "too many entities for candidate".into(),
+                ));
+            }
+            for entity in &candidate.entities {
+                validate_extracted_text(&entity.display_name, "entity display name", 256)?;
+                validate_extracted_text(&entity.normalized_key, "entity normalized key", 256)?;
+                validate_extracted_text(&entity.role, "entity role", 64)?;
+                validate_confidence(entity.confidence)?;
+            }
+        }
+        if let Some(feedback) = &self.response_feedback {
+            validate_extracted_text(&feedback.polarity, "feedback polarity", 16)?;
+            validate_extracted_text(&feedback.signal, "feedback signal", 32)?;
+            validate_extracted_text(&feedback.guidance, "feedback guidance", 1_000)?;
+            validate_extracted_text(&feedback.applicability, "feedback applicability", 500)?;
+            validate_extracted_text(&feedback.evidence_quote, "feedback evidence", 2_000)?;
+            validate_role(&feedback.source_role)?;
+            if feedback.anchors.len() > 16 {
+                return Err(MnemosyneError::ValidationError(
+                    "too many feedback anchors".into(),
+                ));
+            }
+            for anchor in &feedback.anchors {
+                validate_extracted_text(anchor, "feedback anchor", 256)?;
+            }
+            validate_confidence(feedback.confidence)?;
+            ensure_evidence(&source, &feedback.evidence_quote)?;
+            ensure_role_evidence(messages, &feedback.source_role, &feedback.evidence_quote)?;
+            if !matches!(feedback.polarity.as_str(), "prefer" | "avoid") {
+                return Err(MnemosyneError::ValidationError(
+                    "feedback polarity must be prefer or avoid".into(),
+                ));
+            }
+            if !matches!(
+                feedback.signal.as_str(),
+                "direct_preference" | "correction" | "dissatisfaction" | "approval"
+            ) {
+                return Err(MnemosyneError::ValidationError(
+                    "feedback signal is not explicit".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_extracted_text(value: &str, name: &str, max: usize) -> Result<()> {
+    if value.trim().is_empty() || value.chars().count() > max {
+        return Err(MnemosyneError::ValidationError(format!(
+            "{} must contain 1..={} characters",
+            name, max
+        )));
+    }
+    Ok(())
+}
+
+fn validate_confidence(value: f32) -> Result<()> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(MnemosyneError::ValidationError(
+            "confidence must be between 0 and 1".into(),
+        ));
+    }
+    Ok(())
+}
+fn validate_role(role: &str) -> Result<()> {
+    if matches!(role, "user" | "assistant" | "system") {
+        Ok(())
+    } else {
+        Err(MnemosyneError::ValidationError(
+            "source_role must be user, assistant, or system".into(),
+        ))
+    }
+}
+fn ensure_role_evidence(messages: &[SessionMessage], role: &str, quote: &str) -> Result<()> {
+    if messages
+        .iter()
+        .any(|message| message.role.eq_ignore_ascii_case(role) && message.text.contains(quote))
+    {
+        Ok(())
+    } else {
+        Err(MnemosyneError::ValidationError(
+            "evidence quote does not belong to declared source role".into(),
+        ))
+    }
+}
+
+fn ensure_evidence(source: &str, quote: &str) -> Result<()> {
+    if source.contains(quote) {
+        Ok(())
+    } else {
+        Err(MnemosyneError::ValidationError(
+            "evidence quote is not present in source turn".into(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +817,61 @@ mod tests {
         let contents = std::fs::read_to_string(path).unwrap();
         assert_eq!(contents.lines().count(), 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_turn_extraction_rejects_fabricated_evidence() {
+        let extraction = TurnExtraction {
+            schema_version: EXTRACTION_SCHEMA_VERSION.into(),
+            candidates: vec![ExtractedMemoryCandidate {
+                content: "User likes Rust".into(),
+                kind: "preference".into(),
+                confidence: 0.9,
+                evidence_quote: "not in transcript".into(),
+                source_role: "user".into(),
+                entities: vec![],
+            }],
+            response_feedback: None,
+        };
+        let messages = vec![SessionMessage::new("user", "I prefer Rust.")];
+        assert!(extraction.validate(&messages).is_err());
+    }
+
+    #[test]
+    fn test_turn_extraction_accepts_verbatim_role_evidence() {
+        let extraction = TurnExtraction {
+            schema_version: EXTRACTION_SCHEMA_VERSION.into(),
+            candidates: vec![ExtractedMemoryCandidate {
+                content: "The project uses Rust".into(),
+                kind: "fact".into(),
+                confidence: 1.0,
+                evidence_quote: "The project uses Rust".into(),
+                source_role: "assistant".into(),
+                entities: vec![],
+            }],
+            response_feedback: None,
+        };
+        let messages = vec![SessionMessage::new("assistant", "The project uses Rust")];
+        assert!(extraction.validate(&messages).is_ok());
+    }
+
+    #[test]
+    fn test_turn_extraction_rejects_out_of_range_confidence() {
+        let extraction = TurnExtraction {
+            schema_version: EXTRACTION_SCHEMA_VERSION.into(),
+            candidates: vec![ExtractedMemoryCandidate {
+                content: "Fact".into(),
+                kind: "fact".into(),
+                confidence: 1.1,
+                evidence_quote: "Fact".into(),
+                source_role: "user".into(),
+                entities: vec![],
+            }],
+            response_feedback: None,
+        };
+        assert!(extraction
+            .validate(&[SessionMessage::new("user", "Fact")])
+            .is_err());
     }
 
     #[test]

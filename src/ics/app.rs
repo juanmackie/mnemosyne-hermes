@@ -341,6 +341,8 @@ impl IcsApp {
                     superseded_by: None,
                     embedding: None,
                     embedding_model: String::new(),
+                    memory_class: crate::types::MemoryClass::Knowledge,
+                    provenance: None,
                 };
 
                 if let Err(e) = self.storage.store_memory(&memory).await {
@@ -386,6 +388,8 @@ impl IcsApp {
                 superseded_by: None,
                 embedding: None,
                 embedding_model: String::new(),
+                memory_class: crate::types::MemoryClass::Knowledge,
+                provenance: None,
             };
 
             if let Err(e) = self.storage.store_memory(&memory).await {
@@ -425,6 +429,8 @@ impl IcsApp {
                     superseded_by: None,
                     embedding: None,
                     embedding_model: String::new(),
+                    memory_class: crate::types::MemoryClass::Knowledge,
+                    provenance: None,
                 };
 
                 if let Err(e) = self.storage.store_memory(&memory).await {
@@ -1446,6 +1452,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         }
     }
 

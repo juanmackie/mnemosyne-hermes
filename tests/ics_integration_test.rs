@@ -139,6 +139,8 @@ fn test_memory_panel_search_and_selection() {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: mnemosyne_core::MemoryClass::Knowledge,
+            provenance: None,
         },
         MemoryNote {
             id: mnemosyne_core::MemoryId::new(),
@@ -163,6 +165,8 @@ fn test_memory_panel_search_and_selection() {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: mnemosyne_core::MemoryClass::Knowledge,
+            provenance: None,
         },
     ];
 

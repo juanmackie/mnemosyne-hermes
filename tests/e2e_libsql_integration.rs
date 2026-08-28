@@ -41,6 +41,8 @@ fn create_test_memory(
         superseded_by: None,
         embedding: None,
         embedding_model: "test-model".to_string(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     }
 }
 

@@ -841,6 +841,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         let m2 = MemoryNote {
@@ -885,6 +887,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         let m2 = MemoryNote {

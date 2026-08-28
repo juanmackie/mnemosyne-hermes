@@ -1453,3 +1453,24 @@ mnemosyne/
 **Version**: 2.1.1
 **Last Updated**: 2025-11-02
 **Status**: Phase 2 Complete - Composable Tools Architecture + Documentation Reorganization
+
+## Text turn learning
+
+`MemoryManager::sync_and_learn` is an opt-in extension of raw turn sync. It
+persists the raw exchange first, invokes one strict LLM extraction, validates
+verbatim evidence and bounded typed entities, then commits the complete
+derived batch atomically. LLM/auth/transport/parse failures are retryable and
+never create partial derived memories.
+
+Knowledge and internal response guidance are separate through
+`MemoryClass::Knowledge` and `MemoryClass::InteractionPolicy`. Policies live
+in the global namespace, retain evidence rows, and are eligible only while a
+matching source turn remains live. Exact normalized entity aliases are stored
+in `memory_entities` for bounded hybrid retrieval; `related_entities` remains
+the compact public summary.
+
+`recall_for_context` and the CLI/MCP context surfaces retrieve factual evidence
+and response guidance independently. Per-channel quotas and the existing
+context assembler enforce one shared token budget. Guidance is explicitly
+labeled as internal style/approach input and is never represented as a fact
+about the user.

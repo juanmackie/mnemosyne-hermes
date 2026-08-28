@@ -16,6 +16,7 @@
 | 013 | `sqlite/013_add_task_and_agent_event_types.sql` | 2025-11-01 | ✅ Applied (doc only) | Documents task and agent_event memory types |
 | 014 | `sqlite/014_add_specification_workflow_types.sql` | 2025-11-01 | ⚠️ NOT applied | Documents spec workflow memory types |
 | 015 | `sqlite/015_fix_audit_log_schema.sql` | 2025-11-04 | ✅ Applied to project DB | Fixes audit_log schema drift (details → metadata) |
+| 017 | `libsql/017_text_memory_learning.sql`, `sqlite/017_text_memory_learning.sql` | 2026-08-27 | ✅ Registered | Adds memory classes, typed provenance, policy evidence, and indexed entities with backward-compatible knowledge defaults |
 
 ### Ghost Migrations (Applied but Never Committed)
 

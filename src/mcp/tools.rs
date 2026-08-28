@@ -201,6 +201,19 @@ impl ToolHandler {
                             "minimum": 0,
                             "maximum": 1,
                             "description": "Optional minimum score required to return results. Below this threshold the tool abstains explicitly."
+                        },
+                        "expand_graph": {
+                            "type": "boolean",
+                            "default": true
+                        },
+                        "hierarchical": {
+                            "type": "boolean",
+                            "default": false
+                        },
+                        "budget_tokens": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional shared context assembly budget"
                         }
                     },
                     "required": ["query"]
@@ -600,6 +613,8 @@ impl ToolHandler {
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         })
     }
 
@@ -730,11 +745,12 @@ impl ToolHandler {
         let mut degraded_reasons = Vec::new();
         let keyword_results = match self
             .storage
-            .hybrid_search(
+            .hybrid_search_by_class(
                 &params.query,
                 namespace.clone(),
                 max_results * 2,
                 expand_graph,
+                crate::types::MemoryClass::Knowledge,
             )
             .await
         {
@@ -748,7 +764,15 @@ impl ToolHandler {
                 degraded_reasons.push("hybrid_search_vector_unavailable");
                 self.storage
                     .keyword_search(&params.query, namespace.clone())
-                    .await?
+                    .await
+                    .map(|results| {
+                        results
+                            .into_iter()
+                            .filter(|result| {
+                                result.memory.memory_class == crate::types::MemoryClass::Knowledge
+                            })
+                            .collect::<Vec<_>>()
+                    })?
             }
             Err(error) => return Err(error),
         };
@@ -789,6 +813,14 @@ impl ToolHandler {
                 // instead of only max_results*2 nearest rows.
                 .vector_search(&query_embedding, max_results * 4, namespace.clone())
                 .await
+                .map(|results| {
+                    results
+                        .into_iter()
+                        .filter(|result| {
+                            result.memory.memory_class == crate::types::MemoryClass::Knowledge
+                        })
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_else(|e| {
                     warn!(
                         "Vector search unavailable ({}); serving keyword+graph results",
@@ -809,7 +841,14 @@ impl ToolHandler {
             }
         };
 
-        // Phase 3: Merge and re-rank results
+        // Guidance is recalled independently and is never mixed into the
+        // factual result ranking or abstention decision.
+        let policy_results = self
+            .storage
+            .interaction_policy_search(&params.query, 3)
+            .await?;
+
+        // Phase 3: Merge and re-rank factual results
         let mut memory_scores = std::collections::HashMap::new();
 
         // Add keyword results with 40% weight
@@ -907,8 +946,37 @@ impl ToolHandler {
                 .collect();
         }
 
-        // Increment access counts for returned memories
-        for result in &results {
+        let token_ledger = params.budget_tokens.map(|budget| {
+            let mut candidates = results
+                .iter()
+                .map(|result| {
+                    crate::context_assembler::Candidate::new(
+                        result.memory.id.to_string(),
+                        result.memory.summary.clone(),
+                        result.memory.summary.clone(),
+                        result.memory.summary.clone(),
+                        result.memory.content.clone(),
+                        result.score,
+                    )
+                })
+                .collect::<Vec<_>>();
+            candidates.extend(policy_results.iter().map(|result| {
+                crate::context_assembler::Candidate::new(
+                    format!("policy-{}", result.memory.id),
+                    "Response guidance",
+                    result.memory.content.clone(),
+                    result.memory.content.clone(),
+                    result.memory.content.clone(),
+                    result.score,
+                )
+            }));
+            let plan = crate::context_assembler::assemble(&candidates, budget);
+            serde_json::to_value(plan.ledger)
+                .unwrap_or_else(|_| serde_json::json!({"budget_tokens": budget}))
+        });
+
+        // Increment access counts for both independently returned channels.
+        for result in results.iter().chain(policy_results.iter()) {
             if let Err(e) = self.storage.increment_access(result.memory.id).await {
                 warn!("Failed to increment access count: {}", e);
             }
@@ -930,6 +998,22 @@ impl ToolHandler {
 
         Ok(serde_json::json!({
             "results": results,
+            "response_guidance": policy_results,
+            "channels": {
+                "factual": {
+                    "quota": max_results,
+                    "count": results.len(),
+                    "abstained": abstained,
+                    "abstention_reason": if abstained { Some("best factual result score was below abstention_threshold") } else { None::<&str> }
+                },
+                "response_guidance": {
+                    "quota": 3,
+                    "count": policy_results.len(),
+                    "abstained": policy_results.is_empty(),
+                    "abstention_reason": if policy_results.is_empty() { Some("no eligible anchored policy matched") } else { None::<&str> }
+                }
+            },
+            "token_ledger": token_ledger,
             "query": params.query,
             "count": results.len(),
             "method": if params.hierarchical.unwrap_or(false) {

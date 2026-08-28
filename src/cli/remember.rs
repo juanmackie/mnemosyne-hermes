@@ -141,6 +141,8 @@ pub async fn handle(
                     superseded_by: None,
                     embedding: None,
                     embedding_model: String::new(),
+                    memory_class: mnemosyne_core::MemoryClass::Knowledge,
+                    provenance: None,
                 }
             }
         }
@@ -189,6 +191,8 @@ pub async fn handle(
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: mnemosyne_core::MemoryClass::Knowledge,
+            provenance: None,
         }
     };
 

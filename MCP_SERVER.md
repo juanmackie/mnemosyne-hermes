@@ -387,7 +387,7 @@ python3 scripts/testing/test_server.py
 
 | Tool | Status | Phase | Notes |
 |------|--------|-------|-------|
-| mnemosyne.recall | ✅ Complete | Current | Hybrid search, optional abstention, degraded-result metadata |
+| mnemosyne.recall | ✅ Complete | Current | Hybrid factual search, independently returned anchored response guidance, optional abstention, token/degradation metadata |
 | mnemosyne.list | ✅ Complete | Current | Namespace-based listing with offset pagination |
 | mnemosyne.graph | ✅ Complete | Phase 4 | Storage backend integration |
 | mnemosyne.context | ✅ Complete | Phase 4 | Memory retrieval |
@@ -441,6 +441,16 @@ flowchart TD
 ```
 
 **Communication**: JSON-RPC 2.0 over stdin/stdout for seamless integration with Claude Code.
+
+### Recall channels
+
+`mnemosyne.recall` keeps `results` factual and returns explicit response
+policies separately in `response_guidance`. The `channels` object reports the
+factual/guidance quotas and independent abstention reasons. If
+`budget_tokens` is supplied, `token_ledger` reports the existing context
+assembler's budget accounting. Interaction policies are global, anchored,
+evidence-backed guidance for response style only; they must not be quoted as
+facts about the user.
 
 **OODA-Aligned Tools**:
 

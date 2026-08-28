@@ -111,5 +111,7 @@ pub fn sample_memory(content: &str, memory_type: MemoryType, importance: u8) -> 
         superseded_by: None,
         embedding: None,
         embedding_model: "test".to_string(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     }
 }

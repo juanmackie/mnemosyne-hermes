@@ -463,6 +463,8 @@ impl OptimizerActor {
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         state.storage.store_memory(&memory).await?;
@@ -601,6 +603,8 @@ impl OptimizerActor {
                         superseded_by: None,
                         embedding: None,
                         embedding_model: String::new(),
+                        memory_class: crate::types::MemoryClass::Knowledge,
+                        provenance: None,
                     };
 
                     let memory_id = consolidated_memory.id;
@@ -793,6 +797,8 @@ impl OptimizerActor {
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         let memory_id = consolidated_memory.id;

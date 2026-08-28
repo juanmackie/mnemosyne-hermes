@@ -65,6 +65,8 @@ impl MemoryService for MemoryServiceImpl {
             superseded_by: None,
             embedding: None, // Will be filled later if needed
             embedding_model: String::new(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         // TODO: LLM enrichment if skip_llm_enrichment is false and llm is available
@@ -252,6 +254,11 @@ impl MemoryService for MemoryServiceImpl {
             .map_err(|e| Status::from(e))?;
 
         let total_matches = results.len();
+        let response_guidance = self
+            .storage
+            .interaction_policy_search(&req.query, 3)
+            .await
+            .map_err(|e| Status::from(e))?;
 
         // Convert to proto SearchResults
         let proto_results: Vec<generated::SearchResult> = results
@@ -271,6 +278,16 @@ impl MemoryService for MemoryServiceImpl {
             results: proto_results,
             query: req.query,
             total_matches: total_matches as u32,
+            response_guidance: response_guidance
+                .into_iter()
+                .map(|result| generated::SearchResult {
+                    memory: Some(crate::rpc::conversions::memory_note_to_proto(result.memory)),
+                    score: result.score,
+                    semantic_score: None,
+                    fts_score: None,
+                    graph_score: None,
+                })
+                .collect(),
         }))
     }
 
@@ -352,13 +369,23 @@ impl MemoryService for MemoryServiceImpl {
         };
 
         // Perform graph traversal
-        let memories = self
+        let mut memories = self
             .storage
             .graph_traverse(
                 &seed_ids, max_hops, None, // namespace filter not used in graph_traverse
             )
             .await
             .map_err(|e| Status::from(e))?;
+        // The RPC contract returns the requested seeds as well as their
+        // neighbors. The storage traversal intentionally returns depth>0 only
+        // so search graph expansion does not duplicate direct hits.
+        for seed_id in &seed_ids {
+            if !memories.iter().any(|memory| memory.id == *seed_id) {
+                if let Ok(seed) = self.storage.get_memory(*seed_id).await {
+                    memories.insert(0, seed);
+                }
+            }
+        }
 
         // Build edges from memory links
         let mut edges = Vec::new();
@@ -682,6 +709,8 @@ impl MemoryService for MemoryServiceImpl {
                 superseded_by: None,
                 embedding: None,
                 embedding_model: String::new(),
+                memory_class: crate::types::MemoryClass::Knowledge,
+                provenance: None,
             };
 
             // Stage 4: Indexing (80-100%)

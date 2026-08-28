@@ -68,6 +68,8 @@ async fn test_embedding_regeneration_on_content_update() {
         superseded_by: None,
         embedding: Some(initial_embedding.clone()),
         embedding_model: "test-model".to_string(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     };
 
     // Store memory

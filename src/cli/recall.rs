@@ -1,6 +1,6 @@
 //! Memory recall/query command
 
-use mnemosyne_core::{build_memory_context_block, is_trivial_prompt};
+use mnemosyne_core::{build_memory_context_block, is_trivial_prompt, RecallBundle, RecallChannel};
 use mnemosyne_core::{
     embeddings::fallback_embedding_warning, orchestration::events::AgentEvent,
     utils::string::truncate_at_char_boundary, ConnectionMode, EmbeddingConfig, EmbeddingService,
@@ -197,6 +197,9 @@ pub async fn handle(
         })
         .collect();
 
+    // Interaction policies have a separate guidance channel and must never
+    // appear in the factual CLI recall result set.
+    results.retain(|(memory, _)| memory.memory_class == mnemosyne_core::MemoryClass::Knowledge);
     results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     // Coverage rescoring before truncation: promote candidates covering most
@@ -290,14 +293,33 @@ pub async fn handle(
 
     // Agent-friendly fenced context block for prompt injection.
     if format == "context" {
-        let block = build_memory_context_block(
-            results
-                .iter()
-                .filter(|(_, s)| *s > 0.0)
-                .map(|(m, s)| format!("[score={:.2}] {}", s, m.content.trim()))
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-        );
+        let factual = results
+            .iter()
+            .filter(|(_, s)| *s > 0.0)
+            .map(|(memory, score)| mnemosyne_core::types::SearchResult {
+                memory: memory.clone(),
+                score: *score,
+                match_reason: "cli_factual".into(),
+            })
+            .collect();
+        let guidance = (&storage as &dyn StorageBackend)
+            .interaction_policy_search(&query, 3)
+            .await
+            .unwrap_or_default();
+        let bundle = RecallBundle {
+            factual: RecallChannel {
+                results: factual,
+                quota: 5,
+                abstention_reason: None,
+            },
+            guidance: RecallChannel {
+                results: guidance,
+                quota: 3,
+                abstention_reason: None,
+            },
+            budget_tokens: budget_tokens.unwrap_or(512),
+        };
+        let block = build_memory_context_block(mnemosyne_core::render_recall_bundle(&bundle));
         if !block.is_empty() {
             println!("{block}");
         }
@@ -330,6 +352,7 @@ pub async fn handle(
                     "importance": m.importance,
                     "tags": m.tags,
                     "memory_type": format!("{:?}", m.memory_type),
+                    "memory_class": format!("{:?}", m.memory_class),
                     "score": score,
                     "namespace": serde_json::to_string(&m.namespace).unwrap_or_default()
                 })

@@ -416,6 +416,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "voyage-2".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         let formatted = format_memory(&memory, true);
@@ -449,6 +451,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "voyage-2".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         let formatted = format_memory(&memory, false);

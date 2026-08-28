@@ -454,6 +454,8 @@ async fn test_work_completion_notification() {
         superseded_by: None,
         embedding: None,
         embedding_model: "test".to_string(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     };
     storage
         .store_memory(&dummy_memory)
@@ -1492,6 +1494,8 @@ async fn test_graceful_degradation() {
         superseded_by: None,
         embedding: None,
         embedding_model: "test".to_string(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     };
     storage
         .store_memory(&dummy_memory)

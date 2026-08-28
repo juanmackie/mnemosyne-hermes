@@ -2,8 +2,9 @@
 
 use crate::rpc::generated;
 use crate::types::{
-    LinkType as InternalLinkType, MemoryNote as InternalMemoryNote,
-    MemoryType as InternalMemoryType, Namespace as InternalNamespace,
+    LinkType as InternalLinkType, MemoryClass as InternalMemoryClass,
+    MemoryNote as InternalMemoryNote, MemoryProvenance, MemoryType as InternalMemoryType,
+    Namespace as InternalNamespace, ProvenanceSourceKind, ProvenanceSourceRole,
 };
 use tonic::Status;
 
@@ -40,6 +41,12 @@ pub fn namespace_to_proto(ns: InternalNamespace) -> generated::Namespace {
                 session_id,
             },
         )),
+        // The v1 RPC schema predates agent namespaces; preserve wire
+        // compatibility by exposing them as global rather than failing the
+        // conversion.
+        InternalNamespace::Agent { .. } => Some(generated::namespace::Namespace::Global(
+            generated::GlobalNamespace {},
+        )),
     };
     generated::Namespace { namespace }
 }
@@ -65,6 +72,13 @@ pub fn memory_type_from_proto(mt: i32) -> InternalMemoryType {
         Ok(generated::MemoryType::QualityChecklist) => InternalMemoryType::QualityChecklist,
         Ok(generated::MemoryType::Clarification) => InternalMemoryType::Clarification,
         _ => InternalMemoryType::Insight, // Default fallback
+    }
+}
+
+fn memory_class_to_proto(class: InternalMemoryClass) -> i32 {
+    match class {
+        InternalMemoryClass::Knowledge => generated::MemoryClass::Knowledge as i32,
+        InternalMemoryClass::InteractionPolicy => generated::MemoryClass::InteractionPolicy as i32,
     }
 }
 
@@ -122,8 +136,67 @@ pub fn link_type_to_proto(lt: InternalLinkType) -> i32 {
     proto_type as i32
 }
 
+fn provenance_to_proto(provenance: MemoryProvenance) -> generated::MemoryProvenance {
+    generated::MemoryProvenance {
+        source_kind: match provenance.source_kind {
+            ProvenanceSourceKind::Turn => generated::ProvenanceSourceKind::Turn as i32,
+            ProvenanceSourceKind::Import => generated::ProvenanceSourceKind::Import as i32,
+            ProvenanceSourceKind::Manual => generated::ProvenanceSourceKind::Manual as i32,
+        },
+        source_memory_id: provenance.source_memory_id.map(|id| id.to_string()),
+        session_id: provenance.session_id,
+        turn_id: provenance.turn_id,
+        source_role: match provenance.source_role {
+            ProvenanceSourceRole::User => generated::ProvenanceSourceRole::User as i32,
+            ProvenanceSourceRole::Assistant => generated::ProvenanceSourceRole::Assistant as i32,
+            ProvenanceSourceRole::System => generated::ProvenanceSourceRole::System as i32,
+            ProvenanceSourceRole::Unknown => generated::ProvenanceSourceRole::Unknown as i32,
+        },
+        observed_at: provenance.observed_at.timestamp() as u64,
+        evidence_quote: provenance.evidence_quote,
+        extractor_model: provenance.extractor_model,
+        extraction_schema_version: provenance.extraction_schema_version,
+    }
+}
+
+/// Convert an interaction policy and its evidence to the typed RPC shape.
+pub fn interaction_policy_to_proto(
+    policy: crate::types::InteractionPolicy,
+) -> generated::InteractionPolicy {
+    generated::InteractionPolicy {
+        polarity: match policy.polarity {
+            crate::types::PolicyPolarity::Prefer => generated::PolicyPolarity::Prefer as i32,
+            crate::types::PolicyPolarity::Avoid => generated::PolicyPolarity::Avoid as i32,
+        },
+        guidance: policy.guidance,
+        applicability: policy.applicability,
+        signal: match policy.signal {
+            crate::types::PolicySignalKind::DirectPreference => {
+                generated::PolicySignalKind::DirectPreference as i32
+            }
+            crate::types::PolicySignalKind::Correction => {
+                generated::PolicySignalKind::Correction as i32
+            }
+            crate::types::PolicySignalKind::Dissatisfaction => {
+                generated::PolicySignalKind::Dissatisfaction as i32
+            }
+            crate::types::PolicySignalKind::Approval => {
+                generated::PolicySignalKind::Approval as i32
+            }
+        },
+        confidence: policy.confidence,
+        anchors: policy.anchors,
+        evidence: policy
+            .evidence
+            .into_iter()
+            .map(provenance_to_proto)
+            .collect(),
+    }
+}
+
 /// Convert internal MemoryNote to Protobuf MemoryNote
 pub fn memory_note_to_proto(note: InternalMemoryNote) -> generated::MemoryNote {
+    let provenance = note.provenance.map(provenance_to_proto);
     generated::MemoryNote {
         id: note.id.to_string(),
         namespace: Some(namespace_to_proto(note.namespace)),
@@ -135,6 +208,7 @@ pub fn memory_note_to_proto(note: InternalMemoryNote) -> generated::MemoryNote {
         tags: note.tags,
         context: note.context,
         memory_type: memory_type_to_proto(note.memory_type),
+        memory_class: memory_class_to_proto(note.memory_class),
         importance: note.importance as u32,
         confidence: note.confidence,
         links: note
@@ -159,5 +233,6 @@ pub fn memory_note_to_proto(note: InternalMemoryNote) -> generated::MemoryNote {
         superseded_by: note.superseded_by.map(|id| id.to_string()),
         embedding: note.embedding.unwrap_or_default(),
         embedding_model: note.embedding_model,
+        provenance,
     }
 }

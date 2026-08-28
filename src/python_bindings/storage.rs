@@ -308,6 +308,19 @@ impl PyStorage {
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: dict
+                .get_item("memory_class")
+                .ok()
+                .flatten()
+                .and_then(|value| value.extract::<String>().ok())
+                .and_then(|value| serde_json::from_value(serde_json::json!(value)).ok())
+                .unwrap_or_default(),
+            provenance: dict
+                .get_item("provenance")
+                .ok()
+                .flatten()
+                .and_then(|value| value.extract::<String>().ok())
+                .and_then(|value| serde_json::from_str(&value).ok()),
         };
 
         Ok(note)
@@ -324,6 +337,18 @@ impl PyStorage {
         dict.set_item("summary", &note.summary)?;
         dict.set_item("keywords", note.keywords.clone())?;
         dict.set_item("tags", note.tags.clone())?;
+        dict.set_item(
+            "memory_class",
+            serde_json::to_string(&note.memory_class)
+                .unwrap_or_else(|_| "\"knowledge\"".into())
+                .trim_matches('"'),
+        )?;
+        if let Some(provenance) = &note.provenance {
+            dict.set_item(
+                "provenance",
+                serde_json::to_string(provenance).unwrap_or_default(),
+            )?;
+        }
 
         Ok(dict.into())
     }

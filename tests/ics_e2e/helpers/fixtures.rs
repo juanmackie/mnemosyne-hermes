@@ -129,6 +129,8 @@ pub fn sample_memories() -> Vec<MemoryNote> {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: mnemosyne_core::MemoryClass::Knowledge,
+            provenance: None,
         },
         MemoryNote {
             id: MemoryId::new(),
@@ -157,6 +159,8 @@ pub fn sample_memories() -> Vec<MemoryNote> {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: mnemosyne_core::MemoryClass::Knowledge,
+            provenance: None,
         },
         MemoryNote {
             id: MemoryId::new(),
@@ -185,6 +189,8 @@ pub fn sample_memories() -> Vec<MemoryNote> {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: mnemosyne_core::MemoryClass::Knowledge,
+            provenance: None,
         },
     ]
 }

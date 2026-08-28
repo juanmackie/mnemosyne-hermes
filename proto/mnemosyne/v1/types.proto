@@ -58,6 +58,41 @@ enum MemoryType {
   MEMORY_TYPE_CLARIFICATION = 17;
 }
 
+enum MemoryClass {
+  MEMORY_CLASS_UNSPECIFIED = 0;
+  MEMORY_CLASS_KNOWLEDGE = 1;
+  MEMORY_CLASS_INTERACTION_POLICY = 2;
+}
+
+enum ProvenanceSourceKind {
+  PROVENANCE_SOURCE_KIND_UNSPECIFIED = 0;
+  PROVENANCE_SOURCE_KIND_TURN = 1;
+  PROVENANCE_SOURCE_KIND_IMPORT = 2;
+  PROVENANCE_SOURCE_KIND_MANUAL = 3;
+}
+
+enum ProvenanceSourceRole {
+  PROVENANCE_SOURCE_ROLE_UNSPECIFIED = 0;
+  PROVENANCE_SOURCE_ROLE_USER = 1;
+  PROVENANCE_SOURCE_ROLE_ASSISTANT = 2;
+  PROVENANCE_SOURCE_ROLE_SYSTEM = 3;
+  PROVENANCE_SOURCE_ROLE_UNKNOWN = 4;
+}
+
+enum PolicyPolarity {
+  POLICY_POLARITY_UNSPECIFIED = 0;
+  POLICY_POLARITY_PREFER = 1;
+  POLICY_POLARITY_AVOID = 2;
+}
+
+enum PolicySignalKind {
+  POLICY_SIGNAL_KIND_UNSPECIFIED = 0;
+  POLICY_SIGNAL_KIND_DIRECT_PREFERENCE = 1;
+  POLICY_SIGNAL_KIND_CORRECTION = 2;
+  POLICY_SIGNAL_KIND_DISSATISFACTION = 3;
+  POLICY_SIGNAL_KIND_APPROVAL = 4;
+}
+
 enum LinkType {
   LINK_TYPE_UNSPECIFIED = 0;
   LINK_TYPE_EXTENDS = 1;
@@ -87,6 +122,28 @@ message MemoryLink {
 // ============================================================================
 // Memory Note (Full Structure)
 // ============================================================================
+
+message MemoryProvenance {
+  ProvenanceSourceKind source_kind = 1;
+  optional string source_memory_id = 2;
+  optional string session_id = 3;
+  optional string turn_id = 4;
+  ProvenanceSourceRole source_role = 5;
+  uint64 observed_at = 6;
+  string evidence_quote = 7;
+  optional string extractor_model = 8;
+  optional string extraction_schema_version = 9;
+}
+
+message InteractionPolicy {
+  PolicyPolarity polarity = 1;
+  string guidance = 2;
+  string applicability = 3;
+  PolicySignalKind signal = 4;
+  float confidence = 5;
+  repeated string anchors = 6;
+  repeated MemoryProvenance evidence = 7;
+}
 
 message MemoryNote {
   // Identity
@@ -124,6 +181,9 @@ message MemoryNote {
   // Embeddings
   repeated float embedding = 21;      // Vector embedding (768d or 1536d)
   string embedding_model = 22;        // Model name
+  // Orthogonal class; unspecified is treated as knowledge by older clients.
+  MemoryClass memory_class = 23;
+  MemoryProvenance provenance = 24;
 }
 
 // ============================================================================
@@ -138,6 +198,7 @@ message SearchQuery {
   optional uint32 min_importance = 5; // Minimum importance threshold
   uint32 max_results = 6;             // Limit results
   bool include_archived = 7;          // Include archived memories
+  MemoryClass memory_class = 8;       // Optional knowledge/policy filter
 }
 
 message SearchResult {

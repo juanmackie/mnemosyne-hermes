@@ -51,6 +51,8 @@ mod memory_evolution_adapter_tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "".to_string(),
+            memory_class: mnemosyne_core::MemoryClass::Knowledge,
+            provenance: None,
         }
     }
 

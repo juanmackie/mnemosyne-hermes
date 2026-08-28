@@ -824,6 +824,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         }
     }
 

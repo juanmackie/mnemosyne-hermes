@@ -127,6 +127,194 @@ impl std::fmt::Display for Namespace {
     }
 }
 
+/// Distinguishes factual knowledge from internal response guidance.
+///
+/// This is deliberately orthogonal to [`MemoryType`], so existing callers can
+/// continue using their current classification while policy memories are kept
+/// out of factual recall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryClass {
+    #[default]
+    Knowledge,
+    InteractionPolicy,
+}
+
+/// Where a memory's evidence originated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceSourceKind {
+    Turn,
+    Import,
+    Manual,
+}
+
+/// Role that supplied a provenance quote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceSourceRole {
+    User,
+    Assistant,
+    System,
+    Unknown,
+}
+
+/// Typed provenance for an observed or derived memory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryProvenance {
+    pub source_kind: ProvenanceSourceKind,
+    pub source_memory_id: Option<MemoryId>,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub source_role: ProvenanceSourceRole,
+    pub observed_at: DateTime<Utc>,
+    pub evidence_quote: String,
+    pub extractor_model: Option<String>,
+    pub extraction_schema_version: Option<String>,
+}
+
+impl MemoryProvenance {
+    /// Validate bounded metadata and ensure evidence is non-empty.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.evidence_quote.trim().is_empty() || self.evidence_quote.chars().count() > 2_000 {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "provenance evidence_quote must contain 1..=2000 characters".into(),
+            ));
+        }
+        for (name, value, max) in [
+            ("session_id", self.session_id.as_deref(), 256),
+            ("turn_id", self.turn_id.as_deref(), 256),
+            ("extractor_model", self.extractor_model.as_deref(), 128),
+            (
+                "extraction_schema_version",
+                self.extraction_schema_version.as_deref(),
+                64,
+            ),
+        ] {
+            if value.is_some_and(|v| v.chars().count() > max) {
+                return Err(crate::error::MnemosyneError::ValidationError(format!(
+                    "provenance {} exceeds {} characters",
+                    name, max
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An entity indexed for anchored retrieval.
+///
+/// `MemoryNote::related_entities` remains the compact public summary; this
+/// typed representation preserves the display spelling, role, and confidence
+/// in the indexed relation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryEntity {
+    pub display_name: String,
+    pub normalized_name: String,
+    pub role: String,
+    pub confidence: f32,
+}
+
+impl MemoryEntity {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.display_name.trim().is_empty() || self.display_name.chars().count() > 256 {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "entity display_name must contain 1..=256 characters".into(),
+            ));
+        }
+        if self.normalized_name.trim().is_empty() || self.normalized_name.chars().count() > 256 {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "entity normalized_name must contain 1..=256 characters".into(),
+            ));
+        }
+        if self.role.trim().is_empty() || self.role.chars().count() > 64 {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "entity role must contain 1..=64 characters".into(),
+            ));
+        }
+        if !self.confidence.is_finite() || !(0.0..=1.0).contains(&self.confidence) {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "entity confidence must be between 0 and 1".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Polarity of actionable response guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyPolarity {
+    Prefer,
+    Avoid,
+}
+
+/// Explicit signal that justified an interaction policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicySignalKind {
+    DirectPreference,
+    Correction,
+    Dissatisfaction,
+    Approval,
+}
+
+/// Evidence-backed guidance about how the agent should respond.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractionPolicy {
+    pub polarity: PolicyPolarity,
+    pub guidance: String,
+    pub applicability: String,
+    pub signal: PolicySignalKind,
+    pub confidence: f32,
+    pub anchors: Vec<String>,
+    pub evidence: Vec<MemoryProvenance>,
+}
+
+impl InteractionPolicy {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.guidance.trim().is_empty() || self.guidance.chars().count() > 1_000 {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "interaction policy guidance must contain 1..=1000 characters".into(),
+            ));
+        }
+        if self.applicability.chars().count() > 500 {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "interaction policy applicability exceeds 500 characters".into(),
+            ));
+        }
+        if !self.confidence.is_finite() || !(0.0..=1.0).contains(&self.confidence) {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "interaction policy confidence must be between 0 and 1".into(),
+            ));
+        }
+        if self.evidence.is_empty() {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "interaction policy requires evidence".into(),
+            ));
+        }
+        if self.anchors.len() > 16 {
+            return Err(crate::error::MnemosyneError::ValidationError(
+                "interaction policy has too many anchors".into(),
+            ));
+        }
+        for anchor in &self.anchors {
+            if anchor.trim().is_empty() || anchor.chars().count() > 256 {
+                return Err(crate::error::MnemosyneError::ValidationError(
+                    "interaction policy anchors must contain 1..=256 characters".into(),
+                ));
+            }
+        }
+        for evidence in &self.evidence {
+            evidence.validate()?;
+        }
+        Ok(())
+    }
+}
+
 /// Memory type classification for organizational and filtering purposes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -307,6 +495,14 @@ pub struct MemoryNote {
     /// Memory type
     pub memory_type: MemoryType,
 
+    /// Orthogonal class used to keep interaction guidance out of factual recall.
+    #[serde(default)]
+    pub memory_class: MemoryClass,
+
+    /// Optional typed source/evidence metadata.
+    #[serde(default)]
+    pub provenance: Option<MemoryProvenance>,
+
     /// Importance level (1-10, higher = more important)
     pub importance: u8,
 
@@ -390,6 +586,10 @@ pub struct SearchQuery {
     /// Filter by memory types
     pub memory_types: Vec<MemoryType>,
 
+    /// Optional orthogonal class filter.
+    #[serde(default)]
+    pub memory_class: Option<MemoryClass>,
+
     /// Filter by tags
     pub tags: Vec<String>,
 
@@ -409,6 +609,7 @@ impl Default for SearchQuery {
             query: String::new(),
             namespace: None,
             memory_types: Vec::new(),
+            memory_class: None,
             tags: Vec::new(),
             min_importance: None,
             max_results: 10,
@@ -531,6 +732,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         // Fresh memory should have high importance

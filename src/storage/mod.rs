@@ -22,7 +22,7 @@ pub mod libsql_workitem_tests;
 use crate::agents::access_control::{ModificationLog, ModificationType};
 use crate::agents::AgentRole;
 use crate::error::Result;
-use crate::types::{MemoryId, MemoryNote, Namespace, SearchResult};
+use crate::types::{MemoryClass, MemoryId, MemoryNote, Namespace, SearchResult};
 use async_trait::async_trait;
 
 /// Storage backend trait defining all required operations
@@ -102,6 +102,40 @@ pub trait StorageBackend: Send + Sync {
         max_results: usize,
         expand_graph: bool,
     ) -> Result<Vec<SearchResult>>;
+
+    /// Hybrid search restricted to one orthogonal memory class.
+    ///
+    /// The default implementation preserves compatibility for alternate
+    /// backends. Backends with class-aware SQL can override it; fetching a
+    /// bounded supersized candidate set prevents policies from crowding out
+    /// factual results in the common implementation.
+    async fn hybrid_search_by_class(
+        &self,
+        query: &str,
+        namespace: Option<Namespace>,
+        max_results: usize,
+        expand_graph: bool,
+        memory_class: MemoryClass,
+    ) -> Result<Vec<SearchResult>> {
+        let fetch_limit = max_results.saturating_mul(4).max(max_results);
+        let mut results = self
+            .hybrid_search(query, namespace, fetch_limit, expand_graph)
+            .await?;
+        results.retain(|result| result.memory.memory_class == memory_class);
+        results.truncate(max_results);
+        Ok(results)
+    }
+
+    /// Search global interaction guidance independently from factual recall.
+    /// Alternate backends may return an empty list until policy storage is
+    /// implemented; the default keeps the existing trait backwards compatible.
+    async fn interaction_policy_search(
+        &self,
+        _query: &str,
+        _max_results: usize,
+    ) -> Result<Vec<SearchResult>> {
+        Ok(Vec::new())
+    }
 
     /// List recent or important memories
     async fn list_memories(

@@ -251,5 +251,7 @@ fn create_memory(
         superseded_by: None,
         embedding: None,
         embedding_model: "test".to_string(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     }
 }

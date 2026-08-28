@@ -1093,6 +1093,8 @@ impl EventPersistence {
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         // Store to Mnemosyne

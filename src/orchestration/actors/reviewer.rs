@@ -1886,6 +1886,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         storage
@@ -2020,6 +2022,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         let memory2 = crate::types::MemoryNote {
@@ -2045,6 +2049,8 @@ mod tests {
             superseded_by: None,
             embedding: None,
             embedding_model: "test".to_string(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         // Store memories

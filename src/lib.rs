@@ -86,7 +86,9 @@ pub mod python_bindings;
 pub mod rpc;
 
 // Re-export commonly used types
-pub use agent_context::StreamingContextScrubber;
+pub use agent_context::{
+    render_recall_bundle, RecallBundle, RecallChannel, StreamingContextScrubber,
+};
 pub use agents::{AgentMemoryView, AgentRole, CustomImportanceScorer, MemoryAccessControl};
 pub use config::{ConfigManager, EmbeddingConfig, SearchConfig};
 pub use diagnostics::{
@@ -113,13 +115,17 @@ pub use memory_manager::{
 pub use namespace::{NamespaceDetector, ProjectMetadata};
 pub use orchestration::{AgentEvent, OrchestrationEngine, SupervisionConfig, WorkItem, WorkQueue};
 pub use services::{LlmConfig, LlmService};
+pub use session_extract::{
+    ExtractionStatus, TurnExtraction, TurnLearningResult, EXTRACTION_SCHEMA_VERSION,
+};
 pub use storage::{
-    libsql::{ConnectionMode, LibsqlStorage, PurgeReport},
+    libsql::{ConnectionMode, LearningMemory, LibsqlStorage, PurgeReport},
     StorageBackend,
 };
 pub use types::{
-    ConsolidationDecision, LinkType, MemoryId, MemoryLink, MemoryNote, MemoryType, MemoryUpdates,
-    Namespace, SearchQuery, SearchResult,
+    ConsolidationDecision, InteractionPolicy, LinkType, MemoryClass, MemoryEntity, MemoryId,
+    MemoryLink, MemoryNote, MemoryProvenance, MemoryType, MemoryUpdates, Namespace, PolicyPolarity,
+    PolicySignalKind, ProvenanceSourceKind, ProvenanceSourceRole, SearchQuery, SearchResult,
 };
 pub use update::{prompt_for_install, prompt_for_update, UpdateManager, UpdateResult};
 pub use utils::{is_trivial_prompt, sanitize_context, string::truncate_at_char_boundary};

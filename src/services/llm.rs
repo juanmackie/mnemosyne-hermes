@@ -8,6 +8,7 @@
 
 use crate::config::ConfigManager;
 use crate::error::{MnemosyneError, Result};
+use crate::session_extract::{SessionMessage, TurnExtraction, EXTRACTION_SCHEMA_VERSION};
 use crate::types::{ConsolidationDecision, LinkType, MemoryLink, MemoryNote, MemoryType};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -295,6 +296,8 @@ IMPORTANT: Return ONLY valid JSON, no additional text or markdown formatting.
             superseded_by: None,
             embedding: None,
             embedding_model: self.config.model.clone(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         })
     }
 
@@ -739,6 +742,40 @@ IMPORTANT: Return ONLY valid JSON, no additional text.
         Ok(result)
     }
 
+    /// Extract durable memories and explicit response feedback in one LLM call.
+    ///
+    /// Unlike the legacy heuristic session extractor this method is strict: the
+    /// response must be JSON matching [`TurnExtraction`] and is validated
+    /// against the source exchange before it is returned.
+    pub async fn extract_turn(&self, messages: &[SessionMessage]) -> Result<TurnExtraction> {
+        if messages.is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "turn must contain at least one message".into(),
+            ));
+        }
+        let transcript = messages
+            .iter()
+            .map(|message| format!("{}: {}", message.role, message.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = format!(
+            r#"Read this completed text conversation once and extract only durable, explicitly supported memory.
+Return ONLY JSON matching this exact shape:
+{{"schema_version":"{EXTRACTION_SCHEMA_VERSION}","candidates":[{{"content":"...","kind":"fact|preference|constraint|decision","confidence":0.0,"evidence_quote":"verbatim quote","source_role":"user|assistant|system","entities":[{{"display_name":"...","normalized_key":"...","role":"...","confidence":0.0}}]}}],"response_feedback":{{"polarity":"prefer|avoid","guidance":"agent-facing instruction","applicability":"condition","signal":"direct_preference|correction|dissatisfaction|approval","confidence":0.0,"evidence_quote":"verbatim quote","source_role":"user","anchors":["..."]}}}}
+Use response_feedback null when no explicit signal. response_feedback may contain only explicit response guidance and must use polarity prefer/avoid and signal direct_preference/correction/dissatisfaction/approval. Do not infer sentiment, personality, or policies from thanks, generic praise, generic complaints, or one-off requests. Every evidence_quote must be copied verbatim from the conversation. Use an empty candidates array when there is no durable memory.
+
+Conversation:
+{transcript}"#
+        );
+        let response = self.call_api(&prompt).await?;
+        let extraction: TurnExtraction =
+            serde_json::from_str(response.trim()).map_err(|error| {
+                MnemosyneError::LlmApi(format!("turn extraction JSON parse failed: {}", error))
+            })?;
+        extraction.validate(messages)?;
+        Ok(extraction)
+    }
+
     /// Make an API call to Claude with a custom prompt
     ///
     /// This is a low-level method for custom LLM interactions.
@@ -833,6 +870,22 @@ IMPORTANT: Return ONLY valid JSON, no additional text.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn turn_extraction_requires_configured_llm() {
+        let service = LlmService::new(LlmConfig {
+            api_key: String::new(),
+            model: "test".into(),
+            max_tokens: 128,
+            temperature: 0.0,
+        })
+        .unwrap();
+        let error = service
+            .extract_turn(&[SessionMessage::new("user", "Remember this fact.")])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("ANTHROPIC_API_KEY"));
+    }
 
     #[tokio::test]
     #[ignore] // Requires ANTHROPIC_API_KEY

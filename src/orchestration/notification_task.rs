@@ -244,6 +244,8 @@ async fn process_notifications(
             superseded_by: None,
             embedding: None,
             embedding_model: String::new(),
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
         };
 
         if let Err(e) = storage.store_memory(&memory).await {

@@ -103,6 +103,7 @@ impl PyNamespace {
             RustNamespace::Global => "global".to_string(),
             RustNamespace::Project { .. } => "project".to_string(),
             RustNamespace::Session { .. } => "session".to_string(),
+            RustNamespace::Agent { .. } => "agent".to_string(),
         }
     }
 
@@ -113,6 +114,7 @@ impl PyNamespace {
             RustNamespace::Global => None,
             RustNamespace::Project { name } => Some(name.clone()),
             RustNamespace::Session { session_id, .. } => Some(session_id.clone()),
+            RustNamespace::Agent { agent_id } => Some(agent_id.clone()),
         }
     }
 }
@@ -150,13 +152,19 @@ pub struct PyMemory {
 
     #[pyo3(get)]
     pub access_count: u32,
+
+    #[pyo3(get)]
+    pub memory_class: String,
+
+    #[pyo3(get)]
+    pub provenance: Option<String>,
 }
 
 #[pymethods]
 impl PyMemory {
     /// Create new PyMemory from components.
     #[new]
-    #[pyo3(signature = (id, content, namespace, importance, summary=None, keywords=None, tags=None))]
+    #[pyo3(signature = (id, content, namespace, importance, summary=None, keywords=None, tags=None, memory_class=None, provenance=None))]
     fn new(
         id: String,
         content: String,
@@ -165,6 +173,8 @@ impl PyMemory {
         summary: Option<String>,
         keywords: Option<Vec<String>>,
         tags: Option<Vec<String>>,
+        memory_class: Option<String>,
+        provenance: Option<String>,
     ) -> Self {
         PyMemory {
             id,
@@ -176,6 +186,8 @@ impl PyMemory {
             tags: tags.unwrap_or_default(),
             created_at: chrono::Utc::now().to_rfc3339(),
             access_count: 0,
+            memory_class: memory_class.unwrap_or_else(|| "knowledge".into()),
+            provenance,
         }
     }
 
@@ -210,6 +222,14 @@ impl From<&RustMemoryNote> for PyMemory {
             tags: note.tags.clone(),
             created_at: note.created_at.to_rfc3339(),
             access_count: note.access_count,
+            memory_class: serde_json::to_string(&note.memory_class)
+                .unwrap_or_else(|_| "\"knowledge\"".into())
+                .trim_matches('"')
+                .to_string(),
+            provenance: note
+                .provenance
+                .as_ref()
+                .and_then(|value| serde_json::to_string(value).ok()),
         }
     }
 }

@@ -449,5 +449,7 @@ fn create_test_memory(summary: &str, memory_type: MemoryType, tags: Vec<&str>) -
         superseded_by: None,
         embedding: None,
         embedding_model: "claude-haiku-4-5-20251001".to_string(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
     }
 }

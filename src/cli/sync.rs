@@ -21,6 +21,7 @@ pub async fn handle(
     assistant_text: String,
     namespace: String,
     memory_type: Option<String>,
+    learn: bool,
     global_db_path: Option<String>,
 ) -> Result<()> {
     let db_path = get_db_path(global_db_path);
@@ -33,11 +34,17 @@ pub async fn handle(
     let config = MemoryConfig::new()
         .namespace(ns)
         .memory_type(memory_type.unwrap_or(MemoryType::Insight));
-    let id = mgr
-        .sync_with_config(&user_text, &assistant_text, config)
-        .await?;
-
-    println!("synced: {}", id);
+    if learn {
+        let result = mgr
+            .sync_and_learn_with_config(&user_text, &assistant_text, config)
+            .await?;
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        let id = mgr
+            .sync_with_config(&user_text, &assistant_text, config)
+            .await?;
+        println!("synced: {}", id);
+    }
     Ok(())
 }
 

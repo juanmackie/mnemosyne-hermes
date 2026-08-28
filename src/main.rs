@@ -309,6 +309,11 @@ enum Commands {
         /// Memory type tag (architecture|code_pattern|insight|...)
         #[arg(short = 'y', long)]
         memory_type: Option<String>,
+
+        /// Run the strict LLM turn extractor after persisting the raw turn.
+        /// Without this flag sync remains the backward-compatible raw-turn path.
+        #[arg(long)]
+        learn: bool,
     },
 
     /// Generate embeddings for memories
@@ -580,7 +585,18 @@ async fn main() -> Result<()> {
             assistant,
             namespace,
             memory_type,
-        }) => cli::sync::handle(user, assistant, namespace, memory_type, cli.db_path.clone()).await,
+            learn,
+        }) => {
+            cli::sync::handle(
+                user,
+                assistant,
+                namespace,
+                memory_type,
+                learn,
+                cli.db_path.clone(),
+            )
+            .await
+        }
         Some(Commands::List {
             namespace,
             limit,
