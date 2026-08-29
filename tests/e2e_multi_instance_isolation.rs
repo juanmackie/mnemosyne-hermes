@@ -25,7 +25,7 @@ fn setup_realistic_repo() -> (TempDir, WorktreeManager) {
 
     // Initialize git repo
     Command::new("git")
-        .args(["init"])
+        .args(["-c", "init.defaultBranch=main", "init"])
         .current_dir(repo_path)
         .output()
         .expect("Failed to init git");

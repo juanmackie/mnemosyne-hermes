@@ -117,6 +117,9 @@ pub struct ToolHandler {
     llm: Arc<LlmService>,
     embeddings: Arc<EmbeddingService>,
     event_sink: EventSink,
+    /// Namespace supplied by the MCP process environment. Explicit tool
+    /// arguments still override this value.
+    default_namespace: Namespace,
 }
 
 impl ToolHandler {
@@ -126,12 +129,13 @@ impl ToolHandler {
         llm: Arc<LlmService>,
         embeddings: Arc<EmbeddingService>,
     ) -> Self {
-        Self {
+        Self::new_with_default_namespace(
             storage,
             llm,
             embeddings,
-            event_sink: EventSink::None,
-        }
+            EventSink::None,
+            Namespace::Global,
+        )
     }
 
     /// Create a new tool handler with event sink
@@ -141,11 +145,24 @@ impl ToolHandler {
         embeddings: Arc<EmbeddingService>,
         event_sink: EventSink,
     ) -> Self {
+        Self::new_with_default_namespace(storage, llm, embeddings, event_sink, Namespace::Global)
+    }
+
+    /// Create a handler with the validated namespace configured for this MCP
+    /// process. Explicit tool arguments still override this value.
+    pub fn new_with_default_namespace(
+        storage: Arc<dyn StorageBackend>,
+        llm: Arc<LlmService>,
+        embeddings: Arc<EmbeddingService>,
+        event_sink: EventSink,
+        default_namespace: Namespace,
+    ) -> Self {
         Self {
             storage,
             llm,
             embeddings,
             event_sink,
+            default_namespace,
         }
     }
 
@@ -161,12 +178,7 @@ impl ToolHandler {
             Some(broadcaster) => EventSink::Local(broadcaster),
             None => EventSink::None,
         };
-        Self {
-            storage,
-            llm,
-            embeddings,
-            event_sink,
-        }
+        Self::new_with_default_namespace(storage, llm, embeddings, event_sink, Namespace::Global)
     }
 
     /// Get list of all available tools
@@ -727,12 +739,9 @@ impl ToolHandler {
             Self::validate_abstention_threshold(threshold)?;
         }
 
-        // Parse namespace
-        let namespace = if let Some(ns_str) = &params.namespace {
-            Some(self.parse_namespace(ns_str)?)
-        } else {
-            None
-        };
+        // Parse namespace, defaulting to the scope configured for this MCP
+        // process rather than broadening recall to every namespace.
+        let namespace = Some(self.namespace_or_default(params.namespace.as_deref())?);
 
         // Graph expansion is safe for direct matches because the storage
         // layer excludes seed memories and only returns depth>0 neighbors.
@@ -1094,11 +1103,7 @@ impl ToolHandler {
 
         let params: HierarchyParams = serde_json::from_value(params)?;
 
-        let namespace = if let Some(ns_str) = &params.namespace {
-            Some(self.parse_namespace(ns_str)?)
-        } else {
-            None
-        };
+        let namespace = Some(self.namespace_or_default(params.namespace.as_deref())?);
         let max_nodes = Self::validate_max_results(params.max_nodes.unwrap_or(200))?;
 
         let notes = self
@@ -1138,11 +1143,7 @@ impl ToolHandler {
         }
 
         let params: PersonaParams = serde_json::from_value(params)?;
-        let namespace = params
-            .namespace
-            .as_deref()
-            .map(|value| self.parse_namespace(value))
-            .transpose()?;
+        let namespace = Some(self.namespace_or_default(params.namespace.as_deref())?);
         let limit = params.limit.unwrap_or(50).clamp(1, 1000);
         let memories = self
             .storage
@@ -1185,7 +1186,7 @@ impl ToolHandler {
         let params: CanonicalParams = serde_json::from_value(params)?;
         Self::validate_non_empty(&params.category, "category")?;
         Self::validate_non_empty(&params.name, "name")?;
-        let namespace = self.parse_namespace(params.namespace.as_deref().unwrap_or("global"))?;
+        let namespace = self.namespace_or_default(params.namespace.as_deref())?;
         let category_tag = format!("canonical-category:{}", params.category);
         let name_tag = format!("canonical-name:{}", params.name);
         let mut existing = self
@@ -1276,7 +1277,7 @@ impl ToolHandler {
         let params: TripleParams = serde_json::from_value(params)?;
         Self::validate_non_empty(&params.subject, "subject")?;
         Self::validate_non_empty(&params.predicate, "predicate")?;
-        let namespace = self.parse_namespace(params.namespace.as_deref().unwrap_or("global"))?;
+        let namespace = self.namespace_or_default(params.namespace.as_deref())?;
         let subject_tag = format!("triple-subject:{}", params.subject);
         let predicate_tag = format!("triple-predicate:{}", params.predicate);
         let memories = self
@@ -1373,12 +1374,8 @@ impl ToolHandler {
 
         let params: ListParams = serde_json::from_value(params)?;
 
-        // Parse namespace
-        let namespace = if let Some(ns_str) = &params.namespace {
-            Some(self.parse_namespace(ns_str)?)
-        } else {
-            None
-        };
+        // Parse namespace using the process default when omitted.
+        let namespace = Some(self.namespace_or_default(params.namespace.as_deref())?);
 
         // Parse sort order
         use crate::storage::MemorySortOrder;
@@ -1555,7 +1552,7 @@ impl ToolHandler {
         struct RememberParams {
             content: String,
             /// Optional — a small local model WILL omit this. Defaults to the
-            /// shared `global` scope so a malformed call still stores safely.
+            /// MCP process namespace so omitted calls remain scope-safe.
             namespace: Option<String>,
             importance: Option<u8>,
             context: Option<String>,
@@ -1572,8 +1569,8 @@ impl ToolHandler {
             Self::validate_importance(importance)?;
         }
 
-        // Parse namespace (default: global)
-        let namespace = self.parse_namespace(params.namespace.as_deref().unwrap_or("global"))?;
+        // Parse namespace using the process default when omitted.
+        let namespace = self.namespace_or_default(params.namespace.as_deref())?;
 
         // Enrich with LLM when available; degrade gracefully otherwise
         // (local-first personal agents often run without any cloud LLM key)
@@ -1666,6 +1663,7 @@ impl ToolHandler {
                     ConsolidationDecision::Merge { into, content } => {
                         let mut memory = if into == id_a { memory_a } else { memory_b };
                         memory.content = content;
+                        memory.embedding = None;
                         memory.updated_at = chrono::Utc::now();
                         self.storage.update_memory(&memory).await?;
 
@@ -1714,11 +1712,7 @@ impl ToolHandler {
         }
 
         // Otherwise, find candidates in namespace
-        let namespace = if let Some(ns_str) = &params.namespace {
-            Some(self.parse_namespace(ns_str)?)
-        } else {
-            None
-        };
+        let namespace = Some(self.namespace_or_default(params.namespace.as_deref())?);
 
         let candidates = self
             .storage
@@ -1775,6 +1769,9 @@ impl ToolHandler {
                 }
                 Err(e) => {
                     warn!("Failed to regenerate embedding: {}. Update will proceed without embedding.", e);
+                    // Explicitly clear the prior vector so a failed
+                    // regeneration cannot leave stale semantic results live.
+                    memory.embedding = None;
                     // Continue with update even if embedding fails
                 }
             }
@@ -1829,25 +1826,14 @@ impl ToolHandler {
     // === Helper Methods ===
 
     fn parse_namespace(&self, namespace_str: &str) -> Result<Namespace> {
-        let parts: Vec<&str> = namespace_str.split(':').collect();
+        Namespace::parse(namespace_str)
+    }
 
-        match parts.as_slice() {
-            ["global"] => Ok(Namespace::Global),
-            ["project", name] => Ok(Namespace::Project {
-                name: name.to_string(),
-            }),
-            // Hermes profile (persona) — maps onto the per-agent private scope.
-            ["profile", name] | ["agent", name] => Ok(Namespace::Agent {
-                agent_id: name.to_string(),
-            }),
-            ["session", project, session_id] => Ok(Namespace::Session {
-                project: project.to_string(),
-                session_id: session_id.to_string(),
-            }),
-            _ => Err(crate::error::MnemosyneError::InvalidNamespace(
-                namespace_str.to_string(),
-            )),
-        }
+    fn namespace_or_default(&self, namespace: Option<&str>) -> Result<Namespace> {
+        namespace
+            .map(|value| self.parse_namespace(value))
+            .transpose()
+            .map(|parsed| parsed.unwrap_or_else(|| self.default_namespace.clone()))
     }
 }
 

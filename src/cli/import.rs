@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use super::helpers::parse_namespace;
+
 const SOURCE_TABLES: &[&str] = &[
     "working_memory",
     "episodic_memory",
@@ -82,7 +84,7 @@ pub async fn handle(
     source_conn.execute("PRAGMA query_only = ON", ()).await?;
 
     let source_sha256 = file_sha256(&source)?;
-    let target_namespace = parse_namespace(namespace.as_deref().unwrap_or("agent:hermes"));
+    let target_namespace = parse_namespace(namespace.as_deref().unwrap_or("agent:hermes"))?;
     let mut report = ImportReport {
         source: source.display().to_string(),
         source_sha256,
@@ -203,29 +205,7 @@ fn canonical_source_path(path: &str) -> Result<PathBuf> {
     source.canonicalize().map_err(MnemosyneError::from)
 }
 
-fn parse_namespace(value: &str) -> Namespace {
-    if let Some(name) = value.strip_prefix("project:") {
-        Namespace::Project {
-            name: name.to_string(),
-        }
-    } else if let Some(agent_id) = value.strip_prefix("agent:") {
-        Namespace::Agent {
-            agent_id: agent_id.to_string(),
-        }
-    } else if let Some(rest) = value.strip_prefix("session:") {
-        let mut parts = rest.splitn(2, ':');
-        match (parts.next(), parts.next()) {
-            (Some(project), Some(session_id)) => Namespace::Session {
-                project: project.to_string(),
-                session_id: session_id.to_string(),
-            },
-            _ => Namespace::Global,
-        }
-    } else {
-        Namespace::Global
-    }
-}
-
+// Namespace parsing is provided by cli::helpers::parse_namespace.
 async fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let mut rows = conn
         .query(
@@ -537,15 +517,15 @@ mod tests {
 
     #[test]
     fn parses_provider_namespaces() {
-        assert_eq!(parse_namespace("global"), Namespace::Global);
+        assert_eq!(parse_namespace("global").unwrap(), Namespace::Global);
         assert_eq!(
-            parse_namespace("agent:hermes"),
+            parse_namespace("agent:hermes").unwrap(),
             Namespace::Agent {
                 agent_id: "hermes".to_string()
             }
         );
         assert_eq!(
-            parse_namespace("session:home:one"),
+            parse_namespace("session:home:one").unwrap(),
             Namespace::Session {
                 project: "home".to_string(),
                 session_id: "one".to_string()

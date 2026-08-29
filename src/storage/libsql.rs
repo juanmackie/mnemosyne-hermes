@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use libsql::{params, Builder, Connection, Database};
 use once_cell::sync::Lazy;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -20,6 +21,14 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 const MAX_GRAPH_SEEDS: usize = 1_000;
+
+fn content_revision(content: &str, updated_at: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(updated_at.as_bytes());
+    digest.update([0]);
+    digest.update(content.as_bytes());
+    format!("{:x}", digest.finalize())
+}
 
 fn normalize_entity_name(name: &str) -> String {
     name.trim()
@@ -34,6 +43,109 @@ fn normalize_entity_name(name: &str) -> String {
 /// Substring matching makes a short anchor such as `go` match unrelated text
 /// such as `golf`. Entity and policy anchors are names, not arbitrary search
 /// substrings, so compare normalized token windows instead.
+fn decode_embedding_from_row(row: &libsql::Row, index: i32) -> Result<Vec<f32>> {
+    match row.column_type(index).unwrap_or(libsql::ValueType::Blob) {
+        libsql::ValueType::Blob => {
+            let bytes: Vec<u8> = row.get(index)?;
+            if bytes.len() % 4 != 0 {
+                return Err(MnemosyneError::Database(
+                    "embedding blob length is not divisible by four".into(),
+                ));
+            }
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect())
+        }
+        libsql::ValueType::Text => Ok(serde_json::from_str(&row.get::<String>(index)?)?),
+        _ => Err(MnemosyneError::Database(
+            "embedding column has an unsupported type".into(),
+        )),
+    }
+}
+
+async fn mark_proposal_failed(
+    tx: &libsql::Transaction,
+    proposal_id: &str,
+    target_memory_id: &str,
+    error_message: &str,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "UPDATE memory_change_proposals SET status = 'failed', error_message = ?, applied_at = ? WHERE id = ? AND status = 'accepted'",
+        params![error_message, now, proposal_id],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+        params![
+            target_memory_id,
+            serde_json::json!({
+                "event": "memory_proposal_failed",
+                "proposal_id": proposal_id,
+                "reason": error_message,
+            })
+            .to_string(),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn mark_policy_proposal_failed(
+    tx: &libsql::Transaction,
+    proposal_id: &str,
+    source_memory_id: &str,
+    error_message: &str,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "UPDATE interaction_policy_proposals SET status = 'failed', error_message = ?, applied_at = ? WHERE id = ? AND status = 'accepted'",
+        params![error_message, now, proposal_id],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+        params![
+            source_memory_id,
+            serde_json::json!({
+                "event": "interaction_policy_proposal_failed",
+                "proposal_id": proposal_id,
+                "reason": error_message,
+            })
+            .to_string(),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn connection_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut rows = conn.query(&sql, params![]).await?;
+    while let Some(row) = rows.next().await? {
+        if row.get::<String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn parse_datetime_from_row(row: &libsql::Row, index: i32) -> Option<chrono::DateTime<Utc>> {
+    match row.column_type(index).ok()? {
+        libsql::ValueType::Integer => chrono::DateTime::from_timestamp(row.get(index).ok()?, 0),
+        libsql::ValueType::Real => {
+            chrono::DateTime::from_timestamp(row.get::<f64>(index).ok()? as i64, 0)
+        }
+        libsql::ValueType::Text => {
+            chrono::DateTime::parse_from_rfc3339(&row.get::<String>(index).ok()?)
+                .ok()
+                .map(|value| value.with_timezone(&Utc))
+        }
+        _ => None,
+    }
+}
+
 fn query_contains_entity_phrase(query: &str, anchor: &str) -> bool {
     let query_words: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
@@ -106,6 +218,9 @@ static LIBSQL_MIGRATION_NAMES: &[&str] = &[
     "012_requirement_tracking.sql",
     "015_version_check_cache.sql",
     "017_text_memory_learning.sql",
+    "019_memory_maintenance_runs.sql",
+    "020_memory_change_proposals.sql",
+    "022_interaction_policy_proposals.sql",
 ];
 
 /// Migration file names for StandardSQLite schema
@@ -117,8 +232,13 @@ static SQLITE_MIGRATION_NAMES: &[&str] = &[
     "012_requirement_tracking.sql",
     "013_add_task_and_agent_event_types.sql",
     "014_add_specification_workflow_types.sql",
+    "015_fix_audit_log_schema.sql",
     "016_version_check_cache.sql",
     "017_text_memory_learning.sql",
+    "019_memory_maintenance_runs.sql",
+    "020_memory_change_proposals.sql",
+    "021_expand_memory_type_constraint.sql",
+    "022_interaction_policy_proposals.sql",
 ];
 
 /// (filename, SQL content) pairs for LibSQL migrations — SQL embedded at
@@ -151,6 +271,18 @@ static LIBSQL_MIGRATIONS: &[(&str, &str)] = &[
     (
         "017_text_memory_learning.sql",
         include_str!("../../migrations/libsql/017_text_memory_learning.sql"),
+    ),
+    (
+        "019_memory_maintenance_runs.sql",
+        include_str!("../../migrations/libsql/019_memory_maintenance_runs.sql"),
+    ),
+    (
+        "020_memory_change_proposals.sql",
+        include_str!("../../migrations/libsql/020_memory_change_proposals.sql"),
+    ),
+    (
+        "022_interaction_policy_proposals.sql",
+        include_str!("../../migrations/libsql/022_interaction_policy_proposals.sql"),
     ),
 ];
 
@@ -185,12 +317,32 @@ static SQLITE_MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../migrations/sqlite/014_add_specification_workflow_types.sql"),
     ),
     (
+        "015_fix_audit_log_schema.sql",
+        include_str!("../../migrations/sqlite/015_fix_audit_log_schema.sql"),
+    ),
+    (
         "016_version_check_cache.sql",
         include_str!("../../migrations/sqlite/016_version_check_cache.sql"),
     ),
     (
         "017_text_memory_learning.sql",
         include_str!("../../migrations/sqlite/017_text_memory_learning.sql"),
+    ),
+    (
+        "019_memory_maintenance_runs.sql",
+        include_str!("../../migrations/sqlite/019_memory_maintenance_runs.sql"),
+    ),
+    (
+        "020_memory_change_proposals.sql",
+        include_str!("../../migrations/sqlite/020_memory_change_proposals.sql"),
+    ),
+    (
+        "021_expand_memory_type_constraint.sql",
+        include_str!("../../migrations/sqlite/021_expand_memory_type_constraint.sql"),
+    ),
+    (
+        "022_interaction_policy_proposals.sql",
+        include_str!("../../migrations/sqlite/022_interaction_policy_proposals.sql"),
     ),
 ];
 
@@ -452,6 +604,14 @@ impl LibsqlStorage {
             "memory_class = 'knowledge'".to_string()
         } else {
             format!("{}.memory_class = 'knowledge'", alias)
+        }
+    }
+
+    /// Number of migrations registered for this schema family.
+    pub fn registered_migration_count(&self) -> usize {
+        match self.schema_type {
+            SchemaType::LibSQL => LIBSQL_MIGRATIONS.len(),
+            SchemaType::StandardSQLite => SQLITE_MIGRATIONS.len(),
         }
     }
 
@@ -869,8 +1029,12 @@ impl LibsqlStorage {
                 // existing databases that could be in a bad state.
                 if !is_fresh {
                     storage.verify_database_health().await?;
+                    // Ensure columns needed by compatibility migrations before
+                    // a later migration rebuilds legacy tables.
+                    storage.ensure_maintenance_columns().await?;
                 }
                 storage.run_migrations(is_fresh).await?;
+                storage.ensure_maintenance_columns().await?;
             }
         }
 
@@ -1098,6 +1262,7 @@ impl LibsqlStorage {
             }
 
             debug!("Database migrations completed (single batch, pre-compiled)");
+            self.ensure_maintenance_columns_on(&conn).await?;
             if self.db_path != ":memory:" {
                 self.check_text_learning_integrity().await?;
             }
@@ -1122,6 +1287,7 @@ impl LibsqlStorage {
                 count > 0
             })
             .unwrap_or(false);
+        drop(count_rows);
 
         if has_applied_migrations {
             debug!("Existing migrations found - will check each file individually");
@@ -1164,6 +1330,16 @@ impl LibsqlStorage {
                 }
             }
             debug!("Executing migration: {}", migration_file);
+
+            // Migration 015 rebuilds audit_log from either legacy `details`
+            // or current `metadata`. Add whichever compatibility column is
+            // absent so both details-only and metadata-only databases can run
+            // the same embedded migration safely.
+            if self.schema_type == SchemaType::StandardSQLite
+                && *migration_file == "015_fix_audit_log_schema.sql"
+            {
+                self.ensure_audit_migration_columns(&conn).await?;
+            }
 
             // Use pre-compiled SQL from include_str! (no file I/O)
             let sql = lookup_migration_sql(self.schema_type, migration_file);
@@ -1211,6 +1387,75 @@ impl LibsqlStorage {
         debug!("Database migrations completed");
         if self.db_path != ":memory:" {
             self.check_text_learning_integrity().await?;
+        }
+        Ok(())
+    }
+
+    /// Ensure compatibility columns used by the existing evolution scans are
+    /// present without making migration 019 fail on databases that already
+    /// received the legacy evolution schema.
+    async fn ensure_maintenance_columns(&self) -> Result<()> {
+        if self.db_path == ":memory:" {
+            return Ok(());
+        }
+        let conn = self.get_conn()?;
+        self.ensure_maintenance_columns_on(&conn).await
+    }
+
+    async fn ensure_audit_migration_columns(&self, conn: &Connection) -> Result<()> {
+        let has_metadata = connection_has_column(conn, "audit_log", "metadata").await?;
+        let has_details = connection_has_column(conn, "audit_log", "details").await?;
+        if !has_metadata {
+            conn.execute("ALTER TABLE audit_log ADD COLUMN metadata TEXT", params![])
+                .await?;
+        }
+        if !has_details {
+            conn.execute("ALTER TABLE audit_log ADD COLUMN details TEXT", params![])
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_maintenance_columns_on(&self, conn: &Connection) -> Result<()> {
+        let mut rows = conn.query("PRAGMA table_info(memories)", params![]).await?;
+        let mut has_archived_at = false;
+        while let Some(row) = rows.next().await? {
+            let name: String = row.get(1)?;
+            has_archived_at |= name == "archived_at";
+        }
+        drop(rows);
+        if !has_archived_at {
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN archived_at INTEGER",
+                params![],
+            )
+            .await?;
+        }
+
+        let mut rows = conn
+            .query("PRAGMA table_info(memory_links)", params![])
+            .await?;
+        let mut has_last_traversed_at = false;
+        let mut has_user_created = false;
+        while let Some(row) = rows.next().await? {
+            let name: String = row.get(1)?;
+            has_last_traversed_at |= name == "last_traversed_at";
+            has_user_created |= name == "user_created";
+        }
+        drop(rows);
+        if !has_last_traversed_at {
+            conn.execute(
+                "ALTER TABLE memory_links ADD COLUMN last_traversed_at INTEGER",
+                params![],
+            )
+            .await?;
+        }
+        if !has_user_created {
+            conn.execute(
+                "ALTER TABLE memory_links ADD COLUMN user_created INTEGER NOT NULL DEFAULT 0",
+                params![],
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1578,6 +1823,12 @@ impl LibsqlStorage {
             "preference" => crate::types::MemoryType::Preference,
             "task" => crate::types::MemoryType::Task,
             "agent_event" => crate::types::MemoryType::AgentEvent,
+            "constitution" => crate::types::MemoryType::Constitution,
+            "feature_spec" => crate::types::MemoryType::FeatureSpec,
+            "implementation_plan" => crate::types::MemoryType::ImplementationPlan,
+            "task_breakdown" => crate::types::MemoryType::TaskBreakdown,
+            "quality_checklist" => crate::types::MemoryType::QualityChecklist,
+            "clarification" => crate::types::MemoryType::Clarification,
             _ => {
                 return Err(MnemosyneError::Other(format!(
                     "Unknown memory type: {}",
@@ -1829,18 +2080,31 @@ impl LibsqlStorage {
     /// * `embedding` - The embedding vector (must match configured dimensions)
     pub async fn store_embedding(&self, memory_id: &MemoryId, embedding: &[f32]) -> Result<()> {
         let conn = self.get_conn()?;
-
-        // Convert embedding to JSON array for sqlite-vec
-        let embedding_json = serde_json::to_string(embedding)?;
-
-        // Insert or replace embedding in memory_vectors table
-        conn.execute(
-            "INSERT OR REPLACE INTO memory_vectors (memory_id, embedding) VALUES (?, ?)",
-            params![memory_id.to_string(), embedding_json],
-        )
-        .await
-        .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding: {}", e)))?;
-
+        if self.schema_type == SchemaType::LibSQL {
+            let bytes: Vec<u8> = embedding
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            conn.execute(
+                "UPDATE memories SET embedding = ? WHERE id = ?",
+                params![bytes, memory_id.to_string()],
+            )
+            .await
+            .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding: {}", e)))?;
+        } else {
+            // StandardSQLite stores the raw f32 bytes plus their dimension in
+            // its companion table.
+            let bytes: Vec<u8> = embedding
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding, dimension) VALUES (?, ?, ?)",
+                params![memory_id.to_string(), bytes, embedding.len() as i64],
+            )
+            .await
+            .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding: {}", e)))?;
+        }
         Ok(())
     }
 
@@ -1854,11 +2118,15 @@ impl LibsqlStorage {
     /// * `Ok(None)` - If no embedding exists for this memory
     /// * `Err(MnemosyneError)` - If retrieval fails
     pub async fn get_embedding(&self, memory_id: &MemoryId) -> Result<Option<Vec<f32>>> {
+        if self.schema_type == SchemaType::LibSQL {
+            return Ok(StorageBackend::get_memory(self, *memory_id)
+                .await?
+                .embedding);
+        }
         let conn = self.get_conn()?;
-
         let row = conn
             .query(
-                "SELECT embedding FROM memory_vectors WHERE memory_id = ?",
+                "SELECT embedding FROM memory_embeddings WHERE memory_id = ?",
                 params![memory_id.to_string()],
             )
             .await
@@ -1866,13 +2134,8 @@ impl LibsqlStorage {
             .next()
             .await
             .map_err(|e| MnemosyneError::Database(format!("Failed to get embedding row: {}", e)))?;
-
         match row {
-            Some(row) => {
-                let embedding_json: String = row.get(0)?;
-                let embedding: Vec<f32> = serde_json::from_str(&embedding_json)?;
-                Ok(Some(embedding))
-            }
+            Some(row) => Ok(Some(decode_embedding_from_row(&row, 0)?)),
             None => Ok(None),
         }
     }
@@ -1883,14 +2146,20 @@ impl LibsqlStorage {
     /// * `memory_id` - The ID of the memory
     pub async fn delete_embedding(&self, memory_id: &MemoryId) -> Result<()> {
         let conn = self.get_conn()?;
-
-        conn.execute(
-            "DELETE FROM memory_vectors WHERE memory_id = ?",
-            params![memory_id.to_string()],
-        )
-        .await
-        .map_err(|e| MnemosyneError::Database(format!("Failed to delete embedding: {}", e)))?;
-
+        let (sql, error) = if self.schema_type == SchemaType::LibSQL {
+            (
+                "UPDATE memories SET embedding = NULL WHERE id = ?",
+                "Failed to delete embedding from memories",
+            )
+        } else {
+            (
+                "DELETE FROM memory_embeddings WHERE memory_id = ?",
+                "Failed to delete embedding from memory_embeddings",
+            )
+        };
+        conn.execute(sql, params![memory_id.to_string()])
+            .await
+            .map_err(|e| MnemosyneError::Database(format!("{}: {}", error, e)))?;
         Ok(())
     }
 
@@ -1906,67 +2175,162 @@ impl LibsqlStorage {
         let id_str = memory_id.to_string();
         debug!("Purging memory {} (true delete)", id_str);
         let conn = self.get_conn()?;
+        let tx = conn.transaction().await?;
         let mut report = PurgeReport {
             memory_id: id_str.clone(),
             ..Default::default()
         };
 
-        // 1. Remove vector embeddings (sqlite-vec table; libsql-schema stores the
-        //    blob inline in the memories row which disappears with step 5).
-        match conn
-            .execute(
-                "DELETE FROM memory_vectors WHERE memory_id = ?",
-                params![id_str.as_str()],
-            )
-            .await
-        {
-            Ok(n) => report.embedding_removed = n > 0,
-            Err(_) => report.embedding_removed = false, // table may not exist in this schema
-        }
-
-        // 2. Remove link-graph edges in both directions.
-        report.links_removed = conn
-            .execute(
-                "DELETE FROM memory_links WHERE source_id = ? OR target_id = ?",
-                params![id_str.as_str(), id_str.as_str()],
+        // Foreign-key enforcement is connection-local and older databases may
+        // have it disabled, so discover and remove every owned projection
+        // explicitly inside this transaction.
+        let mut table_rows = tx
+            .query(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')",
+                params![],
             )
             .await?;
+        let mut tables = Vec::new();
+        while let Some(row) = table_rows.next().await? {
+            tables.push(row.get::<String>(0)?);
+        }
+        drop(table_rows);
+        let has = |name: &str| tables.iter().any(|table| table == name);
 
-        // 3. Clear supersession back-references so no dangling pointers remain.
-        report.supersession_refs_cleared = conn
+        if self.schema_type == SchemaType::LibSQL && has("memories") {
+            let mut rows = tx
+                .query(
+                    "SELECT embedding IS NOT NULL FROM memories WHERE id = ?",
+                    params![id_str.as_str()],
+                )
+                .await?;
+            if let Some(row) = rows.next().await? {
+                report.embedding_removed |= row.get::<i64>(0).unwrap_or(0) != 0;
+            }
+        }
+        if has("memory_vectors") {
+            report.embedding_removed |= tx
+                .execute(
+                    "DELETE FROM memory_vectors WHERE memory_id = ?",
+                    params![id_str.as_str()],
+                )
+                .await?
+                > 0;
+        }
+        if has("memory_embeddings") {
+            report.embedding_removed |= tx
+                .execute(
+                    "DELETE FROM memory_embeddings WHERE memory_id = ?",
+                    params![id_str.as_str()],
+                )
+                .await?
+                > 0;
+        }
+
+        if has("memory_links") {
+            report.links_removed = tx
+                .execute(
+                    "DELETE FROM memory_links WHERE source_id = ? OR target_id = ?",
+                    params![id_str.as_str(), id_str.as_str()],
+                )
+                .await?;
+        }
+        report.supersession_refs_cleared = tx
             .execute(
                 "UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?",
                 params![id_str.as_str()],
             )
             .await?;
 
-        // 4. Detach policy evidence explicitly as well as relying on foreign
-        // keys. This keeps purge safe on older databases whose connections did
-        // not enable PRAGMA foreign_keys.
-        conn.execute(
-            "DELETE FROM interaction_policy_evidence WHERE source_memory_id = ?",
-            params![id_str.as_str()],
-        )
-        .await
-        .ok();
-        conn.execute(
-            "UPDATE memory_provenance SET source_memory_id = NULL WHERE source_memory_id = ?",
-            params![id_str.as_str()],
-        )
-        .await
-        .ok();
-
-        // 5. Remove audit-trail rows referencing this memory (they may contain content).
-        report.audit_rows_removed = conn
-            .execute(
-                "DELETE FROM audit_log WHERE memory_id = ?",
+        if has("interaction_policy_evidence") {
+            tx.execute(
+                "DELETE FROM interaction_policy_evidence WHERE policy_memory_id = ? OR source_memory_id = ?",
+                params![id_str.as_str(), id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("interaction_policies") {
+            tx.execute(
+                "DELETE FROM interaction_policies WHERE policy_memory_id = ?",
                 params![id_str.as_str()],
             )
             .await?;
+        }
+        if has("memory_provenance") {
+            tx.execute(
+                "UPDATE memory_provenance SET source_memory_id = NULL WHERE source_memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+            tx.execute(
+                "DELETE FROM memory_provenance WHERE memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("memory_entities") {
+            tx.execute(
+                "DELETE FROM memory_entities WHERE memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("memory_change_proposals") {
+            // A proposal's evidence is stored as JSON source IDs. Remove any
+            // proposal that relied on the purged memory, not only proposals
+            // targeting it, so it cannot later apply orphaned provenance.
+            let source_pattern = format!("%\"{}\"%", id_str);
+            tx.execute(
+                "DELETE FROM memory_change_proposals WHERE source_memory_ids LIKE ?",
+                params![source_pattern],
+            )
+            .await?;
+            tx.execute(
+                "DELETE FROM memory_change_proposals WHERE target_memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("turn_learning_claims") {
+            tx.execute(
+                "DELETE FROM turn_learning_claims WHERE source_memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("turn_learning_claim_owners") {
+            tx.execute(
+                "DELETE FROM turn_learning_claim_owners WHERE source_memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("memory_modification_log") {
+            tx.execute(
+                "DELETE FROM memory_modification_log WHERE memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        // Older LibSQL databases used this legacy audit table.  It is not in
+        // the current schema, but true deletion must clean it when present.
+        if has("memory_modifications") {
+            tx.execute(
+                "DELETE FROM memory_modifications WHERE memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("audit_log") {
+            report.audit_rows_removed = tx
+                .execute(
+                    "DELETE FROM audit_log WHERE memory_id = ?",
+                    params![id_str.as_str()],
+                )
+                .await?;
+        }
 
-        // 6. Delete the row itself. The memories_ad trigger removes the FTS entry;
-        //    ON DELETE CASCADE handles owned metadata and any remaining links.
-        let deleted = conn
+        let deleted = tx
             .execute(
                 "DELETE FROM memories WHERE id = ?",
                 params![id_str.as_str()],
@@ -1975,6 +2339,7 @@ impl LibsqlStorage {
         if deleted == 0 {
             return Err(MnemosyneError::MemoryNotFound(id_str));
         }
+        tx.commit().await?;
         report.fts_removed = true;
 
         info!(
@@ -2170,6 +2535,14 @@ impl LibsqlStorage {
         if !self.search_config.enable_vector_search {
             debug!("Vector search disabled in config");
             return Ok(Vec::new());
+        }
+        if self.schema_type == SchemaType::StandardSQLite {
+            return Ok(self
+                .standard_vector_search(query_embedding, limit, namespace)
+                .await?
+                .into_iter()
+                .map(|result| (result.memory.id, result.score))
+                .collect());
         }
 
         let conn = self.get_conn()?;
@@ -2496,16 +2869,30 @@ impl LibsqlStorage {
         let conn = self.get_conn()?;
 
         let sql = r#"
-            SELECT source_id, target_id, link_type, strength, created_at, reason,
-                   last_traversed_at, user_created
-            FROM memory_links
-            WHERE user_created = 0
-              AND strength > 0.1
+            SELECT ml.source_id, ml.target_id, ml.link_type, ml.strength, ml.created_at, ml.reason,
+                   ml.last_traversed_at, ml.user_created
+            FROM memory_links ml
+            LEFT JOIN memories source_memory ON source_memory.id = ml.source_id
+            LEFT JOIN memories target_memory ON target_memory.id = ml.target_id
+            WHERE ml.user_created = 0
+              AND ml.strength > 0.1
               AND (
-                (last_traversed_at IS NULL AND
-                 julianday('now') - julianday(datetime(created_at, 'unixepoch')) > ?) OR
-                (last_traversed_at IS NOT NULL AND
-                 julianday('now') - julianday(datetime(last_traversed_at, 'unixepoch')) > ?)
+                source_memory.id IS NULL OR
+                target_memory.id IS NULL OR
+                COALESCE(source_memory.is_archived, 0) != 0 OR
+                COALESCE(target_memory.is_archived, 0) != 0 OR
+                (ml.last_traversed_at IS NULL AND
+                 julianday('now') - julianday(
+                     CASE WHEN typeof(ml.created_at) IN ('integer', 'real')
+                          THEN datetime(ml.created_at, 'unixepoch')
+                          ELSE ml.created_at END
+                 ) > ?) OR
+                (ml.last_traversed_at IS NOT NULL AND
+                 julianday('now') - julianday(
+                     CASE WHEN typeof(ml.last_traversed_at) IN ('integer', 'real')
+                          THEN datetime(ml.last_traversed_at, 'unixepoch')
+                          ELSE ml.last_traversed_at END
+                 ) > ?)
               )
             ORDER BY strength ASC
             LIMIT ?
@@ -2544,13 +2931,9 @@ impl LibsqlStorage {
                 .get::<String>(5)
                 .unwrap_or_else(|_| String::from("link decay candidate"));
 
-            // Parse last_traversed_at (optional)
-            let last_traversed_at = row
-                .get::<Option<String>>(6)
-                .ok()
-                .flatten()
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+            // Parse last_traversed_at from either legacy Unix seconds or
+            // RFC3339 text; both forms exist across schema generations.
+            let last_traversed_at = parse_datetime_from_row(&row, 6);
 
             // Parse user_created (boolean stored as integer)
             let user_created = row.get::<i64>(7).unwrap_or(0) != 0;
@@ -2745,6 +3128,35 @@ impl LibsqlStorage {
             results.push(self.row_to_memory(&row).await?);
         }
 
+        drop(rows);
+        // Treat graph expansion as a traversal signal for adjacent edges. The
+        // update is best-effort for compact legacy schemas without traversal
+        // columns, and runs only after the result cursor is closed.
+        if connection_has_column(&conn, "memory_links", "last_traversed_at").await?
+            && connection_has_column(&conn, "memory_links", "user_created").await?
+        {
+            let placeholders = seed_strings
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "UPDATE memory_links SET last_traversed_at = ? WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})"
+            );
+            let mut values = vec![libsql::Value::Integer(Utc::now().timestamp())];
+            values.extend(
+                seed_strings
+                    .iter()
+                    .map(|id| libsql::Value::Text(id.clone())),
+            );
+            values.extend(
+                seed_strings
+                    .iter()
+                    .map(|id| libsql::Value::Text(id.clone())),
+            );
+            conn.execute(&sql, libsql::params_from_iter(values)).await?;
+        }
+
         debug!("Graph traversal found {} memories", results.len());
         Ok(results)
     }
@@ -2757,7 +3169,1406 @@ pub struct LearningMemory {
     pub entities: Vec<MemoryEntity>,
 }
 
+/// Durable state for one bounded memory-maintenance run.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MaintenanceRunRecord {
+    pub id: String,
+    pub idempotency_key: String,
+    pub job_kind: String,
+    pub namespace: Option<String>,
+    pub status: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub item_limit: usize,
+    pub retry_limit: usize,
+    pub timeout_ms: u64,
+    pub stale_after_days: i64,
+    pub attempts: usize,
+    pub items_processed: usize,
+    pub findings_count: usize,
+    pub errors_count: usize,
+    pub report_json: Option<String>,
+    pub error_message: Option<String>,
+}
+
+/// Durable state for one owner-routed interaction-policy proposal.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InteractionPolicyProposalRecord {
+    pub id: String,
+    pub namespace: String,
+    pub source_memory_id: String,
+    pub source_revision: String,
+    pub polarity: String,
+    pub guidance: String,
+    pub applicability: String,
+    pub signal: String,
+    pub confidence: f32,
+    pub anchors: String,
+    pub evidence_quote: String,
+    pub proposer: String,
+    pub owner: String,
+    pub status: String,
+    pub created_at: String,
+    pub reviewed_by: Option<String>,
+    pub decided_at: Option<String>,
+    pub decision_note: Option<String>,
+    pub applied_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
+/// Durable state for one owner-routed memory change proposal.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryProposalRecord {
+    pub id: String,
+    pub namespace: String,
+    pub target_memory_id: String,
+    pub base_updated_at: String,
+    pub before_content: String,
+    pub proposed_content: String,
+    pub diff_text: String,
+    pub source_memory_ids: String,
+    pub source_revisions: String,
+    pub evidence_quotes: String,
+    pub proposer: String,
+    pub owner: String,
+    pub status: String,
+    pub created_at: String,
+    pub reviewed_by: Option<String>,
+    pub decided_at: Option<String>,
+    pub decision_note: Option<String>,
+    pub applied_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
 impl LibsqlStorage {
+    async fn standard_vector_search(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        namespace: Option<Namespace>,
+    ) -> Result<Vec<SearchResult>> {
+        let conn = self.get_conn()?;
+        let columns = self.memory_columns("m");
+        let sql = if namespace.is_some() {
+            format!(
+                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge'",
+                columns = columns
+            )
+        } else {
+            format!(
+                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge'",
+                columns = columns
+            )
+        };
+        let mut rows = if let Some(namespace) = namespace {
+            conn.query(&sql, params![serde_json::to_string(&namespace)?])
+                .await?
+        } else {
+            conn.query(&sql, params![]).await?
+        };
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let embedding = match decode_embedding_from_row(&row, 21) {
+                Ok(embedding) => embedding,
+                Err(_) => continue,
+            };
+            if embedding.len() != query_embedding.len() {
+                continue;
+            }
+            let score = crate::embeddings::cosine_similarity(query_embedding, &embedding);
+            let mut memory = self.row_to_memory(&row).await?;
+            memory.embedding = Some(embedding);
+            results.push(SearchResult {
+                memory,
+                score,
+                match_reason: format!("Vector similarity: {:.2}", score),
+            });
+        }
+        results.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit.min(1000));
+        Ok(results)
+    }
+
+    /// Start one durable maintenance run. The unique idempotency key makes a
+    /// retried request return to the same run rather than creating duplicate
+    /// observable work.
+    pub async fn start_maintenance_run(
+        &self,
+        id: &str,
+        idempotency_key: &str,
+        job_kind: &str,
+        namespace: Option<&Namespace>,
+        item_limit: usize,
+        retry_limit: usize,
+        timeout: std::time::Duration,
+        stale_after_days: i64,
+    ) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let namespace = namespace.map(serde_json::to_string).transpose()?;
+        let started_at = Utc::now().to_rfc3339();
+        let tx = conn.transaction().await?;
+        let mut reclaimed = false;
+        let mut affected = tx
+            .execute(
+                "INSERT OR IGNORE INTO memory_maintenance_runs (id, idempotency_key, job_kind, namespace, status, started_at, item_limit, retry_limit, timeout_ms, stale_after_days) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    idempotency_key,
+                    job_kind,
+                    namespace,
+                    started_at.clone(),
+                    item_limit as i64,
+                    retry_limit as i64,
+                    timeout.as_millis().max(1) as i64,
+                    stale_after_days,
+                ],
+            )
+            .await?;
+        if affected == 0 {
+            let mut rows = tx
+                .query(
+                    "SELECT id, status, started_at, timeout_ms FROM memory_maintenance_runs WHERE idempotency_key = ?",
+                    params![idempotency_key],
+                )
+                .await?;
+            if let Some(row) = rows.next().await? {
+                let existing_id: String = row.get(0)?;
+                let status: String = row.get(1)?;
+                let existing_started_at: String = row.get(2)?;
+                let timeout_ms: i64 = row.get(3)?;
+                drop(row);
+                drop(rows);
+                let stale = status == "running"
+                    && chrono::DateTime::parse_from_rfc3339(&existing_started_at)
+                        .ok()
+                        .map(|value| {
+                            Utc::now()
+                                .signed_duration_since(value.with_timezone(&Utc))
+                                .num_milliseconds()
+                                > timeout_ms.max(1)
+                        })
+                        .unwrap_or(false);
+                if stale {
+                    affected = tx
+                        .execute(
+                            "UPDATE memory_maintenance_runs SET id = ?, status = 'running', started_at = ?, completed_at = NULL, item_limit = ?, retry_limit = ?, timeout_ms = ?, stale_after_days = ?, attempts = 0, items_processed = 0, findings_count = 0, errors_count = 0, report_json = NULL, error_message = NULL WHERE id = ? AND idempotency_key = ? AND status = 'running'",
+                            params![
+                                id,
+                                started_at,
+                                item_limit as i64,
+                                retry_limit as i64,
+                                timeout.as_millis().max(1) as i64,
+                                stale_after_days,
+                                existing_id,
+                                idempotency_key,
+                            ],
+                        )
+                        .await?;
+                    reclaimed = affected > 0;
+                }
+            }
+        }
+        if affected > 0 {
+            tx.execute(
+                "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', NULL, ?)",
+                params![
+                    serde_json::json!({
+                        "event": if reclaimed { "maintenance_reclaimed" } else { "maintenance_started" },
+                        "run_id": id,
+                        "idempotency_key": idempotency_key,
+                        "job_kind": job_kind,
+                    })
+                    .to_string(),
+                ],
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(affected > 0)
+    }
+
+    /// Find a maintenance run by its idempotency key.
+    pub async fn get_maintenance_run(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<MaintenanceRunRecord>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, idempotency_key, job_kind, namespace, status, started_at, completed_at, item_limit, retry_limit, timeout_ms, stale_after_days, attempts, items_processed, findings_count, errors_count, report_json, error_message FROM memory_maintenance_runs WHERE idempotency_key = ?",
+                params![idempotency_key],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Ok(Some(Self::maintenance_run_from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Return whether this worker still owns the running maintenance lease.
+    ///
+    /// A reclaimed run keeps the same idempotency key but receives a new run
+    /// id.  Checking the id at attempt boundaries fences a worker that wakes
+    /// after its lease has expired; it must not publish a report for the new
+    /// owner.
+    pub async fn maintenance_run_lease_active(&self, id: &str) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM memory_maintenance_runs WHERE id = ? AND status = 'running' LIMIT 1",
+                params![id],
+            )
+            .await?;
+        Ok(rows.next().await?.is_some())
+    }
+
+    /// Persist the terminal result of one maintenance run if its lease is
+    /// still current.  A false result means that another worker reclaimed the
+    /// idempotency key and this worker is fenced from publishing anything.
+    pub async fn finish_maintenance_run(
+        &self,
+        id: &str,
+        status: &str,
+        attempts: usize,
+        items_processed: usize,
+        findings_count: usize,
+        errors_count: usize,
+        report_json: Option<&str>,
+        error_message: Option<&str>,
+    ) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let tx = conn.transaction().await?;
+        let affected = tx
+            .execute(
+                "UPDATE memory_maintenance_runs SET status = ?, completed_at = ?, attempts = ?, items_processed = ?, findings_count = ?, errors_count = ?, report_json = ?, error_message = ? WHERE id = ? AND status = 'running'",
+                params![
+                    status,
+                    Utc::now().to_rfc3339(),
+                    attempts as i64,
+                    items_processed as i64,
+                    findings_count as i64,
+                    errors_count as i64,
+                    report_json,
+                    error_message,
+                    id,
+                ],
+            )
+            .await?;
+        if affected > 0 {
+            tx.execute(
+                "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', NULL, ?)",
+                params![serde_json::json!({
+                    "event": "maintenance_finished",
+                    "run_id": id,
+                    "status": status,
+                    "attempts": attempts,
+                    "items_processed": items_processed,
+                    "findings_count": findings_count,
+                    "errors_count": errors_count,
+                })
+                .to_string(),],
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(affected > 0)
+    }
+
+    /// List recent maintenance runs for operator-facing status surfaces.
+    pub async fn list_maintenance_runs(
+        &self,
+        job_kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MaintenanceRunRecord>> {
+        let conn = self.get_conn()?;
+        let limit = limit.clamp(1, 1000) as i64;
+        let mut rows = if let Some(job_kind) = job_kind {
+            conn.query(
+                "SELECT id, idempotency_key, job_kind, namespace, status, started_at, completed_at, item_limit, retry_limit, timeout_ms, stale_after_days, attempts, items_processed, findings_count, errors_count, report_json, error_message FROM memory_maintenance_runs WHERE job_kind = ? ORDER BY started_at DESC LIMIT ?",
+                params![job_kind, limit],
+            )
+            .await?
+        } else {
+            conn.query(
+                "SELECT id, idempotency_key, job_kind, namespace, status, started_at, completed_at, item_limit, retry_limit, timeout_ms, stale_after_days, attempts, items_processed, findings_count, errors_count, report_json, error_message FROM memory_maintenance_runs ORDER BY started_at DESC LIMIT ?",
+                params![limit],
+            )
+            .await?
+        };
+        let mut records = Vec::new();
+        while let Some(row) = rows.next().await? {
+            records.push(Self::maintenance_run_from_row(&row)?);
+        }
+        Ok(records)
+    }
+
+    fn maintenance_run_from_row(row: &libsql::Row) -> Result<MaintenanceRunRecord> {
+        Ok(MaintenanceRunRecord {
+            id: row.get(0)?,
+            idempotency_key: row.get(1)?,
+            job_kind: row.get(2)?,
+            namespace: row.get(3)?,
+            status: row.get(4)?,
+            started_at: row.get(5)?,
+            completed_at: row.get(6)?,
+            item_limit: row.get::<i64>(7)?.max(0) as usize,
+            retry_limit: row.get::<i64>(8)?.max(0) as usize,
+            timeout_ms: row.get::<i64>(9)?.max(0) as u64,
+            stale_after_days: row.get(10)?,
+            attempts: row.get::<i64>(11)?.max(0) as usize,
+            items_processed: row.get::<i64>(12)?.max(0) as usize,
+            findings_count: row.get::<i64>(13)?.max(0) as usize,
+            errors_count: row.get::<i64>(14)?.max(0) as usize,
+            report_json: row.get(15)?,
+            error_message: row.get(16)?,
+        })
+    }
+
+    /// List bounded orphan records from the text-learning integrity view for
+    /// advisory maintenance reports.
+    pub async fn list_text_learning_orphans(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT kind, id FROM text_learning_orphans ORDER BY kind, id LIMIT ?",
+                params![limit.clamp(1, 1000) as i64],
+            )
+            .await?;
+        let mut orphans = Vec::new();
+        while let Some(row) = rows.next().await? {
+            orphans.push((row.get(0)?, row.get(1)?));
+        }
+        Ok(orphans)
+    }
+
+    /// Persist an extracted interaction-policy suggestion without making it
+    /// canonical. An owner must explicitly accept and apply it later.
+    pub async fn create_interaction_policy_proposal(
+        &self,
+        id: &str,
+        namespace: &Namespace,
+        source_memory_id: &MemoryId,
+        policy: &crate::types::InteractionPolicy,
+        proposer: &str,
+        owner: &str,
+    ) -> Result<InteractionPolicyProposalRecord> {
+        policy.validate()?;
+        if proposer.trim().is_empty() || owner.trim().is_empty() || owner.trim() == "*" {
+            return Err(MnemosyneError::ValidationError(
+                "policy proposal proposer/owner must be explicit; wildcard owners are not allowed"
+                    .into(),
+            ));
+        }
+        if policy.evidence.len() != 1
+            || policy.evidence[0].source_memory_id != Some(*source_memory_id)
+        {
+            return Err(MnemosyneError::ValidationError(
+                "policy proposal requires exactly one evidence record for its source memory".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let namespace_json = serde_json::to_string(namespace)?;
+        let source_memory_id_string = source_memory_id.to_string();
+        let global_namespace = serde_json::to_string(&Namespace::Global)?;
+        let tx = conn.transaction().await?;
+        let mut source_rows = tx
+            .query(
+                "SELECT namespace, memory_class, is_archived, content, summary, updated_at FROM memories WHERE id = ? LIMIT 1",
+                params![source_memory_id_string.clone()],
+            )
+            .await?;
+        let Some(source_row) = source_rows.next().await? else {
+            return Err(MnemosyneError::NotFound(format!(
+                "policy proposal source memory {}",
+                source_memory_id
+            )));
+        };
+        let source_namespace: String = source_row.get(0)?;
+        let source_class: String = source_row.get(1).unwrap_or_else(|_| "knowledge".into());
+        let source_archived = source_row.get::<i64>(2).unwrap_or(0) != 0;
+        let source_content: String = source_row.get(3)?;
+        let source_summary: String = source_row.get(4)?;
+        let source_updated_at: String = source_row.get(5)?;
+        drop(source_row);
+        drop(source_rows);
+        let evidence_quote = &policy.evidence[0].evidence_quote;
+        if source_class != "knowledge"
+            || source_archived
+            || (source_namespace != namespace_json && source_namespace != global_namespace)
+            || (!source_content.contains(evidence_quote)
+                && !source_summary.contains(evidence_quote))
+        {
+            return Err(MnemosyneError::ValidationError(
+                "policy proposal source or evidence is not valid for its scope".into(),
+            ));
+        }
+        let source_revision = content_revision(&source_content, &source_updated_at);
+        let created_at = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO interaction_policy_proposals (id, namespace, source_memory_id, source_revision, polarity, guidance, applicability, signal, confidence, anchors, evidence_quote, proposer, owner, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+            params![
+                id,
+                namespace_json,
+                source_memory_id_string,
+                source_revision,
+                serde_json::to_value(policy.polarity)?.as_str().unwrap_or("prefer"),
+                policy.guidance.clone(),
+                policy.applicability.clone(),
+                serde_json::to_value(policy.signal)?.as_str().unwrap_or("direct_preference"),
+                policy.confidence as f64,
+                serde_json::to_string(&policy.anchors)?,
+                evidence_quote.clone(),
+                proposer.trim(),
+                owner.trim(),
+                created_at,
+            ],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+            params![
+                source_memory_id.to_string(),
+                serde_json::json!({
+                    "event": "interaction_policy_proposal_created",
+                    "proposal_id": id,
+                    "owner": owner.trim(),
+                    "proposer": proposer.trim(),
+                })
+                .to_string(),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_interaction_policy_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("interaction policy proposal {}", id)))
+    }
+
+    /// Return policy proposal IDs previously created from a raw turn.
+    pub async fn interaction_policy_proposals_for_source(
+        &self,
+        source_memory_id: MemoryId,
+    ) -> Result<Vec<String>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT id FROM interaction_policy_proposals WHERE source_memory_id = ? ORDER BY created_at DESC",
+                params![source_memory_id.to_string()],
+            )
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(row.get(0)?);
+        }
+        Ok(ids)
+    }
+
+    /// Fetch one interaction-policy proposal.
+    pub async fn get_interaction_policy_proposal(
+        &self,
+        id: &str,
+    ) -> Result<Option<InteractionPolicyProposalRecord>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, namespace, source_memory_id, source_revision, polarity, guidance, applicability, signal, confidence, anchors, evidence_quote, proposer, owner, status, created_at, reviewed_by, decided_at, decision_note, applied_at, error_message FROM interaction_policy_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Ok(Some(Self::interaction_policy_proposal_from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List policy proposals with optional namespace/status filters.
+    pub async fn list_interaction_policy_proposals(
+        &self,
+        namespace: Option<&Namespace>,
+        status: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<InteractionPolicyProposalRecord>> {
+        let conn = self.get_conn()?;
+        let mut conditions = Vec::new();
+        let mut values = Vec::new();
+        if let Some(namespace) = namespace {
+            conditions.push("namespace = ?".to_string());
+            values.push(libsql::Value::Text(serde_json::to_string(namespace)?));
+        }
+        if let Some(status) = status {
+            conditions.push("status = ?".to_string());
+            values.push(libsql::Value::Text(status.to_string()));
+        }
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        values.push(libsql::Value::Integer(limit.clamp(1, 1000) as i64));
+        let sql = format!(
+            "SELECT id, namespace, source_memory_id, source_revision, polarity, guidance, applicability, signal, confidence, anchors, evidence_quote, proposer, owner, status, created_at, reviewed_by, decided_at, decision_note, applied_at, error_message FROM interaction_policy_proposals{where_clause} ORDER BY created_at DESC LIMIT ?"
+        );
+        let mut rows = conn.query(&sql, libsql::params_from_iter(values)).await?;
+        let mut proposals = Vec::new();
+        while let Some(row) = rows.next().await? {
+            proposals.push(Self::interaction_policy_proposal_from_row(&row)?);
+        }
+        Ok(proposals)
+    }
+
+    /// Accept or dismiss a pending interaction-policy proposal.
+    pub async fn decide_interaction_policy_proposal(
+        &self,
+        id: &str,
+        reviewer: &str,
+        status: &str,
+        decision_note: Option<&str>,
+    ) -> Result<InteractionPolicyProposalRecord> {
+        if !matches!(status, "accepted" | "dismissed") || reviewer.trim().is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "policy proposal decision must be accepted/dismissed with a reviewer".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let tx = conn.transaction().await?;
+        let mut rows = tx
+            .query(
+                "SELECT source_memory_id, owner, status FROM interaction_policy_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(MnemosyneError::NotFound(format!(
+                "interaction policy proposal {}",
+                id
+            )));
+        };
+        let source_memory_id: String = row.get(0)?;
+        let owner: String = row.get(1)?;
+        let current_status: String = row.get(2)?;
+        drop(row);
+        drop(rows);
+        if current_status != "pending" {
+            return Err(MnemosyneError::InvalidOperation(format!(
+                "policy proposal {} is already {}",
+                id, current_status
+            )));
+        }
+        if owner != reviewer {
+            return Err(MnemosyneError::PermissionDenied(format!(
+                "policy proposal {} is routed to owner {}",
+                id, owner
+            )));
+        }
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE interaction_policy_proposals SET status = ?, reviewed_by = ?, decided_at = ?, decision_note = ? WHERE id = ? AND status = 'pending'",
+            params![status, reviewer, now, decision_note, id],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+            params![
+                source_memory_id,
+                serde_json::json!({
+                    "event": "interaction_policy_proposal_decided",
+                    "proposal_id": id,
+                    "status": status,
+                    "reviewer": reviewer,
+                })
+                .to_string(),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_interaction_policy_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("interaction policy proposal {}", id)))
+    }
+
+    /// Apply an accepted interaction-policy proposal after rechecking its
+    /// source revision and verbatim evidence. The policy memory and proposal
+    /// transition are committed atomically.
+    pub async fn apply_interaction_policy_proposal(
+        &self,
+        id: &str,
+        reviewer: &str,
+    ) -> Result<InteractionPolicyProposalRecord> {
+        if reviewer.trim().is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "policy proposal applier must not be empty".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let tx = conn.transaction().await?;
+        let mut rows = tx
+            .query(
+                "SELECT namespace, source_memory_id, source_revision, polarity, guidance, applicability, signal, confidence, anchors, evidence_quote, owner, status, reviewed_by FROM interaction_policy_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(MnemosyneError::NotFound(format!(
+                "interaction policy proposal {}",
+                id
+            )));
+        };
+        let namespace: String = row.get(0)?;
+        let source_memory_id: String = row.get(1)?;
+        let source_revision: String = row.get(2)?;
+        let polarity: String = row.get(3)?;
+        let guidance: String = row.get(4)?;
+        let applicability: String = row.get(5)?;
+        let signal: String = row.get(6)?;
+        let confidence: f64 = row.get(7)?;
+        let anchors_json: String = row.get(8)?;
+        let evidence_quote: String = row.get(9)?;
+        let owner: String = row.get(10)?;
+        let status: String = row.get(11)?;
+        let reviewed_by: Option<String> = row.get(12)?;
+        drop(row);
+        drop(rows);
+        if status != "accepted" {
+            return Err(MnemosyneError::InvalidOperation(format!(
+                "policy proposal {} must be accepted before apply (current: {})",
+                id, status
+            )));
+        }
+        if owner != reviewer && reviewed_by.as_deref() != Some(reviewer) {
+            return Err(MnemosyneError::PermissionDenied(format!(
+                "policy proposal {} was not accepted by this reviewer",
+                id
+            )));
+        }
+        let mut source_rows = tx
+            .query(
+                "SELECT namespace, memory_class, is_archived, content, summary, updated_at FROM memories WHERE id = ? LIMIT 1",
+                params![source_memory_id.clone()],
+            )
+            .await?;
+        let Some(source_row) = source_rows.next().await? else {
+            let error_message =
+                format!("policy source memory {} no longer exists", source_memory_id);
+            mark_policy_proposal_failed(&tx, id, &source_memory_id, &error_message).await?;
+            tx.commit().await?;
+            return Err(MnemosyneError::InvalidOperation(error_message));
+        };
+        let source_namespace: String = source_row.get(0)?;
+        let source_class: String = source_row.get(1).unwrap_or_else(|_| "knowledge".into());
+        let source_archived = source_row.get::<i64>(2).unwrap_or(0) != 0;
+        let source_content: String = source_row.get(3)?;
+        let source_summary: String = source_row.get(4)?;
+        let source_updated_at: String = source_row.get(5)?;
+        drop(source_row);
+        drop(source_rows);
+        let global_namespace = serde_json::to_string(&Namespace::Global)?;
+        if source_class != "knowledge"
+            || source_archived
+            || (source_namespace != namespace && source_namespace != global_namespace)
+            || content_revision(&source_content, &source_updated_at) != source_revision
+            || (!source_content.contains(&evidence_quote)
+                && !source_summary.contains(&evidence_quote))
+        {
+            let error_message = "policy source revision or evidence is stale";
+            mark_policy_proposal_failed(&tx, id, &source_memory_id, error_message).await?;
+            tx.commit().await?;
+            return Err(MnemosyneError::InvalidOperation(error_message.into()));
+        }
+        let namespace_value: Namespace = serde_json::from_str(&namespace)?;
+        let polarity_value = match polarity.as_str() {
+            "avoid" => crate::types::PolicyPolarity::Avoid,
+            "prefer" => crate::types::PolicyPolarity::Prefer,
+            _ => {
+                let error_message = "policy proposal has an invalid polarity";
+                mark_policy_proposal_failed(&tx, id, &source_memory_id, error_message).await?;
+                tx.commit().await?;
+                return Err(MnemosyneError::ValidationError(error_message.into()));
+            }
+        };
+        let signal_value = match signal.as_str() {
+            "correction" => crate::types::PolicySignalKind::Correction,
+            "dissatisfaction" => crate::types::PolicySignalKind::Dissatisfaction,
+            "approval" => crate::types::PolicySignalKind::Approval,
+            "direct_preference" => crate::types::PolicySignalKind::DirectPreference,
+            _ => {
+                let error_message = "policy proposal has an invalid signal";
+                mark_policy_proposal_failed(&tx, id, &source_memory_id, error_message).await?;
+                tx.commit().await?;
+                return Err(MnemosyneError::ValidationError(error_message.into()));
+            }
+        };
+        let anchors: Vec<String> = match serde_json::from_str(&anchors_json) {
+            Ok(anchors) => anchors,
+            Err(_) => {
+                let error_message = "policy proposal has invalid anchors";
+                mark_policy_proposal_failed(&tx, id, &source_memory_id, error_message).await?;
+                tx.commit().await?;
+                return Err(MnemosyneError::ValidationError(error_message.into()));
+            }
+        };
+        let now = Utc::now();
+        let policy_memory_id = MemoryId::from_string(id)?;
+        let policy = crate::types::InteractionPolicy {
+            polarity: polarity_value,
+            guidance: guidance.clone(),
+            applicability: applicability.clone(),
+            signal: signal_value,
+            confidence: confidence as f32,
+            anchors: anchors.clone(),
+            evidence: vec![crate::types::MemoryProvenance {
+                source_kind: crate::types::ProvenanceSourceKind::Turn,
+                source_memory_id: Some(MemoryId::from_string(&source_memory_id)?),
+                session_id: None,
+                turn_id: None,
+                source_role: crate::types::ProvenanceSourceRole::User,
+                observed_at: now,
+                evidence_quote: evidence_quote.clone(),
+                extractor_model: None,
+                extraction_schema_version: None,
+            }],
+        };
+        policy.validate()?;
+        let note = MemoryNote {
+            id: policy_memory_id,
+            namespace: namespace_value.clone(),
+            created_at: now,
+            updated_at: now,
+            content: guidance.clone(),
+            summary: guidance.clone(),
+            keywords: Vec::new(),
+            tags: vec!["interaction_policy".into()],
+            context: applicability.clone(),
+            memory_type: crate::types::MemoryType::Preference,
+            memory_class: MemoryClass::InteractionPolicy,
+            provenance: Some(policy.evidence[0].clone()),
+            importance: 5,
+            confidence: confidence as f32,
+            links: vec![MemoryLink {
+                target_id: MemoryId::from_string(&source_memory_id)?,
+                link_type: crate::types::LinkType::References,
+                strength: 1.0,
+                reason: "owner-approved policy evidence".into(),
+                created_at: now,
+                last_traversed_at: None,
+                user_created: false,
+            }],
+            related_files: Vec::new(),
+            related_entities: anchors.clone(),
+            access_count: 0,
+            last_accessed_at: now,
+            expires_at: None,
+            is_archived: false,
+            superseded_by: None,
+            embedding: None,
+            embedding_model: String::new(),
+        };
+        let entities = anchors
+            .iter()
+            .map(|anchor| MemoryEntity {
+                display_name: anchor.clone(),
+                normalized_name: normalize_entity_name(anchor),
+                role: "anchor".into(),
+                confidence: 1.0,
+            })
+            .collect();
+        self.insert_learning_memory(
+            &tx,
+            &LearningMemory {
+                memory: note,
+                entities,
+            },
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO interaction_policies (policy_memory_id, polarity, guidance, applicability, signal, confidence, anchors) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                id,
+                serde_json::to_value(policy.polarity)?.as_str().unwrap_or("prefer"),
+                policy.guidance,
+                policy.applicability,
+                serde_json::to_value(policy.signal)?.as_str().unwrap_or("direct_preference"),
+                policy.confidence as f64,
+                serde_json::to_string(&policy.anchors)?,
+            ],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO interaction_policy_evidence (policy_memory_id, source_memory_id, evidence_quote, observed_at) VALUES (?, ?, ?, ?)",
+            params![id, source_memory_id.clone(), evidence_quote, now.to_rfc3339()],
+        )
+        .await?;
+        let applied_at = now.to_rfc3339();
+        tx.execute(
+            "UPDATE interaction_policy_proposals SET status = 'applied', applied_at = ?, error_message = NULL WHERE id = ? AND status = 'accepted'",
+            params![applied_at, id],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+            params![
+                source_memory_id,
+                serde_json::json!({
+                    "event": "interaction_policy_proposal_applied",
+                    "proposal_id": id,
+                    "policy_memory_id": id,
+                    "reviewer": reviewer,
+                })
+                .to_string(),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_interaction_policy_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("interaction policy proposal {}", id)))
+    }
+
+    fn interaction_policy_proposal_from_row(
+        row: &libsql::Row,
+    ) -> Result<InteractionPolicyProposalRecord> {
+        Ok(InteractionPolicyProposalRecord {
+            id: row.get(0)?,
+            namespace: row.get(1)?,
+            source_memory_id: row.get(2)?,
+            source_revision: row.get(3)?,
+            polarity: row.get(4)?,
+            guidance: row.get(5)?,
+            applicability: row.get(6)?,
+            signal: row.get(7)?,
+            confidence: row.get::<f64>(8)? as f32,
+            anchors: row.get(9)?,
+            evidence_quote: row.get(10)?,
+            proposer: row.get(11)?,
+            owner: row.get(12)?,
+            status: row.get(13)?,
+            created_at: row.get(14)?,
+            reviewed_by: row.get(15)?,
+            decided_at: row.get(16)?,
+            decision_note: row.get(17)?,
+            applied_at: row.get(18)?,
+            error_message: row.get(19)?,
+        })
+    }
+
+    /// Persist a pending owner-routed memory change proposal.
+    pub async fn create_memory_proposal(
+        &self,
+        id: &str,
+        namespace: &Namespace,
+        target_memory_id: &MemoryId,
+        base_updated_at: &str,
+        before_content: &str,
+        proposed_content: &str,
+        diff_text: &str,
+        source_memory_ids: &[MemoryId],
+        evidence_quotes: &[String],
+        proposer: &str,
+        owner: &str,
+    ) -> Result<MemoryProposalRecord> {
+        let owner = owner.trim();
+        if owner.is_empty() || owner == "*" {
+            return Err(MnemosyneError::ValidationError(
+                "proposal owner must be an explicit reviewer identity".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let namespace_json = serde_json::to_string(namespace)?;
+        let source_ids_json = serde_json::to_string(
+            &source_memory_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        )?;
+        let evidence_json = serde_json::to_string(evidence_quotes)?;
+        let created_at = Utc::now().to_rfc3339();
+        let tx = conn.transaction().await?;
+        let mut source_revisions = Vec::with_capacity(source_memory_ids.len());
+        for source_id in source_memory_ids {
+            let mut rows = tx
+                .query(
+                    "SELECT updated_at, content FROM memories WHERE id = ? LIMIT 1",
+                    params![source_id.to_string()],
+                )
+                .await?;
+            let Some(row) = rows.next().await? else {
+                return Err(MnemosyneError::NotFound(format!(
+                    "proposal source memory {}",
+                    source_id
+                )));
+            };
+            let updated_at: String = row.get(0)?;
+            let content: String = row.get(1)?;
+            drop(row);
+            drop(rows);
+            source_revisions.push(content_revision(&content, &updated_at));
+        }
+        let source_revisions_json = serde_json::to_string(&source_revisions)?;
+        tx.execute(
+            "INSERT INTO memory_change_proposals (id, namespace, target_memory_id, base_updated_at, before_content, proposed_content, diff_text, source_memory_ids, source_revisions, evidence_quotes, proposer, owner, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+            params![
+                id,
+                namespace_json,
+                target_memory_id.to_string(),
+                base_updated_at,
+                before_content,
+                proposed_content,
+                diff_text,
+                source_ids_json,
+                source_revisions_json,
+                evidence_json,
+                proposer,
+                owner,
+                created_at,
+            ],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+            params![
+                target_memory_id.to_string(),
+                serde_json::json!({
+                    "event": "memory_proposal_created",
+                    "proposal_id": id,
+                    "owner": owner,
+                    "proposer": proposer,
+                })
+                .to_string(),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_memory_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("memory proposal {}", id)))
+    }
+
+    /// Retrieve one durable proposal.
+    pub async fn get_memory_proposal(&self, id: &str) -> Result<Option<MemoryProposalRecord>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, namespace, target_memory_id, base_updated_at, before_content, proposed_content, diff_text, source_memory_ids, source_revisions, evidence_quotes, proposer, owner, status, created_at, reviewed_by, decided_at, decision_note, applied_at, error_message FROM memory_change_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Ok(Some(Self::memory_proposal_from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List proposals for a reviewer without removing them from the durable
+    /// queue.
+    pub async fn list_memory_proposals(
+        &self,
+        namespace: Option<&Namespace>,
+        status: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryProposalRecord>> {
+        let conn = self.get_conn()?;
+        let limit = limit.clamp(1, 1000) as i64;
+        let namespace_json = namespace.map(serde_json::to_string).transpose()?;
+        let (sql, values): (&str, Vec<libsql::Value>) = match (namespace_json, status) {
+            (Some(namespace), Some(status)) => (
+                "SELECT id, namespace, target_memory_id, base_updated_at, before_content, proposed_content, diff_text, source_memory_ids, source_revisions, evidence_quotes, proposer, owner, status, created_at, reviewed_by, decided_at, decision_note, applied_at, error_message FROM memory_change_proposals WHERE namespace = ? AND status = ? ORDER BY created_at DESC LIMIT ?",
+                vec![
+                    libsql::Value::Text(namespace),
+                    libsql::Value::Text(status.to_string()),
+                    libsql::Value::Integer(limit),
+                ],
+            ),
+            (Some(namespace), None) => (
+                "SELECT id, namespace, target_memory_id, base_updated_at, before_content, proposed_content, diff_text, source_memory_ids, source_revisions, evidence_quotes, proposer, owner, status, created_at, reviewed_by, decided_at, decision_note, applied_at, error_message FROM memory_change_proposals WHERE namespace = ? ORDER BY created_at DESC LIMIT ?",
+                vec![libsql::Value::Text(namespace), libsql::Value::Integer(limit)],
+            ),
+            (None, Some(status)) => (
+                "SELECT id, namespace, target_memory_id, base_updated_at, before_content, proposed_content, diff_text, source_memory_ids, source_revisions, evidence_quotes, proposer, owner, status, created_at, reviewed_by, decided_at, decision_note, applied_at, error_message FROM memory_change_proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                vec![
+                    libsql::Value::Text(status.to_string()),
+                    libsql::Value::Integer(limit),
+                ],
+            ),
+            (None, None) => (
+                "SELECT id, namespace, target_memory_id, base_updated_at, before_content, proposed_content, diff_text, source_memory_ids, source_revisions, evidence_quotes, proposer, owner, status, created_at, reviewed_by, decided_at, decision_note, applied_at, error_message FROM memory_change_proposals ORDER BY created_at DESC LIMIT ?",
+                vec![libsql::Value::Integer(limit)],
+            ),
+        };
+        let mut rows = conn.query(sql, libsql::params_from_iter(values)).await?;
+        let mut proposals = Vec::new();
+        while let Some(row) = rows.next().await? {
+            proposals.push(Self::memory_proposal_from_row(&row)?);
+        }
+        Ok(proposals)
+    }
+
+    /// Move a pending proposal to accepted or dismissed. Only the routed
+    /// owner may decide it; applying an accepted proposal is a separate
+    /// transaction and performs a base-revision check.
+    pub async fn decide_memory_proposal(
+        &self,
+        id: &str,
+        reviewer: &str,
+        status: &str,
+        decision_note: Option<&str>,
+    ) -> Result<MemoryProposalRecord> {
+        if !matches!(status, "accepted" | "dismissed") || reviewer.trim().is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "proposal decision must be accepted/dismissed with a reviewer".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let tx = conn.transaction().await?;
+        let mut rows = tx
+            .query(
+                "SELECT target_memory_id, owner, status FROM memory_change_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(MnemosyneError::NotFound(format!("memory proposal {}", id)));
+        };
+        let target_memory_id: String = row.get(0)?;
+        let owner: String = row.get(1)?;
+        let current_status: String = row.get(2)?;
+        drop(row);
+        drop(rows);
+        if current_status != "pending" {
+            return Err(MnemosyneError::InvalidOperation(format!(
+                "proposal {} is already {}",
+                id, current_status
+            )));
+        }
+        if owner != reviewer {
+            return Err(MnemosyneError::PermissionDenied(format!(
+                "proposal {} is routed to owner {}",
+                id, owner
+            )));
+        }
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE memory_change_proposals SET status = ?, reviewed_by = ?, decided_at = ?, decision_note = ? WHERE id = ? AND status = 'pending'",
+            params![status, reviewer, now, decision_note, id],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+            params![
+                target_memory_id,
+                serde_json::json!({
+                    "event": "memory_proposal_decided",
+                    "proposal_id": id,
+                    "status": status,
+                    "reviewer": reviewer,
+                    "decision_note": decision_note,
+                })
+                .to_string(),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_memory_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("memory proposal {}", id)))
+    }
+
+    /// Apply an accepted proposal only if its target still has the exact base
+    /// content and revision captured at proposal time.
+    pub async fn apply_memory_proposal(
+        &self,
+        id: &str,
+        reviewer: &str,
+    ) -> Result<MemoryProposalRecord> {
+        if reviewer.trim().is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "proposal applier must not be empty".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let tx = conn.transaction().await?;
+        let mut rows = tx
+            .query(
+                "SELECT namespace, target_memory_id, base_updated_at, before_content, proposed_content, source_memory_ids, source_revisions, evidence_quotes, owner, status, reviewed_by FROM memory_change_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(MnemosyneError::NotFound(format!("memory proposal {}", id)));
+        };
+        let namespace: String = row.get(0)?;
+        let target_memory_id: String = row.get(1)?;
+        let base_updated_at: String = row.get(2)?;
+        let before_content: String = row.get(3)?;
+        let proposed_content: String = row.get(4)?;
+        let source_memory_ids_json: String = row.get(5)?;
+        let source_revisions_json: String = row.get(6)?;
+        let evidence_quotes_json: String = row.get(7)?;
+        let owner: String = row.get(8)?;
+        let status: String = row.get(9)?;
+        let reviewed_by: Option<String> = row.get(10)?;
+        drop(row);
+        drop(rows);
+        if status != "accepted" {
+            return Err(MnemosyneError::InvalidOperation(format!(
+                "proposal {} must be accepted before apply (current: {})",
+                id, status
+            )));
+        }
+        if owner != reviewer && reviewed_by.as_deref() != Some(reviewer) {
+            return Err(MnemosyneError::PermissionDenied(format!(
+                "proposal {} was not accepted by this reviewer",
+                id
+            )));
+        }
+        let source_memory_ids: Vec<String> = serde_json::from_str(&source_memory_ids_json)
+            .map_err(|error| {
+                MnemosyneError::ValidationError(format!("invalid proposal sources: {error}"))
+            })?;
+        let source_revisions: Vec<String> =
+            serde_json::from_str(&source_revisions_json).map_err(|error| {
+                MnemosyneError::ValidationError(format!(
+                    "invalid proposal source revisions: {error}"
+                ))
+            })?;
+        let evidence_quotes: Vec<String> =
+            serde_json::from_str(&evidence_quotes_json).map_err(|error| {
+                MnemosyneError::ValidationError(format!("invalid proposal evidence: {error}"))
+            })?;
+        if source_revisions.len() != source_memory_ids.len() {
+            let error_message =
+                "proposal source revision snapshot count does not match source count";
+            mark_proposal_failed(&tx, id, &target_memory_id, error_message).await?;
+            tx.commit().await?;
+            return Err(MnemosyneError::ValidationError(error_message.into()));
+        }
+        let source_memory_id = match source_memory_ids.first() {
+            Some(source_memory_id) => source_memory_id,
+            None => {
+                let error_message = "accepted proposal has no source memory";
+                mark_proposal_failed(&tx, id, &target_memory_id, error_message).await?;
+                tx.commit().await?;
+                return Err(MnemosyneError::ValidationError(error_message.into()));
+            }
+        };
+        let evidence_quote = match evidence_quotes.first() {
+            Some(evidence_quote) => evidence_quote,
+            None => {
+                let error_message = "accepted proposal has no evidence quote";
+                mark_proposal_failed(&tx, id, &target_memory_id, error_message).await?;
+                tx.commit().await?;
+                return Err(MnemosyneError::ValidationError(error_message.into()));
+            }
+        };
+        let global_namespace = serde_json::to_string(&Namespace::Global)?;
+        let mut source_snapshots = Vec::with_capacity(source_memory_ids.len());
+        for (source_index, source_id) in source_memory_ids.iter().enumerate() {
+            let mut source_rows = tx
+                .query(
+                    "SELECT namespace, memory_class, is_archived, content, summary, updated_at FROM memories WHERE id = ? LIMIT 1",
+                    params![source_id.clone()],
+                )
+                .await?;
+            let Some(source_row) = source_rows.next().await? else {
+                drop(source_rows);
+                let error_message =
+                    format!("proposal source memory {} no longer exists", source_id);
+                mark_proposal_failed(&tx, id, &target_memory_id, &error_message).await?;
+                tx.commit().await?;
+                return Err(MnemosyneError::InvalidOperation(error_message));
+            };
+            let source_namespace: String = source_row.get(0)?;
+            let source_class: String = source_row.get(1).unwrap_or_else(|_| "knowledge".into());
+            let source_archived = source_row.get::<i64>(2).unwrap_or(0) != 0;
+            let source_content: String = source_row.get(3)?;
+            let source_summary: String = source_row.get(4)?;
+            let source_updated_at: String = source_row.get(5)?;
+            drop(source_row);
+            drop(source_rows);
+            if source_class != "knowledge"
+                || source_archived
+                || (source_namespace != namespace && source_namespace != global_namespace)
+                || content_revision(&source_content, &source_updated_at)
+                    != source_revisions[source_index]
+            {
+                let error_message = format!(
+                    "proposal source memory {} is no longer valid for this proposal",
+                    source_id
+                );
+                mark_proposal_failed(&tx, id, &target_memory_id, &error_message).await?;
+                tx.commit().await?;
+                return Err(MnemosyneError::InvalidOperation(error_message));
+            }
+            source_snapshots.push((source_content, source_summary));
+        }
+        for quote in &evidence_quotes {
+            if !source_snapshots
+                .iter()
+                .any(|(content, summary)| content.contains(quote) || summary.contains(quote))
+            {
+                let error_message = "proposal evidence is no longer present in its source memories";
+                mark_proposal_failed(&tx, id, &target_memory_id, error_message).await?;
+                tx.commit().await?;
+                return Err(MnemosyneError::InvalidOperation(error_message.into()));
+            }
+        }
+        let now = Utc::now().to_rfc3339();
+        // A content proposal invalidates all derived retrieval projections.
+        // Keep the update and invalidation in this same transaction so recall
+        // cannot observe new content paired with old embeddings/entities.
+        let summary: String = proposed_content.chars().take(500).collect();
+        let affected = if self.schema_type == SchemaType::LibSQL {
+            tx.execute(
+                "UPDATE memories SET content = ?, summary = ?, keywords = '[]', related_entities = '[]', embedding_model = '', embedding = NULL, updated_at = ? WHERE id = ? AND namespace = ? AND memory_class = 'knowledge' AND is_archived = 0 AND content = ? AND updated_at = ?",
+                params![
+                    proposed_content,
+                    summary,
+                    now.clone(),
+                    target_memory_id.clone(),
+                    namespace,
+                    before_content,
+                    base_updated_at,
+                ],
+            )
+            .await?
+        } else {
+            tx.execute(
+                "UPDATE memories SET content = ?, summary = ?, keywords = '[]', related_entities = '[]', embedding_model = '', updated_at = ? WHERE id = ? AND namespace = ? AND memory_class = 'knowledge' AND is_archived = 0 AND content = ? AND updated_at = ?",
+                params![
+                    proposed_content,
+                    summary,
+                    now.clone(),
+                    target_memory_id.clone(),
+                    namespace,
+                    before_content,
+                    base_updated_at,
+                ],
+            )
+            .await?
+        };
+        if affected == 0 {
+            let error_message = "proposal base revision is stale; canonical memory was not changed";
+            tx.execute(
+                "UPDATE memory_change_proposals SET status = 'failed', error_message = ?, applied_at = ? WHERE id = ? AND status = 'accepted'",
+                params![error_message, now, id],
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+                params![
+                    target_memory_id,
+                    serde_json::json!({
+                        "event": "memory_proposal_failed",
+                        "proposal_id": id,
+                        "reason": "stale_base_revision",
+                    })
+                    .to_string(),
+                ],
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(MnemosyneError::InvalidOperation(error_message.into()));
+        }
+        tx.execute(
+            "DELETE FROM memory_entities WHERE memory_id = ?",
+            params![target_memory_id.clone()],
+        )
+        .await?;
+        tx.execute(
+            "DELETE FROM memory_provenance WHERE memory_id = ?",
+            params![target_memory_id.clone()],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO memory_provenance (memory_id, source_kind, source_memory_id, source_role, observed_at, evidence_quote) VALUES (?, 'manual', ?, 'unknown', ?, ?)",
+            params![
+                target_memory_id.clone(),
+                source_memory_id.clone(),
+                now.clone(),
+                evidence_quote.clone(),
+            ],
+        )
+        .await?;
+
+        let mut auxiliary_rows = tx
+            .query(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name IN ('memory_vectors', 'memory_embeddings')",
+                params![],
+            )
+            .await?;
+        let mut has_memory_vectors = false;
+        let mut has_memory_embeddings = false;
+        while let Some(row) = auxiliary_rows.next().await? {
+            let name: String = row.get(0)?;
+            has_memory_vectors |= name == "memory_vectors";
+            has_memory_embeddings |= name == "memory_embeddings";
+        }
+        drop(auxiliary_rows);
+        if has_memory_vectors {
+            tx.execute(
+                "DELETE FROM memory_vectors WHERE memory_id = ?",
+                params![target_memory_id.clone()],
+            )
+            .await?;
+        }
+        if has_memory_embeddings {
+            tx.execute(
+                "DELETE FROM memory_embeddings WHERE memory_id = ?",
+                params![target_memory_id.clone()],
+            )
+            .await?;
+        }
+        tx.execute(
+            "UPDATE memory_change_proposals SET status = 'applied', applied_at = ?, error_message = NULL WHERE id = ? AND status = 'accepted'",
+            params![now, id],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)",
+            params![
+                target_memory_id,
+                serde_json::json!({
+                    "event": "memory_proposal_applied",
+                    "proposal_id": id,
+                    "reviewer": reviewer,
+                })
+                .to_string(),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_memory_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("memory proposal {}", id)))
+    }
+
+    fn memory_proposal_from_row(row: &libsql::Row) -> Result<MemoryProposalRecord> {
+        Ok(MemoryProposalRecord {
+            id: row.get(0)?,
+            namespace: row.get(1)?,
+            target_memory_id: row.get(2)?,
+            base_updated_at: row.get(3)?,
+            before_content: row.get(4)?,
+            proposed_content: row.get(5)?,
+            diff_text: row.get(6)?,
+            source_memory_ids: row.get(7)?,
+            source_revisions: row.get(8)?,
+            evidence_quotes: row.get(9)?,
+            proposer: row.get(10)?,
+            owner: row.get(11)?,
+            status: row.get(12)?,
+            created_at: row.get(13)?,
+            reviewed_by: row.get(14)?,
+            decided_at: row.get(15)?,
+            decision_note: row.get(16)?,
+            applied_at: row.get(17)?,
+            error_message: row.get(18)?,
+        })
+    }
+
     /// Store the typed policy payload associated with a policy memory.
     pub async fn store_interaction_policy(
         &self,
@@ -2895,8 +4706,8 @@ impl LibsqlStorage {
                 .ok_or_else(|| MnemosyneError::Database("invalid link type".into()))?
                 .to_string();
             tx.execute(
-                "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                params![memory.id.to_string(), link.target_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339()],
+                "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![memory.id.to_string(), link.target_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339(), link.last_traversed_at.map(|value| value.to_rfc3339()), if link.user_created { 1i64 } else { 0i64 }],
             ).await?;
         }
 
@@ -3250,6 +5061,9 @@ impl StorageBackend for LibsqlStorage {
                 e
             }
         })?;
+        let has_link_metadata = connection_has_column(&conn, "memory_links", "last_traversed_at")
+            .await?
+            && connection_has_column(&conn, "memory_links", "user_created").await?;
         let tx = conn.transaction().await?;
 
         // Insert memory metadata - schema varies by database type
@@ -3385,6 +5199,20 @@ impl StorageBackend for LibsqlStorage {
             .await?;
         }
 
+        if self.schema_type == SchemaType::StandardSQLite {
+            if let Some(embedding) = memory.embedding.as_ref() {
+                let bytes: Vec<u8> = embedding
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect();
+                tx.execute(
+                    "INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding, dimension) VALUES (?, ?, ?)",
+                    params![memory.id.to_string(), bytes, embedding.len() as i64],
+                )
+                .await?;
+            }
+        }
+
         // Store links
         for link in &memory.links {
             let link_type_str = serde_json::to_value(link.link_type)?
@@ -3394,21 +5222,38 @@ impl StorageBackend for LibsqlStorage {
                 })?
                 .to_string();
 
-            tx.execute(
-                r#"
-                INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                "#,
-                params![
-                    memory.id.to_string(),
-                    link.target_id.to_string(),
-                    link_type_str,
-                    link.strength as f64,
-                    link.reason.clone(),
-                    link.created_at.to_rfc3339(),
-                ],
-            )
-            .await?;
+            if has_link_metadata {
+                tx.execute(
+                    r#"
+                    INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                    params![
+                        memory.id.to_string(),
+                        link.target_id.to_string(),
+                        link_type_str,
+                        link.strength as f64,
+                        link.reason.clone(),
+                        link.created_at.to_rfc3339(),
+                        link.last_traversed_at.map(|value| value.to_rfc3339()),
+                        if link.user_created { 1i64 } else { 0i64 },
+                    ],
+                )
+                .await?;
+            } else {
+                tx.execute(
+                    "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    params![
+                        memory.id.to_string(),
+                        link.target_id.to_string(),
+                        link_type_str,
+                        link.strength as f64,
+                        link.reason.clone(),
+                        link.created_at.to_rfc3339(),
+                    ],
+                )
+                .await?;
+            }
         }
 
         // Keep provenance and indexed entities in the same transaction as the memory.
@@ -3505,14 +5350,35 @@ impl StorageBackend for LibsqlStorage {
             .ok_or_else(|| MnemosyneError::MemoryNotFound(id.to_string()))?;
 
         let mut memory = self.row_to_memory(&row).await?;
+        drop(row);
+        drop(rows);
 
-        // Fetch associated links
-        let mut link_rows = conn
-            .query(
-                "SELECT target_id, link_type, strength, reason, created_at FROM memory_links WHERE source_id = ?",
-                params![id.to_string()],
-            )
-            .await?;
+        // StandardSQLite keeps embeddings in its companion table; hydrate the
+        // public MemoryNote projection so read-modify-write callers do not
+        // silently lose the vector.
+        if self.schema_type == SchemaType::StandardSQLite {
+            let mut embedding_rows = conn
+                .query(
+                    "SELECT embedding FROM memory_embeddings WHERE memory_id = ?",
+                    params![id.to_string()],
+                )
+                .await?;
+            if let Some(embedding_row) = embedding_rows.next().await? {
+                memory.embedding = Some(decode_embedding_from_row(&embedding_row, 0)?);
+            }
+        }
+
+        // Fetch associated links. The compact test/legacy schema may not
+        // have the optional traversal columns yet.
+        let has_link_metadata = connection_has_column(&conn, "memory_links", "last_traversed_at")
+            .await?
+            && connection_has_column(&conn, "memory_links", "user_created").await?;
+        let link_query = if has_link_metadata {
+            "SELECT target_id, link_type, strength, reason, created_at, last_traversed_at, user_created FROM memory_links WHERE source_id = ?"
+        } else {
+            "SELECT target_id, link_type, strength, reason, created_at FROM memory_links WHERE source_id = ?"
+        };
+        let mut link_rows = conn.query(link_query, params![id.to_string()]).await?;
 
         let mut links = Vec::new();
         while let Some(link_row) = link_rows.next().await? {
@@ -3527,10 +5393,19 @@ impl StorageBackend for LibsqlStorage {
 
             let strength: f64 = link_row.get(2)?;
             let reason: String = link_row.get(3)?;
-            let created_at_str: String = link_row.get(4)?;
-            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                .map_err(|e| MnemosyneError::Other(format!("Invalid timestamp: {}", e)))?
-                .with_timezone(&chrono::Utc);
+            let created_at = parse_datetime_from_row(&link_row, 4).ok_or_else(|| {
+                MnemosyneError::Other("Invalid memory-link creation timestamp".into())
+            })?;
+            let last_traversed_at = if has_link_metadata {
+                parse_datetime_from_row(&link_row, 5)
+            } else {
+                None
+            };
+            let user_created = if has_link_metadata {
+                link_row.get::<i64>(6).unwrap_or(0) != 0
+            } else {
+                false
+            };
 
             links.push(crate::types::MemoryLink {
                 target_id,
@@ -3538,8 +5413,8 @@ impl StorageBackend for LibsqlStorage {
                 strength: strength as f32,
                 reason,
                 created_at,
-                last_traversed_at: None, // Will be populated on first traversal
-                user_created: false,     // Default to system-created
+                last_traversed_at,
+                user_created,
             });
         }
 
@@ -3551,10 +5426,117 @@ impl StorageBackend for LibsqlStorage {
         debug!("Updating memory: {}", memory.id);
 
         let conn = self.get_conn()?;
+        let has_link_metadata = connection_has_column(&conn, "memory_links", "last_traversed_at")
+            .await?
+            && connection_has_column(&conn, "memory_links", "user_created").await?;
         let tx = conn.transaction().await?;
+        let mut current_rows = tx
+            .query(
+                "SELECT content FROM memories WHERE id = ?",
+                params![memory.id.to_string()],
+            )
+            .await?;
+        let current_content = current_rows
+            .next()
+            .await?
+            .and_then(|row| row.get::<String>(0).ok());
+        drop(current_rows);
+        let content_changed = current_content.as_deref() != Some(memory.content.as_str());
+        let current_embedding = if self.schema_type == SchemaType::LibSQL {
+            let mut rows = tx
+                .query(
+                    "SELECT embedding FROM memories WHERE id = ?",
+                    params![memory.id.to_string()],
+                )
+                .await?;
+            let embedding = if let Some(row) = rows.next().await? {
+                if matches!(row.column_type(0), Ok(libsql::ValueType::Blob)) {
+                    Some(decode_embedding_from_row(&row, 0)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            drop(rows);
+            embedding
+        } else {
+            let mut rows = tx
+                .query(
+                    "SELECT embedding FROM memory_embeddings WHERE memory_id = ?",
+                    params![memory.id.to_string()],
+                )
+                .await?;
+            let embedding = if let Some(row) = rows.next().await? {
+                Some(decode_embedding_from_row(&row, 0)?)
+            } else {
+                None
+            };
+            drop(rows);
+            embedding
+        };
+        let supplied_embedding_is_stale = content_changed
+            && memory.embedding.as_ref().is_some_and(|supplied| {
+                current_embedding
+                    .as_ref()
+                    .is_some_and(|current| supplied == current)
+            });
 
-        // Build SQL and params with or without embedding
-        if let Some(ref embedding) = memory.embedding {
+        // Build SQL and params with or without embedding. StandardSQLite
+        // keeps the vector in memory_embeddings; LibSQL stores it inline.
+        if self.schema_type == SchemaType::StandardSQLite {
+            tx.execute(
+                r#"
+                UPDATE memories SET
+                    updated_at = ?,
+                    content = ?,
+                    summary = ?,
+                    keywords = ?,
+                    tags = ?,
+                    context = ?,
+                    memory_class = ?,
+                    importance = ?,
+                    confidence = ?,
+                    related_files = ?,
+                    related_entities = ?,
+                    is_archived = ?,
+                    superseded_by = ?
+                WHERE id = ?
+                "#,
+                params![
+                    Utc::now().to_rfc3339(),
+                    memory.content.clone(),
+                    memory.summary.clone(),
+                    serde_json::to_string(&memory.keywords)?,
+                    serde_json::to_string(&memory.tags)?,
+                    memory.context.clone(),
+                    serde_json::to_value(memory.memory_class)?
+                        .as_str()
+                        .ok_or_else(|| MnemosyneError::Database(
+                            "Failed to serialize memory_class as string".to_string()
+                        ))?,
+                    memory.importance as i64,
+                    memory.confidence as f64,
+                    serde_json::to_string(&memory.related_files)?,
+                    serde_json::to_string(&memory.related_entities)?,
+                    if memory.is_archived { 1i64 } else { 0i64 },
+                    memory.superseded_by.map(|id| id.to_string()),
+                    memory.id.to_string(),
+                ],
+            )
+            .await?;
+            if let Some(embedding) = memory.embedding.as_ref() {
+                let bytes: Vec<u8> = embedding
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect();
+                tx.execute(
+                    "INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding, dimension) VALUES (?, ?, ?)",
+                    params![memory.id.to_string(), bytes, embedding.len() as i64],
+                )
+                .await?;
+            }
+        } else if let Some(ref embedding) = memory.embedding {
             // Update with embedding using vector32()
             let embedding_json = serde_json::to_string(embedding)?;
             tx.execute(
@@ -3658,21 +5640,38 @@ impl StorageBackend for LibsqlStorage {
                 })?
                 .to_string();
 
-            tx.execute(
-                r#"
-                INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                "#,
-                params![
-                    memory.id.to_string(),
-                    link.target_id.to_string(),
-                    link_type_str,
-                    link.strength as f64,
-                    link.reason.clone(),
-                    link.created_at.to_rfc3339(),
-                ],
-            )
-            .await?;
+            if has_link_metadata {
+                tx.execute(
+                    r#"
+                    INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                    params![
+                        memory.id.to_string(),
+                        link.target_id.to_string(),
+                        link_type_str,
+                        link.strength as f64,
+                        link.reason.clone(),
+                        link.created_at.to_rfc3339(),
+                        link.last_traversed_at.map(|value| value.to_rfc3339()),
+                        if link.user_created { 1i64 } else { 0i64 },
+                    ],
+                )
+                .await?;
+            } else {
+                tx.execute(
+                    "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    params![
+                        memory.id.to_string(),
+                        link.target_id.to_string(),
+                        link_type_str,
+                        link.strength as f64,
+                        link.reason.clone(),
+                        link.created_at.to_rfc3339(),
+                    ],
+                )
+                .await?;
+            }
         }
 
         // Preserve typed entity metadata when a note is updated through its
@@ -3741,6 +5740,24 @@ impl StorageBackend for LibsqlStorage {
             .await?;
         }
 
+        // A read-modify-write of changed content without a replacement vector
+        // must not leave a vector describing the old content searchable.
+        if content_changed && (memory.embedding.is_none() || supplied_embedding_is_stale) {
+            if self.schema_type == SchemaType::LibSQL {
+                tx.execute(
+                    "UPDATE memories SET embedding = NULL WHERE id = ?",
+                    params![memory.id.to_string()],
+                )
+                .await?;
+            } else {
+                tx.execute(
+                    "DELETE FROM memory_embeddings WHERE memory_id = ?",
+                    params![memory.id.to_string()],
+                )
+                .await?;
+            }
+        }
+
         // Inline audit log INSERT within the transaction (avoids a separate DB connection round-trip)
         tx.execute(
             "INSERT INTO audit_log (operation, memory_id, metadata) VALUES (?, ?, ?)",
@@ -3774,16 +5791,24 @@ impl StorageBackend for LibsqlStorage {
         debug!("Archiving memory: {}", id);
 
         let conn = self.get_conn()?;
-
-        conn.execute(
-            r#"
-            UPDATE memories
-            SET is_archived = 1, updated_at = ?
-            WHERE id = ?
-            "#,
-            params![Utc::now().to_rfc3339(), id.to_string()],
-        )
-        .await?;
+        let now = Utc::now();
+        if connection_has_column(&conn, "memories", "archived_at").await? {
+            conn.execute(
+                r#"
+                UPDATE memories
+                SET is_archived = 1, archived_at = COALESCE(archived_at, ?), updated_at = ?
+                WHERE id = ?
+                "#,
+                params![now.timestamp(), now.to_rfc3339(), id.to_string()],
+            )
+            .await?;
+        } else {
+            conn.execute(
+                "UPDATE memories SET is_archived = 1, updated_at = ? WHERE id = ?",
+                params![now.to_rfc3339(), id.to_string()],
+            )
+            .await?;
+        }
 
         // Inline audit log INSERT on same connection (avoids separate get_conn() round-trip)
         conn.execute(
@@ -3801,6 +5826,11 @@ impl StorageBackend for LibsqlStorage {
         limit: usize,
         namespace: Option<Namespace>,
     ) -> Result<Vec<SearchResult>> {
+        if self.schema_type == SchemaType::StandardSQLite {
+            return self
+                .standard_vector_search(embedding, limit, namespace)
+                .await;
+        }
         debug!(
             "Vector search (limit: {}, namespace: {:?})",
             limit, namespace
@@ -4023,7 +6053,20 @@ impl StorageBackend for LibsqlStorage {
         );
 
         let conn = self.get_conn()?;
-        let sql = if namespace.is_some() {
+        let search_namespace = namespace.clone();
+        let sql = if self.schema_type == SchemaType::StandardSQLite {
+            if namespace.is_some() {
+                format!(
+                    "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge' LIMIT 100",
+                    columns = self.memory_columns("m")
+                )
+            } else {
+                format!(
+                    "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge' LIMIT 100",
+                    columns = self.memory_columns("m")
+                )
+            }
+        } else if namespace.is_some() {
             format!(
                 "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 AND memory_class = 'knowledge' AND embedding IS NOT NULL LIMIT 100",
                 self.memory_columns("")
@@ -4044,7 +6087,12 @@ impl StorageBackend for LibsqlStorage {
 
         let mut memories = Vec::new();
         while let Some(row) = rows.next().await? {
-            memories.push(self.row_to_memory(&row).await?);
+            let mut memory = self.row_to_memory(&row).await?;
+            if self.schema_type == SchemaType::StandardSQLite {
+                memory.embedding =
+                    Some(decode_embedding_from_row(&row, self.memory_column_count())?);
+            }
+            memories.push(memory);
         }
 
         debug!(
@@ -4057,7 +6105,9 @@ impl StorageBackend for LibsqlStorage {
 
         for i in 0..memories.len() {
             if let Some(ref embedding_i) = memories[i].embedding {
-                let similar = self.vector_search(embedding_i, 5, None).await?;
+                let similar = self
+                    .vector_search(embedding_i, 5, search_namespace.clone())
+                    .await?;
                 for (memory_id, similarity) in similar {
                     if memory_id == memories[i].id {
                         continue;
@@ -5453,13 +7503,41 @@ impl LibsqlStorage {
             let memory = self.row_to_memory(&row).await?;
             memories.insert(memory.id, memory);
         }
+        drop(rows);
+
+        // Hydrate companion vectors for StandardSQLite so batch recall has the
+        // same public projection as get_memory.
+        if self.schema_type == SchemaType::StandardSQLite {
+            let embedding_sql = format!(
+                "SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN ({placeholders})",
+                placeholders = placeholders
+            );
+            let mut embedding_rows = conn
+                .query(&embedding_sql, libsql::params_from_iter(id_params.clone()))
+                .await?;
+            while let Some(embedding_row) = embedding_rows.next().await? {
+                let memory_id = MemoryId::from_string(&embedding_row.get::<String>(0)?)?;
+                if let Some(memory) = memories.get_mut(&memory_id) {
+                    memory.embedding = Some(decode_embedding_from_row(&embedding_row, 1)?);
+                }
+            }
+        }
 
         // Attach semantic links in one additional grouped query.
-        let link_sql = format!(
-            "SELECT source_id, target_id, link_type, strength, reason, created_at \
-             FROM memory_links WHERE source_id IN ({placeholders})",
-            placeholders = placeholders
-        );
+        let has_link_metadata = connection_has_column(&conn, "memory_links", "last_traversed_at")
+            .await?
+            && connection_has_column(&conn, "memory_links", "user_created").await?;
+        let link_sql = if has_link_metadata {
+            format!(
+                "SELECT source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created FROM memory_links WHERE source_id IN ({placeholders})",
+                placeholders = placeholders
+            )
+        } else {
+            format!(
+                "SELECT source_id, target_id, link_type, strength, reason, created_at FROM memory_links WHERE source_id IN ({placeholders})",
+                placeholders = placeholders
+            )
+        };
         let mut link_rows = conn
             .query(&link_sql, libsql::params_from_iter(id_params))
             .await?;
@@ -5488,10 +7566,19 @@ impl LibsqlStorage {
             };
             let strength: f64 = link_row.get(3)?;
             let reason: String = link_row.get(4)?;
-            let created_at_str: String = link_row.get(5)?;
-            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                .map_err(|e| MnemosyneError::Other(format!("Invalid timestamp: {}", e)))?
-                .with_timezone(&chrono::Utc);
+            let created_at = parse_datetime_from_row(&link_row, 5).ok_or_else(|| {
+                MnemosyneError::Other("Invalid memory-link creation timestamp".into())
+            })?;
+            let last_traversed_at = if has_link_metadata {
+                parse_datetime_from_row(&link_row, 6)
+            } else {
+                None
+            };
+            let user_created = if has_link_metadata {
+                link_row.get::<i64>(7).unwrap_or(0) != 0
+            } else {
+                false
+            };
 
             memory.links.push(crate::types::MemoryLink {
                 target_id,
@@ -5499,8 +7586,8 @@ impl LibsqlStorage {
                 strength: strength as f32,
                 reason,
                 created_at,
-                last_traversed_at: None,
-                user_created: false,
+                last_traversed_at,
+                user_created,
             });
         }
 

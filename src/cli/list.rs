@@ -5,14 +5,13 @@
 //! review what the system has retained.
 
 use mnemosyne_core::{
-    icons, orchestration::events::AgentEvent, ConnectionMode, LibsqlStorage, Namespace,
-    StorageBackend,
+    icons, orchestration::events::AgentEvent, ConnectionMode, LibsqlStorage, StorageBackend,
 };
 use std::sync::Arc;
 use tracing::debug;
 
 use super::event_bridge;
-use super::helpers::get_db_path;
+use super::helpers::{get_db_path, parse_namespace};
 
 /// Handle memory listing command
 pub async fn handle(
@@ -40,7 +39,7 @@ pub async fn handle(
 
     // Parse namespace
     let namespace = if let Some(ns_str) = &namespace_str {
-        Some(parse_namespace(ns_str))
+        Some(parse_namespace(ns_str)?)
     } else {
         None
     };
@@ -138,34 +137,4 @@ pub async fn handle(
     .await;
 
     Ok(())
-}
-
-/// Parse a namespace string into a Namespace
-fn parse_namespace(ns_str: &str) -> Namespace {
-    if let Some(agent_id) = ns_str.strip_prefix("agent:") {
-        Namespace::Agent {
-            agent_id: agent_id.to_string(),
-        }
-    } else if ns_str.starts_with("project:") {
-        let project = ns_str.strip_prefix("project:").unwrap();
-        Namespace::Project {
-            name: project.to_string(),
-        }
-    } else if ns_str.starts_with("session:") {
-        let parts: Vec<&str> = ns_str
-            .strip_prefix("session:")
-            .unwrap()
-            .splitn(2, ':')
-            .collect();
-        if parts.len() == 2 {
-            Namespace::Session {
-                project: parts[0].to_string(),
-                session_id: parts[1].to_string(),
-            }
-        } else {
-            Namespace::Global
-        }
-    } else {
-        Namespace::Global
-    }
 }

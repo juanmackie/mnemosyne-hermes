@@ -4,15 +4,14 @@ use mnemosyne_core::{build_memory_context_block, is_trivial_prompt, RecallBundle
 use mnemosyne_core::{
     embeddings::fallback_embedding_warning, orchestration::events::AgentEvent,
     utils::string::truncate_at_char_boundary, ConnectionMode, EmbeddingConfig, EmbeddingService,
-    LibsqlStorage, LlmConfig, LocalEmbeddingService, Namespace, RemoteEmbeddingService,
-    StorageBackend,
+    LibsqlStorage, LlmConfig, LocalEmbeddingService, RemoteEmbeddingService, StorageBackend,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
 
 use super::event_bridge;
-use super::helpers::get_db_path;
+use super::helpers::{get_db_path, parse_namespace};
 
 /// Handle memory recall command
 #[allow(clippy::too_many_arguments)]
@@ -45,35 +44,8 @@ pub async fn handle(
     let embedding_service_config = LlmConfig::default();
     let has_api_key = !embedding_service_config.api_key.is_empty();
 
-    // Parse namespace
-    let ns = namespace.as_ref().map(|ns_str| {
-        if ns_str.starts_with("project:") {
-            let project = ns_str.strip_prefix("project:").unwrap();
-            Namespace::Project {
-                name: project.to_string(),
-            }
-        } else if let Some(agent_id) = ns_str.strip_prefix("agent:") {
-            Namespace::Agent {
-                agent_id: agent_id.to_string(),
-            }
-        } else if ns_str.starts_with("session:") {
-            let parts: Vec<&str> = ns_str
-                .strip_prefix("session:")
-                .unwrap()
-                .split(':')
-                .collect();
-            if parts.len() == 2 {
-                Namespace::Session {
-                    project: parts[0].to_string(),
-                    session_id: parts[1].to_string(),
-                }
-            } else {
-                Namespace::Global
-            }
-        } else {
-            Namespace::Global
-        }
-    });
+    // Parse namespace strictly so a typo cannot expose global memories.
+    let ns = namespace.as_deref().map(parse_namespace).transpose()?;
 
     // Perform hybrid search (keyword + vector + graph)
     let keyword_results = storage

@@ -31,14 +31,13 @@ pub async fn handle(database: Option<String>, global_db_path: Option<String>) ->
 
             // Initialize storage (this will create the database and run migrations)
             // Init command explicitly creates database if missing
-            let _storage =
+            let storage =
                 LibsqlStorage::new_with_validation(ConnectionMode::Local(db_path.clone()), true)
                     .await?;
 
-            // Count migrations that would be applied for a new database
-            // Based on libsql.rs::run_migrations() - LibSQL has 6 migrations, StandardSQLite has 7
-            // Since this is a new database, all applicable migrations are run
-            let migrations_applied = if cfg!(feature = "libsql") { 6 } else { 7 };
+            // Keep the event count tied to the actual embedded registry rather
+            // than a stale hard-coded schema-family guess.
+            let migrations_applied = storage.registered_migration_count();
 
             // Emit domain event
             event_helpers::emit_domain_event(AgentEvent::DatabaseInitialized {

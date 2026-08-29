@@ -665,7 +665,7 @@ mod tests {
     fn test_embedding_config_default() {
         let config = EmbeddingConfig::default();
         assert!(config.enabled);
-        assert_eq!(config.model, "nomic-embed-text-v1.5");
+        assert_eq!(config.model, "embedding-gemma-300m");
         assert_eq!(config.device, "cpu");
         assert_eq!(config.batch_size, 32);
         assert!(config.show_download_progress);

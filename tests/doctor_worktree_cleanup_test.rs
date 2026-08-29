@@ -9,6 +9,7 @@
 use mnemosyne_core::health::{run_health_checks, CheckStatus};
 use mnemosyne_core::orchestration::{identity::AgentId, WorktreeManager};
 use mnemosyne_core::storage::libsql::{ConnectionMode, LibsqlStorage};
+use serial_test::serial;
 use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
@@ -93,6 +94,7 @@ fn setup_test_repo() -> (TempDir, WorktreeManager, Vec<AgentId>) {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_doctor_detects_worktrees() {
     let (temp_dir, manager, agent_ids) = setup_test_repo();
 
@@ -147,6 +149,7 @@ async fn test_doctor_detects_worktrees() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_doctor_fix_cleans_worktrees() {
     let (temp_dir, manager, agent_ids) = setup_test_repo();
 
@@ -213,6 +216,7 @@ async fn test_doctor_fix_cleans_worktrees() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_doctor_no_worktrees() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let repo_path = temp_dir.path();
@@ -293,6 +297,7 @@ async fn test_doctor_no_worktrees() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_doctor_outside_git_repo() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 

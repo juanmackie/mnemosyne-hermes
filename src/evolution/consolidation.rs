@@ -137,25 +137,24 @@ impl ConsolidationJob {
                 let mem1 = &memories[i];
                 let mem2 = &memories[j];
 
-                // Try vector similarity first
-                let similarity = if let (Some(emb1), Some(emb2)) = (
+                // Try vector similarity first.  Keep the mode explicit: a
+                // mixed pair must use the keyword threshold regardless of
+                // which memory happens to be first in the batch.
+                let (similarity, used_vectors) = if let (Some(emb1), Some(emb2)) = (
                     memory_embeddings.get(&mem1.id),
                     memory_embeddings.get(&mem2.id),
                 ) {
                     // Use cosine similarity for vector comparison
-                    self.cosine_similarity(emb1, emb2)
+                    (self.cosine_similarity(emb1, emb2), true)
                 } else {
-                    // Fall back to keyword overlap if embeddings not available
-                    self.keyword_overlap(mem1, mem2)
+                    // Fall back to keyword overlap if embeddings are not
+                    // available for either side of the comparison.
+                    (self.keyword_overlap(mem1, mem2), false)
                 };
 
                 // High similarity indicates potential duplicate
-                // Use 0.90 threshold for vector similarity, 0.80 for keyword overlap
-                let threshold = if memory_embeddings.contains_key(&mem1.id) {
-                    0.90
-                } else {
-                    0.80
-                };
+                // Use 0.90 threshold for vector similarity, 0.80 for keyword overlap.
+                let threshold = if used_vectors { 0.90 } else { 0.80 };
 
                 if similarity > threshold {
                     candidates.push((mem1.clone(), mem2.clone(), similarity));

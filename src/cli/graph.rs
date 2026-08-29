@@ -1,8 +1,8 @@
-use crate::cli::helpers::get_db_path;
+use crate::cli::helpers::{get_db_path, parse_namespace};
 use mnemosyne_core::{
     error::Result,
     storage::{MemorySortOrder, StorageBackend},
-    types::{MemoryNote, Namespace},
+    types::MemoryNote,
     ConnectionMode, LibsqlStorage,
 };
 use std::fs::File;
@@ -19,36 +19,10 @@ pub async fn handle(
     let db_path = get_db_path(db_path);
     let storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(db_path), true).await?;
 
-    // Parse namespace
-    let namespace = if let Some(ns) = namespace_str {
-        if ns == "global" {
-            Some(Namespace::Global)
-        } else if let Some(project) = ns.strip_prefix("project:") {
-            Some(Namespace::Project {
-                name: project.to_string(),
-            })
-        } else if let Some(session) = ns.strip_prefix("session:") {
-            // Session format is session:project:id
-            let parts: Vec<&str> = session.split(':').collect();
-            if parts.len() == 2 {
-                Some(Namespace::Session {
-                    project: parts[0].to_string(),
-                    session_id: parts[1].to_string(),
-                })
-            } else {
-                eprintln!(
-                    "Invalid session namespace format. Expected 'session:project:id', got '{}'",
-                    ns
-                );
-                return Ok(());
-            }
-        } else {
-            // Default to project if just a name provided
-            Some(Namespace::Project { name: ns })
-        }
-    } else {
-        None
-    };
+    // Parse namespace strictly so a typo cannot read another scope.
+    let namespace = namespace_str
+        .map(|value| parse_namespace(&value))
+        .transpose()?;
 
     let memories = if let Some(q) = query {
         let seeds = storage.keyword_search(&q, namespace.clone()).await?;

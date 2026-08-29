@@ -24,6 +24,7 @@ pub mod models;
 pub mod orchestrate;
 pub mod peer;
 pub mod prefetch;
+pub mod proposal;
 pub mod recall;
 pub mod remember;
 pub mod secrets;

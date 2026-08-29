@@ -3,13 +3,13 @@
 use mnemosyne_core::orchestration::events::AgentEvent;
 use mnemosyne_core::{
     error::Result, ConnectionMode, EmbeddingConfig, LibsqlStorage, LocalEmbeddingService, MemoryId,
-    Namespace, StorageBackend,
+    StorageBackend,
 };
 use std::sync::Arc;
 use uuid::Uuid;
 
 use super::event_helpers;
-use super::helpers::get_db_path;
+use super::helpers::{get_db_path, parse_namespace};
 
 /// Handle embedding generation command
 pub async fn handle(
@@ -45,28 +45,7 @@ pub async fn handle(
             // Fetch all memories using search with empty query
             let ns = if let Some(ns_str) = namespace {
                 println!("Fetching memories in namespace '{}'...", ns_str);
-                Some(if ns_str.starts_with("project:") {
-                    let project = ns_str.strip_prefix("project:").unwrap();
-                    Namespace::Project {
-                        name: project.to_string(),
-                    }
-                } else if ns_str.starts_with("session:") {
-                    let parts: Vec<&str> = ns_str
-                        .strip_prefix("session:")
-                        .unwrap()
-                        .split(':')
-                        .collect();
-                    if parts.len() == 2 {
-                        Namespace::Session {
-                            project: parts[0].to_string(),
-                            session_id: parts[1].to_string(),
-                        }
-                    } else {
-                        Namespace::Global
-                    }
-                } else {
-                    Namespace::Global
-                })
+                Some(parse_namespace(&ns_str)?)
             } else if all {
                 println!("Fetching all memories...");
                 None

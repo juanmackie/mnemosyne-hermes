@@ -15,6 +15,7 @@ pub mod config;
 pub mod consolidation;
 pub mod importance;
 pub mod links;
+pub mod maintenance;
 #[cfg(feature = "python")]
 pub mod memory_evolution_dspy_adapter;
 pub mod scheduler;
@@ -24,6 +25,10 @@ pub use config::{ConfigError, ConsolidationConfig, DecisionMode, EvolutionConfig
 pub use consolidation::ConsolidationJob;
 pub use importance::ImportanceRecalibrator;
 pub use links::LinkDecayJob;
+pub use maintenance::{
+    MaintenanceConfig, MaintenanceError, MaintenanceFinding, MaintenanceKind, MaintenanceReport,
+    MaintenanceRunner, MaintenanceStatus, MAX_ITEMS_PER_RUN, MAX_RETRIES_PER_RUN,
+};
 #[cfg(feature = "python")]
 pub use memory_evolution_dspy_adapter::MemoryEvolutionDSpyAdapter;
 pub use scheduler::{

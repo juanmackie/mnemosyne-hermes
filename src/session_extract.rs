@@ -234,7 +234,10 @@ pub enum ExtractionStatus {
 pub struct TurnLearningResult {
     pub source_memory_id: MemoryId,
     pub derived_ids: Vec<MemoryId>,
+    /// Canonical policy memory IDs, populated only for legacy/materialized
+    /// policy rows. New extraction returns pending proposal IDs instead.
     pub policy_ids: Vec<MemoryId>,
+    pub policy_proposal_ids: Vec<String>,
     pub extraction_status: ExtractionStatus,
 }
 

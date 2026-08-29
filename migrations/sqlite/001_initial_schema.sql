@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS memories (
     expires_at TIMESTAMP,
     is_archived INTEGER NOT NULL DEFAULT 0 CHECK(is_archived IN (0, 1)),
     superseded_by TEXT,
+    archived_at INTEGER,
 
     -- Computational
     embedding_model TEXT NOT NULL,
@@ -118,6 +119,8 @@ CREATE TABLE IF NOT EXISTS memory_links (
     strength REAL NOT NULL DEFAULT 0.5 CHECK(strength BETWEEN 0.0 AND 1.0),
     reason TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_traversed_at INTEGER,
+    user_created INTEGER NOT NULL DEFAULT 0,
 
     FOREIGN KEY (source_id) REFERENCES memories(id) ON DELETE CASCADE,
     FOREIGN KEY (target_id) REFERENCES memories(id) ON DELETE CASCADE,
@@ -156,6 +159,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
     )),
     memory_id TEXT,
     metadata TEXT NOT NULL,  -- JSON object with operation-specific data (renamed from 'details' to avoid reserved keyword)
+    -- Transitional compatibility column removed by migration 015.
+    details TEXT,
 
     FOREIGN KEY (memory_id) REFERENCES memories(id)
 );

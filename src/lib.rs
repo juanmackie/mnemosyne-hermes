@@ -66,6 +66,7 @@ pub mod mcp;
 pub mod memory_manager; // High-level agent memory API
 pub mod namespace;
 pub mod orchestration;
+pub mod proposals; // Durable memory change proposal workflow
 pub mod pty; // PTY wrapper for Claude Code
 pub mod secrets;
 pub mod services;
@@ -105,7 +106,9 @@ pub use evaluation::{
 };
 pub use evolution::{
     ArchivalJob, BackgroundScheduler, ConsolidationJob, EvolutionConfig, EvolutionJob,
-    ImportanceRecalibrator, JobConfig, JobReport, LinkDecayJob,
+    ImportanceRecalibrator, JobConfig, JobReport, LinkDecayJob, MaintenanceConfig,
+    MaintenanceError, MaintenanceFinding, MaintenanceKind, MaintenanceReport, MaintenanceRunner,
+    MaintenanceStatus,
 };
 pub use mcp::{EventSink, McpServer, ToolHandler};
 pub use memory_manager::{
@@ -114,12 +117,19 @@ pub use memory_manager::{
 };
 pub use namespace::{NamespaceDetector, ProjectMetadata};
 pub use orchestration::{AgentEvent, OrchestrationEngine, SupervisionConfig, WorkItem, WorkQueue};
+pub use proposals::{
+    InteractionPolicyProposal, MemoryProposal, MemoryProposalStatus, PolicyProposalService,
+    ProposalError, ProposalProvenance, ProposalService,
+};
 pub use services::{LlmConfig, LlmService};
 pub use session_extract::{
     ExtractionStatus, TurnExtraction, TurnLearningResult, EXTRACTION_SCHEMA_VERSION,
 };
 pub use storage::{
-    libsql::{ConnectionMode, LearningMemory, LibsqlStorage, PurgeReport},
+    libsql::{
+        ConnectionMode, InteractionPolicyProposalRecord, LearningMemory, LibsqlStorage,
+        MaintenanceRunRecord, MemoryProposalRecord, PurgeReport,
+    },
     StorageBackend,
 };
 pub use types::{

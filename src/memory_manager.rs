@@ -87,6 +87,9 @@ pub struct MemoryConfig {
     pub memory_type: Option<MemoryType>,
     /// Orthogonal class; defaults to factual knowledge.
     pub memory_class: crate::types::MemoryClass,
+    /// Owner routed to extracted interaction-policy proposals. Policies are
+    /// never materialized without this explicit review path.
+    pub policy_owner: Option<String>,
 }
 
 impl MemoryConfig {
@@ -119,6 +122,10 @@ impl MemoryConfig {
     }
     pub fn memory_class(mut self, memory_class: crate::types::MemoryClass) -> Self {
         self.memory_class = memory_class;
+        self
+    }
+    pub fn policy_owner(mut self, owner: impl Into<String>) -> Self {
+        self.policy_owner = Some(owner.into());
         self
     }
 }
@@ -844,8 +851,9 @@ impl MemoryManager {
     fn completed_learning_result(
         source_memory_id: MemoryId,
         existing: Vec<(MemoryId, MemoryClass)>,
+        policy_proposal_ids: Vec<String>,
     ) -> Option<TurnLearningResult> {
-        if existing.is_empty() {
+        if existing.is_empty() && policy_proposal_ids.is_empty() {
             return None;
         }
         let (derived_ids, policy_ids): (Vec<_>, Vec<_>) = existing
@@ -855,6 +863,7 @@ impl MemoryManager {
             source_memory_id,
             derived_ids: derived_ids.into_iter().map(|(id, _)| id).collect(),
             policy_ids: policy_ids.into_iter().map(|(id, _)| id).collect(),
+            policy_proposal_ids,
             extraction_status: ExtractionStatus::Succeeded,
         })
     }
@@ -906,7 +915,12 @@ impl MemoryManager {
             let existing = inner
                 .derived_memories_for_source(existing_source_id)
                 .await?;
-            if let Some(result) = Self::completed_learning_result(existing_source_id, existing) {
+            let policy_proposal_ids = inner
+                .interaction_policy_proposals_for_source(existing_source_id)
+                .await?;
+            if let Some(result) =
+                Self::completed_learning_result(existing_source_id, existing, policy_proposal_ids)
+            {
                 return Ok(result);
             }
         }
@@ -998,7 +1012,12 @@ impl MemoryManager {
                 source_memory_id = winner_id;
                 existing_source_id = Some(winner_id);
                 let existing = inner.derived_memories_for_source(winner_id).await?;
-                if let Some(result) = Self::completed_learning_result(winner_id, existing) {
+                let policy_proposal_ids = inner
+                    .interaction_policy_proposals_for_source(winner_id)
+                    .await?;
+                if let Some(result) =
+                    Self::completed_learning_result(winner_id, existing, policy_proposal_ids)
+                {
                     return Ok(result);
                 }
             }
@@ -1016,6 +1035,7 @@ impl MemoryManager {
                         source_memory_id,
                         derived_ids: Vec::new(),
                         policy_ids: Vec::new(),
+                        policy_proposal_ids: Vec::new(),
                         extraction_status: ExtractionStatus::FailedRetryable {
                             error: error.to_string(),
                         },
@@ -1027,6 +1047,7 @@ impl MemoryManager {
                     source_memory_id,
                     derived_ids: Vec::new(),
                     policy_ids: Vec::new(),
+                    policy_proposal_ids: Vec::new(),
                     extraction_status: ExtractionStatus::FailedRetryable {
                         error: error.to_string(),
                     },
@@ -1148,30 +1169,25 @@ impl MemoryManager {
             });
         }
 
-        let mut policy_ids = Vec::new();
-        let mut policy_update = None;
-        let mut superseded_policy = None;
+        // Interaction-policy extraction is an explicit review signal, not a
+        // write authorization. Store factual derived memories first, then
+        // create a durable pending policy proposal. Only its owner can later
+        // accept and apply the policy through PolicyProposalService.
+        let mut policy_proposal = None;
         if let Some(feedback) = extraction
             .response_feedback
             .filter(|feedback| feedback.is_actionable())
         {
-            let polarity = if feedback.polarity == "avoid" {
-                crate::types::PolicyPolarity::Avoid
-            } else {
-                crate::types::PolicyPolarity::Prefer
-            };
-            let signal = match feedback.signal.as_str() {
-                "correction" => crate::types::PolicySignalKind::Correction,
-                "dissatisfaction" => crate::types::PolicySignalKind::Dissatisfaction,
-                "approval" => crate::types::PolicySignalKind::Approval,
-                _ => crate::types::PolicySignalKind::DirectPreference,
-            };
             let evidence = crate::types::MemoryProvenance {
                 source_kind: crate::types::ProvenanceSourceKind::Turn,
                 source_memory_id: Some(source_memory_id),
                 session_id: session_id.map(str::to_owned),
                 turn_id: turn_id.map(str::to_owned),
-                source_role: crate::types::ProvenanceSourceRole::User,
+                source_role: match feedback.source_role.as_str() {
+                    "user" => crate::types::ProvenanceSourceRole::User,
+                    "assistant" => crate::types::ProvenanceSourceRole::Assistant,
+                    _ => crate::types::ProvenanceSourceRole::System,
+                },
                 observed_at: now,
                 evidence_quote: feedback.evidence_quote.clone(),
                 extractor_model: Some("configured-anthropic".into()),
@@ -1179,154 +1195,56 @@ impl MemoryManager {
                     crate::session_extract::EXTRACTION_SCHEMA_VERSION.into(),
                 ),
             };
-            let policy_provenance = evidence.clone();
-            let mut policy = crate::types::InteractionPolicy {
-                polarity,
-                guidance: feedback.guidance.clone(),
-                applicability: feedback.applicability.clone(),
-                signal,
+            let policy = crate::types::InteractionPolicy {
+                polarity: if feedback.polarity == "avoid" {
+                    crate::types::PolicyPolarity::Avoid
+                } else {
+                    crate::types::PolicyPolarity::Prefer
+                },
+                guidance: feedback.guidance,
+                applicability: feedback.applicability,
+                signal: match feedback.signal.as_str() {
+                    "correction" => crate::types::PolicySignalKind::Correction,
+                    "dissatisfaction" => crate::types::PolicySignalKind::Dissatisfaction,
+                    "approval" => crate::types::PolicySignalKind::Approval,
+                    _ => crate::types::PolicySignalKind::DirectPreference,
+                },
                 confidence: feedback.confidence,
-                anchors: feedback.anchors.clone(),
+                anchors: feedback.anchors,
                 evidence: vec![evidence],
             };
-            let existing = {
-                let guard = self.storage.lock().await;
-                let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
-                inner.list_interaction_policies().await?
-            };
-            let matching = existing
-                .into_iter()
-                .filter(|(memory, old)| {
-                    if memory.is_archived
-                        || memory.superseded_by.is_some()
-                        || old.evidence.is_empty()
-                    {
-                        return false;
-                    }
-                    let anchors_overlap = old.anchors.iter().any(|old_anchor| {
-                        policy
-                            .anchors
-                            .iter()
-                            .any(|anchor| old_anchor.eq_ignore_ascii_case(anchor))
-                    });
-                    let same_condition = crate::session_extract::lexical_similarity(
-                        &old.applicability,
-                        &policy.applicability,
-                    ) >= 0.5;
-                    (anchors_overlap && same_condition)
-                        || (crate::session_extract::lexical_similarity(
-                            &old.guidance,
-                            &policy.guidance,
-                        ) >= 0.85
-                            && same_condition)
-                })
-                .max_by_key(|(memory, _)| memory.updated_at);
-            let id = if let Some((old_memory, old_policy)) = matching {
-                let same_condition = crate::session_extract::lexical_similarity(
-                    &old_policy.applicability,
-                    &policy.applicability,
-                ) >= 0.5;
-                let same_guidance = same_condition
-                    && crate::session_extract::lexical_similarity(
-                        &old_policy.guidance,
-                        &policy.guidance,
-                    ) >= 0.85
-                    && old_policy.polarity == policy.polarity;
-                if same_guidance {
-                    // A guidance merge must preserve the applicability surface
-                    // of both observations. Otherwise a coding policy merged
-                    // with an otherwise identical writing policy would lose
-                    // one of its anchors.
-                    for old_anchor in old_policy.anchors {
-                        if !policy
-                            .anchors
-                            .iter()
-                            .any(|anchor| anchor.eq_ignore_ascii_case(&old_anchor))
-                        {
-                            policy.anchors.push(old_anchor);
-                        }
-                    }
-                    policy.evidence.splice(0..0, old_policy.evidence);
-                    policy.confidence = policy.confidence.max(old_policy.confidence);
-                    old_memory.id
-                } else if old_policy.polarity != policy.polarity {
-                    let new_id = MemoryId::new();
-                    superseded_policy = Some((old_memory.id, new_id));
-                    new_id
-                } else {
-                    MemoryId::new()
-                }
-            } else {
-                MemoryId::new()
-            };
-            policy_ids.push(id);
-            if !items
-                .iter()
-                .any(|item: &crate::storage::libsql::LearningMemory| item.memory.id == id)
-            {
-                let entities = policy
-                    .anchors
-                    .iter()
-                    .map(|anchor| crate::types::MemoryEntity {
-                        display_name: anchor.clone(),
-                        normalized_name: anchor.to_lowercase(),
-                        role: "anchor".into(),
-                        confidence: 1.0,
-                    })
-                    .collect::<Vec<_>>();
-                let note = MemoryNote {
-                    id,
-                    namespace: Namespace::Global,
-                    created_at: now,
-                    updated_at: now,
-                    content: policy.guidance.clone(),
-                    summary: policy.guidance.clone(),
-                    keywords: Vec::new(),
-                    tags: vec!["interaction_policy".into()],
-                    context: policy.applicability.clone(),
-                    memory_type: MemoryType::Preference,
-                    memory_class: MemoryClass::InteractionPolicy,
-                    provenance: Some(policy_provenance),
-                    importance: 5,
-                    confidence: policy.confidence,
-                    links: vec![MemoryLink {
-                        target_id: source_memory_id,
-                        link_type: crate::types::LinkType::References,
-                        strength: 1.0,
-                        reason: "policy evidence from completed turn".into(),
-                        created_at: now,
-                        last_traversed_at: None,
-                        user_created: false,
-                    }],
-                    related_files: Vec::new(),
-                    related_entities: policy.anchors.clone(),
-                    access_count: 0,
-                    last_accessed_at: now,
-                    expires_at: None,
-                    is_archived: false,
-                    superseded_by: None,
-                    embedding: None,
-                    embedding_model: String::new(),
-                };
-                items.push(crate::storage::libsql::LearningMemory {
-                    memory: note,
-                    entities,
-                });
-            }
-            policy_update = Some((id, policy));
+            policy_proposal = Some(policy);
         }
 
         {
             let guard = self.storage.lock().await;
             let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            inner.store_learning_batch(&items, None, None).await?;
+        }
+
+        let mut policy_proposal_ids = Vec::new();
+        if let Some(policy) = policy_proposal {
+            let owner = config.policy_owner.as_deref().unwrap_or(&self.agent_id);
+            let proposal_id = uuid::Uuid::new_v4().to_string();
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
             inner
-                .store_learning_batch(&items, policy_update, superseded_policy)
+                .create_interaction_policy_proposal(
+                    &proposal_id,
+                    &target_namespace,
+                    &source_memory_id,
+                    &policy,
+                    &self.agent_id,
+                    owner,
+                )
                 .await?;
+            policy_proposal_ids.push(proposal_id);
         }
         Ok(TurnLearningResult {
             source_memory_id,
             derived_ids,
-            policy_ids,
+            policy_ids: Vec::new(),
+            policy_proposal_ids,
             extraction_status: ExtractionStatus::Succeeded,
         })
     }

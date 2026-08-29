@@ -74,6 +74,49 @@ pub enum Namespace {
 }
 
 impl Namespace {
+    /// Parse the canonical CLI/API namespace notation without silently
+    /// converting malformed input to the global scope.
+    pub fn parse(value: &str) -> crate::error::Result<Self> {
+        if value == "global" {
+            return Ok(Self::Global);
+        }
+        if let Some(agent_id) = value
+            .strip_prefix("agent:")
+            .or_else(|| value.strip_prefix("profile:"))
+        {
+            if !agent_id.is_empty() && !agent_id.contains(':') {
+                return Ok(Self::Agent {
+                    agent_id: agent_id.to_string(),
+                });
+            }
+        }
+        if let Some(project) = value.strip_prefix("project:") {
+            if !project.is_empty() && !project.contains(':') {
+                return Ok(Self::Project {
+                    name: project.to_string(),
+                });
+            }
+        }
+        if let Some(rest) = value.strip_prefix("session:") {
+            let parts: Vec<&str> = rest.split(':').collect();
+            if parts.len() == 1 && !parts[0].is_empty() {
+                return Ok(Self::Session {
+                    project: parts[0].to_string(),
+                    session_id: parts[0].to_string(),
+                });
+            }
+            if parts.len() == 2 && parts.iter().all(|part| !part.is_empty()) {
+                return Ok(Self::Session {
+                    project: parts[0].to_string(),
+                    session_id: parts[1].to_string(),
+                });
+            }
+        }
+        Err(crate::error::MnemosyneError::InvalidNamespace(
+            value.to_string(),
+        ))
+    }
+
     /// Get namespace priority for retrieval ordering
     /// Higher priority = searched first (Agent is most specific)
     pub fn priority(&self) -> u8 {

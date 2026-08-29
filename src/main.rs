@@ -351,6 +351,12 @@ enum Commands {
         job: cli::evolve::EvolveJob,
     },
 
+    /// Create and review durable memory change proposals
+    Proposal {
+        #[command(subcommand)]
+        command: cli::proposal::ProposalCommand,
+    },
+
     /// Manage specification workflow artifacts
     Artifact {
         #[command(subcommand)]
@@ -623,6 +629,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Models { action }) => cli::models::handle(action).await,
         Some(Commands::Evolve { job }) => cli::evolve::handle(job, cli.db_path.clone()).await,
+        Some(Commands::Proposal { command }) => {
+            cli::proposal::handle(command, cli.db_path.clone()).await
+        }
         Some(Commands::Graph {
             format,
             depth,

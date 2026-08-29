@@ -511,10 +511,10 @@ async fn w7_large_scale_processing() {
         "Bulk search should be fast"
     );
 
-    // Returns top 20 by importance
+    // Returns the bounded default FTS candidate pool by importance.
     assert_memory_count(
         &results.iter().map(|r| r.memory.clone()).collect::<Vec<_>>(),
-        20,
+        50,
     );
 
     // Phase 4: Update batch

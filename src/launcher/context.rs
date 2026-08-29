@@ -72,8 +72,8 @@ impl ContextLoader {
         namespace: &str,
         config: &ContextLoadConfig,
     ) -> Result<String> {
-        // Parse namespace
-        let ns = parse_namespace(namespace);
+        // Parse namespace strictly so malformed input cannot load global context.
+        let ns = Namespace::parse(namespace)?;
 
         // Query memories (over-fetch to ensure we have enough after filtering)
         let memories = self
@@ -176,31 +176,7 @@ impl ContextLoader {
     }
 }
 
-/// Parse namespace string to Namespace enum
-fn parse_namespace(s: &str) -> Namespace {
-    if s == "global" {
-        Namespace::Global
-    } else if let Some(name) = s.strip_prefix("project:") {
-        Namespace::Project {
-            name: name.to_string(),
-        }
-    } else if let Some(rest) = s.strip_prefix("session:") {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 2 {
-            Namespace::Session {
-                project: parts[0].to_string(),
-                session_id: parts[1].to_string(),
-            }
-        } else {
-            // Malformed session namespace, default to global
-            Namespace::Global
-        }
-    } else {
-        // Unknown format, default to global
-        Namespace::Global
-    }
-}
-
+// Namespace parsing is centralized in `Namespace::parse`.
 /// Format a single memory for context display
 fn format_memory(mem: &MemoryNote, detailed: bool) -> String {
     if detailed {
@@ -312,13 +288,13 @@ mod tests {
 
     #[test]
     fn test_parse_namespace_global() {
-        let ns = parse_namespace("global");
+        let ns = Namespace::parse("global").unwrap();
         assert_eq!(ns, Namespace::Global);
     }
 
     #[test]
     fn test_parse_namespace_project() {
-        let ns = parse_namespace("project:myapp");
+        let ns = Namespace::parse("project:myapp").unwrap();
         assert_eq!(
             ns,
             Namespace::Project {
@@ -329,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_parse_namespace_session() {
-        let ns = parse_namespace("session:myapp:abc123");
+        let ns = Namespace::parse("session:myapp:abc123").unwrap();
         assert!(matches!(ns, Namespace::Session { .. }));
         if let Namespace::Session {
             project,
@@ -342,9 +318,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_namespace_unknown_defaults_to_global() {
-        let ns = parse_namespace("unknown:format");
-        assert_eq!(ns, Namespace::Global);
+    fn test_parse_namespace_unknown_is_rejected() {
+        assert!(Namespace::parse("unknown:format").is_err());
+        assert!(Namespace::parse("agent:").is_err());
     }
 
     #[test]

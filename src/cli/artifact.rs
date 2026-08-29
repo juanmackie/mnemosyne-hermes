@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::event_helpers;
-use super::helpers::get_db_path;
+use super::helpers::{get_db_path, parse_namespace};
 
 #[derive(Debug, Subcommand)]
 pub enum ArtifactCommands {
@@ -146,16 +146,7 @@ pub async fn handle(command: ArtifactCommands, global_db_path: Option<String>) -
 
                 // Determine namespace
                 let ns = if let Some(ns_str) = namespace {
-                    // Parse namespace string (e.g., "project:myapp")
-                    if ns_str.starts_with("project:") {
-                        let name = ns_str.strip_prefix("project:").unwrap().to_string();
-                        Namespace::Project { name }
-                    } else if ns_str == "global" {
-                        Namespace::Global
-                    } else {
-                        eprintln!("✗ Invalid namespace format. Use 'global' or 'project:NAME'");
-                        std::process::exit(1);
-                    }
+                    parse_namespace(&ns_str)?
                 } else {
                     // Default to project namespace
                     Namespace::Project {
@@ -240,16 +231,7 @@ pub async fn handle(command: ArtifactCommands, global_db_path: Option<String>) -
 
                 // Determine namespace
                 let ns = if let Some(ns_str) = namespace {
-                    // Parse namespace string
-                    if ns_str.starts_with("project:") {
-                        let proj_name = ns_str.strip_prefix("project:").unwrap().to_string();
-                        Namespace::Project { name: proj_name }
-                    } else if ns_str == "global" {
-                        Namespace::Global
-                    } else {
-                        eprintln!("✗ Invalid namespace format. Use 'global' or 'project:NAME'");
-                        std::process::exit(1);
-                    }
+                    parse_namespace(&ns_str)?
                 } else {
                     // Try to infer project name from git root or use "default"
                     let project_name = std::env::current_dir()

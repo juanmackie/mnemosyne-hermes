@@ -3,10 +3,10 @@
 //! Mirrors `MemoryManager::sync_all` in hermes-agent.  Stores the exchange
 //! as a session-scoped memory so the agent can recall it on future turns.
 
-use mnemosyne_core::{error::Result, MemoryConfig, MemoryManager, MemoryType, Namespace};
+use mnemosyne_core::{error::Result, MemoryConfig, MemoryManager, MemoryType};
 use std::path::PathBuf;
 
-use super::helpers::get_db_path;
+use super::helpers::{get_db_path, parse_namespace};
 
 /// Store a completed exchange in the agent's memory.
 ///
@@ -27,7 +27,7 @@ pub async fn handle(
     let db_path = get_db_path(global_db_path);
     let mgr = MemoryManager::new_with_path("_sync", Some(PathBuf::from(db_path))).await?;
 
-    let ns = parse_namespace(&namespace);
+    let ns = parse_namespace(&namespace)?;
     let memory_type = memory_type
         .as_deref()
         .and_then(|value| serde_json::from_value(serde_json::json!(value)).ok());
@@ -46,28 +46,4 @@ pub async fn handle(
         println!("synced: {}", id);
     }
     Ok(())
-}
-
-fn parse_namespace(value: &str) -> Namespace {
-    if value == "global" {
-        Namespace::Global
-    } else if let Some(agent_id) = value.strip_prefix("agent:") {
-        Namespace::Agent {
-            agent_id: agent_id.to_string(),
-        }
-    } else if let Some(project) = value.strip_prefix("project:") {
-        Namespace::Project {
-            name: project.to_string(),
-        }
-    } else if let Some(rest) = value.strip_prefix("session:") {
-        let mut parts = rest.splitn(2, ':');
-        let first = parts.next().unwrap_or("default");
-        let second = parts.next().unwrap_or(first);
-        Namespace::Session {
-            project: first.to_string(),
-            session_id: second.to_string(),
-        }
-    } else {
-        Namespace::Global
-    }
 }

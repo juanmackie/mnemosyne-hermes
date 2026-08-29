@@ -205,6 +205,8 @@ mod tests {
             tags: vec![],
             context: String::new(),
             memory_type: crate::types::MemoryType::Insight,
+            memory_class: crate::types::MemoryClass::Knowledge,
+            provenance: None,
             importance: 5,
             confidence: 0.5,
             links: vec![],

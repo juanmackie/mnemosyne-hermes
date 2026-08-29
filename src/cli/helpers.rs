@@ -5,7 +5,7 @@
 
 use mnemosyne_core::{
     error::Result, mcp::EventSink, services::embeddings::EmbeddingService, ConfigManager,
-    ConnectionMode, LibsqlStorage, LlmConfig, LlmService, McpServer, ToolHandler,
+    ConnectionMode, LibsqlStorage, LlmConfig, LlmService, McpServer, Namespace, ToolHandler,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +17,23 @@ pub fn get_default_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("mnemosyne")
         .join("mnemosyne.db")
+}
+
+/// Parse a CLI namespace without silently falling back to global.
+pub fn parse_namespace(value: &str) -> Result<Namespace> {
+    Namespace::parse(value)
+}
+
+/// Resolve the MCP process scope. An invalid environment value is rejected
+/// instead of silently falling back to global.
+pub fn get_mcp_namespace() -> Result<Namespace> {
+    match std::env::var("MNEMOSYNE_NAMESPACE") {
+        Ok(value) => parse_namespace(&value),
+        Err(std::env::VarError::NotPresent) => Ok(Namespace::Global),
+        Err(error) => Err(mnemosyne_core::error::MnemosyneError::Other(format!(
+            "Invalid MNEMOSYNE_NAMESPACE: {error}"
+        ))),
+    }
 }
 
 /// Get the database path from CLI arg, env var, project dir, or default
@@ -260,9 +277,16 @@ pub async fn start_mcp_server(db_path_arg: Option<String>) -> Result<()> {
         }
     };
 
-    // Initialize tool handler with event sink
-    let tool_handler =
-        ToolHandler::new_with_event_sink(Arc::new(storage), llm, embeddings, event_sink);
+    // Initialize the handler with the validated process scope. Tool calls
+    // may still provide an explicit namespace override.
+    let default_namespace = get_mcp_namespace()?;
+    let tool_handler = ToolHandler::new_with_default_namespace(
+        Arc::new(storage),
+        llm,
+        embeddings,
+        event_sink,
+        default_namespace,
+    );
 
     // Create and run MCP server
     let mcp_server = McpServer::new(tool_handler);
@@ -365,8 +389,14 @@ pub async fn start_mcp_server_with_api(
 
     // Initialize tool handler with event broadcasting
     let event_sink = EventSink::Local(event_broadcaster);
-    let tool_handler =
-        ToolHandler::new_with_event_sink(Arc::new(storage), llm, embeddings, event_sink);
+    let default_namespace = get_mcp_namespace()?;
+    let tool_handler = ToolHandler::new_with_default_namespace(
+        Arc::new(storage),
+        llm,
+        embeddings,
+        event_sink,
+        default_namespace,
+    );
 
     // Create MCP server
     let mcp_server = McpServer::new(tool_handler);

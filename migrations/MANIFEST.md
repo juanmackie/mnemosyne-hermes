@@ -15,8 +15,12 @@
 | 007 | `sqlite/007_evolution.sql` | 2025-10-28 | ⚠️ NOT applied (obsolete) | Evolution mechanics (not needed) |
 | 013 | `sqlite/013_add_task_and_agent_event_types.sql` | 2025-11-01 | ✅ Applied (doc only) | Documents task and agent_event memory types |
 | 014 | `sqlite/014_add_specification_workflow_types.sql` | 2025-11-01 | ⚠️ NOT applied | Documents spec workflow memory types |
-| 015 | `sqlite/015_fix_audit_log_schema.sql` | 2025-11-04 | ✅ Applied to project DB | Fixes audit_log schema drift (details → metadata) |
+| 015 | `sqlite/015_fix_audit_log_schema.sql` | 2025-11-04 | ✅ Registered | Fixes audit_log schema drift (details → metadata), including details-only upgrade compatibility |
 | 017 | `libsql/017_text_memory_learning.sql`, `sqlite/017_text_memory_learning.sql` | 2026-08-27 | ✅ Registered | Adds memory classes, typed provenance, policy evidence, and indexed entities with backward-compatible knowledge defaults |
+| 019 | `libsql/019_memory_maintenance_runs.sql`, `sqlite/019_memory_maintenance_runs.sql` | 2026-08-28 | ✅ Registered | Persists bounded maintenance run state and advisory reports |
+| 020 | `libsql/020_memory_change_proposals.sql`, `sqlite/020_memory_change_proposals.sql` | 2026-08-28 | ✅ Registered | Persists owner-routed memory change proposals and explicit review outcomes |
+| 021 | `sqlite/021_expand_memory_type_constraint.sql` | 2026-08-28 | ✅ Registered | Rebuilds the StandardSQLite memory-type constraint for the complete workflow enum |
+| 022 | `libsql/022_interaction_policy_proposals.sql`, `sqlite/022_interaction_policy_proposals.sql` | 2026-08-29 | ✅ Registered | Adds owner-reviewed interaction-policy proposals; extracted guidance is not canonical until applied |
 
 ### Ghost Migrations (Applied but Never Committed)
 

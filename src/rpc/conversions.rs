@@ -10,17 +10,22 @@ use tonic::Status;
 
 /// Convert Protobuf Namespace to internal Namespace
 pub fn namespace_from_proto(ns: generated::Namespace) -> Result<InternalNamespace, Status> {
-    match ns.namespace {
-        Some(generated::namespace::Namespace::Global(_)) => Ok(InternalNamespace::Global),
+    let namespace = match ns.namespace {
+        Some(generated::namespace::Namespace::Global(_)) => InternalNamespace::Global,
         Some(generated::namespace::Namespace::Project(p)) => {
-            Ok(InternalNamespace::Project { name: p.name })
+            InternalNamespace::Project { name: p.name }
         }
-        Some(generated::namespace::Namespace::Session(s)) => Ok(InternalNamespace::Session {
+        Some(generated::namespace::Namespace::Session(s)) => InternalNamespace::Session {
             project: s.project,
             session_id: s.session_id,
-        }),
-        None => Err(Status::invalid_argument("Namespace is required")),
-    }
+        },
+        Some(generated::namespace::Namespace::Agent(a)) => InternalNamespace::Agent {
+            agent_id: a.agent_id,
+        },
+        None => return Err(Status::invalid_argument("Namespace is required")),
+    };
+    InternalNamespace::parse(&namespace.to_string())
+        .map_err(|error| Status::invalid_argument(error.to_string()))
 }
 
 /// Convert internal Namespace to Protobuf Namespace
@@ -44,8 +49,8 @@ pub fn namespace_to_proto(ns: InternalNamespace) -> generated::Namespace {
         // The v1 RPC schema predates agent namespaces; preserve wire
         // compatibility by exposing them as global rather than failing the
         // conversion.
-        InternalNamespace::Agent { .. } => Some(generated::namespace::Namespace::Global(
-            generated::GlobalNamespace {},
+        InternalNamespace::Agent { agent_id } => Some(generated::namespace::Namespace::Agent(
+            generated::AgentNamespace { agent_id },
         )),
     };
     generated::Namespace { namespace }

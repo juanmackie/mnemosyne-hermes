@@ -4,13 +4,13 @@ use mnemosyne_core::{
     error::{MnemosyneError, Result},
     orchestration::events::AgentEvent,
     storage::MemorySortOrder,
-    ConnectionMode, LibsqlStorage, Namespace, StorageBackend,
+    ConnectionMode, LibsqlStorage, StorageBackend,
 };
 use std::{io::Write, path::PathBuf};
 use tracing::debug;
 
 use super::event_helpers;
-use super::helpers::get_db_path;
+use super::helpers::{get_db_path, parse_namespace};
 
 /// Handle memory export command
 pub async fn handle(
@@ -37,31 +37,8 @@ pub async fn handle(
     let db_path = get_db_path(global_db_path);
     let storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(db_path), false).await?;
 
-    // Parse namespace if provided
-    let ns = namespace.map(|ns_str| {
-        if ns_str.starts_with("project:") {
-            let project = ns_str.strip_prefix("project:").unwrap();
-            Namespace::Project {
-                name: project.to_string(),
-            }
-        } else if ns_str.starts_with("session:") {
-            let parts: Vec<&str> = ns_str
-                .strip_prefix("session:")
-                .unwrap()
-                .split(':')
-                .collect();
-            if parts.len() == 2 {
-                Namespace::Session {
-                    project: parts[0].to_string(),
-                    session_id: parts[1].to_string(),
-                }
-            } else {
-                Namespace::Global
-            }
-        } else {
-            Namespace::Global
-        }
-    });
+    // Parse namespace strictly so a typo cannot export global memories.
+    let ns = namespace.map(|value| parse_namespace(&value)).transpose()?;
 
     // Query all memories (or filtered by namespace)
     let memories = storage

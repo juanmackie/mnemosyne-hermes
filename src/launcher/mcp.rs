@@ -5,6 +5,7 @@
 
 use crate::error::{MnemosyneError, Result};
 use crate::launcher::agents::AgentRole;
+use crate::types::Namespace;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -45,6 +46,7 @@ pub struct McpConfigGenerator {
 impl McpConfigGenerator {
     /// Generate MCP configuration JSON string
     pub fn generate_config(&self) -> Result<String> {
+        self.validate_namespace()?;
         let mut env = HashMap::new();
         env.insert("MNEMOSYNE_NAMESPACE".to_string(), self.namespace.clone());
         env.insert("MNEMOSYNE_DB_PATH".to_string(), self.db_path.clone());
@@ -73,6 +75,7 @@ impl McpConfigGenerator {
 
     /// Generate MCP configuration with custom server name
     pub fn generate_config_with_name(&self, server_name: &str) -> Result<String> {
+        self.validate_namespace()?;
         let mut env = HashMap::new();
         env.insert("MNEMOSYNE_NAMESPACE".to_string(), self.namespace.clone());
         env.insert("MNEMOSYNE_DB_PATH".to_string(), self.db_path.clone());
@@ -97,6 +100,10 @@ impl McpConfigGenerator {
 
         serde_json::to_string(&config)
             .map_err(|e| MnemosyneError::Other(format!("Failed to serialize MCP config: {}", e)))
+    }
+
+    fn validate_namespace(&self) -> Result<()> {
+        Namespace::parse(&self.namespace).map(|_| ())
     }
 }
 
@@ -160,6 +167,17 @@ mod tests {
     }
 
     #[test]
+    fn invalid_namespace_is_rejected() {
+        let generator = McpConfigGenerator {
+            mnemosyne_binary_path: "mnemosyne".to_string(),
+            namespace: "not-a-namespace".to_string(),
+            db_path: "test.db".to_string(),
+            agent_role: AgentRole::Executor,
+        };
+        assert!(generator.generate_config().is_err());
+    }
+
+    #[test]
     fn test_different_agent_roles() {
         let roles = vec![
             AgentRole::Orchestrator,
@@ -171,7 +189,7 @@ mod tests {
         for role in roles {
             let generator = McpConfigGenerator {
                 mnemosyne_binary_path: "mnemosyne".to_string(),
-                namespace: "test".to_string(),
+                namespace: "project:test".to_string(),
                 db_path: "test.db".to_string(),
                 agent_role: role,
             };

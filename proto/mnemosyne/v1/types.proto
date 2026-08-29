@@ -19,6 +19,7 @@ message Namespace {
     GlobalNamespace global = 1;
     ProjectNamespace project = 2;
     SessionNamespace session = 3;
+    AgentNamespace agent = 4;
   }
 }
 
@@ -31,6 +32,10 @@ message ProjectNamespace {
 message SessionNamespace {
   string project = 1;
   string session_id = 2;
+}
+
+message AgentNamespace {
+  string agent_id = 1;
 }
 
 // ============================================================================

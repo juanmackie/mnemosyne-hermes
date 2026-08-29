@@ -3,13 +3,13 @@
 use mnemosyne_core::{
     error::Result, icons, orchestration::events::AgentEvent, ConnectionMode, EmbeddingConfig,
     EmbeddingService, LibsqlStorage, LlmConfig, LlmService, LocalEmbeddingService, MemoryNote,
-    Namespace, RemoteEmbeddingService, StorageBackend,
+    RemoteEmbeddingService, StorageBackend,
 };
 use std::sync::Arc;
 use tracing::{debug, warn};
 
 use super::event_bridge;
-use super::helpers::{get_db_path, parse_memory_type};
+use super::helpers::{get_db_path, parse_memory_type, parse_namespace};
 
 /// Handle memory creation command
 #[allow(clippy::too_many_arguments)]
@@ -50,33 +50,8 @@ pub async fn handle(
         debug!("LLM enrichment skipped (--no-enrich)");
     }
 
-    // Parse namespace
-    let ns = if namespace.starts_with("project:") {
-        let project = namespace.strip_prefix("project:").unwrap();
-        Namespace::Project {
-            name: project.to_string(),
-        }
-    } else if let Some(agent_id) = namespace.strip_prefix("agent:") {
-        Namespace::Agent {
-            agent_id: agent_id.to_string(),
-        }
-    } else if namespace.starts_with("session:") {
-        let parts: Vec<&str> = namespace
-            .strip_prefix("session:")
-            .unwrap()
-            .split(':')
-            .collect();
-        if parts.len() == 2 {
-            Namespace::Session {
-                project: parts[0].to_string(),
-                session_id: parts[1].to_string(),
-            }
-        } else {
-            Namespace::Global
-        }
-    } else {
-        Namespace::Global
-    };
+    // Parse namespace strictly so a typo cannot write to global memory.
+    let ns = parse_namespace(&namespace)?;
 
     // Create or enrich memory. When --no-enrich is set, skip LLM enrichment
     // and fall back to basic memory construction (still generates embedding).

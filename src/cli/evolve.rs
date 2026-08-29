@@ -1,12 +1,12 @@
 //! Memory evolution command (importance recalibration, link decay, archival, consolidation)
 
 use anyhow::Context;
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use mnemosyne_core::{
     error::Result,
     evolution::{
         ArchivalJob, ConsolidationJob, EvolutionJob, ImportanceRecalibrator, JobConfig,
-        LinkDecayJob,
+        LinkDecayJob, MaintenanceConfig, MaintenanceKind, MaintenanceRunner, MaintenanceStatus,
     },
     orchestration::events::AgentEvent,
     ConnectionMode, LibsqlStorage,
@@ -15,7 +15,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::event_bridge;
-use super::helpers::get_default_db_path;
+use super::helpers::{get_default_db_path, parse_namespace};
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum MaintenanceKindArg {
+    StaleLinks,
+    MissingCitations,
+    HealthSummary,
+}
+
+impl MaintenanceKindArg {
+    fn kind(self) -> MaintenanceKind {
+        match self {
+            Self::StaleLinks => MaintenanceKind::StaleLinks,
+            Self::MissingCitations => MaintenanceKind::MissingCitations,
+            Self::HealthSummary => MaintenanceKind::HealthSummary,
+        }
+    }
+}
 
 #[derive(Subcommand)]
 pub enum EvolveJob {
@@ -63,6 +80,52 @@ pub enum EvolveJob {
         database: Option<String>,
     },
 
+    /// Run a bounded advisory maintenance report
+    Maintenance {
+        /// Report kind (stale-links, missing-citations, health-summary)
+        #[arg(value_enum)]
+        kind: MaintenanceKindArg,
+
+        /// Namespace filter (for example project:mnemosyne)
+        #[arg(short, long)]
+        namespace: Option<String>,
+
+        /// Maximum items inspected (clamped to the safe runtime bound)
+        #[arg(short, long, default_value = "100")]
+        item_limit: usize,
+
+        /// Maximum retries after a failed attempt
+        #[arg(long, default_value = "2")]
+        retry_limit: usize,
+
+        /// Link staleness threshold in days
+        #[arg(long, default_value = "90")]
+        stale_after_days: i64,
+
+        /// Stable key for safe retries; generated when omitted
+        #[arg(long)]
+        idempotency_key: Option<String>,
+
+        /// Database path
+        #[arg(short, long)]
+        database: Option<String>,
+    },
+
+    /// List durable maintenance run history
+    MaintenanceHistory {
+        /// Optional report kind filter
+        #[arg(value_enum)]
+        kind: Option<MaintenanceKindArg>,
+
+        /// Maximum history entries
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+
+        /// Database path
+        #[arg(short, long)]
+        database: Option<String>,
+    },
+
     /// Run all evolution jobs
     All {
         /// Batch size for each job
@@ -75,6 +138,7 @@ pub enum EvolveJob {
     },
 }
 
+// Namespace parsing is provided by cli::helpers::parse_namespace.
 /// Handle evolution command
 pub async fn handle(job: EvolveJob, global_db_path: Option<String>) -> Result<()> {
     let start_time = std::time::Instant::now();
@@ -85,6 +149,8 @@ pub async fn handle(job: EvolveJob, global_db_path: Option<String>) -> Result<()
         EvolveJob::Links { .. } => "links",
         EvolveJob::Archival { .. } => "archival",
         EvolveJob::Consolidation { .. } => "consolidation",
+        EvolveJob::Maintenance { .. } => "maintenance",
+        EvolveJob::MaintenanceHistory { .. } => "maintenance-history",
         EvolveJob::All { .. } => "all",
     };
 
@@ -103,6 +169,8 @@ pub async fn handle(job: EvolveJob, global_db_path: Option<String>) -> Result<()
         | EvolveJob::Links { database, .. }
         | EvolveJob::Archival { database, .. }
         | EvolveJob::Consolidation { database, .. }
+        | EvolveJob::Maintenance { database, .. }
+        | EvolveJob::MaintenanceHistory { database, .. }
         | EvolveJob::All { database, .. } => database
             .clone()
             .or(global_db_path)
@@ -224,6 +292,51 @@ pub async fn handle(job: EvolveJob, global_db_path: Option<String>) -> Result<()
                     std::process::exit(1);
                 }
             }
+        }
+        EvolveJob::Maintenance {
+            kind,
+            namespace,
+            item_limit,
+            retry_limit,
+            stale_after_days,
+            idempotency_key,
+            ..
+        } => {
+            let maintenance_kind = kind.kind();
+            let namespace = namespace.as_deref().map(parse_namespace).transpose()?;
+            let key = idempotency_key.unwrap_or_else(|| {
+                format!("cli:{}:{}", maintenance_kind.as_str(), uuid::Uuid::new_v4())
+            });
+            let config = MaintenanceConfig {
+                kind: maintenance_kind,
+                namespace,
+                item_limit,
+                retry_limit,
+                max_duration: Duration::from_secs(300),
+                stale_after_days,
+                idempotency_key: key,
+            };
+            let runner = MaintenanceRunner::new(storage.clone());
+            let report = runner
+                .run(config)
+                .await
+                .map_err(|error| mnemosyne_core::MnemosyneError::Other(error.to_string()))?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if report.status != MaintenanceStatus::Success {
+                eprintln!(
+                    "maintenance report completed with status {:?}",
+                    report.status
+                );
+            }
+            Ok(())
+        }
+        EvolveJob::MaintenanceHistory { kind, limit, .. } => {
+            let kind = kind.map(|value| value.kind().as_str().to_string());
+            let history = storage
+                .list_maintenance_runs(kind.as_deref(), limit)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&history)?);
+            Ok(())
         }
         EvolveJob::All { batch_size, .. } => {
             println!("Running all evolution jobs...");

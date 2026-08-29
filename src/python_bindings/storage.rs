@@ -205,21 +205,7 @@ impl PyStorage {
 
 // Helper function to parse namespace from string
 pub(crate) fn parse_namespace(s: &str) -> Result<Namespace, String> {
-    if s == "global" {
-        return Ok(Namespace::Global);
-    }
-
-    let parts: Vec<&str> = s.split(':').collect();
-    match parts.as_slice() {
-        ["project", name] => Ok(Namespace::Project {
-            name: name.to_string(),
-        }),
-        ["session", project, session_id] => Ok(Namespace::Session {
-            project: project.to_string(),
-            session_id: session_id.to_string(),
-        }),
-        _ => Err(format!("Invalid namespace format: {}", s)),
-    }
+    Namespace::parse(s).map_err(|error| error.to_string())
 }
 
 // Helper methods for type conversion
