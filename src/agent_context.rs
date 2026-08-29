@@ -14,24 +14,30 @@ use crate::types::SearchResult;
 use crate::utils::sanitize_context;
 
 /// One independently recalled context channel and its observability metadata.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RecallChannel {
     pub results: Vec<SearchResult>,
     pub quota: usize,
     pub abstention_reason: Option<String>,
 }
 
-/// Bounded factual and response-guidance recall bundle.
+/// Bounded factual, reasoning, and response-guidance recall bundle.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecallBundle {
     pub factual: RecallChannel,
     pub guidance: RecallChannel,
+    /// Outcome-aware strategies and failure guardrails. This is deliberately
+    /// separate from factual evidence and response-style guidance.
+    #[serde(default)]
+    pub reasoning: RecallChannel,
     pub budget_tokens: usize,
 }
 
 impl RecallBundle {
     pub fn is_empty(&self) -> bool {
-        self.factual.results.is_empty() && self.guidance.results.is_empty()
+        self.factual.results.is_empty()
+            && self.guidance.results.is_empty()
+            && self.reasoning.results.is_empty()
     }
 }
 
@@ -74,37 +80,94 @@ pub fn render_recall_bundle(bundle: &RecallBundle) -> String {
             )
         })
         .collect();
+    let reasoning_candidates: Vec<_> = bundle
+        .reasoning
+        .results
+        .iter()
+        .take(bundle.reasoning.quota)
+        .map(|result| {
+            let label = if result
+                .memory
+                .tags
+                .iter()
+                .any(|tag| tag == "reasoning_guardrail")
+            {
+                "Failure-derived guardrail"
+            } else {
+                "Strategy learned from a completed task"
+            };
+            let text = if result.memory.context.trim().is_empty() {
+                format!("{}: {}", label, result.memory.content)
+            } else {
+                format!(
+                    "{}: {}\nApply only when: {}",
+                    label, result.memory.content, result.memory.context
+                )
+            };
+            Candidate::new(
+                format!("reasoning-{}", result.memory.id),
+                label,
+                text.clone(),
+                text.clone(),
+                text,
+                result.score,
+            )
+        })
+        .collect();
 
-    // Reserve a bounded slice for guidance, but let either channel use the
-    // whole shared budget when the other channel abstains. Running the same
-    // assembler for both slices preserves its token estimator and guarantees
-    // policy text cannot crowd factual evidence out of the prompt.
+    // Give strategies a bounded slice so they can inform the next action
+    // without displacing factual evidence. A lone channel may use the whole
+    // budget; otherwise the slices are proportional to their role.
     let has_factual = !factual_candidates.is_empty();
     let has_guidance = !guidance_candidates.is_empty();
-    let has_both_channels = has_factual && has_guidance;
-    let (factual_budget, guidance_budget) = if has_both_channels {
+    let has_reasoning = !reasoning_candidates.is_empty();
+    let channel_count = has_factual as usize + has_guidance as usize + has_reasoning as usize;
+    let factual_share = if has_factual { 60 } else { 0 };
+    let reasoning_share = if has_reasoning { 25 } else { 0 };
+    let guidance_share = if has_guidance { 15 } else { 0 };
+    let share_total = factual_share + reasoning_share + guidance_share;
+    let scale = |share: usize| {
+        if share_total == 0 {
+            0
+        } else {
+            (bundle.budget_tokens * share / share_total).max(1)
+        }
+    };
+    let (factual_budget, reasoning_budget, guidance_budget) = if channel_count == 1 {
         (
-            (bundle.budget_tokens * 3 / 4).max(1),
-            bundle
-                .budget_tokens
-                .saturating_sub((bundle.budget_tokens * 3 / 4).max(1)),
+            if has_factual { bundle.budget_tokens } else { 0 },
+            if has_reasoning {
+                bundle.budget_tokens
+            } else {
+                0
+            },
+            if has_guidance {
+                bundle.budget_tokens
+            } else {
+                0
+            },
         )
-    } else if has_factual {
-        (bundle.budget_tokens, 0)
     } else {
-        (0, bundle.budget_tokens)
+        (
+            scale(factual_share),
+            scale(reasoning_share),
+            scale(guidance_share),
+        )
     };
     let mut factual_plan = assemble(&factual_candidates, factual_budget);
-    let mut guidance_plan = assemble(&guidance_candidates, guidance_budget);
+    let mut reasoning_plan = assemble(&reasoning_candidates, reasoning_budget);
+    let guidance_plan = assemble(&guidance_candidates, guidance_budget);
 
     // A candidate can be present but still be rejected by the assembler (for
-    // example, when one memory exceeds the channel slice). Give the unused
-    // budget to the other channel instead of starving valid guidance/evidence
-    // based only on pre-assembly vector lengths.
-    if factual_plan.entries.is_empty() && !guidance_candidates.is_empty() {
-        guidance_plan = assemble(&guidance_candidates, bundle.budget_tokens);
+    // example, when one memory exceeds its channel slice). Give the unused
+    // budget to the richest channel rather than silently dropping all context.
+    if factual_plan.entries.is_empty() && !reasoning_candidates.is_empty() {
+        reasoning_plan = assemble(&reasoning_candidates, bundle.budget_tokens);
     }
-    if guidance_plan.entries.is_empty() && !factual_candidates.is_empty() {
+    if reasoning_plan.entries.is_empty() && !factual_candidates.is_empty() {
+        factual_plan = assemble(&factual_candidates, bundle.budget_tokens);
+    }
+    if guidance_plan.entries.is_empty() && !factual_candidates.is_empty() && !has_reasoning {
         factual_plan = assemble(&factual_candidates, bundle.budget_tokens);
     }
 
@@ -119,6 +182,15 @@ pub fn render_recall_bundle(bundle: &RecallBundle) -> String {
                 entry.id,
                 escape_context_text(&entry.text)
             ));
+        }
+    }
+    if !reasoning_plan.entries.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("## Reasoning strategies\n\nThese are fallible lessons from prior task outcomes. Validate applicability before acting; do not present them as facts.\n\n");
+        for entry in &reasoning_plan.entries {
+            out.push_str(&format!("- {}\n", escape_context_text(&entry.text)));
         }
     }
     if !guidance_plan.entries.is_empty() {
@@ -310,7 +382,7 @@ pub fn build_memory_context_block(raw_context: impl AsRef<str>) -> String {
         tracing::warn!("memory provider returned pre-wrapped context; stripped");
     }
     format!(
-        "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Factual items are evidence and may be stale or incomplete. Internal response guidance may influence style or approach only; never quote it or represent it as a fact about the user.]\n\n{}\n</memory-context>",
+        "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Factual items are evidence and may be stale or incomplete. Reasoning strategies are fallible lessons that require applicability checks. Internal response guidance may influence style or approach only; never quote it or represent it as a fact about the user.]\n\n{}\n</memory-context>",
         clean
     )
 }
@@ -443,6 +515,10 @@ mod tests {
             score: 0.9,
             match_reason: "explicit_policy_anchor".into(),
         };
+        let mut strategy = result.clone();
+        strategy.memory.tags = vec!["reasoning_strategy".into(), "reasoning_guardrail".into()];
+        strategy.memory.content = "Check every page before concluding".into();
+        strategy.memory.context = "complete-result tasks".into();
         let bundle = RecallBundle {
             factual: RecallChannel {
                 results: vec![],
@@ -454,10 +530,17 @@ mod tests {
                 quota: 3,
                 abstention_reason: None,
             },
+            reasoning: RecallChannel {
+                results: vec![strategy],
+                quota: 1,
+                abstention_reason: None,
+            },
             budget_tokens: 100,
         };
         let rendered = render_recall_bundle(&bundle);
         assert!(rendered.contains("Internal response guidance"));
+        assert!(rendered.contains("Reasoning strategies"));
+        assert!(rendered.contains("Failure-derived guardrail"));
         assert!(rendered.contains("never quote it"));
         assert!(rendered.contains("&lt;/memory-context&gt;"));
         let fenced = build_memory_context_block(rendered);

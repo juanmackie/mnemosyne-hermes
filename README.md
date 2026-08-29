@@ -47,6 +47,7 @@ with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configur
 - **Graph Linking**: Automatic bidirectional relationship management
 - **Privacy-First**: Local-only storage with optional privacy-preserving evaluation
 - **Hierarchical Topic Tree** *(OpenViking-inspired)*: memories organized into directories with L0 abstracts / L1 overviews / L2 full content; directory-recursive retrieval with score propagation, retrieval trajectories, and token-budgeted context assembly — see [docs/HIERARCHICAL_MEMORY.md](docs/HIERARCHICAL_MEMORY.md)
+- **Outcome-Aware Reasoning Memory** *(ReasoningBank-inspired)*: distills observable successful-task strategies and failure guardrails with verifier-supplied outcomes, provenance-bound evidence, sparse retrieval, and no hidden chain-of-thought storage — see [docs/REASONING_MEMORY.md](docs/REASONING_MEMORY.md)
 
 ### Multi-Agent Orchestration
 - **Ractor Actors**: 4 specialized agents (Orchestrator, Optimizer, Reviewer, Executor)

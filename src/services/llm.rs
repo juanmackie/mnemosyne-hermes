@@ -8,6 +8,7 @@
 
 use crate::config::ConfigManager;
 use crate::error::{MnemosyneError, Result};
+use crate::reasoning::{ReasoningExtraction, TaskOutcome, REASONING_EXTRACTION_SCHEMA_VERSION};
 use crate::session_extract::{SessionMessage, TurnExtraction, EXTRACTION_SCHEMA_VERSION};
 use crate::types::{ConsolidationDecision, LinkType, MemoryLink, MemoryNote, MemoryType};
 use chrono::Utc;
@@ -773,6 +774,77 @@ Conversation:
                 MnemosyneError::LlmApi(format!("turn extraction JSON parse failed: {}", error))
             })?;
         extraction.validate(messages)?;
+        Ok(extraction)
+    }
+
+    /// Extract a small set of reusable strategies or failure guardrails from
+    /// an observable task trajectory. The outcome is supplied by the caller
+    /// rather than guessed here; callers should prefer tests, tool exit codes,
+    /// or reviewer decisions over an unconstrained LLM self-judge.
+    pub async fn extract_reasoning_items(
+        &self,
+        task_summary: &str,
+        messages: &[SessionMessage],
+        outcome: TaskOutcome,
+        outcome_evidence: &str,
+    ) -> Result<ReasoningExtraction> {
+        if messages.is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "reasoning trajectory must contain at least one message".into(),
+            ));
+        }
+        if task_summary.trim().is_empty() || task_summary.chars().count() > 2_000 {
+            return Err(MnemosyneError::ValidationError(
+                "task summary must contain 1..=2000 characters".into(),
+            ));
+        }
+        if outcome_evidence.trim().is_empty() || outcome_evidence.chars().count() > 2_000 {
+            return Err(MnemosyneError::ValidationError(
+                "outcome evidence must contain 1..=2000 characters".into(),
+            ));
+        }
+        let transcript = messages
+            .iter()
+            .map(|message| format!("{}: {}", message.role, message.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = format!(
+            r#"Extract durable, reusable lessons from this completed agent task.
+
+Task: {task_summary}
+Outcome: {outcome}
+Outcome evidence: {outcome_evidence}
+
+Observable trajectory:
+{transcript}
+
+Return ONLY JSON matching this exact shape:
+{{"schema_version":"{schema}","items":[{{"title":"short name","description":"when this applies","content":"specific reusable lesson","lesson_kind":"strategy|guardrail","applicability":"condition where it is useful","confidence":0.0,"evidence_quote":"verbatim quote from the trajectory","source_role":"user|assistant|system|tool"}}]}}
+
+Rules:
+- Return at most {max_items} items, and return [] when there is no durable lesson.
+- For success, emit only strategy items: what worked and why.
+- For failure, emit only guardrail items: what to avoid and how to detect it.
+- For uncertain outcomes, emit only cautious lessons and keep confidence low.
+- Generalize one level beyond the exact file, URL, or variable, but do not invent facts.
+- Quote only observable user, assistant, system, or tool text. Never reproduce hidden chain-of-thought.
+- Do not store generic praise, sentiment, or a restatement of the task.
+- Every evidence_quote must be copied verbatim from the trajectory and belong to source_role.
+- Confidence must be between 0 and 1.
+"#,
+            task_summary = task_summary.trim(),
+            outcome = outcome.as_str(),
+            outcome_evidence = outcome_evidence.trim(),
+            transcript = transcript,
+            schema = REASONING_EXTRACTION_SCHEMA_VERSION,
+            max_items = crate::reasoning::MAX_REASONING_ITEMS,
+        );
+        let response = self.call_api(&prompt).await?;
+        let extraction: ReasoningExtraction =
+            serde_json::from_str(response.trim()).map_err(|error| {
+                MnemosyneError::LlmApi(format!("reasoning extraction JSON parse failed: {}", error))
+            })?;
+        extraction.validate(messages, outcome)?;
         Ok(extraction)
     }
 

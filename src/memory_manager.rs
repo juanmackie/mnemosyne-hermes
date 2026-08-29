@@ -41,7 +41,14 @@ use tokio::sync::Mutex;
 
 use crate::{
     error::{MnemosyneError, Result},
-    storage::{libsql::ConnectionMode, libsql::PurgeReport, MemorySortOrder, StorageBackend},
+    reasoning::{
+        ReasoningExperience, ReasoningExtractionStatus, ReasoningLearningResult,
+        ReasoningLessonKind, ReasoningMemory, TaskOutcome,
+    },
+    storage::{
+        libsql::{ConnectionMode, PurgeReport, ReasoningMemoryRecord},
+        MemorySortOrder, StorageBackend,
+    },
     types::{MemoryClass, MemoryId, MemoryLink, MemoryNote, Namespace, SearchResult},
 };
 
@@ -265,6 +272,32 @@ impl MemoryManager {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(results)
+    }
+
+    /// Recall outcome-aware strategies and failure guardrails independently
+    /// from factual memories. The default caller should use one result; larger
+    /// values are available for inspection and evaluation but increase noise.
+    pub async fn recall_reasoning(
+        &self,
+        query: impl Into<String>,
+        limit: usize,
+        config: MemoryConfig,
+    ) -> Result<Vec<crate::reasoning::ReasoningSearchHit>> {
+        let ns = config
+            .namespace
+            .unwrap_or_else(|| self.default_namespace.clone());
+        let mut hits = {
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            inner
+                .search_reasoning_strategies(&query.into(), Some(ns), limit.min(3))
+                .await?
+        };
+        if let Some(min_importance) = config.min_importance {
+            hits.retain(|hit| hit.result.memory.importance >= min_importance);
+        }
+        hits.truncate(limit.min(3));
+        Ok(hits)
     }
 
     /// Recall with confidence-gated abstention.
@@ -570,9 +603,10 @@ impl MemoryManager {
     ///
     /// Returns empty string when the query is a trivial greeting ("hi",
     /// "thanks") or when no provider returns content.
-    /// Recall factual evidence and internal response guidance independently.
-    /// Quotas are applied before both channels are rendered under one shared
-    /// token budget; policy memories never enter the factual channel.
+    /// Recall factual evidence, response guidance, and outcome-aware reasoning
+    /// independently. Quotas are applied before all channels are rendered
+    /// under one shared token budget; policy and reasoning memories never enter
+    /// the factual channel.
     pub async fn recall_for_context(
         &self,
         query: impl Into<String>,
@@ -590,6 +624,11 @@ impl MemoryManager {
                 guidance: crate::agent_context::RecallChannel {
                     results: Vec::new(),
                     quota: 3,
+                    abstention_reason: Some("trivial prompt".into()),
+                },
+                reasoning: crate::agent_context::RecallChannel {
+                    results: Vec::new(),
+                    quota: 1,
                     abstention_reason: Some("trivial prompt".into()),
                 },
                 budget_tokens,
@@ -613,6 +652,15 @@ impl MemoryManager {
                 )
                 .await?
         };
+        // Reasoning memories have their own sparse channel; do not let them
+        // crowd out factual evidence in the ordinary knowledge lane.
+        factual_results.retain(|result| {
+            !result
+                .memory
+                .tags
+                .iter()
+                .any(|tag| tag == "reasoning_strategy")
+        });
         if let Some(min_importance) = config.min_importance {
             factual_results.retain(|result| result.memory.importance >= min_importance);
         }
@@ -648,6 +696,48 @@ impl MemoryManager {
         } else {
             None
         };
+        let raw_reasoning = {
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            inner
+                .search_reasoning_strategies(
+                    &q,
+                    Some(
+                        config
+                            .namespace
+                            .clone()
+                            .unwrap_or_else(|| self.default_namespace.clone()),
+                    ),
+                    1,
+                )
+                .await?
+                .into_iter()
+                .map(|hit| hit.result)
+                .collect::<Vec<_>>()
+        };
+        let best_reasoning = raw_reasoning
+            .iter()
+            .map(|result| result.score)
+            .fold(0.0_f32, f32::max);
+        let (reasoning, reasoning_reason) = if raw_reasoning.is_empty() {
+            (
+                Vec::new(),
+                Some("no eligible reasoning strategy matched the query".to_string()),
+            )
+        } else if best_reasoning < DEFAULT_ABSTENTION_THRESHOLD {
+            (
+                Vec::new(),
+                Some(format!(
+                    "best reasoning match score {:.2} below abstention threshold {:.2}",
+                    best_reasoning, DEFAULT_ABSTENTION_THRESHOLD
+                )),
+            )
+        } else {
+            (raw_reasoning, None)
+        };
+        // Reasoning items are selected independently and deliberately kept
+        // sparse: one high-quality lesson is safer than a noisy bundle of
+        // contradictory strategies.
         Ok(crate::agent_context::RecallBundle {
             factual: crate::agent_context::RecallChannel {
                 results: factual.into_iter().take(5).collect(),
@@ -658,6 +748,11 @@ impl MemoryManager {
                 results: guidance,
                 quota: 3,
                 abstention_reason: guidance_reason,
+            },
+            reasoning: crate::agent_context::RecallChannel {
+                results: reasoning,
+                quota: 1,
+                abstention_reason: reasoning_reason,
             },
             budget_tokens,
         })
@@ -1246,6 +1341,286 @@ impl MemoryManager {
             policy_ids: Vec::new(),
             policy_proposal_ids,
             extraction_status: ExtractionStatus::Succeeded,
+        })
+    }
+
+    /// Learn reusable reasoning from an observable completed-task trajectory.
+    ///
+    /// The caller supplies the outcome and its evidence, ideally from tests,
+    /// tool exit codes, or a reviewer. The LLM only distills the trajectory;
+    /// it is not allowed to turn an unverified outcome into a trusted recipe.
+    /// The raw trajectory is committed before the optional LLM call, so a
+    /// failed extraction never loses its evidence.
+    pub async fn learn_reasoning_experience(
+        &self,
+        task_summary: &str,
+        messages: &[SessionMessage],
+        outcome: TaskOutcome,
+        outcome_confidence: f32,
+        outcome_evidence: &str,
+        verifier: &str,
+    ) -> Result<ReasoningLearningResult> {
+        self.learn_reasoning_experience_with_config(
+            task_summary,
+            messages,
+            outcome,
+            outcome_confidence,
+            outcome_evidence,
+            verifier,
+            MemoryConfig::new(),
+        )
+        .await
+    }
+
+    /// Learn reasoning in an explicit project, session, or agent namespace.
+    pub async fn learn_reasoning_experience_with_config(
+        &self,
+        task_summary: &str,
+        messages: &[SessionMessage],
+        outcome: TaskOutcome,
+        outcome_confidence: f32,
+        outcome_evidence: &str,
+        verifier: &str,
+        config: MemoryConfig,
+    ) -> Result<ReasoningLearningResult> {
+        if messages.is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "reasoning trajectory must contain at least one message".into(),
+            ));
+        }
+        if task_summary.trim().is_empty() || task_summary.chars().count() > 2_000 {
+            return Err(MnemosyneError::ValidationError(
+                "task summary must contain 1..=2000 characters".into(),
+            ));
+        }
+        if outcome_evidence.trim().is_empty() || outcome_evidence.chars().count() > 2_000 {
+            return Err(MnemosyneError::ValidationError(
+                "outcome evidence must contain 1..=2000 characters".into(),
+            ));
+        }
+        if verifier.trim().is_empty() || verifier.chars().count() > 128 {
+            return Err(MnemosyneError::ValidationError(
+                "verifier must contain 1..=128 characters".into(),
+            ));
+        }
+        if !outcome_confidence.is_finite() || !(0.0..=1.0).contains(&outcome_confidence) {
+            return Err(MnemosyneError::ValidationError(
+                "outcome confidence must be between 0 and 1".into(),
+            ));
+        }
+
+        let namespace = config
+            .namespace
+            .unwrap_or_else(|| self.default_namespace.clone());
+        let now = chrono::Utc::now();
+        let trajectory = messages
+            .iter()
+            .map(|message| format!("{}: {}", message.role, message.text))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if trajectory.trim().is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "reasoning trajectory must contain observable text".into(),
+            ));
+        }
+        let source_memory_id = MemoryId::new();
+        let source_note = MemoryNote {
+            id: source_memory_id,
+            namespace: namespace.clone(),
+            created_at: now,
+            updated_at: now,
+            content: format!("Task: {}\n\n{}", task_summary.trim(), trajectory),
+            summary: crate::utils::string::truncate_at_char_boundary(task_summary.trim(), 200),
+            keywords: Vec::new(),
+            tags: vec!["reasoning_source".into(), "trajectory".into()],
+            context: "Observable completed-task trajectory; hidden reasoning is not stored".into(),
+            memory_type: crate::types::MemoryType::AgentEvent,
+            memory_class: MemoryClass::Knowledge,
+            provenance: Some(crate::types::MemoryProvenance {
+                source_kind: crate::types::ProvenanceSourceKind::Turn,
+                source_memory_id: None,
+                session_id: None,
+                turn_id: None,
+                source_role: crate::types::ProvenanceSourceRole::Unknown,
+                observed_at: now,
+                evidence_quote: trajectory.chars().take(2_000).collect(),
+                extractor_model: None,
+                extraction_schema_version: Some(
+                    crate::reasoning::REASONING_EXTRACTION_SCHEMA_VERSION.into(),
+                ),
+            }),
+            importance: 5,
+            confidence: outcome_confidence,
+            links: Vec::new(),
+            related_files: Vec::new(),
+            related_entities: Vec::new(),
+            access_count: 0,
+            last_accessed_at: now,
+            expires_at: None,
+            is_archived: false,
+            superseded_by: None,
+            embedding: None,
+            embedding_model: String::new(),
+        };
+        {
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            <crate::storage::libsql::LibsqlStorage as StorageBackend>::store_memory(
+                inner,
+                &source_note,
+            )
+            .await?;
+        }
+
+        let experience_id = uuid::Uuid::new_v4().to_string();
+        let extraction = match crate::services::LlmService::with_default() {
+            Ok(service) => match service
+                .extract_reasoning_items(task_summary, messages, outcome, outcome_evidence)
+                .await
+            {
+                Ok(extraction) => extraction,
+                Err(error) => {
+                    return Ok(ReasoningLearningResult {
+                        source_memory_id,
+                        experience_id,
+                        item_ids: Vec::new(),
+                        extraction_status: ReasoningExtractionStatus::FailedRetryable {
+                            error: error.to_string(),
+                        },
+                    })
+                }
+            },
+            Err(error) => {
+                return Ok(ReasoningLearningResult {
+                    source_memory_id,
+                    experience_id,
+                    item_ids: Vec::new(),
+                    extraction_status: ReasoningExtractionStatus::FailedRetryable {
+                        error: error.to_string(),
+                    },
+                })
+            }
+        };
+
+        let mut records = Vec::with_capacity(extraction.items.len());
+        let mut item_ids = Vec::with_capacity(extraction.items.len());
+        for item in extraction.items {
+            let id = MemoryId::new();
+            let mut keywords = Vec::new();
+            for word in format!("{} {} {}", item.title, item.description, item.content)
+                .split(|c: char| !c.is_alphanumeric())
+            {
+                let word = word.to_ascii_lowercase();
+                if word.len() > 2 && !keywords.contains(&word) {
+                    keywords.push(word);
+                }
+                if keywords.len() == 12 {
+                    break;
+                }
+            }
+            let kind_tag = format!("reasoning_{}", item.lesson_kind.as_str());
+            let outcome_tag = format!("reasoning_{}", outcome.as_str());
+            let source_role = match item.source_role.as_str() {
+                "user" => crate::types::ProvenanceSourceRole::User,
+                "assistant" => crate::types::ProvenanceSourceRole::Assistant,
+                "system" => crate::types::ProvenanceSourceRole::System,
+                _ => crate::types::ProvenanceSourceRole::Unknown,
+            };
+            let note = MemoryNote {
+                id,
+                namespace: namespace.clone(),
+                created_at: now,
+                updated_at: now,
+                content: item.content.clone(),
+                summary: item.title.clone(),
+                keywords,
+                tags: vec![
+                    "reasoning_strategy".into(),
+                    kind_tag,
+                    outcome_tag,
+                    "extracted".into(),
+                ],
+                context: item.applicability.clone(),
+                memory_type: if item.lesson_kind == ReasoningLessonKind::Guardrail {
+                    crate::types::MemoryType::BugFix
+                } else {
+                    crate::types::MemoryType::Insight
+                },
+                memory_class: MemoryClass::Knowledge,
+                provenance: Some(crate::types::MemoryProvenance {
+                    source_kind: crate::types::ProvenanceSourceKind::Turn,
+                    source_memory_id: Some(source_memory_id),
+                    session_id: None,
+                    turn_id: None,
+                    source_role,
+                    observed_at: now,
+                    evidence_quote: item.evidence_quote,
+                    extractor_model: Some("configured-anthropic".into()),
+                    extraction_schema_version: Some(
+                        crate::reasoning::REASONING_EXTRACTION_SCHEMA_VERSION.into(),
+                    ),
+                }),
+                importance: if item.lesson_kind == ReasoningLessonKind::Guardrail {
+                    7
+                } else {
+                    6
+                },
+                confidence: (item.confidence * outcome_confidence).clamp(0.0, 1.0),
+                links: vec![MemoryLink {
+                    target_id: source_memory_id,
+                    link_type: crate::types::LinkType::References,
+                    strength: 1.0,
+                    reason: "distilled from completed task trajectory".into(),
+                    created_at: now,
+                    last_traversed_at: None,
+                    user_created: false,
+                }],
+                related_files: Vec::new(),
+                related_entities: Vec::new(),
+                access_count: 0,
+                last_accessed_at: now,
+                expires_at: None,
+                is_archived: false,
+                superseded_by: None,
+                embedding: None,
+                embedding_model: String::new(),
+            };
+            item_ids.push(id);
+            records.push(ReasoningMemoryRecord {
+                memory: ReasoningMemory {
+                    memory: note,
+                    lesson_kind: item.lesson_kind,
+                    title: item.title,
+                    description: item.description,
+                    applicability: item.applicability,
+                },
+                entities: Vec::new(),
+            });
+        }
+
+        let experience = ReasoningExperience {
+            id: experience_id.clone(),
+            namespace,
+            source_memory_id,
+            task_summary: task_summary.trim().into(),
+            outcome,
+            verifier: verifier.trim().into(),
+            confidence: outcome_confidence,
+            outcome_evidence: outcome_evidence.trim().into(),
+            created_at: now,
+        };
+        {
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            inner
+                .store_reasoning_experience(&experience, &records)
+                .await?;
+        }
+        Ok(ReasoningLearningResult {
+            source_memory_id,
+            experience_id,
+            item_ids,
+            extraction_status: ReasoningExtractionStatus::Succeeded,
         })
     }
 

@@ -5,6 +5,9 @@
 
 use crate::embeddings::EmbeddingService;
 use crate::error::{MnemosyneError, Result};
+use crate::reasoning::{
+    ReasoningExperience, ReasoningLessonKind, ReasoningMemory, ReasoningSearchHit, TaskOutcome,
+};
 use crate::storage::StorageBackend;
 use crate::types::{
     MemoryClass, MemoryEntity, MemoryId, MemoryLink, MemoryNote, Namespace, SearchResult,
@@ -221,6 +224,7 @@ static LIBSQL_MIGRATION_NAMES: &[&str] = &[
     "019_memory_maintenance_runs.sql",
     "020_memory_change_proposals.sql",
     "022_interaction_policy_proposals.sql",
+    "023_reasoning_experiences.sql",
 ];
 
 /// Migration file names for StandardSQLite schema
@@ -239,6 +243,7 @@ static SQLITE_MIGRATION_NAMES: &[&str] = &[
     "020_memory_change_proposals.sql",
     "021_expand_memory_type_constraint.sql",
     "022_interaction_policy_proposals.sql",
+    "023_reasoning_experiences.sql",
 ];
 
 /// (filename, SQL content) pairs for LibSQL migrations — SQL embedded at
@@ -283,6 +288,10 @@ static LIBSQL_MIGRATIONS: &[(&str, &str)] = &[
     (
         "022_interaction_policy_proposals.sql",
         include_str!("../../migrations/libsql/022_interaction_policy_proposals.sql"),
+    ),
+    (
+        "023_reasoning_experiences.sql",
+        include_str!("../../migrations/libsql/023_reasoning_experiences.sql"),
     ),
 ];
 
@@ -343,6 +352,10 @@ static SQLITE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "022_interaction_policy_proposals.sql",
         include_str!("../../migrations/sqlite/022_interaction_policy_proposals.sql"),
+    ),
+    (
+        "023_reasoning_experiences.sql",
+        include_str!("../../migrations/sqlite/023_reasoning_experiences.sql"),
     ),
 ];
 
@@ -3169,6 +3182,15 @@ pub struct LearningMemory {
     pub entities: Vec<MemoryEntity>,
 }
 
+/// Durable state for one reasoning memory item. The underlying note remains a
+/// normal knowledge memory so existing APIs and migrations remain compatible;
+/// the companion table supplies the outcome-aware metadata.
+#[derive(Debug, Clone)]
+pub struct ReasoningMemoryRecord {
+    pub memory: ReasoningMemory,
+    pub entities: Vec<MemoryEntity>,
+}
+
 /// Durable state for one bounded memory-maintenance run.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MaintenanceRunRecord {
@@ -4846,6 +4868,232 @@ impl LibsqlStorage {
             }
         }
         Ok(())
+    }
+
+    /// Persist one completed-task experience and its distilled strategy or
+    /// guardrail items atomically. The source trajectory is stored separately
+    /// so a failed extraction can be retried without losing the evidence.
+    pub async fn store_reasoning_experience(
+        &self,
+        experience: &ReasoningExperience,
+        items: &[ReasoningMemoryRecord],
+    ) -> Result<()> {
+        experience.validate()?;
+        if items.len() > crate::reasoning::MAX_REASONING_ITEMS {
+            return Err(MnemosyneError::ValidationError(format!(
+                "too many reasoning items; maximum is {}",
+                crate::reasoning::MAX_REASONING_ITEMS
+            )));
+        }
+        let mut item_ids = std::collections::HashSet::new();
+        for item in items {
+            item.memory.validate()?;
+            if item.memory.memory.id == experience.source_memory_id {
+                return Err(MnemosyneError::ValidationError(
+                    "reasoning item cannot reuse its source memory id".into(),
+                ));
+            }
+            if !item_ids.insert(item.memory.memory.id) {
+                return Err(MnemosyneError::ValidationError(
+                    "reasoning item ids must be unique".into(),
+                ));
+            }
+            if item.memory.memory.namespace != experience.namespace {
+                return Err(MnemosyneError::ValidationError(
+                    "reasoning item namespace must match its experience".into(),
+                ));
+            }
+            if item.memory.memory.memory_class != MemoryClass::Knowledge {
+                return Err(MnemosyneError::ValidationError(
+                    "reasoning items must use the knowledge memory class".into(),
+                ));
+            }
+            let expected_kind = match experience.outcome {
+                TaskOutcome::Success => ReasoningLessonKind::Strategy,
+                TaskOutcome::Failure => ReasoningLessonKind::Guardrail,
+                TaskOutcome::Uncertain => item.memory.lesson_kind,
+            };
+            if item.memory.lesson_kind != expected_kind {
+                return Err(MnemosyneError::ValidationError(
+                    "reasoning lesson kind does not match experience outcome".into(),
+                ));
+            }
+            let source_id = item
+                .memory
+                .memory
+                .provenance
+                .as_ref()
+                .and_then(|p| p.source_memory_id);
+            if source_id != Some(experience.source_memory_id) {
+                return Err(MnemosyneError::ValidationError(
+                    "reasoning item provenance must reference its source trajectory".into(),
+                ));
+            }
+        }
+
+        let conn = self.get_conn()?;
+        let tx = conn.transaction().await?;
+        tx.execute(
+            "INSERT INTO reasoning_experiences (id, namespace, source_memory_id, task_summary, outcome, verifier, confidence, outcome_evidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                experience.id.clone(),
+                serde_json::to_string(&experience.namespace)?,
+                experience.source_memory_id.to_string(),
+                experience.task_summary.clone(),
+                experience.outcome.as_str(),
+                experience.verifier.clone(),
+                experience.confidence as f64,
+                experience.outcome_evidence.clone(),
+                experience.created_at.to_rfc3339(),
+            ],
+        )
+        .await?;
+
+        for item in items {
+            self.insert_learning_memory(
+                &tx,
+                &LearningMemory {
+                    memory: item.memory.memory.clone(),
+                    entities: item.entities.clone(),
+                },
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO reasoning_memory_items (memory_id, experience_id, lesson_kind, title, description, applicability) VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    item.memory.memory.id.to_string(),
+                    experience.id.clone(),
+                    item.memory.lesson_kind.as_str(),
+                    item.memory.title.clone(),
+                    item.memory.description.clone(),
+                    item.memory.applicability.clone(),
+                ],
+            )
+            .await?;
+        }
+        tx.execute(
+            "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('create', ?, ?)",
+            params![
+                experience.source_memory_id.to_string(),
+                serde_json::json!({
+                    "event": "reasoning_experience",
+                    "experience_id": experience.id,
+                    "outcome": experience.outcome.as_str(),
+                    "item_count": items.len(),
+                })
+                .to_string(),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+
+        for item in items {
+            if self.embedding_service.is_some() {
+                if let Err(error) = self
+                    .generate_and_store_embedding(
+                        &item.memory.memory.id,
+                        &item.memory.memory.content,
+                    )
+                    .await
+                {
+                    warn!(
+                        "Failed to generate embedding for reasoning memory {}: {}",
+                        item.memory.memory.id, error
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Search only distilled reasoning items. Generic factual recall can keep
+    /// using the existing knowledge-class search without strategy items
+    /// crowding it out. A wide bounded candidate pool allows the metadata
+    /// filter to work with both keyword-only and vector-backed databases.
+    pub async fn search_reasoning_strategies(
+        &self,
+        query: &str,
+        namespace: Option<Namespace>,
+        max_results: usize,
+    ) -> Result<Vec<ReasoningSearchHit>> {
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+        let candidate_limit = max_results.saturating_mul(32).min(256).max(max_results);
+        let candidates = <Self as StorageBackend>::hybrid_search(
+            self,
+            query,
+            namespace.clone(),
+            candidate_limit,
+            false,
+        )
+        .await?;
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.get_conn()?;
+        let mut metadata = HashMap::new();
+        let mut rows = if let Some(namespace) = namespace {
+            conn.query(
+                "SELECT r.memory_id, r.experience_id, e.outcome, r.lesson_kind, r.title, r.description, r.applicability FROM reasoning_memory_items r JOIN reasoning_experiences e ON e.id = r.experience_id JOIN memories m ON m.id = r.memory_id WHERE m.namespace = ? AND m.is_archived = 0 AND m.superseded_by IS NULL",
+                params![serde_json::to_string(&namespace)?],
+            )
+            .await?
+        } else {
+            conn.query(
+                "SELECT r.memory_id, r.experience_id, e.outcome, r.lesson_kind, r.title, r.description, r.applicability FROM reasoning_memory_items r JOIN reasoning_experiences e ON e.id = r.experience_id JOIN memories m ON m.id = r.memory_id WHERE m.is_archived = 0 AND m.superseded_by IS NULL",
+                params![],
+            )
+            .await?
+        };
+        while let Some(row) = rows.next().await? {
+            let memory_id = MemoryId::from_string(&row.get::<String>(0)?)?;
+            metadata.insert(
+                memory_id,
+                (
+                    row.get::<String>(1)?,
+                    row.get::<String>(2)?,
+                    row.get::<String>(3)?,
+                    row.get::<String>(4)?,
+                    row.get::<String>(5)?,
+                    row.get::<String>(6)?,
+                ),
+            );
+        }
+
+        let mut hits = Vec::new();
+        for result in candidates {
+            let Some((experience_id, outcome, lesson_kind, title, description, applicability)) =
+                metadata.get(&result.memory.id)
+            else {
+                continue;
+            };
+            let outcome = match outcome.as_str() {
+                "success" => TaskOutcome::Success,
+                "failure" => TaskOutcome::Failure,
+                "uncertain" => TaskOutcome::Uncertain,
+                _ => continue,
+            };
+            let lesson_kind = match lesson_kind.as_str() {
+                "strategy" => ReasoningLessonKind::Strategy,
+                "guardrail" => ReasoningLessonKind::Guardrail,
+                _ => continue,
+            };
+            hits.push(ReasoningSearchHit {
+                result,
+                experience_id: experience_id.clone(),
+                outcome,
+                lesson_kind,
+                title: title.clone(),
+                description: description.clone(),
+                applicability: applicability.clone(),
+            });
+            if hits.len() >= max_results {
+                break;
+            }
+        }
+        Ok(hits)
     }
 
     /// Find the durable raw turn for a caller-supplied session/turn identity.

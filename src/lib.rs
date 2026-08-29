@@ -68,6 +68,7 @@ pub mod namespace;
 pub mod orchestration;
 pub mod proposals; // Durable memory change proposal workflow
 pub mod pty; // PTY wrapper for Claude Code
+pub mod reasoning; // Outcome-aware strategy and guardrail memories
 pub mod secrets;
 pub mod services;
 pub mod session_extract; // Session commit → memory extraction pipeline
@@ -121,14 +122,19 @@ pub use proposals::{
     InteractionPolicyProposal, MemoryProposal, MemoryProposalStatus, PolicyProposalService,
     ProposalError, ProposalProvenance, ProposalService,
 };
+pub use reasoning::{
+    ExtractedReasoningItem, ReasoningExperience, ReasoningExtraction, ReasoningExtractionStatus,
+    ReasoningLearningResult, ReasoningLessonKind, ReasoningMemory, ReasoningSearchHit, TaskOutcome,
+    MAX_REASONING_ITEMS, REASONING_EXTRACTION_SCHEMA_VERSION,
+};
 pub use services::{LlmConfig, LlmService};
 pub use session_extract::{
-    ExtractionStatus, TurnExtraction, TurnLearningResult, EXTRACTION_SCHEMA_VERSION,
+    ExtractionStatus, SessionMessage, TurnExtraction, TurnLearningResult, EXTRACTION_SCHEMA_VERSION,
 };
 pub use storage::{
     libsql::{
         ConnectionMode, InteractionPolicyProposalRecord, LearningMemory, LibsqlStorage,
-        MaintenanceRunRecord, MemoryProposalRecord, PurgeReport,
+        MaintenanceRunRecord, MemoryProposalRecord, PurgeReport, ReasoningMemoryRecord,
     },
     StorageBackend,
 };

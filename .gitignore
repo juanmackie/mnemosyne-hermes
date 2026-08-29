@@ -16,6 +16,10 @@ __pycache__/
 .mnemosyne/
 .mnemosyne/worktrees/
 
+# Local agent/session state and nested working copies
+/.pi/
+/mnemosyne-hermes/
+
 # Test artifacts
 test_output*.log
 tests/e2e/results/*/

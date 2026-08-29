@@ -267,7 +267,9 @@ pub async fn handle(
     if format == "context" {
         let factual = results
             .iter()
-            .filter(|(_, s)| *s > 0.0)
+            .filter(|(memory, s)| {
+                *s > 0.0 && !memory.tags.iter().any(|tag| tag == "reasoning_strategy")
+            })
             .map(|(memory, score)| mnemosyne_core::types::SearchResult {
                 memory: memory.clone(),
                 score: *score,
@@ -278,6 +280,13 @@ pub async fn handle(
             .interaction_policy_search(&query, 3)
             .await
             .unwrap_or_default();
+        let reasoning = storage
+            .search_reasoning_strategies(&query, ns.clone(), 1)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|hit| hit.result)
+            .collect();
         let bundle = RecallBundle {
             factual: RecallChannel {
                 results: factual,
@@ -287,6 +296,11 @@ pub async fn handle(
             guidance: RecallChannel {
                 results: guidance,
                 quota: 3,
+                abstention_reason: None,
+            },
+            reasoning: RecallChannel {
+                results: reasoning,
+                quota: 1,
                 abstention_reason: None,
             },
             budget_tokens: budget_tokens.unwrap_or(512),
