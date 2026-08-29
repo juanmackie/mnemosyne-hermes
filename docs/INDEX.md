@@ -26,6 +26,7 @@ Navigate the Mnemosyne documentation efficiently with this comprehensive index.
 ### Core Documentation
 - [**HIERARCHICAL_MEMORY**](HIERARCHICAL_MEMORY.md) - Topic-tree memory organization, L0/L1/L2 tiers, hierarchical retrieval, context assembly, session commit pipeline
 - [**REASONING_MEMORY**](REASONING_MEMORY.md) - Outcome-aware strategies, failure guardrails, evidence validation, and sparse retrieval
+- [**BOOTSTRAP**](BOOTSTRAP.md) - Bounded project startup context, constraint approval, provenance, abstention, and Hermes/MCP integration
 - [**TYPES_REFERENCE**](TYPES_REFERENCE.md) - Complete type system reference
   - MemoryNote, Namespace, MemoryType, LinkType, WorkItem, etc.
   - JSON serialization formats

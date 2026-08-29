@@ -594,6 +594,46 @@ impl MemoryManager {
         &self.agent_id
     }
 
+    /// Build the shared, structured project-context bootstrap package for an
+    /// agent turn. CLI, MCP, and in-process callers use the same selector and
+    /// receive separate constraints, facts, guardrails, policies, skills,
+    /// provenance, and abstentions.
+    pub async fn bootstrap(
+        &self,
+        task: impl Into<String>,
+        budget_tokens: usize,
+    ) -> Result<crate::bootstrap::BootstrapResponse> {
+        self.bootstrap_with_config(task, MemoryConfig::new(), budget_tokens)
+            .await
+    }
+
+    /// Bootstrap with namespace and confidence configuration.
+    pub async fn bootstrap_with_config(
+        &self,
+        task: impl Into<String>,
+        config: MemoryConfig,
+        budget_tokens: usize,
+    ) -> Result<crate::bootstrap::BootstrapResponse> {
+        let guard = self.storage.lock().await;
+        crate::bootstrap::build_bootstrap(
+            &*guard,
+            crate::bootstrap::BootstrapRequest {
+                project: None,
+                namespace: Some(
+                    config
+                        .namespace
+                        .unwrap_or_else(|| self.default_namespace.clone()),
+                ),
+                task: task.into(),
+                agent: Some(self.agent_id.clone()),
+                capability: None,
+                budget_tokens,
+                min_confidence: config.min_importance.unwrap_or(5) as f32 / 10.0,
+            },
+        )
+        .await
+    }
+
     /// Prefetch context for the given query, returning plain text ready for
     /// agent prompt injection.
     ///

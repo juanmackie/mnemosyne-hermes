@@ -225,6 +225,7 @@ static LIBSQL_MIGRATION_NAMES: &[&str] = &[
     "020_memory_change_proposals.sql",
     "022_interaction_policy_proposals.sql",
     "023_reasoning_experiences.sql",
+    "024_constraint_proposals.sql",
 ];
 
 /// Migration file names for StandardSQLite schema
@@ -244,6 +245,7 @@ static SQLITE_MIGRATION_NAMES: &[&str] = &[
     "021_expand_memory_type_constraint.sql",
     "022_interaction_policy_proposals.sql",
     "023_reasoning_experiences.sql",
+    "024_constraint_proposals.sql",
 ];
 
 /// (filename, SQL content) pairs for LibSQL migrations — SQL embedded at
@@ -292,6 +294,10 @@ static LIBSQL_MIGRATIONS: &[(&str, &str)] = &[
     (
         "023_reasoning_experiences.sql",
         include_str!("../../migrations/libsql/023_reasoning_experiences.sql"),
+    ),
+    (
+        "024_constraint_proposals.sql",
+        include_str!("../../migrations/libsql/024_constraint_proposals.sql"),
     ),
 ];
 
@@ -356,6 +362,10 @@ static SQLITE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "023_reasoning_experiences.sql",
         include_str!("../../migrations/sqlite/023_reasoning_experiences.sql"),
+    ),
+    (
+        "024_constraint_proposals.sql",
+        include_str!("../../migrations/sqlite/024_constraint_proposals.sql"),
     ),
 ];
 
@@ -3262,6 +3272,27 @@ pub struct MemoryProposalRecord {
     pub error_message: Option<String>,
 }
 
+/// Durable owner-reviewed constraint proposal. Approved rows are read by the
+/// bootstrap layer; proposed/rejected rows never enter startup context.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConstraintProposalRecord {
+    pub id: String,
+    pub namespace: String,
+    pub text: String,
+    pub scope: String,
+    pub priority: u8,
+    pub valid_until: Option<String>,
+    pub source_memory_ids: String,
+    pub evidence_quotes: String,
+    pub proposer: String,
+    pub owner: String,
+    pub status: String,
+    pub created_at: String,
+    pub approved_by: Option<String>,
+    pub decided_at: Option<String>,
+    pub decision_note: Option<String>,
+}
+
 impl LibsqlStorage {
     async fn standard_vector_search(
         &self,
@@ -3570,6 +3601,327 @@ impl LibsqlStorage {
 
     /// Persist an extracted interaction-policy suggestion without making it
     /// canonical. An owner must explicitly accept and apply it later.
+    /// Persist a pending project-constraint proposal. Source memories and
+    /// evidence are checked before the proposal becomes reviewable.
+    pub async fn create_constraint_proposal(
+        &self,
+        id: &str,
+        namespace: &Namespace,
+        text: &str,
+        scope: &str,
+        priority: u8,
+        valid_until: Option<&str>,
+        source_memory_ids: &[MemoryId],
+        evidence_quotes: &[String],
+        proposer: &str,
+        owner: &str,
+    ) -> Result<ConstraintProposalRecord> {
+        if id.trim().is_empty()
+            || text.trim().is_empty()
+            || text.chars().count() > 2_000
+            || scope.trim().is_empty()
+            || scope.chars().count() > 256
+            || !(1..=10).contains(&priority)
+            || proposer.trim().is_empty()
+            || owner.trim().is_empty()
+            || owner == "*"
+        {
+            return Err(MnemosyneError::ValidationError(
+                "invalid constraint proposal fields".into(),
+            ));
+        }
+        if source_memory_ids.is_empty()
+            || source_memory_ids.len() > 16
+            || evidence_quotes.is_empty()
+        {
+            return Err(MnemosyneError::ValidationError(
+                "constraint proposal requires 1..=16 source memories and evidence quotes".into(),
+            ));
+        }
+        if evidence_quotes.len() > 16
+            || evidence_quotes
+                .iter()
+                .any(|quote| quote.trim().is_empty() || quote.chars().count() > 2_000)
+        {
+            return Err(MnemosyneError::ValidationError(
+                "constraint evidence quotes must contain 1..=16 items of at most 2000 characters"
+                    .into(),
+            ));
+        }
+        if let Some(valid_until) = valid_until {
+            chrono::DateTime::parse_from_rfc3339(valid_until).map_err(|_| {
+                MnemosyneError::ValidationError("valid_until must be an RFC3339 timestamp".into())
+            })?;
+        }
+
+        let mut sources = Vec::with_capacity(source_memory_ids.len());
+        for source_id in source_memory_ids {
+            let source = self.get_memory(*source_id).await?;
+            if source.is_archived {
+                return Err(MnemosyneError::ValidationError(format!(
+                    "source memory {} is archived",
+                    source_id
+                )));
+            }
+            if source.memory_class == MemoryClass::InteractionPolicy {
+                return Err(MnemosyneError::ValidationError(
+                    "interaction policy rows cannot be constraint evidence".into(),
+                ));
+            }
+            if source.namespace != *namespace && source.namespace != Namespace::Global {
+                return Err(MnemosyneError::ValidationError(format!(
+                    "source memory {} is outside the constraint namespace",
+                    source_id
+                )));
+            }
+            sources.push(source);
+        }
+        if evidence_quotes.iter().any(|quote| {
+            !sources
+                .iter()
+                .any(|source| source.content.contains(quote) || source.summary.contains(quote))
+        }) {
+            return Err(MnemosyneError::ValidationError(
+                "constraint evidence quote is not present in the supplied source memories".into(),
+            ));
+        }
+
+        let conn = self.get_conn()?;
+        let created_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO constraint_proposals (id, namespace, text, scope, priority, valid_until, source_memory_ids, evidence_quotes, proposer, owner, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?)",
+            params![
+                id,
+                serde_json::to_string(namespace)?,
+                text.trim(),
+                scope.trim(),
+                priority as i64,
+                valid_until,
+                serde_json::to_string(
+                    &source_memory_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                )?,
+                serde_json::to_string(evidence_quotes)?,
+                proposer.trim(),
+                owner.trim(),
+                created_at,
+            ],
+        )
+        .await?;
+        conn.execute(
+            "INSERT INTO audit_log (operation, metadata) VALUES ('create', ?)",
+            params![serde_json::json!({
+                "event": "constraint_proposal_created",
+                "proposal_id": id,
+                "namespace": namespace.to_string(),
+            })
+            .to_string()],
+        )
+        .await?;
+        self.get_constraint_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("constraint proposal {}", id)))
+    }
+
+    pub async fn get_constraint_proposal(
+        &self,
+        id: &str,
+    ) -> Result<Option<ConstraintProposalRecord>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, namespace, text, scope, priority, valid_until, source_memory_ids, evidence_quotes, proposer, owner, status, created_at, approved_by, decided_at, decision_note FROM constraint_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Ok(Some(Self::constraint_proposal_from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn list_constraint_proposals(
+        &self,
+        namespace: Option<&Namespace>,
+        status: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConstraintProposalRecord>> {
+        let limit = limit.clamp(1, 1_000);
+        let mut clauses = Vec::new();
+        let mut values = Vec::new();
+        if let Some(namespace) = namespace {
+            clauses.push("namespace = ?");
+            values.push(libsql::Value::Text(serde_json::to_string(namespace)?));
+        }
+        if let Some(status) = status {
+            clauses.push("status = ?");
+            values.push(libsql::Value::Text(status.to_string()));
+        }
+        let where_clause = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        };
+        let sql = format!(
+            "SELECT id, namespace, text, scope, priority, valid_until, source_memory_ids, evidence_quotes, proposer, owner, status, created_at, approved_by, decided_at, decision_note FROM constraint_proposals{} ORDER BY priority DESC, created_at DESC, id ASC LIMIT {}",
+            where_clause, limit
+        );
+        let conn = self.get_conn()?;
+        let mut rows = conn.query(&sql, libsql::params_from_iter(values)).await?;
+        let mut proposals = Vec::new();
+        while let Some(row) = rows.next().await? {
+            proposals.push(Self::constraint_proposal_from_row(&row)?);
+        }
+        Ok(proposals)
+    }
+
+    /// Approve or reject a proposed constraint. Approval only changes
+    /// lifecycle state; it does not mutate a memory row.
+    pub async fn decide_constraint_proposal(
+        &self,
+        id: &str,
+        reviewer: &str,
+        decision: &str,
+        note: Option<&str>,
+    ) -> Result<ConstraintProposalRecord> {
+        if reviewer.trim().is_empty() || !matches!(decision, "approved" | "rejected") {
+            return Err(MnemosyneError::ValidationError(
+                "constraint decision requires a reviewer and approved/rejected status".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT owner, status FROM constraint_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(MnemosyneError::NotFound(format!(
+                "constraint proposal {}",
+                id
+            )));
+        };
+        let owner: String = row.get(0)?;
+        let status: String = row.get(1)?;
+        drop(rows);
+        if owner != reviewer {
+            return Err(MnemosyneError::ValidationError(format!(
+                "constraint proposal {} is routed to owner {}",
+                id, owner
+            )));
+        }
+        if status != "proposed" {
+            return Err(MnemosyneError::ValidationError(format!(
+                "constraint proposal {} is already {}",
+                id, status
+            )));
+        }
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE constraint_proposals SET status = ?, approved_by = ?, decided_at = ?, decision_note = ? WHERE id = ? AND status = 'proposed'",
+            params![decision, reviewer.trim(), now, note, id],
+        )
+        .await?;
+        conn.execute(
+            "INSERT INTO audit_log (operation, metadata) VALUES ('update', ?)",
+            params![serde_json::json!({
+                "event": "constraint_proposal_decided",
+                "proposal_id": id,
+                "status": decision,
+                "reviewer": reviewer.trim(),
+            })
+            .to_string()],
+        )
+        .await?;
+        self.get_constraint_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("constraint proposal {}", id)))
+    }
+
+    /// Retire an approved constraint without deleting its audit history.
+    pub async fn supersede_constraint_proposal(
+        &self,
+        id: &str,
+        reviewer: &str,
+        note: Option<&str>,
+    ) -> Result<ConstraintProposalRecord> {
+        if reviewer.trim().is_empty() {
+            return Err(MnemosyneError::ValidationError(
+                "constraint supersession requires a reviewer".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT owner, status FROM constraint_proposals WHERE id = ?",
+                params![id],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(MnemosyneError::NotFound(format!(
+                "constraint proposal {}",
+                id
+            )));
+        };
+        let owner: String = row.get(0)?;
+        let status: String = row.get(1)?;
+        drop(rows);
+        if owner != reviewer {
+            return Err(MnemosyneError::ValidationError(format!(
+                "constraint proposal {} is routed to owner {}",
+                id, owner
+            )));
+        }
+        if status != "approved" {
+            return Err(MnemosyneError::ValidationError(format!(
+                "only approved constraints can be superseded (current: {})",
+                status
+            )));
+        }
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE constraint_proposals SET status = 'superseded', approved_by = ?, decided_at = ?, decision_note = ? WHERE id = ? AND status = 'approved'",
+            params![reviewer.trim(), now, note, id],
+        )
+        .await?;
+        conn.execute(
+            "INSERT INTO audit_log (operation, metadata) VALUES ('update', ?)",
+            params![serde_json::json!({
+                "event": "constraint_proposal_superseded",
+                "proposal_id": id,
+                "reviewer": reviewer.trim(),
+            })
+            .to_string()],
+        )
+        .await?;
+        self.get_constraint_proposal(id)
+            .await?
+            .ok_or_else(|| MnemosyneError::NotFound(format!("constraint proposal {}", id)))
+    }
+
+    fn constraint_proposal_from_row(row: &libsql::Row) -> Result<ConstraintProposalRecord> {
+        Ok(ConstraintProposalRecord {
+            id: row.get(0)?,
+            namespace: row.get(1)?,
+            text: row.get(2)?,
+            scope: row.get(3)?,
+            priority: row.get::<i64>(4)?.clamp(1, 10) as u8,
+            valid_until: row.get(5)?,
+            source_memory_ids: row.get(6)?,
+            evidence_quotes: row.get(7)?,
+            proposer: row.get(8)?,
+            owner: row.get(9)?,
+            status: row.get(10)?,
+            created_at: row.get(11)?,
+            approved_by: row.get(12)?,
+            decided_at: row.get(13)?,
+            decision_note: row.get(14)?,
+        })
+    }
+
     pub async fn create_interaction_policy_proposal(
         &self,
         id: &str,
@@ -6624,6 +6976,48 @@ impl StorageBackend for LibsqlStorage {
         max_results: usize,
     ) -> Result<Vec<SearchResult>> {
         self.search_interaction_policies(query, max_results).await
+    }
+
+    async fn list_approved_constraints(
+        &self,
+        namespace: &Namespace,
+        limit: usize,
+    ) -> Result<Vec<ConstraintProposalRecord>> {
+        let proposals = self
+            .list_constraint_proposals(Some(namespace), Some("approved"), limit)
+            .await?;
+        let mut live = Vec::with_capacity(proposals.len());
+        for proposal in proposals {
+            let source_ids: Vec<String> = serde_json::from_str(&proposal.source_memory_ids)?;
+            let evidence_quotes: Vec<String> = serde_json::from_str(&proposal.evidence_quotes)?;
+            let mut sources = Vec::with_capacity(source_ids.len());
+            let mut valid = true;
+            for source_id in source_ids {
+                let source_id = MemoryId::from_string(&source_id)?;
+                match self.get_memory(source_id).await {
+                    Ok(memory) if !memory.is_archived => sources.push(memory),
+                    _ => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if valid
+                && evidence_quotes.iter().all(|quote| {
+                    sources.iter().any(|source| {
+                        source.content.contains(quote) || source.summary.contains(quote)
+                    })
+                })
+                && proposal.valid_until.as_deref().is_none_or(|value| {
+                    chrono::DateTime::parse_from_rfc3339(value)
+                        .map(|until| until.with_timezone(&Utc) > Utc::now())
+                        .unwrap_or(false)
+                })
+            {
+                live.push(proposal);
+            }
+        }
+        Ok(live)
     }
 
     async fn list_memories(

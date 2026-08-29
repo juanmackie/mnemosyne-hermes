@@ -347,6 +347,36 @@ impl ClaudeCodeLauncher {
             .clone()
             .unwrap_or_else(detect_namespace);
 
+        // When an initial task is available, use the same structured bootstrap
+        // selector exposed by CLI and MCP. This keeps launcher context
+        // channel-separated and task-relevant instead of replaying a generic
+        // history slice. The legacy importance-based loader remains the safe
+        // fallback for launches without an initial task.
+        if let Some(task) = self
+            .config
+            .initial_prompt
+            .as_deref()
+            .filter(|prompt| !prompt.trim().is_empty())
+        {
+            let task: String = task.chars().take(2_000).collect();
+            let project = crate::namespace::NamespaceDetector::new().detect_project_root()?;
+            let response = crate::bootstrap::build_bootstrap(
+                storage.as_ref(),
+                crate::bootstrap::BootstrapRequest {
+                    project,
+                    namespace: Some(crate::types::Namespace::parse(&namespace)?),
+                    task,
+                    agent: Some("claude-code-launcher".into()),
+                    capability: Some("project-startup".into()),
+                    budget_tokens: (self.config.context_config.max_size_bytes / 4).clamp(1, 20_000),
+                    min_confidence: (self.config.context_config.min_importance as f32 / 10.0)
+                        .clamp(0.0, 1.0),
+                },
+            )
+            .await?;
+            return Ok(response.render_context());
+        }
+
         let loader = context::ContextLoader::new(storage);
 
         loader

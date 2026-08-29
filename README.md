@@ -48,6 +48,7 @@ with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configur
 - **Privacy-First**: Local-only storage with optional privacy-preserving evaluation
 - **Hierarchical Topic Tree** *(OpenViking-inspired)*: memories organized into directories with L0 abstracts / L1 overviews / L2 full content; directory-recursive retrieval with score propagation, retrieval trajectories, and token-budgeted context assembly — see [docs/HIERARCHICAL_MEMORY.md](docs/HIERARCHICAL_MEMORY.md)
 - **Outcome-Aware Reasoning Memory** *(ReasoningBank-inspired)*: distills observable successful-task strategies and failure guardrails with verifier-supplied outcomes, provenance-bound evidence, sparse retrieval, and no hidden chain-of-thought storage — see [docs/REASONING_MEMORY.md](docs/REASONING_MEMORY.md)
+- **Project-context Bootstrap**: a shared, read-only CLI/MCP assembly path for bounded project constraints, facts, reasoning guardrails, policies, skills, provenance, and explicit abstentions — see [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)
 
 ### Multi-Agent Orchestration
 - **Ractor Actors**: 4 specialized agents (Orchestrator, Optimizer, Reviewer, Executor)
@@ -241,6 +242,21 @@ mnemosyne remember "Database uses LibSQL with vector search" \
   --type architecture \
   --importance 9
 ```
+
+**Build bounded project context**:
+```bash
+mnemosyne bootstrap \
+  --project . \
+  --task "review the authentication changes" \
+  --agent hermes \
+  --capability security-review \
+  --budget-tokens 3500
+```
+
+The structured `bootstrap.v1` response keeps approved constraints, factual
+memories, failure guardrails, interaction policies, and relevant project-local
+skills in separate channels. It is also available as `mnemosyne.bootstrap`
+(and the Hermes alias `mnemosyne_bootstrap`).
 
 **Search memories**:
 ```bash

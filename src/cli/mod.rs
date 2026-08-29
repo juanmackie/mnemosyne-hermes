@@ -5,7 +5,9 @@
 
 pub mod api_server;
 pub mod artifact;
+pub mod bootstrap;
 pub mod config;
+pub mod constraint;
 pub mod doctor;
 pub mod edit;
 pub mod embed;

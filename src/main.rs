@@ -271,6 +271,41 @@ enum Commands {
         budget_tokens: Option<usize>,
     },
 
+    /// Build a bounded, structured project-context package for agent startup.
+    Bootstrap {
+        /// Repository root used for namespace detection and project skills.
+        #[arg(long)]
+        project: Option<PathBuf>,
+
+        /// Explicit namespace (otherwise the project namespace is detected).
+        #[arg(short, long)]
+        namespace: Option<String>,
+
+        /// Current task or user request driving context selection.
+        #[arg(short, long)]
+        task: String,
+
+        /// Agent/client identity included in the response.
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Optional capability to use when selecting skills.
+        #[arg(long)]
+        capability: Option<String>,
+
+        /// Maximum approximate tokens in the response.
+        #[arg(long, default_value = "3500")]
+        budget_tokens: usize,
+
+        /// Minimum confidence for returned memories and skills.
+        #[arg(long, default_value = "0.5")]
+        min_confidence: f32,
+
+        /// Output format (json).
+        #[arg(short, long, default_value = "json")]
+        format: String,
+    },
+
     /// Warm up memory context for the next agent turn (fire-and-forget recall).
     ///
     /// Designed to be called after a turn completes.  Prints the prefetched
@@ -355,6 +390,12 @@ enum Commands {
     Proposal {
         #[command(subcommand)]
         command: cli::proposal::ProposalCommand,
+    },
+
+    /// Create, review, and export project constraint proposals
+    Constraint {
+        #[command(subcommand)]
+        command: cli::constraint::ConstraintCommand,
     },
 
     /// Manage specification workflow artifacts
@@ -581,6 +622,29 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Some(Commands::Bootstrap {
+            project,
+            namespace,
+            task,
+            agent,
+            capability,
+            budget_tokens,
+            min_confidence,
+            format,
+        }) => {
+            cli::bootstrap::handle(
+                project,
+                namespace,
+                task,
+                agent,
+                capability,
+                budget_tokens,
+                min_confidence,
+                format,
+                cli.db_path.clone(),
+            )
+            .await
+        }
         Some(Commands::Prefetch {
             query,
             namespace,
@@ -631,6 +695,9 @@ async fn main() -> Result<()> {
         Some(Commands::Evolve { job }) => cli::evolve::handle(job, cli.db_path.clone()).await,
         Some(Commands::Proposal { command }) => {
             cli::proposal::handle(command, cli.db_path.clone()).await
+        }
+        Some(Commands::Constraint { command }) => {
+            cli::constraint::handle(command, cli.db_path.clone()).await
         }
         Some(Commands::Graph {
             format,

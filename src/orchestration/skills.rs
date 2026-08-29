@@ -125,6 +125,16 @@ impl SkillsDiscovery {
 
             let path = entry.path();
 
+            // Project-local bootstrap must not follow a symlink out of the
+            // selected repository. This also prevents an accidentally linked
+            // secrets directory from being parsed as skill content.
+            if fs::symlink_metadata(&path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(true)
+            {
+                continue;
+            }
+
             if path.is_dir() {
                 // Recurse into subdirectories
                 self.scan_directory_recursive(&path)?;
@@ -181,7 +191,14 @@ impl SkillsDiscovery {
                     "name" => name = value.to_string(),
                     "category" => category = value.to_string(),
                     "keywords" => {
-                        keywords = value.split(',').map(|s| s.trim().to_lowercase()).collect();
+                        keywords = value
+                            .trim()
+                            .trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .split(',')
+                            .map(|s| s.trim().trim_matches(['\"', '\'']).to_lowercase())
+                            .filter(|s| !s.is_empty())
+                            .collect();
                     }
                     "description" => description = value.to_string(),
                     _ => {}
@@ -270,11 +287,31 @@ impl SkillsDiscovery {
             "mcp",
         ];
 
-        keyword_patterns
+        let mut keywords = keyword_patterns
             .iter()
             .filter(|&&keyword| text_lower.contains(keyword))
             .map(|&s| s.to_string())
-            .collect()
+            .collect::<Vec<_>>();
+
+        // Keep discovery useful for project-specific capabilities (for
+        // example `security-review` or `terraform-migration`) instead of
+        // restricting matching to the built-in technology catalog.
+        const STOP_WORDS: &[&str] = &[
+            "the", "and", "for", "with", "from", "this", "that", "into", "review", "task", "work",
+            "use", "using", "build", "make", "please", "about", "when", "what",
+        ];
+        for token in text_lower.split(|c: char| !c.is_ascii_alphanumeric()) {
+            if token.len() < 3
+                || STOP_WORDS.contains(&token)
+                || token.chars().all(|character| character.is_ascii_digit())
+            {
+                continue;
+            }
+            if !keywords.iter().any(|keyword| keyword == token) {
+                keywords.push(token.to_string());
+            }
+        }
+        keywords
     }
 
     /// Score a skill against keywords (0.0-1.0)
@@ -377,6 +414,15 @@ mod tests {
         assert!(keywords.contains(&"rust".to_string()));
         assert!(keywords.contains(&"postgres".to_string()));
         assert!(keywords.contains(&"redis".to_string()));
+    }
+
+    #[test]
+    fn test_extracts_project_specific_keywords() {
+        let discovery = SkillsDiscovery::new(PathBuf::from("."));
+        let keywords = discovery.extract_keywords("review authentication security policy");
+        assert!(keywords.contains(&"authentication".to_string()));
+        assert!(keywords.contains(&"security".to_string()));
+        assert!(keywords.contains(&"policy".to_string()));
     }
 
     #[test]

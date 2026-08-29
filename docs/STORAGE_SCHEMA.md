@@ -420,6 +420,7 @@ ON agent_events(agent_id, timestamp DESC);
 | 011 | work_items.sql | Work queue for agents |
 | 012 | requirement_tracking.sql | Reviewer agent requirements |
 | 013 | add_task_and_agent_event_types.sql | New memory/event types |
+| 024 | constraint_proposals.sql | Owner-reviewed, scoped project constraints used by bootstrap |
 
 **Applied via**: `libsql_migration` crate at startup
 

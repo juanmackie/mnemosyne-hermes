@@ -137,6 +137,17 @@ pub trait StorageBackend: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// List approved project constraints for the bounded bootstrap path.
+    /// Alternate backends can return an empty list until they support the
+    /// durable constraint-proposal table.
+    async fn list_approved_constraints(
+        &self,
+        _namespace: &Namespace,
+        _limit: usize,
+    ) -> Result<Vec<crate::storage::libsql::ConstraintProposalRecord>> {
+        Ok(Vec::new())
+    }
+
     /// List recent or important memories
     async fn list_memories(
         &self,

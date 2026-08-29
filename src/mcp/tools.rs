@@ -433,6 +433,23 @@ impl ToolHandler {
                 }),
             },
             Tool {
+                name: "mnemosyne.bootstrap".to_string(),
+                description: "Build a bounded, structured project-context package with approved constraints, relevant facts, reasoning guardrails, policies, skills, provenance, and explicit abstentions.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Optional repository root used for namespace detection and project-local skills"},
+                        "namespace": {"type": "string", "description": "Optional explicit namespace; otherwise the project namespace is detected"},
+                        "task": {"type": "string", "description": "Current task or request driving context selection"},
+                        "agent": {"type": "string", "description": "Optional agent/client identity"},
+                        "capability": {"type": "string", "description": "Optional capability, such as security-review"},
+                        "budget_tokens": {"type": "integer", "minimum": 1, "maximum": 20000, "default": 3500},
+                        "min_confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5}
+                    },
+                    "required": ["task"]
+                }),
+            },
+            Tool {
                 name: "mnemosyne.persona".to_string(),
                 description: "Read durable preference and constraint memories for a personal-agent persona.".to_string(),
                 input_schema: serde_json::json!({
@@ -485,6 +502,7 @@ impl ToolHandler {
             ("mnemosyne.list", "mnemosyne_list"),
             ("mnemosyne.used", "mnemosyne_used"),
             ("mnemosyne.hierarchy", "mnemosyne_hierarchy"),
+            ("mnemosyne.bootstrap", "mnemosyne_bootstrap"),
             ("mnemosyne.graph", "mnemosyne_graph"),
             ("mnemosyne.context", "mnemosyne_context"),
             ("mnemosyne.remember", "mnemosyne_remember"),
@@ -523,6 +541,7 @@ impl ToolHandler {
             "mnemosyne_list" => "mnemosyne.list",
             "mnemosyne_used" => "mnemosyne.used",
             "mnemosyne_hierarchy" => "mnemosyne.hierarchy",
+            "mnemosyne_bootstrap" => "mnemosyne.bootstrap",
             "mnemosyne_graph" => "mnemosyne.graph",
             "mnemosyne_context" => "mnemosyne.context",
             "mnemosyne_remember" => "mnemosyne.remember",
@@ -542,6 +561,7 @@ impl ToolHandler {
             "mnemosyne.list" => self.list(params).await,
             "mnemosyne.used" => self.used(params).await,
             "mnemosyne.hierarchy" => self.hierarchy(params).await,
+            "mnemosyne.bootstrap" => self.bootstrap(params).await,
             "mnemosyne.graph" => self.graph(params).await,
             "mnemosyne.context" => self.context(params).await,
             "mnemosyne.remember" => self.remember(params).await,
@@ -1133,6 +1153,46 @@ impl ToolHandler {
             "max_nodes": max_nodes,
             "truncated": truncated
         }))
+    }
+
+    async fn bootstrap(&self, params: Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct BootstrapParams {
+            project: Option<String>,
+            namespace: Option<String>,
+            task: String,
+            agent: Option<String>,
+            capability: Option<String>,
+            budget_tokens: Option<usize>,
+            min_confidence: Option<f32>,
+        }
+
+        let params: BootstrapParams = serde_json::from_value(params)?;
+        // Preserve an explicitly configured non-global MCP scope while still
+        // allowing the default global handler to auto-detect the repository.
+        let namespace = match params.namespace.as_deref() {
+            Some(value) => Some(crate::types::Namespace::parse(value)?),
+            None if params.project.is_none()
+                && !matches!(self.default_namespace, Namespace::Global) =>
+            {
+                Some(self.default_namespace.clone())
+            }
+            None => None,
+        };
+        let response = crate::bootstrap::build_bootstrap(
+            self.storage.as_ref(),
+            crate::bootstrap::BootstrapRequest {
+                project: params.project.map(std::path::PathBuf::from),
+                namespace,
+                task: params.task,
+                agent: params.agent,
+                capability: params.capability,
+                budget_tokens: params.budget_tokens.unwrap_or(3500),
+                min_confidence: params.min_confidence.unwrap_or(0.5),
+            },
+        )
+        .await?;
+        Ok(serde_json::to_value(response)?)
     }
 
     async fn persona(&self, params: Value) -> Result<Value> {

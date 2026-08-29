@@ -47,6 +47,8 @@ async fn test_hermes_aliases_are_advertised_and_dispatched() {
     assert!(names.contains("mnemosyne_recall"));
     assert!(names.contains("mnemosyne_forget"));
     assert!(names.contains("mnemosyne_persona"));
+    assert!(names.contains("mnemosyne.bootstrap"));
+    assert!(names.contains("mnemosyne_bootstrap"));
     assert!(names.contains("mnemosyne_canonical"));
     assert!(names.contains("mnemosyne_triples"));
 
@@ -62,6 +64,21 @@ async fn test_hermes_aliases_are_advertised_and_dispatched() {
         )
         .await;
     assert!(matches!(canonical, Err(MnemosyneError::ValidationError(_))));
+
+    let bootstrap = handler
+        .execute(
+            "mnemosyne_bootstrap",
+            serde_json::json!({
+                "task": "review authentication",
+                "namespace": "global",
+                "budget_tokens": 100
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bootstrap["schema_version"], "bootstrap.v1");
+    assert_eq!(bootstrap["namespace"]["type"], "global");
+    assert!(bootstrap["budget"]["used"].as_u64().unwrap() <= 100);
 }
 
 #[tokio::test]

@@ -47,7 +47,9 @@ pub mod agent_context; // Agent context helpers (scrubber, context blocks)
 pub mod agents;
 pub mod api; // HTTP API for event streaming
 pub mod artifacts; // Specification workflow artifacts
+pub mod bootstrap; // Bounded, channel-separated project startup context
 pub mod config;
+pub mod constraints;
 pub mod context_assembler; // Token-budgeted tiered context packing
 pub mod coordination; // ICS handoff coordination
 pub mod daemon;
@@ -92,7 +94,14 @@ pub use agent_context::{
     render_recall_bundle, RecallBundle, RecallChannel, StreamingContextScrubber,
 };
 pub use agents::{AgentMemoryView, AgentRole, CustomImportanceScorer, MemoryAccessControl};
+pub use bootstrap::{
+    build_bootstrap, BootstrapBudget, BootstrapConstraint, BootstrapMemory, BootstrapRequest,
+    BootstrapResponse, BootstrapSkill, BOOTSTRAP_SCHEMA_VERSION,
+};
 pub use config::{ConfigManager, EmbeddingConfig, SearchConfig};
+pub use constraints::{
+    ConstraintError, ConstraintProposal, ConstraintProposalService, ConstraintStatus,
+};
 pub use diagnostics::{
     global_memory_tracker, start_memory_monitoring, MemorySnapshot, MemoryStatus,
 };
@@ -133,8 +142,9 @@ pub use session_extract::{
 };
 pub use storage::{
     libsql::{
-        ConnectionMode, InteractionPolicyProposalRecord, LearningMemory, LibsqlStorage,
-        MaintenanceRunRecord, MemoryProposalRecord, PurgeReport, ReasoningMemoryRecord,
+        ConnectionMode, ConstraintProposalRecord, InteractionPolicyProposalRecord, LearningMemory,
+        LibsqlStorage, MaintenanceRunRecord, MemoryProposalRecord, PurgeReport,
+        ReasoningMemoryRecord,
     },
     StorageBackend,
 };

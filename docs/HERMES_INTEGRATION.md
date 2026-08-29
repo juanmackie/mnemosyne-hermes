@@ -70,13 +70,18 @@ underscore aliases with identical schemas:
 | `mnemosyne_context` | `mnemosyne.context` | Load linked context |
 | `mnemosyne_graph` | `mnemosyne.graph` | Traverse memory links |
 | `mnemosyne_hierarchy` | `mnemosyne.hierarchy` | Browse topic hierarchy |
+| `mnemosyne_bootstrap` | `mnemosyne.bootstrap` | Build bounded project startup context |
 | `mnemosyne_update` | `mnemosyne.update` | Amend a memory |
 | `mnemosyne_consolidate` | `mnemosyne.consolidate` | Find/consolidate candidates |
 | `mnemosyne_used` | `mnemosyne.used` | Report useful recalls |
 
 The provider surfaces also include `mnemosyne_persona`,
-`mnemosyne_canonical`, and `mnemosyne_triples`. Persona reads durable
-preference/constraint memories; canonical facts provide one current value per
+`mnemosyne_canonical`, and `mnemosyne_triples`. Bootstrap is the shared,
+read-only startup assembly path: it returns separate approved constraints,
+facts, failure guardrails, policies, relevant project-local skills, provenance,
+and abstentions under a token budget. Constraint proposals are reviewed with
+`mnemosyne constraint` and are only visible to bootstrap after owner approval.
+Persona reads durable preference/constraint memories; canonical facts provide one current value per
 (category, name) slot; triples provide add/query operations with one current
 object per (subject, predicate) slot and archived superseded values. Imported
 canonical/triple rows remain tagged memory records, so the source data is still
