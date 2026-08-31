@@ -805,6 +805,7 @@ impl ToolHandler {
             }
             Err(error) => return Err(error),
         };
+        let keyword_candidate_count = keyword_results.len();
 
         // Keyless release builds use deterministic hash embeddings. They still
         // provide a vector-shaped signal, but semantic quality can collapse as
@@ -869,6 +870,7 @@ impl ToolHandler {
                 Vec::new()
             }
         };
+        let vector_candidate_count = vector_results.len();
 
         // Guidance is recalled independently and is never mixed into the
         // factual result ranking or abstention decision.
@@ -877,25 +879,30 @@ impl ToolHandler {
             .interaction_policy_search(&params.query, 3)
             .await?;
 
-        // Phase 3: Merge and re-rank factual results
+        // Phase 3: Merge and re-rank factual results. Use the same persisted
+        // weights as storage so MCP and CLI retrieval do not drift.
+        let retrieval_weights = self.storage.retrieval_weights().await;
         let mut memory_scores = std::collections::HashMap::new();
 
-        // Add keyword results with 40% weight
+        // `hybrid_search` has already fused keyword, graph, importance, and
+        // recency signals using the shared adaptive weights. Treat that score
+        // as one channel here; applying keyword weight again would double
+        // weight it and erase the graph contribution from this public path.
         for result in keyword_results {
             memory_scores
                 .entry(result.memory.id)
                 .or_insert((result.memory.clone(), vec![]))
                 .1
-                .push(("keyword", result.score * 0.4));
+                .push(("hybrid", result.score));
         }
 
-        // Add vector results with 30% weight
+        // Add vector results with the effective weight
         for result in vector_results {
             memory_scores
                 .entry(result.memory.id)
                 .or_insert((result.memory.clone(), vec![]))
                 .1
-                .push(("vector", result.score * 0.3));
+                .push(("vector", result.score * retrieval_weights.vector));
         }
 
         // Compute final scores
@@ -1004,6 +1011,31 @@ impl ToolHandler {
                 .unwrap_or_else(|_| serde_json::json!({"budget_tokens": budget}))
         });
 
+        let mut explain_trace =
+            crate::utils::retrieval::RetrievalTrace::for_query(&params.query, retrieval_weights);
+        explain_trace.namespace = namespace.as_ref().map(ToString::to_string);
+        explain_trace.keyword_candidates = keyword_candidate_count;
+        explain_trace.vector_candidates = vector_candidate_count;
+        explain_trace.graph_candidates = results
+            .iter()
+            .filter(|result| result.match_reason.contains("graph"))
+            .count();
+        explain_trace.fallback_reasons = degraded_reasons
+            .iter()
+            .map(|reason| (*reason).to_string())
+            .collect();
+        explain_trace.result_ids = results
+            .iter()
+            .map(|result| result.memory.id.to_string())
+            .collect();
+        if let Err(error) = self
+            .storage
+            .record_retrieval_trace(explain_trace.clone())
+            .await
+        {
+            warn!("Failed to persist retrieval explain trace: {}", error);
+        }
+
         // Increment access counts for both independently returned channels.
         for result in results.iter().chain(policy_results.iter()) {
             if let Err(e) = self.storage.increment_access(result.memory.id).await {
@@ -1048,7 +1080,7 @@ impl ToolHandler {
             "method": if params.hierarchical.unwrap_or(false) {
                 "hierarchical_hybrid_search"
             } else {
-                "hybrid_search (keyword 40% + vector 30% + graph)"
+                "hybrid_search (adaptive keyword/vector/graph weights)"
             },
             "trajectory": trajectory_json,
             // Loud degradation flag: true means the ranking signal is
@@ -1064,6 +1096,7 @@ impl ToolHandler {
             // opt into abstention, while returning the requested threshold
             // when one was supplied.
             "abstention_threshold": abstention_threshold.unwrap_or(RECOMMENDED_ABSTENTION_THRESHOLD),
+            "explain_trace": explain_trace,
             "abstention_reason": if abstained {
                 Some("best result score was below abstention_threshold")
             } else {
@@ -1092,6 +1125,14 @@ impl ToolHandler {
                 },
                 Err(e) => failed.push(serde_json::json!({"id": id_str, "error": e.to_string()})),
             }
+        }
+
+        let used_ids: Vec<MemoryId> = confirmed
+            .iter()
+            .filter_map(|id| MemoryId::from_string(id).ok())
+            .collect();
+        if let Err(e) = self.storage.record_retrieval_use(&used_ids).await {
+            warn!("Failed to record retrieval use signal: {}", e);
         }
 
         // Emit usage feedback event for the online relevance learner

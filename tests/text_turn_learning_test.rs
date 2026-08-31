@@ -412,6 +412,56 @@ async fn metadata_identity_reuses_one_raw_turn_and_derived_children() {
 }
 
 #[tokio::test]
+async fn captured_turns_are_transcript_searchable_but_not_recallable() {
+    let agent_id = format!("distill-{}", uuid::Uuid::new_v4());
+    let manager = mnemosyne_core::MemoryManager::new(agent_id).await.unwrap();
+    let first = manager
+        .sync_and_learn_with_metadata(
+            "I prefer Rust for this service until 2030-01-02.",
+            "We decided to keep SQLite for the durable transcript. hello unrecallable raw phrase xyz.",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        first.extraction_status,
+        mnemosyne_core::ExtractionStatus::Succeeded
+    ));
+    assert_eq!(first.derived_ids.len(), 2);
+    let retry = manager
+        .sync_and_learn_with_metadata(
+            "I prefer Rust for this service until 2030-01-02.",
+            "We decided to keep SQLite for the durable transcript. hello unrecallable raw phrase xyz.",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry.source_memory_id, first.source_memory_id);
+    assert_eq!(retry.derived_ids, first.derived_ids);
+
+    let transcript = manager
+        .search_session_transcripts("unrecallable raw phrase", Some("session-1"), 5)
+        .await
+        .unwrap();
+    assert_eq!(transcript.len(), 1);
+    assert_eq!(transcript[0].turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(
+        transcript[0].valid_until.unwrap().date_naive().to_string(),
+        "2030-01-02"
+    );
+
+    // This phrase exists only in the captured assistant turn, so recall must
+    // not rank the raw source row.
+    assert!(manager
+        .recall("unrecallable raw phrase", 5)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn accessed_old_memory_gets_a_bounded_search_time_reinforcement() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("recency.db");

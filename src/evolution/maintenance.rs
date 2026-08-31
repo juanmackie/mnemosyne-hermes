@@ -1,14 +1,14 @@
-//! Bounded, advisory memory-maintenance reports.
+//! Bounded, observable memory-maintenance reports.
 //!
-//! Maintenance is deliberately separate from factual mutation. It scans the
-//! existing store, records a bounded report, and leaves repairs to explicit
-//! proposal or evolution operations.
+//! Most maintenance kinds are advisory scans. `OrphanRepair` is the explicit
+//! exception: it performs only bounded projection cleanup and records exact
+//! counts, while canonical factual mutations remain outside maintenance.
 
 use crate::error::MnemosyneError;
 use crate::storage::libsql::{LibsqlStorage, MaintenanceRunRecord};
 use crate::storage::{MemorySortOrder, StorageBackend};
 use crate::types::{MemoryId, Namespace};
-use chrono::Utc;
+use chrono::{Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,6 +25,7 @@ pub enum MaintenanceKind {
     StaleLinks,
     MissingCitations,
     HealthSummary,
+    OrphanRepair,
 }
 
 impl MaintenanceKind {
@@ -33,6 +34,7 @@ impl MaintenanceKind {
             Self::StaleLinks => "stale_links",
             Self::MissingCitations => "missing_citations",
             Self::HealthSummary => "health_summary",
+            Self::OrphanRepair => "orphan_repair",
         }
     }
 }
@@ -338,6 +340,7 @@ impl MaintenanceRunner {
             MaintenanceKind::StaleLinks => self.scan_stale_links(config).await,
             MaintenanceKind::MissingCitations => self.scan_missing_citations(config).await,
             MaintenanceKind::HealthSummary => self.scan_health_summary(config).await,
+            MaintenanceKind::OrphanRepair => self.scan_orphan_repair(config).await,
         }
     }
 
@@ -357,8 +360,18 @@ impl MaintenanceRunner {
             errors_count: 0,
             findings: Vec::new(),
         };
+        let mut seen_edges = std::collections::HashSet::new();
 
         for (source_id, link) in candidates {
+            let (low, high) = if source_id.to_string() <= link.target_id.to_string() {
+                (source_id, link.target_id)
+            } else {
+                (link.target_id, source_id)
+            };
+            let edge_key = format!("{}:{}:{:?}", low, high, link.link_type);
+            if !seen_edges.insert(edge_key) {
+                continue;
+            }
             if output.items_processed >= config.item_limit {
                 break;
             }
@@ -464,6 +477,34 @@ impl MaintenanceRunner {
         Ok(output)
     }
 
+    async fn scan_orphan_repair(
+        &self,
+        config: &MaintenanceConfig,
+    ) -> Result<ScanOutput, MnemosyneError> {
+        let report = self.storage.repair_orphans(config.item_limit).await?;
+        let counts = serde_json::to_string(&report).unwrap_or_else(|_| "{}".into());
+        let processed = report.embeddings_removed
+            + report.vector_rows_removed
+            + report.graph_links_removed
+            + report.fts_rows_removed
+            + report.provenance_rows_removed
+            + report.provenance_sources_cleared
+            + report.entity_rows_removed
+            + report.policy_rows_removed
+            + report.policy_evidence_rows_removed
+            + report.fact_rows_removed;
+        Ok(ScanOutput {
+            items_processed: processed.min(config.item_limit as u64) as usize,
+            errors_count: 0,
+            findings: vec![MaintenanceFinding {
+                code: "orphan_repair_counts".into(),
+                memory_id: None,
+                related_memory_id: None,
+                detail: counts,
+            }],
+        })
+    }
+
     async fn scan_health_summary(
         &self,
         config: &MaintenanceConfig,
@@ -473,6 +514,26 @@ impl MaintenanceRunner {
             errors_count: 0,
             findings: Vec::new(),
         };
+        let integrity = self.storage.orphan_projection_counts().await?;
+        let orphan_count = integrity.embeddings_removed
+            + integrity.vector_rows_removed
+            + integrity.graph_links_removed
+            + integrity.fts_rows_removed
+            + integrity.provenance_rows_removed
+            + integrity.provenance_sources_cleared
+            + integrity.entity_rows_removed
+            + integrity.policy_rows_removed
+            + integrity.policy_evidence_rows_removed
+            + integrity.fact_rows_removed;
+        if orphan_count > 0 && output.items_processed < config.item_limit {
+            output.items_processed += 1;
+            output.findings.push(MaintenanceFinding {
+                code: "orphaned_projection_counts".into(),
+                memory_id: None,
+                related_memory_id: None,
+                detail: serde_json::to_string(&integrity).unwrap_or_else(|_| "{}".into()),
+            });
+        }
         for (kind, id) in self
             .storage
             .list_text_learning_orphans(config.item_limit)
@@ -589,6 +650,7 @@ impl MaintenanceRunner {
             kind: match record.job_kind.as_str() {
                 "stale_links" => MaintenanceKind::StaleLinks,
                 "missing_citations" => MaintenanceKind::MissingCitations,
+                "orphan_repair" => MaintenanceKind::OrphanRepair,
                 _ => MaintenanceKind::HealthSummary,
             },
             namespace: record
@@ -604,6 +666,76 @@ impl MaintenanceRunner {
             started_at: record.started_at,
             completed_at: record.completed_at.unwrap_or_default(),
         })
+    }
+}
+
+/// Scheduler adapter for the bounded UTC-nightly orphan repair.
+/// The persisted idempotency key also makes restarts safe.
+pub struct NightlyOrphanRepairJob {
+    runner: Arc<MaintenanceRunner>,
+    last_run: std::sync::Mutex<Option<chrono::NaiveDate>>,
+}
+
+impl NightlyOrphanRepairJob {
+    pub fn new(storage: Arc<LibsqlStorage>) -> Self {
+        Self {
+            runner: Arc::new(MaintenanceRunner::new(storage)),
+            last_run: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::evolution::scheduler::EvolutionJob for NightlyOrphanRepairJob {
+    fn name(&self) -> &str {
+        "orphan_repair"
+    }
+
+    async fn run(
+        &self,
+        config: &crate::evolution::config::JobConfig,
+    ) -> Result<crate::evolution::scheduler::JobReport, crate::evolution::scheduler::JobError> {
+        let date = Utc::now().date_naive();
+        let report = self
+            .runner
+            .run(MaintenanceConfig {
+                kind: MaintenanceKind::OrphanRepair,
+                namespace: None,
+                item_limit: config.batch_size,
+                retry_limit: 1,
+                max_duration: config.max_duration,
+                stale_after_days: 1,
+                idempotency_key: format!("orphan-repair-{}", date),
+            })
+            .await
+            .map_err(|error| {
+                crate::evolution::scheduler::JobError::ExecutionError(error.to_string())
+            })?;
+        Ok(crate::evolution::scheduler::JobReport {
+            memories_processed: report.items_processed,
+            changes_made: report.items_processed,
+            duration: config.max_duration,
+            errors: report.errors_count,
+            error_message: report.error_message,
+        })
+    }
+
+    async fn should_run(&self) -> Result<bool, crate::evolution::scheduler::JobError> {
+        let now = Utc::now();
+        if now.hour() != 2 {
+            return Ok(false);
+        }
+        let date = now.date_naive();
+        let mut last_run = self.last_run.lock().map_err(|_| {
+            crate::evolution::scheduler::JobError::ExecutionError(
+                "orphan repair scheduler lock poisoned".into(),
+            )
+        })?;
+        if *last_run == Some(date) {
+            return Ok(false);
+        }
+        *last_run = Some(date);
+        Ok(true)
     }
 }
 
@@ -633,6 +765,11 @@ mod tests {
         assert_eq!(config.item_limit, MAX_ITEMS_PER_RUN);
         assert_eq!(config.retry_limit, MAX_RETRIES_PER_RUN);
         assert_eq!(config.max_duration, MAX_RUN_DURATION);
+    }
+
+    #[test]
+    fn orphan_repair_kind_is_scheduler_addressable() {
+        assert_eq!(MaintenanceKind::OrphanRepair.as_str(), "orphan_repair");
     }
 
     #[test]

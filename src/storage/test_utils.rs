@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS memories (
     is_archived INTEGER NOT NULL DEFAULT 0,
     superseded_by TEXT,
     embedding_model TEXT NOT NULL DEFAULT '',
+    content_hash TEXT,
     embedding F32_BLOB(384),
     FOREIGN KEY (superseded_by) REFERENCES memories(id)
 );

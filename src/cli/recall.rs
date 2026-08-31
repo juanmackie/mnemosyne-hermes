@@ -51,6 +51,7 @@ pub async fn handle(
     let keyword_results = storage
         .hybrid_search(&query, ns.clone(), limit * 2, true)
         .await?;
+    let keyword_candidate_count = keyword_results.len();
 
     let mut embedding_mode = if has_api_key {
         "llm-concept"
@@ -142,15 +143,20 @@ pub async fn handle(
         }
     };
 
+    let vector_candidate_count = vector_results.len();
+    let retrieval_weights = storage.retrieval_weights().await;
     // Merge results
     let mut memory_scores = HashMap::new();
 
+    // `hybrid_search` already applied the shared keyword/graph/importance/
+    // recency weights. Do not multiply the fused score by keyword weight a
+    // second time; only the separately generated vector channel is added here.
     for result in keyword_results {
         memory_scores
             .entry(result.memory.id)
             .or_insert((result.memory.clone(), vec![]))
             .1
-            .push(result.score * 0.4);
+            .push(result.score);
     }
 
     for result in vector_results {
@@ -158,7 +164,7 @@ pub async fn handle(
             .entry(result.memory.id)
             .or_insert((result.memory.clone(), vec![]))
             .1
-            .push(result.score * 0.3);
+            .push(result.score * retrieval_weights.vector);
     }
 
     let mut results: Vec<_> = memory_scores
@@ -262,6 +268,26 @@ pub async fn handle(
     }
 
     let result_count = results.len();
+    let mut explain_trace =
+        mnemosyne_core::utils::retrieval::RetrievalTrace::for_query(&query, retrieval_weights);
+    explain_trace.namespace = ns.as_ref().map(ToString::to_string);
+    explain_trace.keyword_candidates = keyword_candidate_count;
+    explain_trace.vector_candidates = vector_candidate_count;
+    // Storage's trace records the precise graph expansion count; this
+    // adapter does not retain the pre-truncation graph set.
+    explain_trace.graph_candidates = 0;
+    if embedding_warning.is_some() {
+        explain_trace
+            .fallback_reasons
+            .push("fallback_embeddings".to_string());
+    }
+    explain_trace.result_ids = results
+        .iter()
+        .map(|(memory, _)| memory.id.to_string())
+        .collect();
+    if let Err(error) = storage.record_retrieval_trace(&explain_trace).await {
+        debug!("Unable to persist CLI retrieval trace: {}", error);
+    }
 
     // Agent-friendly fenced context block for prompt injection.
     if format == "context" {
@@ -373,6 +399,7 @@ pub async fn handle(
                 "results": json_results,
                 "count": json_results.len(),
                 "trajectory": trajectory_json,
+                "explain_trace": explain_trace,
                 "embedding_mode": embedding_mode,
                 "fallback_warning": embedding_warning,
                 "assembled_context": assembled,

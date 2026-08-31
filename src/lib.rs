@@ -79,6 +79,10 @@ pub mod tui; // Shared TUI infrastructure
 pub mod types;
 pub mod update; // Tool update and installation system
 pub mod utils; // Utility functions and helpers
+pub use utils::retrieval::{
+    rewrite_fts_query, FtsRewrite, RetrievalEvaluationReport, RetrievalGoldenItem, RetrievalTrace,
+    RetrievalWeights,
+};
 pub mod version_check; // Version checking and update system
 
 // Python bindings (PyO3) - only available with "python" feature
@@ -118,7 +122,7 @@ pub use evolution::{
     ArchivalJob, BackgroundScheduler, ConsolidationJob, EvolutionConfig, EvolutionJob,
     ImportanceRecalibrator, JobConfig, JobReport, LinkDecayJob, MaintenanceConfig,
     MaintenanceError, MaintenanceFinding, MaintenanceKind, MaintenanceReport, MaintenanceRunner,
-    MaintenanceStatus,
+    MaintenanceStatus, NightlyOrphanRepairJob,
 };
 pub use mcp::{EventSink, McpServer, ToolHandler};
 pub use memory_manager::{
@@ -138,13 +142,14 @@ pub use reasoning::{
 };
 pub use services::{LlmConfig, LlmService};
 pub use session_extract::{
-    ExtractionStatus, SessionMessage, TurnExtraction, TurnLearningResult, EXTRACTION_SCHEMA_VERSION,
+    distill_turn, temporal_valid_until, ExtractionStatus, SessionMessage, TurnExtraction,
+    TurnLearningResult, EXTRACTION_SCHEMA_VERSION,
 };
 pub use storage::{
     libsql::{
         ConnectionMode, ConstraintProposalRecord, InteractionPolicyProposalRecord, LearningMemory,
-        LibsqlStorage, MaintenanceRunRecord, MemoryProposalRecord, PurgeReport,
-        ReasoningMemoryRecord,
+        LibsqlStorage, MaintenanceRunRecord, MemoryProposalRecord, OrphanRepairReport, PurgeReport,
+        ReasoningMemoryRecord, SessionTranscriptRecord, StructuredFact,
     },
     StorageBackend,
 };

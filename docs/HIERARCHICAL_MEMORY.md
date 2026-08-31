@@ -97,12 +97,16 @@ can layer on later.
 
 `src/session_extract.rs`:
 
-1. **Sync phase**: `archive_messages()` writes the transcript to JSONL.
-2. **Async phase**: heuristic candidate extraction (preferences, decisions),
-   similarity pre-filtering, per-item dedup decisions
-   (`skip ≥0.92`, `merge ≥0.72`, create otherwise; conservative delete policy
-   for subsumed-and-richer replacements), and a **memory diff audit log**
-   (`memory_diff_*.json`) recording every add/update/delete for rollback.
+1. **Write-time sync**: `MemoryManager::sync` and `sync_and_learn` persist the
+   raw turn in the durable `session_transcripts` FTS tier. These rows are
+   searchable by session but are not recall-ranked or embedded.
+2. **Write-time distillation**: a deterministic, no-network gate emits bounded
+   fact, preference, constraint, and decision memories with typed evidence,
+   entities, confidence, and explicit date bounds when present. Existing
+   provenance/retry identifiers remain the source anchor.
+3. **Optional commit pipeline**: `archive_messages()` and
+   `extract_and_decide()` retain the broader heuristic candidate/dedup flow for
+   session exports and memory diffs.
 
 ## Hotness ranking
 

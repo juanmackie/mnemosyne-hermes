@@ -142,6 +142,28 @@ impl BackgroundScheduler {
         self.jobs.push(job);
     }
 
+    /// Build a scheduler with the self-healing orphan repair enabled. The
+    /// plain `new` constructor remains storage-agnostic for compatibility;
+    /// storage-backed application startup should use this constructor.
+    pub fn new_with_storage(
+        config: EvolutionConfig,
+        storage: Arc<crate::storage::libsql::LibsqlStorage>,
+    ) -> Self {
+        let mut scheduler = Self::new(config);
+        scheduler.register_nightly_orphan_repair(storage);
+        scheduler
+    }
+
+    /// Register the storage-backed bounded UTC-nightly orphan repair.
+    pub fn register_nightly_orphan_repair(
+        &mut self,
+        storage: Arc<crate::storage::libsql::LibsqlStorage>,
+    ) {
+        self.register_job(Arc::new(super::maintenance::NightlyOrphanRepairJob::new(
+            storage,
+        )));
+    }
+
     /// Start the scheduler (runs until stopped)
     pub async fn start(&self) -> Result<(), SchedulerError> {
         if self.running.swap(true, Ordering::SeqCst) {
@@ -281,6 +303,14 @@ impl BackgroundScheduler {
             "importance_recalibration" => &self.config.importance,
             "link_decay" => &self.config.link_decay,
             "archival" => &self.config.archival,
+            "orphan_repair" => {
+                return Ok(JobConfig {
+                    enabled: true,
+                    interval: Duration::from_secs(24 * 60 * 60),
+                    batch_size: 10_000,
+                    max_duration: Duration::from_secs(30 * 60),
+                });
+            }
             // For testing: allow test jobs with default config
             name if name.starts_with("test_") => {
                 return Ok(JobConfig {
@@ -418,6 +448,26 @@ mod tests {
 
         scheduler.register_job(job);
         assert_eq!(scheduler.jobs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_storage_scheduler_registers_nightly_repair() {
+        let storage = Arc::new(
+            crate::storage::libsql::LibsqlStorage::new_with_validation(
+                crate::storage::libsql::ConnectionMode::Local(
+                    std::env::temp_dir()
+                        .join(format!("mnemosyne_scheduler_{}.db", uuid::Uuid::new_v4()))
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                true,
+            )
+            .await
+            .unwrap(),
+        );
+        let scheduler = BackgroundScheduler::new_with_storage(EvolutionConfig::default(), storage);
+        assert_eq!(scheduler.jobs.len(), 1);
+        assert_eq!(scheduler.jobs[0].name(), "orphan_repair");
     }
 
     #[tokio::test]

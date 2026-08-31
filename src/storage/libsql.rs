@@ -13,17 +13,196 @@ use crate::types::{
     MemoryClass, MemoryEntity, MemoryId, MemoryLink, MemoryNote, Namespace, SearchResult,
 };
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use libsql::{params, Builder, Connection, Database};
 use once_cell::sync::Lazy;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 const MAX_GRAPH_SEEDS: usize = 1_000;
+const NEAR_DUPLICATE_THRESHOLD: f32 = 0.92;
+const INTEGRITY_SCAN_LIMIT: usize = 10_000;
+
+/// A normalized structured fact used by the integrity gate. Facts sharing a
+/// subject and predicate are mutually exclusive when their objects differ.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StructuredFact {
+    pub memory_id: MemoryId,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub confidence: f32,
+    pub observed_at: DateTime<Utc>,
+}
+
+/// Exact projection counts produced by bounded orphan repair.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct OrphanRepairReport {
+    pub embeddings_removed: u64,
+    pub vector_rows_removed: u64,
+    pub graph_links_removed: u64,
+    pub fts_rows_removed: u64,
+    pub provenance_rows_removed: u64,
+    pub provenance_sources_cleared: u64,
+    pub entity_rows_removed: u64,
+    pub policy_rows_removed: u64,
+    pub policy_evidence_rows_removed: u64,
+    pub fact_rows_removed: u64,
+}
+
+fn canonical_content(content: &str) -> String {
+    content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn content_hash(content: &str) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(canonical_content(content).as_bytes())
+    )
+}
+
+fn term_fingerprint(term: &str) -> String {
+    format!("{:x}", Sha256::digest(term.as_bytes()))
+}
+
+fn lexical_similarity(left: &str, right: &str) -> f32 {
+    let left_content = canonical_content(left);
+    let right_content = canonical_content(right);
+    let left: HashSet<_> = left_content.split_whitespace().collect();
+    let right: HashSet<_> = right_content.split_whitespace().collect();
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    left.intersection(&right).count() as f32 / left.union(&right).count() as f32
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
+    if left.len() != right.len() || left.is_empty() {
+        return None;
+    }
+    // Constant vectors are common test/fallback placeholders and have no
+    // discriminating power even though their cosine is 1.0.
+    let left_range = left
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), value| {
+            (min.min(*value), max.max(*value))
+        });
+    let right_range = right
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), value| {
+            (min.min(*value), max.max(*value))
+        });
+    if left_range.1 - left_range.0 < f32::EPSILON || right_range.1 - right_range.0 < f32::EPSILON {
+        return None;
+    }
+    let (dot, left_norm, right_norm) = left
+        .iter()
+        .zip(right)
+        .fold((0.0, 0.0, 0.0), |(dot, ln, rn), (a, b)| {
+            (dot + a * b, ln + a * a, rn + b * b)
+        });
+    if left_norm == 0.0 || right_norm == 0.0 {
+        None
+    } else {
+        Some((dot / (left_norm.sqrt() * right_norm.sqrt())).clamp(-1.0, 1.0))
+    }
+}
+
+fn extracted_entities(content: &str, related: &[String]) -> Vec<MemoryEntity> {
+    let mut names = related.to_vec();
+    // Deterministic fallback: preserve technical/proper-name tokens without a
+    // model call. It is intentionally bounded so arbitrary imports cannot
+    // create an unbounded entity projection.
+    for token in content.split(|c: char| !c.is_alphanumeric() && !"_:/.-".contains(c)) {
+        let token = token.trim_matches('.');
+        if token.chars().count() >= 2
+            && (token.chars().any(|c| c.is_uppercase()) || token.contains(['_', '/', ':']))
+        {
+            names.push(token.to_string());
+        }
+        if names.len() >= 32 {
+            break;
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut entities = names
+        .into_iter()
+        .filter_map(|display_name| {
+            let normalized_name = normalize_entity_name(&display_name);
+            if normalized_name.is_empty() || !seen.insert(normalized_name.clone()) {
+                return None;
+            }
+            Some(MemoryEntity {
+                display_name,
+                normalized_name,
+                role: "related".into(),
+                confidence: 1.0,
+            })
+        })
+        .collect::<Vec<_>>();
+    if entities.is_empty() {
+        if let Some(token) = canonical_content(content).split_whitespace().next() {
+            entities.push(MemoryEntity {
+                display_name: token.to_string(),
+                normalized_name: token.to_string(),
+                role: "topic".into(),
+                confidence: 0.5,
+            });
+        }
+    }
+    entities
+}
+
+fn parse_structured_fact(memory: &MemoryNote) -> Option<StructuredFact> {
+    // The triples MCP tool stores explicit slots as tags; accept those as the
+    // canonical structured representation as well as the human-readable pipe
+    // form used by imports and tests.
+    let tagged = |prefix: &str| {
+        memory
+            .tags
+            .iter()
+            .find_map(|tag| tag.strip_prefix(prefix).map(str::to_owned))
+    };
+    let (subject, predicate, object) = match (
+        tagged("triple-subject:"),
+        tagged("triple-predicate:"),
+        tagged("triple-object:"),
+    ) {
+        (Some(subject), Some(predicate), Some(object)) => (subject, predicate, object),
+        _ => {
+            let line = memory
+                .content
+                .lines()
+                .find(|line| line.split('|').count() == 3)?;
+            let mut parts = line.split('|').map(str::trim);
+            (
+                parts.next()?.to_owned(),
+                parts.next()?.to_owned(),
+                parts.next()?.to_owned(),
+            )
+        }
+    };
+    if subject.trim().is_empty() || predicate.trim().is_empty() || object.trim().is_empty() {
+        return None;
+    }
+    Some(StructuredFact {
+        memory_id: memory.id,
+        subject: subject.trim().to_lowercase(),
+        predicate: predicate.trim().to_lowercase(),
+        object: object.trim().to_string(),
+        confidence: memory.confidence,
+        observed_at: memory.updated_at,
+    })
+}
 
 fn content_revision(content: &str, updated_at: &str) -> String {
     let mut digest = Sha256::new();
@@ -134,6 +313,15 @@ async fn connection_has_column(conn: &Connection, table: &str, column: &str) -> 
     Ok(false)
 }
 
+async fn scalar_count(conn: &Connection, sql: &str) -> Result<u64> {
+    let mut rows = conn.query(sql, params![]).await?;
+    Ok(rows
+        .next()
+        .await?
+        .map(|row| row.get::<i64>(0).unwrap_or(0).max(0) as u64)
+        .unwrap_or(0))
+}
+
 fn parse_datetime_from_row(row: &libsql::Row, index: i32) -> Option<chrono::DateTime<Utc>> {
     match row.column_type(index).ok()? {
         libsql::ValueType::Integer => chrono::DateTime::from_timestamp(row.get(index).ok()?, 0),
@@ -188,24 +376,6 @@ fn bounded_recency_score(
     (0.75 * creation_freshness + 0.25 * access_freshness).clamp(0.0, 1.0)
 }
 
-// Function words add noise to natural-language OR queries, especially in
-// keyless mode where BM25 is the primary ranking signal. Keep negations and
-// temporal qualifiers so safety and scheduling questions retain their meaning.
-const FTS_STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "can", "could", "did",
-    "do", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "into", "is", "it",
-    "its", "may", "might", "more", "most", "of", "on", "or", "should", "so", "than", "that", "the",
-    "their", "then", "there", "these", "this", "to", "use", "was", "were", "what", "where",
-    "which", "who", "why", "will", "with", "would", "you", "your", "user", "happen", "appear",
-    "must", "every", "provide",
-    // Conversational meta-words from personal-agent questions: they match
-    // episodic chatter ("I already told you...", "you remember right?") far
-    // more often than the fact being asked for.
-    "again", "already", "asked", "back", "come", "exactly", "know", "like", "multiple", "remember",
-    "right", "said", "say", "still", "stuff", "sure", "tell", "told", "thing", "things", "times",
-    "well", "yes", "yet",
-];
-
 // ---------------------------------------------------------------------------
 // Migration SQL embedded at compile time via include_str!
 // Eliminates runtime file I/O during database initialization — critical for
@@ -226,6 +396,10 @@ static LIBSQL_MIGRATION_NAMES: &[&str] = &[
     "022_interaction_policy_proposals.sql",
     "023_reasoning_experiences.sql",
     "024_constraint_proposals.sql",
+    "025_session_transcripts.sql",
+    "026_retrieval_evaluation.sql",
+    "027_memory_integrity.sql",
+    "028_retrieval_trace_namespace.sql",
 ];
 
 /// Migration file names for StandardSQLite schema
@@ -246,6 +420,10 @@ static SQLITE_MIGRATION_NAMES: &[&str] = &[
     "022_interaction_policy_proposals.sql",
     "023_reasoning_experiences.sql",
     "024_constraint_proposals.sql",
+    "025_session_transcripts.sql",
+    "026_retrieval_evaluation.sql",
+    "027_memory_integrity.sql",
+    "028_retrieval_trace_namespace.sql",
 ];
 
 /// (filename, SQL content) pairs for LibSQL migrations — SQL embedded at
@@ -298,6 +476,22 @@ static LIBSQL_MIGRATIONS: &[(&str, &str)] = &[
     (
         "024_constraint_proposals.sql",
         include_str!("../../migrations/libsql/024_constraint_proposals.sql"),
+    ),
+    (
+        "025_session_transcripts.sql",
+        include_str!("../../migrations/libsql/025_session_transcripts.sql"),
+    ),
+    (
+        "026_retrieval_evaluation.sql",
+        include_str!("../../migrations/libsql/026_retrieval_evaluation.sql"),
+    ),
+    (
+        "027_memory_integrity.sql",
+        include_str!("../../migrations/libsql/027_memory_integrity.sql"),
+    ),
+    (
+        "028_retrieval_trace_namespace.sql",
+        include_str!("../../migrations/libsql/028_retrieval_trace_namespace.sql"),
     ),
 ];
 
@@ -366,6 +560,22 @@ static SQLITE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "024_constraint_proposals.sql",
         include_str!("../../migrations/sqlite/024_constraint_proposals.sql"),
+    ),
+    (
+        "025_session_transcripts.sql",
+        include_str!("../../migrations/sqlite/025_session_transcripts.sql"),
+    ),
+    (
+        "026_retrieval_evaluation.sql",
+        include_str!("../../migrations/sqlite/026_retrieval_evaluation.sql"),
+    ),
+    (
+        "027_memory_integrity.sql",
+        include_str!("../../migrations/sqlite/027_memory_integrity.sql"),
+    ),
+    (
+        "028_retrieval_trace_namespace.sql",
+        include_str!("../../migrations/sqlite/028_retrieval_trace_namespace.sql"),
     ),
 ];
 
@@ -442,6 +652,12 @@ static SQLITE_FRESH_SQL_MEM: Lazy<String> = Lazy::new(|| {
         &*SQLITE_FRESH_SQL
     )
 });
+
+/// Serialize schema upgrades within a process. This is especially important
+/// for the integrity migration, which rebuilds one legacy CHECK-constrained
+/// table and cannot safely be run concurrently by two agent instances.
+static MIGRATION_LOCK: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::const_new(()));
 
 /// Look up pre-compiled migration SQL by file name
 fn lookup_migration_sql(schema_type: SchemaType, file_name: &str) -> &'static str {
@@ -533,6 +749,15 @@ pub struct LibsqlStorage {
     search_config: crate::config::SearchConfig,
     schema_type: SchemaType,
     db_path: String,
+    temporary_path: Option<std::path::PathBuf>,
+}
+
+impl Drop for LibsqlStorage {
+    fn drop(&mut self) {
+        if let Some(path) = &self.temporary_path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// Shared in-memory storage cache for test builds.
@@ -623,11 +848,15 @@ impl LibsqlStorage {
     }
 
     fn knowledge_predicate(&self, alias: &str) -> String {
-        if alias.is_empty() {
-            "memory_class = 'knowledge'".to_string()
+        let prefix = if alias.is_empty() {
+            String::new()
         } else {
-            format!("{}.memory_class = 'knowledge'", alias)
-        }
+            format!("{}.", alias)
+        };
+        format!(
+            "{}memory_class = 'knowledge' AND {}tags NOT LIKE '%\"turn_sync\"%'",
+            prefix, prefix
+        )
     }
 
     /// Number of migrations registered for this schema family.
@@ -910,6 +1139,7 @@ impl LibsqlStorage {
             }
         }
 
+        let mut temporary_path = None;
         let db = match mode {
             ConnectionMode::Local(ref path) => {
                 // Create parent directory only if create_if_missing is true
@@ -938,15 +1168,18 @@ impl LibsqlStorage {
                 })?
             }
             ConnectionMode::InMemory => {
-                // Skip SQLite safety assertion in test builds — safe because
-                // libsql is the only SQLite user in the test process, so there
-                // can be no threading mode conflicts. The assertion check adds
-                // overhead per database open, and in-memory databases are
-                // created in 20+ tests per run.
-                let builder = Builder::new_local(":memory:");
-                #[cfg(test)]
-                let builder = unsafe { builder.skip_safety_assert(true) };
-                builder.build().await.map_err(|e| {
+                // LibSQL creates a fresh database for each `connect()` call
+                // when using `:memory:`, while this backend obtains a
+                // connection per operation. A private temporary file keeps
+                // the documented in-memory lifecycle without losing schema
+                // visibility between operations.
+                let path = std::env::temp_dir().join(format!(
+                    "mnemosyne_inmemory_{}_{}.db",
+                    std::process::id(),
+                    Uuid::new_v4()
+                ));
+                temporary_path = Some(path.clone());
+                Builder::new_local(path).build().await.map_err(|e| {
                     MnemosyneError::Database(format!("Failed to create in-memory database: {}", e))
                 })?
             }
@@ -1021,7 +1254,10 @@ impl LibsqlStorage {
         let db_path = match &mode {
             ConnectionMode::Local(path) | ConnectionMode::LocalReadOnly(path) => path.clone(),
             ConnectionMode::EmbeddedReplica { path, .. } => path.clone(),
-            ConnectionMode::InMemory => ":memory:".to_string(),
+            ConnectionMode::InMemory => temporary_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ":memory:".to_string()),
             ConnectionMode::Remote { url, .. } => url.clone(),
         };
 
@@ -1031,6 +1267,7 @@ impl LibsqlStorage {
             search_config: crate::config::SearchConfig::default(),
             schema_type,
             db_path,
+            temporary_path,
         };
 
         // Verify database health and run migrations (skip for read-only databases)
@@ -1058,6 +1295,7 @@ impl LibsqlStorage {
                 }
                 storage.run_migrations(is_fresh).await?;
                 storage.ensure_maintenance_columns().await?;
+                storage.ensure_integrity_columns().await?;
             }
         }
 
@@ -1115,16 +1353,30 @@ impl LibsqlStorage {
         Self::new(ConnectionMode::Local(path.to_string())).await
     }
 
-    /// Get a shared in-memory storage for test-only use.
+    /// Get a shared file-backed storage for test-only use.
     ///
-    /// Creates one in-memory database on first call and returns an `Arc<LibsqlStorage>`
-    /// clone for all subsequent calls. Safe ONLY for tests whose pure-computation
-    /// methods (should_archive, calculate_importance, calculate_decay, etc.) never
-    /// read from or write to the database. Tests that perform actual DB operations
-    /// should call `LibsqlStorage::new()` directly for isolated DB instances.
+    /// LibSQL's `:memory:` connections are not shared across calls to
+    /// `Database::connect`, so a temporary file is used to keep this cache
+    /// reliable while retaining the one-database-per-test-process behavior.
     #[cfg(test)]
     pub async fn shared_test_storage() -> Result<Arc<LibsqlStorage>> {
-        LibsqlStorage::shared_test_storage_sync()
+        if let Some(cached) = SHARED_TEST_STORAGE.get() {
+            return Ok(cached.clone());
+        }
+        let path = std::env::temp_dir().join(format!(
+            "mnemosyne_shared_test_{}_{}.db",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let storage = Arc::new(
+            Self::new_with_validation(
+                ConnectionMode::Local(path.to_string_lossy().into_owned()),
+                true,
+            )
+            .await?,
+        );
+        let _ = SHARED_TEST_STORAGE.set(storage.clone());
+        Ok(SHARED_TEST_STORAGE.get().cloned().unwrap_or(storage))
     }
 
     /// Synchronous version of `shared_test_storage()` that doesn't require a tokio
@@ -1143,11 +1395,18 @@ impl LibsqlStorage {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
             MnemosyneError::Database(format!("Failed to create test runtime: {}", e))
         })?;
-        let storage =
-            Arc::new(rt.block_on(Self::new_with_validation(ConnectionMode::InMemory, true))?);
+        let path = std::env::temp_dir().join(format!(
+            "mnemosyne_shared_test_{}_{}.db",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let storage = Arc::new(rt.block_on(Self::new_with_validation(
+            ConnectionMode::Local(path.to_string_lossy().into_owned()),
+            true,
+        ))?);
         let _ = SHARED_TEST_STORAGE.set(storage.clone());
         rt.shutdown_background();
-        Ok(storage)
+        Ok(SHARED_TEST_STORAGE.get().cloned().unwrap_or(storage))
     }
 
     /// Create from string path (backward compatibility)
@@ -1185,6 +1444,7 @@ impl LibsqlStorage {
             search_config: crate::config::SearchConfig::default(),
             schema_type: SchemaType::LibSQL, // Use LibSQL schema (F32_BLOB support)
             db_path: ":memory:".to_string(), // Test databases typically use in-memory
+            temporary_path: None,
         }
     }
 
@@ -1234,6 +1494,7 @@ impl LibsqlStorage {
     /// Run database migrations
     pub async fn run_migrations(&self, is_fresh: bool) -> Result<()> {
         debug!("Running database migrations...");
+        let _migration_guard = MIGRATION_LOCK.lock().await;
 
         // Get a connection for migrations
         let conn = self.get_conn()?;
@@ -1363,6 +1624,29 @@ impl LibsqlStorage {
             {
                 self.ensure_audit_migration_columns(&conn).await?;
             }
+            if *migration_file == "027_memory_integrity.sql" {
+                self.recover_integrity_migration_state(&conn).await?;
+            }
+            // Migration 028's ALTER TABLE is not itself repeatable if a
+            // process crashed after adding the column but before recording
+            // the migration. Finish its index/bookkeeping idempotently.
+            if *migration_file == "028_retrieval_trace_namespace.sql"
+                && connection_has_column(&conn, "retrieval_traces", "namespace").await?
+            {
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_retrieval_traces_namespace_time ON retrieval_traces(namespace, created_at DESC)",
+                    params![],
+                )
+                .await?;
+                let now = Utc::now().timestamp();
+                conn.execute(
+                    "INSERT INTO _migrations_applied (migration_name, applied_at) VALUES (?, ?)",
+                    params![migration_file, now],
+                )
+                .await?;
+                info!("Recovered migration: {}", migration_file);
+                continue;
+            }
 
             // Use pre-compiled SQL from include_str! (no file I/O)
             let sql = lookup_migration_sql(self.schema_type, migration_file);
@@ -1384,25 +1668,39 @@ impl LibsqlStorage {
                 .collect::<Vec<_>>()
                 .join(";\n");
 
+            // Apply each upgrade and its bookkeeping atomically. This is
+            // important for table-rebuild migrations: a crash cannot leave a
+            // replacement schema without its copied rows while marking the
+            // migration as complete.
+            conn.execute("BEGIN", params![]).await?;
             if !batch_sql.is_empty() {
-                conn.execute_batch(&batch_sql).await.map_err(|e| {
-                    MnemosyneError::Migration(format!(
+                if let Err(error) = conn.execute_batch(&batch_sql).await {
+                    let _ = conn.execute("ROLLBACK", params![]).await;
+                    return Err(MnemosyneError::Migration(format!(
                         "Failed to execute migration {}: {}\nSQL: {}",
                         migration_file,
-                        e,
+                        error,
                         &batch_sql[..batch_sql.len().min(500)]
-                    ))
-                })?;
+                    )));
+                }
             }
 
-            // Record migration as applied
+            // Record migration as applied inside the same transaction.
             let now = Utc::now().timestamp();
-            conn.execute(
-                "INSERT INTO _migrations_applied (migration_name, applied_at) VALUES (?, ?)",
-                params![migration_file, now],
-            )
-            .await
-            .map_err(|e| MnemosyneError::Migration(format!("Failed to record migration: {}", e)))?;
+            if let Err(error) = conn
+                .execute(
+                    "INSERT INTO _migrations_applied (migration_name, applied_at) VALUES (?, ?)",
+                    params![migration_file, now],
+                )
+                .await
+            {
+                let _ = conn.execute("ROLLBACK", params![]).await;
+                return Err(MnemosyneError::Migration(format!(
+                    "Failed to record migration: {}",
+                    error
+                )));
+            }
+            conn.execute("COMMIT", params![]).await?;
 
             info!("Executed migration: {}", migration_file);
         }
@@ -1423,6 +1721,86 @@ impl LibsqlStorage {
         }
         let conn = self.get_conn()?;
         self.ensure_maintenance_columns_on(&conn).await
+    }
+
+    /// Complete the integrity upgrade idempotently. Keeping the column add and
+    /// hash backfill here makes recovery safe when an older database was
+    /// interrupted between migration statements.
+    async fn recover_integrity_migration_state(&self, conn: &Connection) -> Result<()> {
+        let mut rows = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('memory_maintenance_runs', 'memory_maintenance_runs_027_old')",
+                params![],
+            )
+            .await?;
+        let mut has_current = false;
+        let mut has_backup = false;
+        while let Some(row) = rows.next().await? {
+            match row.get::<String>(0)?.as_str() {
+                "memory_maintenance_runs" => has_current = true,
+                "memory_maintenance_runs_027_old" => has_backup = true,
+                _ => {}
+            }
+        }
+        drop(rows);
+        if has_backup {
+            if has_current {
+                // If a crash happened after the replacement table was created
+                // but before its copy completed, restore the backup rather
+                // than silently discarding maintenance history. Otherwise the
+                // replacement is complete and the renamed table is stale.
+                let current_count =
+                    scalar_count(conn, "SELECT COUNT(*) FROM memory_maintenance_runs").await?;
+                let backup_count =
+                    scalar_count(conn, "SELECT COUNT(*) FROM memory_maintenance_runs_027_old")
+                        .await?;
+                if current_count < backup_count {
+                    conn.execute("DROP TABLE memory_maintenance_runs", params![])
+                        .await?;
+                    conn.execute(
+                        "ALTER TABLE memory_maintenance_runs_027_old RENAME TO memory_maintenance_runs",
+                        params![],
+                    )
+                    .await?;
+                } else {
+                    conn.execute("DROP TABLE memory_maintenance_runs_027_old", params![])
+                        .await?;
+                }
+            } else {
+                // Recover the old table before retrying the migration so its
+                // advisory history is retained.
+                conn.execute(
+                    "ALTER TABLE memory_maintenance_runs_027_old RENAME TO memory_maintenance_runs",
+                    params![],
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn ensure_integrity_columns(&self) -> Result<()> {
+        let _migration_guard = MIGRATION_LOCK.lock().await;
+        let conn = self.get_conn()?;
+        if !connection_has_column(&conn, "memories", "content_hash").await? {
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN content_hash TEXT",
+                params![],
+            )
+            .await?;
+        }
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_namespace_content_hash ON memories(namespace, content_hash)", params![]).await?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS memory_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, memory_id TEXT NOT NULL, subject TEXT NOT NULL, predicate TEXT NOT NULL, object TEXT NOT NULL, confidence REAL NOT NULL CHECK(confidence BETWEEN 0.0 AND 1.0), observed_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)), superseded_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(memory_id, subject, predicate, object), FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE, FOREIGN KEY(superseded_by) REFERENCES memory_facts(id) ON DELETE SET NULL); CREATE INDEX IF NOT EXISTS idx_memory_facts_lookup ON memory_facts(subject, predicate, is_active); CREATE INDEX IF NOT EXISTS idx_memory_facts_memory ON memory_facts(memory_id);").await?;
+        let mut rows = conn.query("SELECT id, content FROM memories WHERE content_hash IS NULL OR content_hash = '' LIMIT ?", params![INTEGRITY_SCAN_LIMIT as i64]).await?;
+        let mut pending = Vec::new();
+        while let Some(row) = rows.next().await? {
+            pending.push((row.get::<String>(0)?, row.get::<String>(1)?));
+        }
+        drop(rows);
+        for (id, content) in pending {
+            conn.execute("UPDATE memories SET content_hash = ? WHERE id = ? AND (content_hash IS NULL OR content_hash = '')", params![content_hash(&content), id]).await?;
+        }
+        Ok(())
     }
 
     async fn ensure_audit_migration_columns(&self, conn: &Connection) -> Result<()> {
@@ -2009,28 +2387,7 @@ impl LibsqlStorage {
 
     /// Build a safe, relevance-focused FTS5 query from natural language.
     fn build_fts_query(query: &str) -> String {
-        let original_terms: Vec<&str> = query.split_whitespace().collect();
-        let filtered_terms: Vec<&str> = original_terms
-            .iter()
-            .copied()
-            .filter(|term| {
-                let normalized = term
-                    .trim_matches(|character: char| !character.is_alphanumeric())
-                    .to_ascii_lowercase();
-                let normalized = normalized.strip_suffix("'s").unwrap_or(&normalized);
-                !normalized.is_empty() && !FTS_STOP_WORDS.contains(&normalized)
-            })
-            .collect();
-        let terms = if filtered_terms.is_empty() {
-            &original_terms
-        } else {
-            &filtered_terms
-        };
-        terms
-            .iter()
-            .map(|term| Self::escape_fts5_query(term))
-            .collect::<Vec<String>>()
-            .join(" OR ")
+        crate::utils::retrieval::rewrite_fts_query(query).fts_query
     }
 
     /// Escape one FTS5 query token as a literal term.
@@ -2050,6 +2407,29 @@ impl LibsqlStorage {
         self.embedding_service = Some(service);
     }
 
+    async fn is_raw_turn(&self, memory_id: &MemoryId) -> Result<bool> {
+        let conn = self.get_conn()?;
+        // Tags cover legacy/raw callers that predate typed provenance.
+        let mut tagged = conn
+            .query(
+                "SELECT 1 FROM memories WHERE id = ? AND tags LIKE '%\"turn_sync\"%' LIMIT 1",
+                params![memory_id.to_string()],
+            )
+            .await?;
+        if tagged.next().await?.is_some() {
+            return Ok(true);
+        }
+        let mut rows = match conn.query(
+            "SELECT 1 FROM memory_provenance WHERE memory_id = ? AND source_kind = 'turn' AND source_memory_id IS NULL LIMIT 1",
+            params![memory_id.to_string()],
+        ).await {
+            Ok(rows) => rows,
+            // Compatibility with databases created before provenance was added.
+            Err(_) => return Ok(false),
+        };
+        Ok(rows.next().await?.is_some())
+    }
+
     /// Generate and store embedding for a memory
     ///
     /// This method generates an embedding for the given memory content and stores it
@@ -2067,6 +2447,10 @@ impl LibsqlStorage {
         memory_id: &MemoryId,
         content: &str,
     ) -> Result<()> {
+        // Raw captured turns are transcript anchors, never ranked vectors.
+        if self.is_raw_turn(memory_id).await? {
+            return Ok(());
+        }
         // Skip if no embedding service configured
         let service = match &self.embedding_service {
             Some(s) => s,
@@ -2102,7 +2486,22 @@ impl LibsqlStorage {
     /// * `memory_id` - The ID of the memory
     /// * `embedding` - The embedding vector (must match configured dimensions)
     pub async fn store_embedding(&self, memory_id: &MemoryId, embedding: &[f32]) -> Result<()> {
+        // Keep the low-level path safe too: CLI/backfill callers must not
+        // accidentally embed a raw turn.
+        if self.is_raw_turn(memory_id).await? {
+            return Ok(());
+        }
         let conn = self.get_conn()?;
+        let mut memory_rows = conn
+            .query(
+                "SELECT 1 FROM memories WHERE id = ? LIMIT 1",
+                params![memory_id.to_string()],
+            )
+            .await?;
+        if memory_rows.next().await?.is_none() {
+            return Err(MnemosyneError::MemoryNotFound(memory_id.to_string()));
+        }
+        drop(memory_rows);
         if self.schema_type == SchemaType::LibSQL {
             let bytes: Vec<u8> = embedding
                 .iter()
@@ -2436,7 +2835,7 @@ impl LibsqlStorage {
             r#"
             SELECT {columns} FROM memories m
             WHERE m.namespace = ?
-              AND m.memory_class = 'knowledge'
+              AND {knowledge_filter}
             {fts_filter}
               AND m.created_at <= ?
               AND (
@@ -2451,6 +2850,7 @@ impl LibsqlStorage {
             LIMIT {limit}
             "#,
             columns = self.memory_columns("m"),
+            knowledge_filter = self.knowledge_predicate("m"),
             limit = limit as i64
         );
 
@@ -2480,6 +2880,36 @@ impl LibsqlStorage {
             });
         }
         Ok(results)
+    }
+
+    /// Resolve a content-hash deduplicated write to its active canonical row.
+    /// This is useful to high-level callers whose legacy store API returns the
+    /// requested ID even when the integrity gate merged it into a parent.
+    pub async fn find_memory_by_content(
+        &self,
+        namespace: &Namespace,
+        content: &str,
+        memory_class: MemoryClass,
+    ) -> Result<Option<MemoryId>> {
+        let conn = self.get_conn()?;
+        let namespace = serde_json::to_string(namespace)?;
+        let memory_class = serde_json::to_value(memory_class)?
+            .as_str()
+            .unwrap_or("knowledge")
+            .to_string();
+        let mut rows = conn
+            .query(
+                "SELECT id FROM memories WHERE namespace = ? AND memory_class = ? AND content_hash = ? AND is_archived = 0 ORDER BY updated_at DESC LIMIT 1",
+                params![namespace, memory_class, content_hash(content)],
+            )
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .map(|row| row.get::<String>(0))
+            .transpose()?
+            .map(|id| MemoryId::from_string(&id))
+            .transpose()?)
     }
 
     /// Find candidate memories for a "forget X" cascade: case-insensitive
@@ -2582,6 +3012,8 @@ impl LibsqlStorage {
             WHERE embedding IS NOT NULL
               AND is_archived = 0
               AND memory_class = 'knowledge'
+              AND tags NOT LIKE '%\"turn_sync\"%'
+              AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
               AND namespace = ?
             ORDER BY distance ASC
             LIMIT ?
@@ -2594,6 +3026,8 @@ impl LibsqlStorage {
             WHERE embedding IS NOT NULL
               AND is_archived = 0
               AND memory_class = 'knowledge'
+              AND tags NOT LIKE '%\"turn_sync\"%'
+              AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
             ORDER BY distance ASC
             LIMIT ?
             "#
@@ -2636,13 +3070,13 @@ impl LibsqlStorage {
         let conn = self.get_conn()?;
         let sql = if let Some(lim) = limit {
             format!(
-                "SELECT {} FROM memories WHERE is_archived = 0 AND memory_class = 'knowledge' AND archived_at IS NULL ORDER BY created_at DESC LIMIT {}",
+                "SELECT {} FROM memories WHERE is_archived = 0 AND memory_class = 'knowledge' AND tags NOT LIKE '%\"turn_sync\"%' AND (expires_at IS NULL OR datetime(expires_at) > datetime('now')) AND archived_at IS NULL ORDER BY created_at DESC LIMIT {}",
                 self.memory_columns(""),
                 lim
             )
         } else {
             format!(
-                "SELECT {} FROM memories WHERE is_archived = 0 AND memory_class = 'knowledge' AND archived_at IS NULL ORDER BY created_at DESC",
+                "SELECT {} FROM memories WHERE is_archived = 0 AND memory_class = 'knowledge' AND tags NOT LIKE '%\"turn_sync\"%' AND (expires_at IS NULL OR datetime(expires_at) > datetime('now')) AND archived_at IS NULL ORDER BY created_at DESC",
                 self.memory_columns("")
             )
         };
@@ -2739,6 +3173,13 @@ impl LibsqlStorage {
             params![now.timestamp(), now.to_rfc3339(), memory_id.to_string()],
         )
         .await?;
+        if connection_has_column(&conn, "memory_facts", "memory_id").await? {
+            conn.execute(
+                "UPDATE memory_facts SET is_active = 0 WHERE memory_id = ?",
+                params![memory_id.to_string()],
+            )
+            .await?;
+        }
 
         Ok(())
     }
@@ -2801,6 +3242,13 @@ impl LibsqlStorage {
             ],
         )
         .await?;
+        if connection_has_column(&conn, "memory_facts", "memory_id").await? {
+            conn.execute(
+                "UPDATE memory_facts SET is_active = 0 WHERE memory_id = ?",
+                params![superseded_id.to_string()],
+            )
+            .await?;
+        }
 
         // Log the consolidation in audit log
         conn.execute(
@@ -3112,12 +3560,14 @@ impl LibsqlStorage {
             JOIN graph_walk gw ON m.id = gw.memory_id
             WHERE gw.depth > 0
               AND m.is_archived = 0
-              AND m.memory_class = 'knowledge' {namespace_filter}
+              AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))
+              AND {knowledge_filter} {namespace_filter}
             ORDER BY gw.depth, m.importance DESC
             {limit_clause}
             "#,
             placeholders = placeholders,
             namespace_filter = namespace_filter,
+            knowledge_filter = self.knowledge_predicate("m"),
             limit_clause = limit_clause,
             traversal_limit_clause = traversal_limit_clause,
             columns = self.memory_columns("m")
@@ -3183,6 +3633,24 @@ impl LibsqlStorage {
         debug!("Graph traversal found {} memories", results.len());
         Ok(results)
     }
+}
+
+/// One durable captured turn. Transcript rows are searchable audit data, not
+/// recallable memories and never receive embeddings.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionTranscriptRecord {
+    pub id: MemoryId,
+    pub namespace: Namespace,
+    pub source_memory_id: MemoryId,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub user_text: String,
+    pub assistant_text: String,
+    pub content: String,
+    pub observed_at: chrono::DateTime<Utc>,
+    pub valid_from: chrono::DateTime<Utc>,
+    pub valid_until: Option<chrono::DateTime<Utc>>,
+    pub created_at: chrono::DateTime<Utc>,
 }
 
 /// A derived memory plus its typed entity records for atomic turn learning.
@@ -3304,12 +3772,12 @@ impl LibsqlStorage {
         let columns = self.memory_columns("m");
         let sql = if namespace.is_some() {
             format!(
-                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge'",
+                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))",
                 columns = columns
             )
         } else {
             format!(
-                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge'",
+                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))",
                 columns = columns
             )
         };
@@ -3597,6 +4065,586 @@ impl LibsqlStorage {
             orphans.push((row.get(0)?, row.get(1)?));
         }
         Ok(orphans)
+    }
+
+    async fn find_integrity_parent(
+        &self,
+        tx: &libsql::Transaction,
+        memory: &MemoryNote,
+    ) -> Result<Option<MemoryId>> {
+        // Bare un-enriched notes without any provenance/context/tags are often
+        // intentionally repeated observations (and are used as historical
+        // snapshots by callers). Require at least one richer signal before
+        // applying the fallback lexical dedup path; embedding-backed writes
+        // still use the content-hash/cosine gate unconditionally.
+        if memory.embedding.is_none()
+            && memory.provenance.is_none()
+            && memory.tags.is_empty()
+            && memory.context.trim().is_empty()
+        {
+            return Ok(None);
+        }
+        let namespace = serde_json::to_string(&memory.namespace)?;
+        let memory_class = serde_json::to_value(memory.memory_class)?
+            .as_str()
+            .unwrap_or("knowledge")
+            .to_string();
+        let hash = content_hash(&memory.content);
+        let mut exact = tx.query(
+            "SELECT id, created_at, last_accessed_at FROM memories WHERE namespace = ? AND memory_class = ? AND content_hash = ? AND is_archived = 0 ORDER BY updated_at DESC LIMIT 1",
+            params![namespace.clone(), memory_class.clone(), hash],
+        ).await?;
+        if let Some(row) = exact.next().await? {
+            let existing_created = DateTime::parse_from_rfc3339(&row.get::<String>(1)?)
+                .map(|value| value.with_timezone(&Utc))
+                .ok();
+            let existing_last_accessed = DateTime::parse_from_rfc3339(&row.get::<String>(2)?)
+                .map(|value| value.with_timezone(&Utc))
+                .ok();
+            // Keep periodic historical snapshots distinct while collapsing
+            // retries/repeated writes in the same day. A read-modify-write
+            // snapshot with the same creation time but a different access
+            // time is also intentionally preserved.
+            let same_write_window = existing_created
+                .map(|value| (memory.created_at - value).num_hours().abs() <= 24)
+                .unwrap_or(true);
+            let access_snapshot = existing_created == Some(memory.created_at)
+                && existing_last_accessed.is_some_and(|value| value != memory.last_accessed_at);
+            if same_write_window && !access_snapshot {
+                return Ok(Some(MemoryId::from_string(&row.get::<String>(0)?)?));
+            }
+        }
+
+        let mut candidates = if self.schema_type == SchemaType::LibSQL {
+            tx.query(
+                "SELECT id, content, embedding, created_at, last_accessed_at FROM memories WHERE namespace = ? AND memory_class = ? AND is_archived = 0 ORDER BY updated_at DESC LIMIT ?",
+                params![namespace, memory_class, INTEGRITY_SCAN_LIMIT as i64],
+            ).await?
+        } else {
+            tx.query(
+                "SELECT m.id, m.content, e.embedding, m.created_at, m.last_accessed_at FROM memories m LEFT JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.memory_class = ? AND m.is_archived = 0 ORDER BY m.updated_at DESC LIMIT ?",
+                params![namespace, memory_class, INTEGRITY_SCAN_LIMIT as i64],
+            ).await?
+        };
+        while let Some(row) = candidates.next().await? {
+            let candidate_created = DateTime::parse_from_rfc3339(&row.get::<String>(3)?)
+                .map(|value| value.with_timezone(&Utc))
+                .ok();
+            if !candidate_created
+                .map(|value| (memory.created_at - value).num_hours().abs() <= 24)
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            let candidate_last_accessed = DateTime::parse_from_rfc3339(&row.get::<String>(4)?)
+                .map(|value| value.with_timezone(&Utc))
+                .ok();
+            if candidate_created == Some(memory.created_at)
+                && candidate_last_accessed.is_some_and(|value| value != memory.last_accessed_at)
+                && canonical_content(&memory.content)
+                    == canonical_content(&row.get::<String>(1).unwrap_or_default())
+            {
+                continue;
+            }
+            let similarity = if let Some(incoming) = &memory.embedding {
+                if matches!(row.column_type(2), Ok(libsql::ValueType::Blob)) {
+                    cosine_similarity(incoming, &decode_embedding_from_row(&row, 2)?)
+                        .unwrap_or_else(|| {
+                            lexical_similarity(
+                                &memory.content,
+                                &row.get::<String>(1).unwrap_or_default(),
+                            )
+                        })
+                } else {
+                    lexical_similarity(&memory.content, &row.get::<String>(1).unwrap_or_default())
+                }
+            } else {
+                lexical_similarity(&memory.content, &row.get::<String>(1).unwrap_or_default())
+            };
+            if similarity > NEAR_DUPLICATE_THRESHOLD {
+                return Ok(Some(MemoryId::from_string(&row.get::<String>(0)?)?));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn validate_provenance_source(
+        &self,
+        tx: &libsql::Transaction,
+        provenance: &crate::types::MemoryProvenance,
+    ) -> Result<()> {
+        let Some(source_id) = provenance.source_memory_id else {
+            return Ok(());
+        };
+        let mut rows = tx
+            .query(
+                "SELECT 1 FROM memories WHERE id = ? LIMIT 1",
+                params![source_id.to_string()],
+            )
+            .await?;
+        if rows.next().await?.is_none() {
+            return Err(MnemosyneError::MemoryNotFound(source_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn add_integrity_entities(
+        &self,
+        tx: &libsql::Transaction,
+        memory_id: MemoryId,
+        namespace: &str,
+        content: &str,
+        related: &[String],
+    ) -> Result<()> {
+        for entity in extracted_entities(content, related) {
+            entity.validate()?;
+            tx.execute(
+                "INSERT OR IGNORE INTO memory_entities (memory_id, namespace, normalized_name, display_name, role, confidence) VALUES (?, ?, ?, ?, ?, ?)",
+                params![memory_id.to_string(), namespace, entity.normalized_name, entity.display_name, entity.role, entity.confidence as f64],
+            ).await?;
+        }
+        Ok(())
+    }
+
+    async fn add_bidirectional_links(
+        &self,
+        tx: &libsql::Transaction,
+        source_id: MemoryId,
+        links: &[MemoryLink],
+        has_link_metadata: bool,
+    ) -> Result<()> {
+        for link in links {
+            if link.target_id == source_id {
+                continue;
+            }
+            let mut target_rows = tx
+                .query(
+                    "SELECT 1 FROM memories WHERE id = ? LIMIT 1",
+                    params![link.target_id.to_string()],
+                )
+                .await?;
+            if target_rows.next().await?.is_none() {
+                return Err(MnemosyneError::MemoryNotFound(link.target_id.to_string()));
+            }
+            let link_type = serde_json::to_value(link.link_type)?
+                .as_str()
+                .unwrap_or("references")
+                .to_string();
+            let values = params![
+                source_id.to_string(),
+                link.target_id.to_string(),
+                link_type.clone(),
+                link.strength as f64,
+                link.reason.clone(),
+                link.created_at.to_rfc3339(),
+                link.last_traversed_at.map(|value| value.to_rfc3339()),
+                if link.user_created { 1i64 } else { 0i64 }
+            ];
+            if has_link_metadata {
+                tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", values).await?;
+                tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![link.target_id.to_string(), source_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339(), link.last_traversed_at.map(|value| value.to_rfc3339()), if link.user_created { 1i64 } else { 0i64 }]).await?;
+            } else {
+                tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)", params![source_id.to_string(), link.target_id.to_string(), link_type.clone(), link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339()]).await?;
+                tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)", params![link.target_id.to_string(), source_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339()]).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_structured_fact(
+        &self,
+        tx: &libsql::Transaction,
+        fact: &StructuredFact,
+    ) -> Result<()> {
+        let mut rows = tx.query(
+            "SELECT f.id, f.memory_id, f.object, f.confidence, f.observed_at FROM memory_facts f JOIN memories m ON m.id = f.memory_id WHERE f.subject = ? AND f.predicate = ? AND f.is_active = 1 AND m.is_archived = 0 AND m.superseded_by IS NULL AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) AND f.object <> ? ORDER BY f.confidence DESC, f.observed_at DESC LIMIT 1",
+            params![fact.subject.clone(), fact.predicate.clone(), fact.object.clone()],
+        ).await?;
+        let prior = rows.next().await?;
+        drop(rows);
+        let prior_found = prior.is_some();
+        let mut losing_prior = None;
+        let superseded_prior = if let Some(row) = prior {
+            let prior_id: i64 = row.get(0)?;
+            let prior_memory: String = row.get(1)?;
+            let prior_confidence: f64 = row.get(3)?;
+            let prior_observed = DateTime::parse_from_rfc3339(&row.get::<String>(4)?)
+                .map(|v| v.with_timezone(&Utc))
+                .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            let new_wins = fact.confidence > prior_confidence as f32
+                || (fact.confidence == prior_confidence as f32
+                    && fact.observed_at >= prior_observed);
+            if new_wins {
+                tx.execute(
+                    "UPDATE memory_facts SET is_active = 0, superseded_by = NULL WHERE id = ?",
+                    params![prior_id],
+                )
+                .await?;
+                // A structured fact is also a memory-level correction when the
+                // successor is a different persisted memory. Keep same-memory
+                // fact updates usable for callers that maintain several
+                // observations on one row.
+                let mut successor_rows = tx
+                    .query(
+                        "SELECT 1 FROM memories WHERE id = ? LIMIT 1",
+                        params![fact.memory_id.to_string()],
+                    )
+                    .await?;
+                let successor_exists = successor_rows.next().await?.is_some();
+                drop(successor_rows);
+                let memory_superseded =
+                    prior_memory != fact.memory_id.to_string() && successor_exists;
+                if memory_superseded {
+                    tx.execute(
+                        "UPDATE memories SET is_archived = 1, superseded_by = ?, updated_at = ? WHERE id = ? AND is_archived = 0",
+                        params![fact.memory_id.to_string(), Utc::now().to_rfc3339(), prior_memory.clone()],
+                    )
+                    .await?;
+                }
+                tx.execute("INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('supersede', ?, ?)", params![prior_memory, serde_json::json!({"event":"fact_contradiction", "subject":fact.subject, "predicate":fact.predicate, "old_object":row.get::<String>(2)?, "new_object":fact.object, "new_memory_id":fact.memory_id, "memory_superseded":memory_superseded}).to_string()]).await?;
+                true
+            } else {
+                losing_prior = Some(prior_memory);
+                false
+            }
+        } else {
+            false
+        };
+        let active = if prior_found && !superseded_prior {
+            0i64
+        } else {
+            1i64
+        };
+        tx.execute("INSERT OR IGNORE INTO memory_facts (memory_id, subject, predicate, object, confidence, observed_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)", params![fact.memory_id.to_string(), fact.subject.clone(), fact.predicate.clone(), fact.object.clone(), fact.confidence as f64, fact.observed_at.to_rfc3339(), active]).await?;
+        if let Some(prior_memory) = losing_prior {
+            // Preserve the lower-confidence observation as inactive evidence,
+            // but keep it out of the active recall surface instead of allowing
+            // two contradictory facts to coexist silently.
+            let mut successor_rows = tx
+                .query(
+                    "SELECT 1 FROM memories WHERE id = ? LIMIT 1",
+                    params![fact.memory_id.to_string()],
+                )
+                .await?;
+            let successor_exists = successor_rows.next().await?.is_some();
+            drop(successor_rows);
+            if successor_exists && prior_memory != fact.memory_id.to_string() {
+                tx.execute(
+                    "UPDATE memories SET is_archived = 1, superseded_by = ?, updated_at = ? WHERE id = ? AND is_archived = 0",
+                    params![prior_memory.clone(), Utc::now().to_rfc3339(), fact.memory_id.to_string()],
+                )
+                .await?;
+                tx.execute(
+                    "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('supersede', ?, ?)",
+                    params![fact.memory_id.to_string(), serde_json::json!({"event":"fact_conflict_rejected", "superseded_by":prior_memory, "subject":fact.subject, "predicate":fact.predicate, "object":fact.object}).to_string()],
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn merge_integrity_parent(
+        &self,
+        tx: &libsql::Transaction,
+        parent_id: MemoryId,
+        memory: &MemoryNote,
+        has_link_metadata: bool,
+    ) -> Result<()> {
+        let mut rows = tx.query("SELECT content, summary, keywords, tags, context, related_files, related_entities, importance, confidence FROM memories WHERE id = ?", params![parent_id.to_string()]).await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| MnemosyneError::MemoryNotFound(parent_id.to_string()))?;
+        let old_content: String = row.get(0)?;
+        let mut keywords: Vec<String> =
+            serde_json::from_str(&row.get::<String>(2)?).unwrap_or_default();
+        let mut tags: Vec<String> =
+            serde_json::from_str(&row.get::<String>(3)?).unwrap_or_default();
+        let mut files: Vec<String> =
+            serde_json::from_str(&row.get::<String>(5)?).unwrap_or_default();
+        let mut entities: Vec<String> =
+            serde_json::from_str(&row.get::<String>(6)?).unwrap_or_default();
+        for (dest, values) in [
+            (&mut keywords, &memory.keywords),
+            (&mut tags, &memory.tags),
+            (&mut files, &memory.related_files),
+            (&mut entities, &memory.related_entities),
+        ] {
+            for value in values {
+                if !dest.contains(value) {
+                    dest.push(value.clone());
+                }
+            }
+        }
+        let content = if canonical_content(&old_content) == canonical_content(&memory.content) {
+            old_content.clone()
+        } else {
+            // Preserve both evidence-bearing statements while keeping one
+            // recall row. Exact repeats were handled by the hash gate above;
+            // only genuinely new near-duplicate detail is appended.
+            format!("{}\n\n{}", old_content, memory.content.trim())
+        };
+        tx.execute("UPDATE memories SET content = ?, content_hash = ?, summary = CASE WHEN length(?) > length(summary) THEN ? ELSE summary END, keywords = ?, tags = ?, context = CASE WHEN length(?) > length(context) THEN ? ELSE context END, related_files = ?, related_entities = ?, importance = MAX(importance, ?), confidence = MAX(confidence, ?), updated_at = ? WHERE id = ?", params![content.clone(), content_hash(&content), memory.summary.clone(), memory.summary.clone(), serde_json::to_string(&keywords)?, serde_json::to_string(&tags)?, memory.context.clone(), memory.context.clone(), serde_json::to_string(&files)?, serde_json::to_string(&entities)?, memory.importance as i64, memory.confidence as f64, Utc::now().to_rfc3339(), parent_id.to_string()]).await?;
+        let namespace = serde_json::to_string(&memory.namespace)?;
+        if self.table_exists_tx(tx, "memory_entities").await? {
+            self.add_integrity_entities(
+                tx,
+                parent_id,
+                &namespace,
+                &memory.content,
+                &memory.related_entities,
+            )
+            .await?;
+        }
+        self.add_bidirectional_links(tx, parent_id, &memory.links, has_link_metadata)
+            .await?;
+        if let Some(provenance) = &memory.provenance {
+            provenance.validate()?;
+            self.validate_provenance_source(tx, provenance).await?;
+            tx.execute("INSERT OR REPLACE INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![parent_id.to_string(), serde_json::to_value(provenance.source_kind)?.as_str().unwrap_or("manual"), provenance.source_memory_id.map(|id| id.to_string()), provenance.session_id.clone(), provenance.turn_id.clone(), serde_json::to_value(provenance.source_role)?.as_str().unwrap_or("unknown"), provenance.observed_at.to_rfc3339(), provenance.evidence_quote.clone(), provenance.extractor_model.clone(), provenance.extraction_schema_version.clone()]).await?;
+        }
+        tx.execute("INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)", params![parent_id.to_string(), serde_json::json!({"event":"integrity_enrichment", "source_memory_id":memory.id, "content_hash":content_hash(&memory.content)}).to_string()]).await?;
+        if self.table_exists_tx(tx, "memory_facts").await? {
+            if let Some(mut fact) = parse_structured_fact(memory) {
+                fact.memory_id = parent_id;
+                self.apply_structured_fact(tx, &fact).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the active values for one structured subject/predicate pair.
+    pub async fn list_active_facts(
+        &self,
+        subject: &str,
+        predicate: &str,
+    ) -> Result<Vec<StructuredFact>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn.query(
+            "SELECT f.memory_id, f.subject, f.predicate, f.object, f.confidence, f.observed_at FROM memory_facts f JOIN memories m ON m.id = f.memory_id WHERE f.subject = ? AND f.predicate = ? AND f.is_active = 1 AND m.is_archived = 0 AND m.superseded_by IS NULL AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY f.confidence DESC, f.observed_at DESC",
+            params![subject.to_lowercase(), predicate.to_lowercase()],
+        ).await?;
+        let mut facts = Vec::new();
+        while let Some(row) = rows.next().await? {
+            facts.push(StructuredFact {
+                memory_id: MemoryId::from_string(&row.get::<String>(0)?)?,
+                subject: row.get(1)?,
+                predicate: row.get(2)?,
+                object: row.get(3)?,
+                confidence: row.get::<f64>(4)? as f32,
+                observed_at: DateTime::parse_from_rfc3339(&row.get::<String>(5)?)
+                    .map_err(|error| {
+                        MnemosyneError::Database(format!("invalid fact timestamp: {error}"))
+                    })?
+                    .with_timezone(&Utc),
+            });
+        }
+        Ok(facts)
+    }
+
+    /// Apply the same integrity gate to an explicit structured fact.
+    pub async fn store_structured_fact(&self, fact: &StructuredFact) -> Result<()> {
+        if fact.subject.trim().is_empty()
+            || fact.predicate.trim().is_empty()
+            || fact.object.trim().is_empty()
+            || !fact.confidence.is_finite()
+            || !(0.0..=1.0).contains(&fact.confidence)
+        {
+            return Err(MnemosyneError::ValidationError(
+                "structured fact fields are invalid".into(),
+            ));
+        }
+        let conn = self.get_conn()?;
+        let mut memory_rows = conn
+            .query(
+                "SELECT 1 FROM memories WHERE id = ? LIMIT 1",
+                params![fact.memory_id.to_string()],
+            )
+            .await?;
+        if memory_rows.next().await?.is_none() {
+            return Err(MnemosyneError::MemoryNotFound(fact.memory_id.to_string()));
+        }
+        drop(memory_rows);
+        let tx = conn.transaction().await?;
+        self.apply_structured_fact(&tx, fact).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Count orphaned derived rows without mutating the database. Health and
+    /// weekly audit reports use the same projection set as repair so operators
+    /// can see both the pre-repair and post-repair counts.
+    pub async fn orphan_projection_counts(&self) -> Result<OrphanRepairReport> {
+        let conn = self.get_conn()?;
+        let mut table_rows = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')",
+                params![],
+            )
+            .await?;
+        let mut tables = HashSet::new();
+        while let Some(row) = table_rows.next().await? {
+            tables.insert(row.get::<String>(0)?);
+        }
+        drop(table_rows);
+        let has = |name: &str| tables.contains(name);
+        let mut report = OrphanRepairReport::default();
+        if has("memory_links") {
+            report.graph_links_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_links l LEFT JOIN memories s ON s.id = l.source_id LEFT JOIN memories t ON t.id = l.target_id WHERE s.id IS NULL OR t.id IS NULL",
+            )
+            .await?;
+        }
+        if has("memory_provenance") {
+            report.provenance_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_provenance p LEFT JOIN memories m ON m.id = p.memory_id WHERE m.id IS NULL",
+            )
+            .await?;
+            report.provenance_sources_cleared = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_provenance p LEFT JOIN memories s ON s.id = p.source_memory_id WHERE p.source_memory_id IS NOT NULL AND s.id IS NULL",
+            )
+            .await?;
+        }
+        if has("memory_entities") {
+            report.entity_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_entities e LEFT JOIN memories m ON m.id = e.memory_id WHERE m.id IS NULL",
+            )
+            .await?;
+        }
+        if has("interaction_policies") {
+            report.policy_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM interaction_policies p LEFT JOIN memories m ON m.id = p.policy_memory_id WHERE m.id IS NULL",
+            )
+            .await?;
+        }
+        if has("interaction_policy_evidence") {
+            report.policy_evidence_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM interaction_policy_evidence e LEFT JOIN interaction_policies p ON p.policy_memory_id = e.policy_memory_id LEFT JOIN memories m ON m.id = e.source_memory_id WHERE p.policy_memory_id IS NULL OR m.id IS NULL",
+            )
+            .await?;
+        }
+        if has("memory_facts") {
+            report.fact_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_facts f LEFT JOIN memories m ON m.id = f.memory_id WHERE m.id IS NULL",
+            )
+            .await?;
+        }
+        if has("memory_embeddings") {
+            report.embeddings_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_embeddings e LEFT JOIN memories m ON m.id = e.memory_id WHERE m.id IS NULL",
+            )
+            .await?;
+        }
+        if has("memory_vectors") {
+            report.vector_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_vectors v LEFT JOIN memories m ON m.id = v.memory_id WHERE m.id IS NULL",
+            )
+            .await?;
+        }
+        if has("memories_fts") {
+            report.fts_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memories_fts f LEFT JOIN memories m ON m.rowid = f.rowid WHERE m.rowid IS NULL",
+            )
+            .await?;
+        }
+        Ok(report)
+    }
+
+    /// Repair at most `limit` rows from every derived projection and return
+    /// exact deletion counts. No canonical memory row is deleted.
+    pub async fn repair_orphans(&self, limit: usize) -> Result<OrphanRepairReport> {
+        let limit = limit.clamp(1, INTEGRITY_SCAN_LIMIT) as i64;
+        let conn = self.get_conn()?;
+        let tx = conn.transaction().await?;
+        let mut report = OrphanRepairReport::default();
+        if self.table_exists_tx(&tx, "memory_links").await? {
+            report.graph_links_removed = tx.execute("DELETE FROM memory_links WHERE rowid IN (SELECT l.rowid FROM memory_links l LEFT JOIN memories s ON s.id = l.source_id LEFT JOIN memories t ON t.id = l.target_id WHERE s.id IS NULL OR t.id IS NULL LIMIT ?)", params![limit]).await?;
+        }
+        if self.table_exists_tx(&tx, "memory_provenance").await? {
+            report.provenance_rows_removed = tx.execute("DELETE FROM memory_provenance WHERE rowid IN (SELECT rowid FROM memory_provenance WHERE memory_id NOT IN (SELECT id FROM memories) LIMIT ?)", params![limit]).await?;
+            // Preserve a derived citation when only its source was removed,
+            // but clear the dangling foreign-key value so future integrity
+            // scans do not treat it as valid evidence.
+            report.provenance_sources_cleared = tx
+                .execute(
+                    "UPDATE memory_provenance SET source_memory_id = NULL WHERE rowid IN (SELECT p.rowid FROM memory_provenance p LEFT JOIN memories s ON s.id = p.source_memory_id WHERE p.source_memory_id IS NOT NULL AND s.id IS NULL LIMIT ?)",
+                    params![limit],
+                )
+                .await?;
+        }
+        if self.table_exists_tx(&tx, "memory_entities").await? {
+            report.entity_rows_removed = tx.execute("DELETE FROM memory_entities WHERE rowid IN (SELECT rowid FROM memory_entities WHERE memory_id NOT IN (SELECT id FROM memories) LIMIT ?)", params![limit]).await?;
+        }
+        if self.table_exists_tx(&tx, "interaction_policies").await? {
+            report.policy_rows_removed = tx.execute("DELETE FROM interaction_policies WHERE rowid IN (SELECT rowid FROM interaction_policies WHERE policy_memory_id NOT IN (SELECT id FROM memories) LIMIT ?)", params![limit]).await?;
+        }
+        if self
+            .table_exists_tx(&tx, "interaction_policy_evidence")
+            .await?
+            && self.table_exists_tx(&tx, "interaction_policies").await?
+        {
+            report.policy_evidence_rows_removed = tx.execute("DELETE FROM interaction_policy_evidence WHERE rowid IN (SELECT rowid FROM interaction_policy_evidence WHERE policy_memory_id NOT IN (SELECT policy_memory_id FROM interaction_policies) OR source_memory_id NOT IN (SELECT id FROM memories) LIMIT ?)", params![limit]).await?;
+        }
+        if self.table_exists_tx(&tx, "memory_facts").await? {
+            report.fact_rows_removed = tx
+                .execute(
+                    "DELETE FROM memory_facts WHERE rowid IN (SELECT rowid FROM memory_facts WHERE memory_id NOT IN (SELECT id FROM memories) LIMIT ?)",
+                    params![limit],
+                )
+                .await?;
+        }
+        if self.schema_type == SchemaType::StandardSQLite
+            && self.table_exists_tx(&tx, "memory_embeddings").await?
+        {
+            report.embeddings_removed = tx.execute("DELETE FROM memory_embeddings WHERE rowid IN (SELECT rowid FROM memory_embeddings WHERE memory_id NOT IN (SELECT id FROM memories) LIMIT ?)", params![limit]).await?;
+        }
+        if self.table_exists_tx(&tx, "memories_fts").await? {
+            report.fts_rows_removed = tx
+                .execute(
+                    "DELETE FROM memories_fts WHERE rowid IN (SELECT rowid FROM memories_fts WHERE rowid NOT IN (SELECT rowid FROM memories) LIMIT ?)",
+                    params![limit],
+                )
+                .await?;
+        }
+        report.vector_rows_removed = if self.table_exists_tx(&tx, "memory_vectors").await? {
+            tx.execute("DELETE FROM memory_vectors WHERE rowid IN (SELECT rowid FROM memory_vectors WHERE memory_id NOT IN (SELECT id FROM memories) LIMIT ?)", params![limit]).await?
+        } else {
+            0
+        };
+        // Rebuild external-content FTS after removing stale rowids. This also
+        // repairs missing index entries without deleting canonical content;
+        // failures are returned so the maintenance report cannot claim a
+        // successful repair while recall remains stale.
+        if self.table_exists_tx(&tx, "memories_fts").await? {
+            tx.execute(
+                "INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')",
+                params![],
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(report)
+    }
+
+    async fn table_exists_tx(&self, tx: &libsql::Transaction, table: &str) -> Result<bool> {
+        let mut rows = tx
+            .query(
+                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
+                params![table],
+            )
+            .await?;
+        Ok(rows.next().await?.is_some())
     }
 
     /// Persist an extracted interaction-policy suggestion without making it
@@ -5037,8 +6085,14 @@ impl LibsqlStorage {
         &self,
         tx: &libsql::Transaction,
         item: &LearningMemory,
-    ) -> Result<()> {
+    ) -> Result<MemoryId> {
         let memory = &item.memory;
+        if let Some(parent_id) = self.find_integrity_parent(tx, memory).await? {
+            self.merge_integrity_parent(tx, parent_id, memory, true)
+                .await?;
+            return Ok(parent_id);
+        }
+        let memory_hash = content_hash(&memory.content);
         let memory_type = serde_json::to_value(memory.memory_type)?
             .as_str()
             .ok_or_else(|| MnemosyneError::Database("invalid memory type".into()))?
@@ -5058,63 +6112,43 @@ impl LibsqlStorage {
             if let Some(embedding) = &memory.embedding {
                 let embedding_json = serde_json::to_string(embedding)?;
                 tx.execute(
-                    "INSERT INTO memories (id, namespace, created_at, updated_at, content, summary, keywords, tags, context, memory_type, memory_class, importance, confidence, related_files, related_entities, access_count, last_accessed_at, expires_at, is_archived, superseded_by, embedding_model, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, vector32(?))",
-                    params![memory.id.to_string(), namespace.clone(), memory.created_at.to_rfc3339(), memory.updated_at.to_rfc3339(), memory.content.clone(), memory.summary.clone(), keywords, tags, memory.context.clone(), memory_type, memory_class, memory.importance as i64, memory.confidence as f64, related_files, related_entities, memory.access_count as i64, memory.last_accessed_at.to_rfc3339(), memory.expires_at.map(|value| value.to_rfc3339()), if memory.is_archived { 1i64 } else { 0i64 }, superseded_by, memory.embedding_model.clone(), embedding_json],
+                    "INSERT INTO memories (id, namespace, created_at, updated_at, content, summary, keywords, tags, context, memory_type, memory_class, importance, confidence, related_files, related_entities, access_count, last_accessed_at, expires_at, is_archived, superseded_by, embedding_model, content_hash, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, vector32(?))",
+                    params![memory.id.to_string(), namespace.clone(), memory.created_at.to_rfc3339(), memory.updated_at.to_rfc3339(), memory.content.clone(), memory.summary.clone(), keywords, tags, memory.context.clone(), memory_type, memory_class, memory.importance as i64, memory.confidence as f64, related_files, related_entities, memory.access_count as i64, memory.last_accessed_at.to_rfc3339(), memory.expires_at.map(|value| value.to_rfc3339()), if memory.is_archived { 1i64 } else { 0i64 }, superseded_by, memory.embedding_model.clone(), memory_hash.clone(), embedding_json],
                 ).await?;
             } else {
                 tx.execute(
-                    "INSERT INTO memories (id, namespace, created_at, updated_at, content, summary, keywords, tags, context, memory_type, memory_class, importance, confidence, related_files, related_entities, access_count, last_accessed_at, expires_at, is_archived, superseded_by, embedding_model, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
-                    params![memory.id.to_string(), namespace.clone(), memory.created_at.to_rfc3339(), memory.updated_at.to_rfc3339(), memory.content.clone(), memory.summary.clone(), keywords, tags, memory.context.clone(), memory_type, memory_class, memory.importance as i64, memory.confidence as f64, related_files, related_entities, memory.access_count as i64, memory.last_accessed_at.to_rfc3339(), memory.expires_at.map(|value| value.to_rfc3339()), if memory.is_archived { 1i64 } else { 0i64 }, superseded_by, memory.embedding_model.clone()],
+                    "INSERT INTO memories (id, namespace, created_at, updated_at, content, summary, keywords, tags, context, memory_type, memory_class, importance, confidence, related_files, related_entities, access_count, last_accessed_at, expires_at, is_archived, superseded_by, embedding_model, content_hash, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+                    params![memory.id.to_string(), namespace.clone(), memory.created_at.to_rfc3339(), memory.updated_at.to_rfc3339(), memory.content.clone(), memory.summary.clone(), keywords, tags, memory.context.clone(), memory_type, memory_class, memory.importance as i64, memory.confidence as f64, related_files, related_entities, memory.access_count as i64, memory.last_accessed_at.to_rfc3339(), memory.expires_at.map(|value| value.to_rfc3339()), if memory.is_archived { 1i64 } else { 0i64 }, superseded_by, memory.embedding_model.clone(), memory_hash.clone()],
                 ).await?;
             }
         } else {
             tx.execute(
-                "INSERT INTO memories (id, namespace, created_at, updated_at, content, summary, keywords, tags, context, memory_type, memory_class, importance, confidence, related_files, related_entities, access_count, last_accessed_at, expires_at, is_archived, superseded_by, embedding_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![memory.id.to_string(), namespace.clone(), memory.created_at.to_rfc3339(), memory.updated_at.to_rfc3339(), memory.content.clone(), memory.summary.clone(), keywords, tags, memory.context.clone(), memory_type, memory_class, memory.importance as i64, memory.confidence as f64, related_files, related_entities, memory.access_count as i64, memory.last_accessed_at.to_rfc3339(), memory.expires_at.map(|value| value.to_rfc3339()), if memory.is_archived { 1i64 } else { 0i64 }, superseded_by, memory.embedding_model.clone()],
+                "INSERT INTO memories (id, namespace, created_at, updated_at, content, summary, keywords, tags, context, memory_type, memory_class, importance, confidence, related_files, related_entities, access_count, last_accessed_at, expires_at, is_archived, superseded_by, embedding_model, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![memory.id.to_string(), namespace.clone(), memory.created_at.to_rfc3339(), memory.updated_at.to_rfc3339(), memory.content.clone(), memory.summary.clone(), keywords, tags, memory.context.clone(), memory_type, memory_class, memory.importance as i64, memory.confidence as f64, related_files, related_entities, memory.access_count as i64, memory.last_accessed_at.to_rfc3339(), memory.expires_at.map(|value| value.to_rfc3339()), if memory.is_archived { 1i64 } else { 0i64 }, superseded_by, memory.embedding_model.clone(), memory_hash.clone()],
             ).await?;
         }
 
-        for link in &memory.links {
-            let link_type = serde_json::to_value(link.link_type)?
-                .as_str()
-                .ok_or_else(|| MnemosyneError::Database("invalid link type".into()))?
-                .to_string();
-            tx.execute(
-                "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                params![memory.id.to_string(), link.target_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339(), link.last_traversed_at.map(|value| value.to_rfc3339()), if link.user_created { 1i64 } else { 0i64 }],
-            ).await?;
-        }
+        self.add_bidirectional_links(tx, memory.id, &memory.links, true)
+            .await?;
 
         if let Some(provenance) = &memory.provenance {
             provenance.validate()?;
+            self.validate_provenance_source(tx, provenance).await?;
             tx.execute(
                 "INSERT INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![memory.id.to_string(), serde_json::to_value(provenance.source_kind)?.as_str().unwrap_or("manual"), provenance.source_memory_id.map(|id| id.to_string()), provenance.session_id.clone(), provenance.turn_id.clone(), serde_json::to_value(provenance.source_role)?.as_str().unwrap_or("unknown"), provenance.observed_at.to_rfc3339(), provenance.evidence_quote.clone(), provenance.extractor_model.clone(), provenance.extraction_schema_version.clone()],
             ).await?;
         }
 
-        let entities = if item.entities.is_empty() {
-            memory
-                .related_entities
-                .iter()
-                .map(|entity| MemoryEntity {
-                    display_name: entity.clone(),
-                    normalized_name: normalize_entity_name(entity),
-                    role: "related".to_string(),
-                    confidence: 1.0,
-                })
-                .collect::<Vec<_>>()
-        } else {
-            item.entities.clone()
-        };
-        for entity in &entities {
-            entity.validate()?;
-            let mut normalized_names = vec![normalize_entity_name(&entity.normalized_name)];
-            let display_normalized = normalize_entity_name(&entity.display_name);
-            if !normalized_names.contains(&display_normalized) {
-                normalized_names.push(display_normalized);
-            }
-            for normalized_name in normalized_names {
+        if self.table_exists_tx(tx, "memory_entities").await? {
+            let entities = if item.entities.is_empty() {
+                extracted_entities(&memory.content, &memory.related_entities)
+            } else {
+                item.entities.clone()
+            };
+            for entity in &entities {
+                entity.validate()?;
+                let normalized_name = normalize_entity_name(&entity.normalized_name);
                 if normalized_name.is_empty() {
                     continue;
                 }
@@ -5122,6 +6156,11 @@ impl LibsqlStorage {
                     "INSERT OR IGNORE INTO memory_entities (memory_id, namespace, normalized_name, display_name, role, confidence) VALUES (?, ?, ?, ?, ?, ?)",
                     params![memory.id.to_string(), namespace.clone(), normalized_name, entity.display_name.clone(), entity.role.clone(), entity.confidence as f64],
                 ).await?;
+            }
+        }
+        if self.table_exists_tx(tx, "memory_facts").await? {
+            if let Some(fact) = parse_structured_fact(memory) {
+                self.apply_structured_fact(tx, &fact).await?;
             }
         }
 
@@ -5134,7 +6173,7 @@ impl LibsqlStorage {
             ],
         )
         .await?;
-        Ok(())
+        Ok(memory.id)
     }
 
     /// Persist all derived memories, links, provenance, entities, and an
@@ -5146,6 +6185,21 @@ impl LibsqlStorage {
         policy: Option<(MemoryId, crate::types::InteractionPolicy)>,
         superseded_policy: Option<(MemoryId, MemoryId)>,
     ) -> Result<()> {
+        self.store_learning_batch_with_ids(items, policy, superseded_policy)
+            .await
+            .map(|_| ())
+    }
+
+    /// Variant of [`store_learning_batch`] that returns the canonical ID for
+    /// each requested item. Integrity enrichment can merge a requested row
+    /// into an existing parent, so callers that persist secondary metadata
+    /// must use these returned IDs rather than the unmaterialized request IDs.
+    pub async fn store_learning_batch_with_ids(
+        &self,
+        items: &[LearningMemory],
+        policy: Option<(MemoryId, crate::types::InteractionPolicy)>,
+        superseded_policy: Option<(MemoryId, MemoryId)>,
+    ) -> Result<Vec<MemoryId>> {
         for item in items {
             if let Some(provenance) = &item.memory.provenance {
                 provenance.validate()?;
@@ -5159,10 +6213,16 @@ impl LibsqlStorage {
         }
         let conn = self.get_conn()?;
         let tx = conn.transaction().await?;
+        let mut stored_ids = Vec::with_capacity(items.len());
         for item in items {
-            self.insert_learning_memory(&tx, item).await?;
+            stored_ids.push(self.insert_learning_memory(&tx, item).await?);
         }
-        if let Some((policy_id, policy)) = policy {
+        if let Some((requested_policy_id, policy)) = policy {
+            let policy_id = items
+                .iter()
+                .position(|item| item.memory.id == requested_policy_id)
+                .and_then(|index| stored_ids.get(index).copied())
+                .unwrap_or(requested_policy_id);
             tx.execute(
                 "INSERT OR REPLACE INTO interaction_policies (policy_memory_id, polarity, guidance, applicability, signal, confidence, anchors) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 params![policy_id.to_string(), serde_json::to_value(policy.polarity)?.as_str().unwrap_or("prefer"), policy.guidance.clone(), policy.applicability.clone(), serde_json::to_value(policy.signal)?.as_str().unwrap_or("direct_preference"), policy.confidence as f64, serde_json::to_string(&policy.anchors)?],
@@ -5206,20 +6266,20 @@ impl LibsqlStorage {
             .await?;
         }
         tx.commit().await?;
-        for item in items {
+        for (item, stored_id) in items.iter().zip(stored_ids.iter()) {
             if self.embedding_service.is_some() {
                 if let Err(error) = self
-                    .generate_and_store_embedding(&item.memory.id, &item.memory.content)
+                    .generate_and_store_embedding(stored_id, &item.memory.content)
                     .await
                 {
                     warn!(
                         "Failed to generate embedding for learned memory {}: {}",
-                        item.memory.id, error
+                        stored_id, error
                     );
                 }
             }
         }
-        Ok(())
+        Ok(stored_ids)
     }
 
     /// Persist one completed-task experience and its distilled strategy or
@@ -5301,19 +6361,22 @@ impl LibsqlStorage {
         )
         .await?;
 
+        let mut stored_item_ids = Vec::with_capacity(items.len());
         for item in items {
-            self.insert_learning_memory(
-                &tx,
-                &LearningMemory {
-                    memory: item.memory.memory.clone(),
-                    entities: item.entities.clone(),
-                },
-            )
-            .await?;
+            let stored_id = self
+                .insert_learning_memory(
+                    &tx,
+                    &LearningMemory {
+                        memory: item.memory.memory.clone(),
+                        entities: item.entities.clone(),
+                    },
+                )
+                .await?;
+            stored_item_ids.push(stored_id);
             tx.execute(
                 "INSERT INTO reasoning_memory_items (memory_id, experience_id, lesson_kind, title, description, applicability) VALUES (?, ?, ?, ?, ?, ?)",
                 params![
-                    item.memory.memory.id.to_string(),
+                    stored_id.to_string(),
                     experience.id.clone(),
                     item.memory.lesson_kind.as_str(),
                     item.memory.title.clone(),
@@ -5339,19 +6402,17 @@ impl LibsqlStorage {
         .await?;
         tx.commit().await?;
 
-        for item in items {
+        for (item, stored_id) in items.iter().zip(stored_item_ids.iter()) {
             if self.embedding_service.is_some() {
                 if let Err(error) = self
-                    .generate_and_store_embedding(
-                        &item.memory.memory.id,
-                        &item.memory.memory.content,
-                    )
+                    .generate_and_store_embedding(stored_id, &item.memory.memory.content)
                     .await
                 {
                     warn!(
-                        "Failed to generate embedding for reasoning memory {}: {}",
-                        item.memory.memory.id, error
+                        "Failed to generate embedding for reasoning memory {}",
+                        stored_id
                     );
+                    debug!("reasoning embedding error: {}", error);
                 }
             }
         }
@@ -5446,6 +6507,107 @@ impl LibsqlStorage {
             }
         }
         Ok(hits)
+    }
+
+    /// Store one captured turn in the durable transcript tier. The unique
+    /// session/turn index makes retries idempotent when both identifiers exist.
+    pub async fn store_session_transcript(&self, record: &SessionTranscriptRecord) -> Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO session_transcripts (id, namespace, source_memory_id, session_id, turn_id, user_text, assistant_text, content, observed_at, valid_from, valid_until, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                record.id.to_string(), serde_json::to_string(&record.namespace)?,
+                record.source_memory_id.to_string(), record.session_id.clone(), record.turn_id.clone(),
+                record.user_text.clone(), record.assistant_text.clone(), record.content.clone(),
+                record.observed_at.to_rfc3339(), record.valid_from.to_rfc3339(),
+                record.valid_until.map(|value| value.to_rfc3339()), record.created_at.to_rfc3339(),
+            ],
+        ).await?;
+        Ok(())
+    }
+
+    /// Full-text search over captured turns. This is intentionally separate
+    /// from memory recall so raw conversations remain inspectable without
+    /// becoming ranked context.
+    pub async fn search_session_transcripts(
+        &self,
+        query: &str,
+        namespace: Option<Namespace>,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SessionTranscriptRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.get_conn()?;
+        let mut filters = Vec::new();
+        let mut values = Vec::new();
+        if namespace.is_some() {
+            filters.push("t.namespace = ?");
+        }
+        if session_id.is_some() {
+            filters.push("t.session_id = ?");
+        }
+        let scope = if filters.is_empty() {
+            String::new()
+        } else {
+            format!(" AND {}", filters.join(" AND "))
+        };
+        if let Some(namespace) = namespace {
+            values.push(libsql::Value::Text(serde_json::to_string(&namespace)?));
+        }
+        if let Some(session_id) = session_id {
+            values.push(libsql::Value::Text(session_id.to_owned()));
+        }
+        let (join, match_filter) = if query.trim().is_empty() {
+            (String::new(), String::new())
+        } else {
+            values.insert(0, libsql::Value::Text(Self::build_fts_query(query)));
+            (
+                " JOIN session_transcripts_fts f ON f.rowid = t.rowid".to_string(),
+                " AND session_transcripts_fts MATCH ?".to_string(),
+            )
+        };
+        values.push(libsql::Value::Integer(limit.min(1000) as i64));
+        let sql = format!("SELECT t.id, t.namespace, t.source_memory_id, t.session_id, t.turn_id, t.user_text, t.assistant_text, t.content, t.observed_at, t.valid_from, t.valid_until, t.created_at FROM session_transcripts t{join} WHERE 1=1{match_filter}{scope} ORDER BY t.created_at DESC LIMIT ?");
+        let mut rows = conn.query(&sql, libsql::params_from_iter(values)).await?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let parse = |index: i32| -> Result<chrono::DateTime<Utc>> {
+                let value: String = row.get(index)?;
+                chrono::DateTime::parse_from_rfc3339(&value)
+                    .map(|parsed| parsed.with_timezone(&Utc))
+                    .map_err(|error| {
+                        MnemosyneError::Other(format!("Invalid transcript timestamp: {error}"))
+                    })
+            };
+            let namespace: Namespace = serde_json::from_str(&row.get::<String>(1)?)?;
+            let valid_until = row
+                .get::<Option<String>>(10)?
+                .map(|value| {
+                    chrono::DateTime::parse_from_rfc3339(&value)
+                        .map(|parsed| parsed.with_timezone(&Utc))
+                        .map_err(|error| {
+                            MnemosyneError::Other(format!("Invalid transcript timestamp: {error}"))
+                        })
+                })
+                .transpose()?;
+            result.push(SessionTranscriptRecord {
+                id: MemoryId::from_string(&row.get::<String>(0)?)?,
+                namespace,
+                source_memory_id: MemoryId::from_string(&row.get::<String>(2)?)?,
+                session_id: row.get(3)?,
+                turn_id: row.get(4)?,
+                user_text: row.get(5)?,
+                assistant_text: row.get(6)?,
+                content: row.get(7)?,
+                observed_at: parse(8)?,
+                valid_from: parse(9)?,
+                valid_until,
+                created_at: parse(11)?,
+            });
+        }
+        Ok(result)
     }
 
     /// Find the durable raw turn for a caller-supplied session/turn identity.
@@ -5665,6 +6827,26 @@ impl StorageBackend for LibsqlStorage {
             .await?
             && connection_has_column(&conn, "memory_links", "user_created").await?;
         let tx = conn.transaction().await?;
+        let is_raw_turn = memory.tags.iter().any(|tag| tag == "turn_sync")
+            || memory.provenance.as_ref().is_some_and(|provenance| {
+                provenance.source_kind == crate::types::ProvenanceSourceKind::Turn
+                    && provenance.source_memory_id.is_none()
+            });
+        // Raw turns are append-only source events. Their deduplication key is
+        // the explicit session/turn identity, not content: identical user and
+        // assistant text can legitimately occur in separate turns.
+        if !is_raw_turn {
+            if let Some(parent_id) = self.find_integrity_parent(&tx, memory).await? {
+                self.merge_integrity_parent(&tx, parent_id, memory, has_link_metadata)
+                    .await?;
+                tx.commit().await?;
+                return Ok(());
+            }
+        }
+        let memory_hash = content_hash(&memory.content);
+        let supplied_embedding = (!is_raw_turn)
+            .then_some(memory.embedding.as_ref())
+            .flatten();
 
         // Insert memory metadata - schema varies by database type
         // LibSQL: embedding column with F32_BLOB type
@@ -5672,7 +6854,7 @@ impl StorageBackend for LibsqlStorage {
         let (sql, include_embedding_param) = match self.schema_type {
             SchemaType::LibSQL => {
                 // LibSQL schema: embedding column in memories table
-                let sql = if memory.embedding.is_some() {
+                let sql = if supplied_embedding.is_some() {
                     r#"
                     INSERT INTO memories (
                         id, namespace, created_at, updated_at,
@@ -5680,8 +6862,8 @@ impl StorageBackend for LibsqlStorage {
                         memory_type, memory_class, importance, confidence,
                         related_files, related_entities,
                         access_count, last_accessed_at, expires_at,
-                        is_archived, superseded_by, embedding_model, embedding
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, vector32(?))
+                        is_archived, superseded_by, embedding_model, content_hash, embedding
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, vector32(?))
                     "#
                 } else {
                     r#"
@@ -5691,11 +6873,11 @@ impl StorageBackend for LibsqlStorage {
                         memory_type, memory_class, importance, confidence,
                         related_files, related_entities,
                         access_count, last_accessed_at, expires_at,
-                        is_archived, superseded_by, embedding_model, embedding
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                        is_archived, superseded_by, embedding_model, content_hash, embedding
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                     "#
                 };
-                (sql, memory.embedding.is_some())
+                (sql, supplied_embedding.is_some())
             }
             SchemaType::StandardSQLite => {
                 // Standard SQLite schema: no embedding column in memories table
@@ -5706,15 +6888,15 @@ impl StorageBackend for LibsqlStorage {
                         memory_type, memory_class, importance, confidence,
                         related_files, related_entities,
                         access_count, last_accessed_at, expires_at,
-                        is_archived, superseded_by, embedding_model
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_archived, superseded_by, embedding_model, content_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     "#;
                 (sql, false)
             }
         };
 
         // Serialize embedding outside params! macro to handle errors properly
-        let embedding_json = match &memory.embedding {
+        let embedding_json = match supplied_embedding {
             Some(emb) => Some(serde_json::to_string(emb).map_err(|e| {
                 MnemosyneError::Database(format!("Failed to serialize embedding: {}", e))
             })?),
@@ -5756,6 +6938,7 @@ impl StorageBackend for LibsqlStorage {
                     if memory.is_archived { 1i64 } else { 0i64 },
                     memory.superseded_by.map(|id| id.to_string()),
                     memory.embedding_model.clone(),
+                    memory_hash.clone(),
                     embedding_json
                 ],
             )
@@ -5794,13 +6977,14 @@ impl StorageBackend for LibsqlStorage {
                     if memory.is_archived { 1i64 } else { 0i64 },
                     memory.superseded_by.map(|id| id.to_string()),
                     memory.embedding_model.clone(),
+                    memory_hash.clone(),
                 ],
             )
             .await?;
         }
 
         if self.schema_type == SchemaType::StandardSQLite {
-            if let Some(embedding) = memory.embedding.as_ref() {
+            if let Some(embedding) = supplied_embedding {
                 let bytes: Vec<u8> = embedding
                     .iter()
                     .flat_map(|value| value.to_le_bytes())
@@ -5813,52 +6997,15 @@ impl StorageBackend for LibsqlStorage {
             }
         }
 
-        // Store links
-        for link in &memory.links {
-            let link_type_str = serde_json::to_value(link.link_type)?
-                .as_str()
-                .ok_or_else(|| {
-                    MnemosyneError::Database("Failed to serialize link_type as string".to_string())
-                })?
-                .to_string();
-
-            if has_link_metadata {
-                tx.execute(
-                    r#"
-                    INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    "#,
-                    params![
-                        memory.id.to_string(),
-                        link.target_id.to_string(),
-                        link_type_str,
-                        link.strength as f64,
-                        link.reason.clone(),
-                        link.created_at.to_rfc3339(),
-                        link.last_traversed_at.map(|value| value.to_rfc3339()),
-                        if link.user_created { 1i64 } else { 0i64 },
-                    ],
-                )
-                .await?;
-            } else {
-                tx.execute(
-                    "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    params![
-                        memory.id.to_string(),
-                        link.target_id.to_string(),
-                        link_type_str,
-                        link.strength as f64,
-                        link.reason.clone(),
-                        link.created_at.to_rfc3339(),
-                    ],
-                )
-                .await?;
-            }
-        }
+        // Links are a graph invariant: every accepted edge is idempotently
+        // materialized in both directions.
+        self.add_bidirectional_links(&tx, memory.id, &memory.links, has_link_metadata)
+            .await?;
 
         // Keep provenance and indexed entities in the same transaction as the memory.
         if let Some(provenance) = &memory.provenance {
             provenance.validate()?;
+            self.validate_provenance_source(&tx, provenance).await?;
             tx.execute(
                 "INSERT INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
@@ -5872,13 +7019,25 @@ impl StorageBackend for LibsqlStorage {
                 ],
             ).await?;
         }
-        for entity in &memory.related_entities {
-            let normalized = normalize_entity_name(entity);
-            if !normalized.is_empty() {
+        if self.table_exists_tx(&tx, "memory_entities").await? {
+            self.add_integrity_entities(
+                &tx,
+                memory.id,
+                &serde_json::to_string(&memory.namespace)?,
+                &memory.content,
+                &memory.related_entities,
+            )
+            .await?;
+        }
+        if self.table_exists_tx(&tx, "memory_facts").await? {
+            if let Some(fact) = parse_structured_fact(memory) {
+                self.apply_structured_fact(&tx, &fact).await?;
+            } else {
                 tx.execute(
-                    "INSERT OR IGNORE INTO memory_entities (memory_id, namespace, normalized_name, display_name, role, confidence) VALUES (?, ?, ?, ?, 'related', 1.0)",
-                    params![memory.id.to_string(), serde_json::to_string(&memory.namespace)?, normalized, entity.clone()],
-                ).await?;
+                    "UPDATE memory_facts SET is_active = 0 WHERE memory_id = ?",
+                    params![memory.id.to_string()],
+                )
+                .await?;
             }
         }
 
@@ -6030,6 +7189,22 @@ impl StorageBackend for LibsqlStorage {
             .await?
             && connection_has_column(&conn, "memory_links", "user_created").await?;
         let tx = conn.transaction().await?;
+        let is_raw_turn = memory.tags.iter().any(|tag| tag == "turn_sync")
+            || memory.provenance.as_ref().is_some_and(|provenance| {
+                provenance.source_kind == crate::types::ProvenanceSourceKind::Turn
+                    && provenance.source_memory_id.is_none()
+            });
+        if !is_raw_turn {
+            if let Some(parent_id) = self.find_integrity_parent(&tx, memory).await? {
+                if parent_id != memory.id {
+                    self.merge_integrity_parent(&tx, parent_id, memory, has_link_metadata)
+                        .await?;
+                    tx.execute("UPDATE memories SET is_archived = 1, superseded_by = ?, updated_at = ? WHERE id = ?", params![parent_id.to_string(), Utc::now().to_rfc3339(), memory.id.to_string()]).await?;
+                    tx.commit().await?;
+                    return Ok(());
+                }
+            }
+        }
         let mut current_rows = tx
             .query(
                 "SELECT content FROM memories WHERE id = ?",
@@ -6089,6 +7264,7 @@ impl StorageBackend for LibsqlStorage {
                 r#"
                 UPDATE memories SET
                     updated_at = ?,
+                    content_hash = ?,
                     content = ?,
                     summary = ?,
                     keywords = ?,
@@ -6105,6 +7281,7 @@ impl StorageBackend for LibsqlStorage {
                 "#,
                 params![
                     Utc::now().to_rfc3339(),
+                    content_hash(&memory.content),
                     memory.content.clone(),
                     memory.summary.clone(),
                     serde_json::to_string(&memory.keywords)?,
@@ -6143,6 +7320,7 @@ impl StorageBackend for LibsqlStorage {
                 r#"
                 UPDATE memories SET
                     updated_at = ?,
+                    content_hash = ?,
                     content = ?,
                     summary = ?,
                     keywords = ?,
@@ -6160,6 +7338,7 @@ impl StorageBackend for LibsqlStorage {
                 "#,
                 params![
                     Utc::now().to_rfc3339(),
+                    content_hash(&memory.content),
                     memory.content.clone(),
                     memory.summary.clone(),
                     serde_json::to_string(&memory.keywords)?,
@@ -6187,6 +7366,7 @@ impl StorageBackend for LibsqlStorage {
                 r#"
                 UPDATE memories SET
                     updated_at = ?,
+                    content_hash = ?,
                     content = ?,
                     summary = ?,
                     keywords = ?,
@@ -6203,6 +7383,7 @@ impl StorageBackend for LibsqlStorage {
                 "#,
                 params![
                     Utc::now().to_rfc3339(),
+                    content_hash(&memory.content),
                     memory.content.clone(),
                     memory.summary.clone(),
                     serde_json::to_string(&memory.keywords)?,
@@ -6225,54 +7406,34 @@ impl StorageBackend for LibsqlStorage {
             .await?;
         }
 
-        // Delete and re-insert links
+        // Replace this memory's outgoing edges and their generated reverse
+        // edges, without deleting unrelated incoming edges from other
+        // memories.
+        let mut old_links = tx
+            .query(
+                "SELECT target_id, link_type FROM memory_links WHERE source_id = ?",
+                params![memory.id.to_string()],
+            )
+            .await?;
+        let mut old_targets = Vec::new();
+        while let Some(row) = old_links.next().await? {
+            old_targets.push((row.get::<String>(0)?, row.get::<String>(1)?));
+        }
+        drop(old_links);
         tx.execute(
             "DELETE FROM memory_links WHERE source_id = ?",
             params![memory.id.to_string()],
         )
         .await?;
-
-        for link in &memory.links {
-            let link_type_str = serde_json::to_value(link.link_type)?
-                .as_str()
-                .ok_or_else(|| {
-                    MnemosyneError::Database("Failed to serialize link_type as string".to_string())
-                })?
-                .to_string();
-
-            if has_link_metadata {
-                tx.execute(
-                    r#"
-                    INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    "#,
-                    params![
-                        memory.id.to_string(),
-                        link.target_id.to_string(),
-                        link_type_str,
-                        link.strength as f64,
-                        link.reason.clone(),
-                        link.created_at.to_rfc3339(),
-                        link.last_traversed_at.map(|value| value.to_rfc3339()),
-                        if link.user_created { 1i64 } else { 0i64 },
-                    ],
-                )
-                .await?;
-            } else {
-                tx.execute(
-                    "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    params![
-                        memory.id.to_string(),
-                        link.target_id.to_string(),
-                        link_type_str,
-                        link.strength as f64,
-                        link.reason.clone(),
-                        link.created_at.to_rfc3339(),
-                    ],
-                )
-                .await?;
-            }
+        for (target_id, link_type) in old_targets {
+            tx.execute(
+                "DELETE FROM memory_links WHERE source_id = ? AND target_id = ? AND link_type = ?",
+                params![target_id, memory.id.to_string(), link_type],
+            )
+            .await?;
         }
+        self.add_bidirectional_links(&tx, memory.id, &memory.links, has_link_metadata)
+            .await?;
 
         // Preserve typed entity metadata when a note is updated through its
         // compact `related_entities` projection.
@@ -6298,19 +7459,26 @@ impl StorageBackend for LibsqlStorage {
         )
         .await?;
         let namespace_json = serde_json::to_string(&memory.namespace)?;
-        for entity in &memory.related_entities {
-            let normalized = normalize_entity_name(entity);
+        for entity in extracted_entities(&memory.content, &memory.related_entities).iter() {
+            let normalized = normalize_entity_name(&entity.normalized_name);
             if normalized.is_empty() {
                 continue;
             }
             let existing = preserved_entities
                 .iter()
                 .find(|(old_normalized, old_display, _, _)| {
-                    old_normalized == &normalized || old_display.eq_ignore_ascii_case(entity)
+                    old_normalized == &normalized
+                        || old_display.eq_ignore_ascii_case(&entity.display_name)
                 });
             let (display_name, role, confidence) = existing
                 .map(|(_, display, role, confidence)| (display.clone(), role.clone(), *confidence))
-                .unwrap_or_else(|| (entity.clone(), "related".to_string(), 1.0));
+                .unwrap_or_else(|| {
+                    (
+                        entity.display_name.clone(),
+                        entity.role.clone(),
+                        entity.confidence,
+                    )
+                });
             tx.execute(
                 "INSERT OR IGNORE INTO memory_entities (memory_id, namespace, normalized_name, display_name, role, confidence) VALUES (?, ?, ?, ?, ?, ?)",
                 params![memory.id.to_string(), namespace_json.clone(), normalized, display_name, role, confidence as f64],
@@ -6318,26 +7486,29 @@ impl StorageBackend for LibsqlStorage {
             .await?;
         }
 
-        if let Some(provenance) = &memory.provenance {
-            provenance.validate()?;
-            tx.execute(
-                "INSERT OR REPLACE INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![
-                    memory.id.to_string(),
-                    serde_json::to_value(provenance.source_kind)?.as_str().unwrap_or("manual"),
-                    provenance.source_memory_id.map(|id| id.to_string()),
-                    provenance.session_id.clone(), provenance.turn_id.clone(),
-                    serde_json::to_value(provenance.source_role)?.as_str().unwrap_or("unknown"),
-                    provenance.observed_at.to_rfc3339(), provenance.evidence_quote.clone(),
-                    provenance.extractor_model.clone(), provenance.extraction_schema_version.clone(),
-                ],
-            ).await?;
-        } else {
-            tx.execute(
-                "DELETE FROM memory_provenance WHERE memory_id = ?",
-                params![memory.id.to_string()],
-            )
-            .await?;
+        if self.table_exists_tx(&tx, "memory_provenance").await? {
+            if let Some(provenance) = &memory.provenance {
+                provenance.validate()?;
+                self.validate_provenance_source(&tx, provenance).await?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        memory.id.to_string(),
+                        serde_json::to_value(provenance.source_kind)?.as_str().unwrap_or("manual"),
+                        provenance.source_memory_id.map(|id| id.to_string()),
+                        provenance.session_id.clone(), provenance.turn_id.clone(),
+                        serde_json::to_value(provenance.source_role)?.as_str().unwrap_or("unknown"),
+                        provenance.observed_at.to_rfc3339(), provenance.evidence_quote.clone(),
+                        provenance.extractor_model.clone(), provenance.extraction_schema_version.clone(),
+                    ],
+                ).await?;
+            } else {
+                tx.execute(
+                    "DELETE FROM memory_provenance WHERE memory_id = ?",
+                    params![memory.id.to_string()],
+                )
+                .await?;
+            }
         }
 
         // A read-modify-write of changed content without a replacement vector
@@ -6356,6 +7527,9 @@ impl StorageBackend for LibsqlStorage {
                 )
                 .await?;
             }
+        }
+        if let Some(fact) = parse_structured_fact(memory) {
+            self.apply_structured_fact(&tx, &fact).await?;
         }
 
         // Inline audit log INSERT within the transaction (avoids a separate DB connection round-trip)
@@ -6409,6 +7583,13 @@ impl StorageBackend for LibsqlStorage {
             )
             .await?;
         }
+        if connection_has_column(&conn, "memory_facts", "memory_id").await? {
+            conn.execute(
+                "UPDATE memory_facts SET is_active = 0 WHERE memory_id = ?",
+                params![id.to_string()],
+            )
+            .await?;
+        }
 
         // Inline audit log INSERT on same connection (avoids separate get_conn() round-trip)
         conn.execute(
@@ -6452,6 +7633,8 @@ impl StorageBackend for LibsqlStorage {
                 WHERE embedding IS NOT NULL
                   AND is_archived = 0
                   AND memory_class = 'knowledge'
+                  AND tags NOT LIKE '%\"turn_sync\"%'
+                  AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
                   AND namespace = ?
                 ORDER BY distance ASC
                 LIMIT {}
@@ -6471,6 +7654,8 @@ impl StorageBackend for LibsqlStorage {
                 WHERE embedding IS NOT NULL
                   AND is_archived = 0
                   AND memory_class = 'knowledge'
+                  AND tags NOT LIKE '%\"turn_sync\"%'
+                  AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
                 ORDER BY distance ASC
                 LIMIT {}
                 "#,
@@ -6522,7 +7707,12 @@ impl StorageBackend for LibsqlStorage {
         // than turning it into an invalid empty MATCH expression.
         let fts_query = Self::build_fts_query(query);
 
-        // Handle empty query - return all memories in namespace (no FTS5)
+        // Handle empty query - return all memories in namespace (no FTS5).
+        // A non-empty punctuation-only query has no safe FTS token; treat it
+        // as a keyword miss rather than sending an empty MATCH expression.
+        if !query.trim().is_empty() && fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
         let conn = self.get_conn()?;
         let candidate_limit = self.search_config.fts_candidate_limit.max(1);
         let class_filter = self.knowledge_predicate("m");
@@ -6531,14 +7721,14 @@ impl StorageBackend for LibsqlStorage {
             let columns = self.memory_columns("m");
             let sql = if namespace_filter.is_some() {
                 format!(
-                    "SELECT {columns} FROM memories m WHERE m.namespace = ? AND m.is_archived = 0 AND {class_filter} ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}",
+                    "SELECT {columns} FROM memories m WHERE m.namespace = ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}",
                     columns = columns,
                     class_filter = class_filter,
                     candidate_limit = candidate_limit
                 )
             } else {
                 format!(
-                    "SELECT {columns} FROM memories m WHERE m.is_archived = 0 AND {class_filter} ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}",
+                    "SELECT {columns} FROM memories m WHERE m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}",
                     columns = columns,
                     class_filter = class_filter,
                     candidate_limit = candidate_limit
@@ -6560,14 +7750,14 @@ impl StorageBackend for LibsqlStorage {
             let columns = self.memory_columns("m");
             let sql = if namespace_filter.is_some() {
                 format!(
-                    "SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.namespace = ? AND m.is_archived = 0 AND {class_filter} ORDER BY fts_rank ASC LIMIT {candidate_limit}",
+                    "SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.namespace = ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY fts_rank ASC LIMIT {candidate_limit}",
                     columns = columns,
                     class_filter = class_filter,
                     candidate_limit = candidate_limit
                 )
             } else {
                 format!(
-                    "SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.is_archived = 0 AND {class_filter} ORDER BY fts_rank ASC LIMIT {candidate_limit}",
+                    "SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY fts_rank ASC LIMIT {candidate_limit}",
                     columns = columns,
                     class_filter = class_filter,
                     candidate_limit = candidate_limit
@@ -6657,23 +7847,23 @@ impl StorageBackend for LibsqlStorage {
         let sql = if self.schema_type == SchemaType::StandardSQLite {
             if namespace.is_some() {
                 format!(
-                    "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge' LIMIT 100",
+                    "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) LIMIT 100",
                     columns = self.memory_columns("m")
                 )
             } else {
                 format!(
-                    "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge' LIMIT 100",
+                    "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) LIMIT 100",
                     columns = self.memory_columns("m")
                 )
             }
         } else if namespace.is_some() {
             format!(
-                "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 AND memory_class = 'knowledge' AND embedding IS NOT NULL LIMIT 100",
+                "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 AND memory_class = 'knowledge' AND tags NOT LIKE '%\"turn_sync\"%' AND (expires_at IS NULL OR datetime(expires_at) > datetime('now')) AND embedding IS NOT NULL LIMIT 100",
                 self.memory_columns("")
             )
         } else {
             format!(
-                "SELECT {} FROM memories WHERE is_archived = 0 AND memory_class = 'knowledge' AND embedding IS NOT NULL LIMIT 100",
+                "SELECT {} FROM memories WHERE is_archived = 0 AND memory_class = 'knowledge' AND tags NOT LIKE '%\"turn_sync\"%' AND (expires_at IS NULL OR datetime(expires_at) > datetime('now')) AND embedding IS NOT NULL LIMIT 100",
                 self.memory_columns("")
             )
         };
@@ -6759,12 +7949,12 @@ impl StorageBackend for LibsqlStorage {
         let (sql, params_vec) = if let Some(ns) = namespace {
             let ns_str = serde_json::to_string(&ns)?;
             (
-                "SELECT COUNT(*) FROM memories WHERE namespace = ? AND is_archived = 0",
+                "SELECT COUNT(*) FROM memories WHERE namespace = ? AND is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%'",
                 vec![ns_str],
             )
         } else {
             (
-                "SELECT COUNT(*) FROM memories WHERE is_archived = 0",
+                "SELECT COUNT(*) FROM memories WHERE is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%'",
                 vec![],
             )
         };
@@ -6792,6 +7982,9 @@ impl StorageBackend for LibsqlStorage {
     ) -> Result<Vec<SearchResult>> {
         debug!("Hybrid search: {} (expand_graph: {})", query, expand_graph);
 
+        let effective_weights = self.retrieval_weights().await;
+        let trace_namespace = namespace.as_ref().map(ToString::to_string);
+        let mut fallback_reasons = Vec::new();
         // Collect scores from different sources
         let mut memory_scores: std::collections::HashMap<MemoryId, (f32, f32, f32, f32)> =
             std::collections::HashMap::new(); // (keyword, vector, graph, depth)
@@ -6808,6 +8001,7 @@ impl StorageBackend for LibsqlStorage {
         // 2. Vector search (if embedding service available and query non-empty)
         // Ranked vector channel results, kept ordered best-first for fusion.
         let mut vector_results: Vec<(MemoryId, f32)> = Vec::new();
+        let mut graph_candidate_count = 0usize;
         if !query.is_empty()
             && self.embedding_service.is_some()
             && self.search_config.enable_vector_search
@@ -6833,9 +8027,23 @@ impl StorageBackend for LibsqlStorage {
                         }
                     }
                     Err(e) => {
+                        fallback_reasons.push("query_embedding_unavailable".to_string());
                         // Fail-closed retrieval: if a ranking signal fails, do not
                         // silently serve keyword-only (unranked) results.
                         if self.search_config.fail_closed {
+                            let mut trace = crate::utils::retrieval::RetrievalTrace::for_query(
+                                query,
+                                effective_weights,
+                            );
+                            trace.namespace = trace_namespace.clone();
+                            trace.keyword_candidates = keyword_results.len();
+                            trace.fallback_reasons = vec![
+                                "query_embedding_unavailable".to_string(),
+                                "fail_closed".to_string(),
+                            ];
+                            if let Err(error) = self.record_retrieval_trace(&trace).await {
+                                warn!("failed to persist retrieval trace: {}", error);
+                            }
                             return Err(MnemosyneError::Database(format!(
                                 "fail-closed retrieval: query embedding generation failed: {}",
                                 e
@@ -6848,6 +8056,8 @@ impl StorageBackend for LibsqlStorage {
                     }
                 }
             }
+        } else if !query.is_empty() && self.search_config.enable_vector_search {
+            fallback_reasons.push("vector_search_unavailable".to_string());
         }
 
         // 3. Exact entity anchors. This is a union signal, never a hard
@@ -6873,6 +8083,7 @@ impl StorageBackend for LibsqlStorage {
                 )
                 .await?;
 
+            graph_candidate_count = graph_memories.len();
             for memory in graph_memories {
                 let entry = memory_scores
                     .entry(memory.id)
@@ -6884,6 +8095,15 @@ impl StorageBackend for LibsqlStorage {
 
         // If no results from any source, return empty
         if memory_scores.is_empty() {
+            let mut trace =
+                crate::utils::retrieval::RetrievalTrace::for_query(query, effective_weights);
+            trace.namespace = trace_namespace.clone();
+            trace.keyword_candidates = keyword_results.len();
+            trace.vector_candidates = vector_results.len();
+            trace.fallback_reasons = fallback_reasons;
+            if let Err(error) = self.record_retrieval_trace(&trace).await {
+                warn!("failed to persist retrieval trace: {}", error);
+            }
             debug!("No results from any search source");
             return Ok(vec![]);
         }
@@ -6907,6 +8127,9 @@ impl StorageBackend for LibsqlStorage {
                     continue;
                 }
             };
+            if memory.is_archived {
+                continue;
+            }
 
             // Compute component scores
             let importance_score = memory.importance as f32 / 10.0;
@@ -6924,9 +8147,9 @@ impl StorageBackend for LibsqlStorage {
             } else {
                 0.0
             };
-            let final_score = (self.search_config.keyword_weight * keyword_score
-                + self.search_config.vector_weight * vector_score
-                + self.search_config.graph_weight * graph_depth_score
+            let final_score = (effective_weights.keyword * keyword_score
+                + effective_weights.vector * vector_score
+                + effective_weights.graph * graph_depth_score
                 + self.search_config.importance_weight * importance_score
                 + self.search_config.recency_weight * recency_score
                 + 0.15 * entity_score)
@@ -6966,8 +8189,54 @@ impl StorageBackend for LibsqlStorage {
         });
         scored_results.truncate(max_results);
 
+        let mut trace =
+            crate::utils::retrieval::RetrievalTrace::for_query(query, effective_weights);
+        trace.namespace = trace_namespace;
+        trace.keyword_candidates = keyword_results.len();
+        trace.vector_candidates = vector_results.len();
+        trace.graph_candidates = graph_candidate_count;
+        trace.fallback_reasons = fallback_reasons;
+        trace.result_ids = scored_results
+            .iter()
+            .map(|result| result.memory.id.to_string())
+            .collect();
+        if let Err(error) = self.record_retrieval_trace(&trace).await {
+            warn!("failed to persist retrieval trace: {}", error);
+        }
         debug!("Hybrid search returned {} results", scored_results.len());
         Ok(scored_results)
+    }
+
+    async fn record_retrieval_trace(
+        &self,
+        trace: crate::utils::retrieval::RetrievalTrace,
+    ) -> Result<()> {
+        self.record_retrieval_trace(&trace).await
+    }
+
+    async fn retrieval_weights(&self) -> crate::utils::retrieval::RetrievalWeights {
+        self.retrieval_weights().await
+    }
+
+    async fn record_retrieval_use(&self, memory_ids: &[MemoryId]) -> Result<()> {
+        self.record_retrieval_use(memory_ids).await
+    }
+
+    async fn harvest_retrieval_golden_item(
+        &self,
+        query: &str,
+        relevant_memory_ids: &[MemoryId],
+        namespace: Option<Namespace>,
+    ) -> Result<()> {
+        self.harvest_retrieval_golden_item(query, relevant_memory_ids, namespace)
+            .await
+    }
+
+    async fn run_retrieval_evaluation(
+        &self,
+        max_samples: usize,
+    ) -> Result<crate::utils::retrieval::RetrievalEvaluationReport> {
+        self.run_retrieval_evaluation(max_samples).await
     }
 
     async fn interaction_policy_search(
@@ -7044,7 +8313,7 @@ impl StorageBackend for LibsqlStorage {
             let ns_str = serde_json::to_string(&ns)?;
             (
                 format!(
-                    "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 ORDER BY {} LIMIT ?",
+                    "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ?",
                     self.memory_columns(""),
                     order_clause
                 ),
@@ -7053,7 +8322,7 @@ impl StorageBackend for LibsqlStorage {
         } else {
             (
                 format!(
-                    "SELECT {} FROM memories WHERE is_archived = 0 ORDER BY {} LIMIT ?",
+                    "SELECT {} FROM memories WHERE is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ?",
                     self.memory_columns(""),
                     order_clause
                 ),
@@ -8112,6 +9381,377 @@ mod fts_query_tests {
 
 // Additional implementation methods for LibsqlStorage
 impl LibsqlStorage {
+    async fn retrieval_setting(conn: &Connection, key: &str, default: &str) -> String {
+        let Ok(mut rows) = conn
+            .query(
+                "SELECT value FROM retrieval_evaluation_config WHERE key = ? LIMIT 1",
+                params![key],
+            )
+            .await
+        else {
+            return default.to_string();
+        };
+        rows.next()
+            .await
+            .ok()
+            .flatten()
+            .and_then(|row| row.get::<String>(0).ok())
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    /// Persist a privacy-conscious retrieval explanation. Diagnostics are
+    /// enabled by default and failures never change recall behavior.
+    pub async fn record_retrieval_trace(
+        &self,
+        trace: &crate::utils::retrieval::RetrievalTrace,
+    ) -> Result<()> {
+        let conn = self.get_conn()?;
+        let diagnostics_enabled = Self::retrieval_setting(&conn, "diagnostics_enabled", "true")
+            .await
+            .parse::<bool>()
+            .unwrap_or(true)
+            && std::env::var("MNEMOSYNE_RECALL_DIAGNOSTICS")
+                .map(|value| !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "off"))
+                .unwrap_or(true);
+        if !diagnostics_enabled {
+            return Ok(());
+        }
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT OR REPLACE INTO retrieval_traces (id, query_hash, namespace, rewritten_terms, keyword_candidates, vector_candidates, graph_candidates, effective_weights, fallback_reasons, result_ids, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                trace.id.clone(),
+                trace.query_hash.clone(),
+                trace.namespace.clone(),
+                serde_json::to_string(
+                    &trace
+                        .rewritten_terms
+                        .iter()
+                        .map(|term| term_fingerprint(term))
+                        .collect::<Vec<_>>(),
+                )?,
+                trace.keyword_candidates as i64,
+                trace.vector_candidates as i64,
+                trace.graph_candidates as i64,
+                serde_json::to_string(&trace.effective_weights)?,
+                serde_json::to_string(&trace.fallback_reasons)?,
+                serde_json::to_string(&trace.result_ids)?,
+                now,
+            ],
+        )
+        .await?;
+
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN fallback_reasons != '[]' THEN 1 ELSE 0 END), 0) FROM retrieval_traces",
+                params![],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let total: i64 = row.get(0)?;
+            let fallback: i64 = row.get(1)?;
+            let alert_rate = Self::retrieval_setting(&conn, "fallback_alert_rate", "0.05")
+                .await
+                .parse::<f64>()
+                .unwrap_or(0.05)
+                .clamp(0.0, 1.0);
+            if total >= 20 && fallback as f64 / total as f64 > alert_rate {
+                warn!(
+                    "retrieval fallback rate {:.1}% exceeds configured {:.1}% threshold",
+                    fallback as f64 * 100.0 / total as f64,
+                    alert_rate * 100.0
+                );
+            }
+        }
+        drop(rows);
+        // Evaluation is bounded by the persisted weekly gate and becomes
+        // active automatically once a local golden item has been harvested.
+        let mut golden = conn
+            .query("SELECT 1 FROM retrieval_golden_items LIMIT 1", params![])
+            .await?;
+        let has_golden_items = golden.next().await?.is_some();
+        drop(golden);
+        let evaluation_enabled = Self::retrieval_setting(&conn, "enabled", "true")
+            .await
+            .parse::<bool>()
+            .unwrap_or(true);
+        if has_golden_items && evaluation_enabled {
+            let _ = self.run_retrieval_evaluation(100).await;
+        }
+        Ok(())
+    }
+
+    /// Return the most recent persisted retrieval traces for diagnostics and
+    /// operator-facing audit tooling.
+    pub async fn list_retrieval_traces(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::utils::retrieval::RetrievalTrace>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, query_hash, namespace, rewritten_terms, keyword_candidates, vector_candidates, graph_candidates, effective_weights, fallback_reasons, result_ids FROM retrieval_traces ORDER BY created_at DESC LIMIT ?",
+                params![limit.clamp(1, 1_000) as i64],
+            )
+            .await?;
+        let mut traces = Vec::new();
+        while let Some(row) = rows.next().await? {
+            traces.push(crate::utils::retrieval::RetrievalTrace {
+                id: row.get(0)?,
+                query_hash: row.get(1)?,
+                namespace: row.get(2)?,
+                rewritten_terms: serde_json::from_str(&row.get::<String>(3)?)?,
+                keyword_candidates: row.get::<i64>(4)?.max(0) as usize,
+                vector_candidates: row.get::<i64>(5)?.max(0) as usize,
+                graph_candidates: row.get::<i64>(6)?.max(0) as usize,
+                effective_weights: serde_json::from_str(&row.get::<String>(7)?)?,
+                fallback_reasons: serde_json::from_str(&row.get::<String>(8)?)?,
+                result_ids: serde_json::from_str(&row.get::<String>(9)?)?,
+            });
+        }
+        Ok(traces)
+    }
+
+    /// Read learned weights, retaining safe defaults when the table is absent
+    /// (for callers opening a pre-migration database).
+    pub async fn retrieval_weights(&self) -> crate::utils::retrieval::RetrievalWeights {
+        let defaults = crate::utils::retrieval::RetrievalWeights::default();
+        let Ok(conn) = self.get_conn() else {
+            return defaults;
+        };
+        let Ok(mut rows) = conn
+            .query(
+                "SELECT weights FROM retrieval_adaptive_weights WHERE profile = 'default'",
+                params![],
+            )
+            .await
+        else {
+            return defaults;
+        };
+        let Ok(Some(row)) = rows.next().await else {
+            return defaults;
+        };
+        serde_json::from_str::<crate::utils::retrieval::RetrievalWeights>(
+            &row.get::<String>(0).unwrap_or_default(),
+        )
+        .unwrap_or(defaults)
+    }
+
+    /// Record a user-use signal without storing the raw response or query.
+    pub async fn record_retrieval_use(&self, memory_ids: &[MemoryId]) -> Result<()> {
+        if memory_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.get_conn()?;
+        let mut rows = conn.query(
+            "SELECT id, query_hash, namespace, rewritten_terms, result_ids, used_result_ids FROM retrieval_traces ORDER BY created_at DESC LIMIT 1000",
+            params![],
+        ).await?;
+        let wanted: std::collections::HashSet<String> =
+            memory_ids.iter().map(ToString::to_string).collect();
+        // `mnemosyne.used` has no trace ID in its historical wire contract.
+        // Attribute the signal to the newest matching query only; labeling
+        // every historical trace containing the same memory corrupts the
+        // golden set and makes evaluation look better than reality.
+        let mut update = None;
+        while let Some(row) = rows.next().await? {
+            let id: String = row.get(0)?;
+            let query_hash: String = row.get(1)?;
+            let namespace: Option<String> = row.get(2)?;
+            let query_terms: Vec<String> =
+                serde_json::from_str(&row.get::<String>(3)?).unwrap_or_default();
+            let ids: Vec<String> = serde_json::from_str(&row.get::<String>(4)?).unwrap_or_default();
+            let mut used: Vec<String> =
+                serde_json::from_str(&row.get::<String>(5).unwrap_or_else(|_| "[]".into()))
+                    .unwrap_or_default();
+            for memory_id in ids.into_iter().filter(|id| wanted.contains(id)) {
+                if !used.contains(&memory_id) {
+                    used.push(memory_id);
+                }
+            }
+            if !used.is_empty() {
+                update = Some((id, query_hash, namespace, query_terms, used));
+                break;
+            }
+        }
+        if let Some((id, query_hash, namespace, query_terms, used)) = update {
+            conn.execute(
+                "UPDATE retrieval_traces SET used_result_ids = ? WHERE id = ?",
+                params![serde_json::to_string(&used)?, id],
+            )
+            .await?;
+            conn.execute(
+                "INSERT OR REPLACE INTO retrieval_golden_items (id, query_hash, query_terms, relevant_memory_ids, namespace, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                params![Uuid::new_v4().to_string(), query_hash, serde_json::to_string(&query_terms)?, serde_json::to_string(&used)?, namespace.unwrap_or_default(), Utc::now().timestamp()],
+            ).await?;
+        }
+        Ok(())
+    }
+
+    /// Add or replace a privacy-conscious golden-set item.
+    pub async fn upsert_retrieval_golden_item(
+        &self,
+        item: &crate::utils::retrieval::RetrievalGoldenItem,
+    ) -> Result<()> {
+        let conn = self.get_conn()?;
+        let query_term_fingerprints = item
+            .query_terms
+            .iter()
+            .map(|term| term_fingerprint(term))
+            .collect::<Vec<_>>();
+        conn.execute(
+            "INSERT OR REPLACE INTO retrieval_golden_items (id, query_hash, query_terms, relevant_memory_ids, namespace, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                item.id.clone(), item.query_hash.clone(),
+                serde_json::to_string(&query_term_fingerprints)?,
+                serde_json::to_string(&item.relevant_memory_ids)?,
+                item.namespace.clone().unwrap_or_default(), Utc::now().timestamp()
+            ],
+        ).await?;
+        Ok(())
+    }
+
+    /// Harvest a user-confirmed query/result pair without persisting query text.
+    pub async fn harvest_retrieval_golden_item(
+        &self,
+        query: &str,
+        relevant_memory_ids: &[MemoryId],
+        namespace: Option<Namespace>,
+    ) -> Result<()> {
+        let trace = crate::utils::retrieval::RetrievalTrace::for_query(
+            query,
+            crate::utils::retrieval::RetrievalWeights::default(),
+        );
+        self.upsert_retrieval_golden_item(&crate::utils::retrieval::RetrievalGoldenItem {
+            id: Uuid::new_v4().to_string(),
+            query_hash: trace.query_hash,
+            query_terms: trace.rewritten_terms,
+            relevant_memory_ids: relevant_memory_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            namespace: namespace.map(|value| value.to_string()),
+        })
+        .await
+    }
+
+    /// Evaluate at most `max_samples` golden items and adapt only after a
+    /// minimum sample count. A recent run is reused to enforce weekly bounds.
+    pub async fn run_retrieval_evaluation(
+        &self,
+        max_samples: usize,
+    ) -> Result<crate::utils::retrieval::RetrievalEvaluationReport> {
+        let conn = self.get_conn()?;
+        let evaluation_enabled = Self::retrieval_setting(&conn, "enabled", "true")
+            .await
+            .parse::<bool>()
+            .unwrap_or(true);
+        if !evaluation_enabled {
+            return Ok(crate::utils::retrieval::RetrievalEvaluationReport {
+                sample_count: 0,
+                precision_at_5: 0.0,
+                phrasing_miss_rate: 0.0,
+            });
+        }
+        let configured_interval =
+            Self::retrieval_setting(&conn, "weekly_interval_seconds", "604800")
+                .await
+                .parse::<i64>()
+                .unwrap_or(604800)
+                .max(1);
+        let configured_max_samples = Self::retrieval_setting(&conn, "max_samples", "100")
+            .await
+            .parse::<usize>()
+            .unwrap_or(100)
+            .clamp(1, 1000);
+        let max_samples = max_samples.clamp(1, configured_max_samples);
+        let now = Utc::now().timestamp();
+        let mut recent = conn.query(
+            "SELECT sample_count, precision_at_5, phrasing_miss_rate FROM retrieval_evaluation_runs WHERE created_at > ? ORDER BY created_at DESC LIMIT 1",
+            params![now - configured_interval],
+        ).await?;
+        if let Some(row) = recent.next().await? {
+            return Ok(crate::utils::retrieval::RetrievalEvaluationReport {
+                sample_count: row.get::<i64>(0)? as usize,
+                precision_at_5: row.get::<f64>(1)? as f32,
+                phrasing_miss_rate: row.get::<f64>(2)? as f32,
+            });
+        }
+        let mut golden = conn.query(
+            "SELECT query_hash, relevant_memory_ids, COALESCE(namespace, '') FROM retrieval_golden_items ORDER BY created_at DESC LIMIT ?",
+            params![max_samples as i64],
+        ).await?;
+        let mut samples = Vec::new();
+        while let Some(row) = golden.next().await? {
+            let query_hash: String = row.get(0)?;
+            let relevant: Vec<String> =
+                serde_json::from_str(&row.get::<String>(1)?).unwrap_or_default();
+            let namespace: String = row.get(2)?;
+            let mut traces = conn.query("SELECT keyword_candidates, result_ids FROM retrieval_traces WHERE query_hash = ? AND COALESCE(namespace, '') = ? ORDER BY created_at DESC LIMIT 1", params![query_hash, namespace]).await?;
+            let (keyword_candidates, result_ids): (usize, Vec<String>) = match traces.next().await?
+            {
+                Some(trace) => (
+                    trace.get::<i64>(0)?.max(0) as usize,
+                    serde_json::from_str(&trace.get::<String>(1)?).unwrap_or_default(),
+                ),
+                None => continue,
+            };
+            samples.push((relevant, result_ids, keyword_candidates));
+        }
+        let sample_count = samples.len();
+        let (precision_at_5, phrasing_miss_rate) = if sample_count == 0 {
+            (0.0, 0.0)
+        } else {
+            let mut hits = 0usize;
+            let mut miss = 0usize;
+            for (relevant, results, keyword_candidates) in &samples {
+                let relevant: std::collections::HashSet<_> = relevant.iter().collect();
+                let top = results.iter().take(5);
+                let count = top.filter(|id| relevant.contains(id)).count();
+                hits += count;
+                if *keyword_candidates == 0 && count == 0 {
+                    miss += 1;
+                }
+            }
+            (
+                hits as f32 / (sample_count * 5) as f32,
+                miss as f32 / sample_count as f32,
+            )
+        };
+        let report = crate::utils::retrieval::RetrievalEvaluationReport {
+            sample_count,
+            precision_at_5,
+            phrasing_miss_rate,
+        };
+        conn.execute("INSERT INTO retrieval_evaluation_runs (id, sample_count, precision_at_5, phrasing_miss_rate, created_at) VALUES (?, ?, ?, ?, ?)", params![Uuid::new_v4().to_string(), sample_count as i64, precision_at_5, phrasing_miss_rate, now]).await?;
+        let min_samples = Self::retrieval_setting(&conn, "min_samples_for_adaptation", "20")
+            .await
+            .parse::<usize>()
+            .unwrap_or(20)
+            .clamp(1, 10_000);
+        if sample_count >= min_samples {
+            let current = self.retrieval_weights().await;
+            let delta = (0.5 - precision_at_5).clamp(-0.05, 0.05);
+            let mut updated = crate::utils::retrieval::RetrievalWeights {
+                keyword: current.keyword + delta,
+                vector: current.vector - delta,
+                graph: current.graph,
+            };
+            updated.keyword = updated.keyword.clamp(0.20, 0.60);
+            updated.vector = updated.vector.clamp(0.15, 0.50);
+            updated.graph = updated.graph.clamp(0.05, 0.30);
+            let sum = updated.keyword + updated.vector + updated.graph;
+            updated.keyword /= sum;
+            updated.vector /= sum;
+            updated.graph /= sum;
+            conn.execute("INSERT OR REPLACE INTO retrieval_adaptive_weights (profile, weights, sample_count, last_evaluated_at) VALUES ('default', ?, ?, ?)", params![serde_json::to_string(&updated)?, sample_count as i64, now]).await?;
+        }
+        Ok(report)
+    }
+
     /// Fetch many memories in two round trips (one for rows, one for all
     /// associated links) instead of two queries per id.
     ///

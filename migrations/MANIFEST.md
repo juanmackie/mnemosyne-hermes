@@ -21,6 +21,10 @@
 | 020 | `libsql/020_memory_change_proposals.sql`, `sqlite/020_memory_change_proposals.sql` | 2026-08-28 | ✅ Registered | Persists owner-routed memory change proposals and explicit review outcomes |
 | 021 | `sqlite/021_expand_memory_type_constraint.sql` | 2026-08-28 | ✅ Registered | Rebuilds the StandardSQLite memory-type constraint for the complete workflow enum |
 | 022 | `libsql/022_interaction_policy_proposals.sql`, `sqlite/022_interaction_policy_proposals.sql` | 2026-08-29 | ✅ Registered | Adds owner-reviewed interaction-policy proposals; extracted guidance is not canonical until applied |
+| 025 | `libsql/025_session_transcripts.sql`, `sqlite/025_session_transcripts.sql` | 2026-08-30 | ✅ Registered | Adds durable full-text searchable captured-turn transcripts excluded from memory recall and embeddings |
+| 026 | `libsql/026_retrieval_evaluation.sql`, `sqlite/026_retrieval_evaluation.sql` | 2026-08-30 | ✅ Registered | Adds privacy-preserving retrieval traces, golden items, bounded evaluation, and adaptive weights |
+| 027 | `libsql/027_memory_integrity.sql`, `sqlite/027_memory_integrity.sql` | 2026-08-30 | ✅ Registered | Adds content hashes, structured facts, centralized deduplication, and orphan-repair scheduling |
+| 028 | `libsql/028_retrieval_trace_namespace.sql`, `sqlite/028_retrieval_trace_namespace.sql` | 2026-08-30 | ✅ Registered | Keeps retrieval diagnostics and golden evaluation scoped by namespace |
 
 ### Ghost Migrations (Applied but Never Committed)
 

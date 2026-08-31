@@ -22,6 +22,7 @@ pub enum MaintenanceKindArg {
     StaleLinks,
     MissingCitations,
     HealthSummary,
+    OrphanRepair,
 }
 
 impl MaintenanceKindArg {
@@ -30,6 +31,7 @@ impl MaintenanceKindArg {
             Self::StaleLinks => MaintenanceKind::StaleLinks,
             Self::MissingCitations => MaintenanceKind::MissingCitations,
             Self::HealthSummary => MaintenanceKind::HealthSummary,
+            Self::OrphanRepair => MaintenanceKind::OrphanRepair,
         }
     }
 }
@@ -82,7 +84,7 @@ pub enum EvolveJob {
 
     /// Run a bounded advisory maintenance report
     Maintenance {
-        /// Report kind (stale-links, missing-citations, health-summary)
+        /// Report kind (stale-links, missing-citations, health-summary, orphan-repair)
         #[arg(value_enum)]
         kind: MaintenanceKindArg,
 

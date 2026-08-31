@@ -9,6 +9,187 @@
 //! one-token OR matches lose ties against multi-term coverage.
 
 use crate::types::{MemoryNote, SearchResult};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+/// Stable, bounded fusion weights shared by storage and MCP recall.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct RetrievalWeights {
+    pub keyword: f32,
+    pub vector: f32,
+    pub graph: f32,
+}
+
+impl Default for RetrievalWeights {
+    fn default() -> Self {
+        Self {
+            keyword: 0.40,
+            vector: 0.35,
+            graph: 0.18,
+        }
+    }
+}
+
+/// A privacy-preserving explanation of one retrieval operation. Raw queries
+/// are intentionally excluded; `query_hash` permits joining a golden item
+/// without making the query recoverable from the evaluation database.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RetrievalTrace {
+    pub id: String,
+    pub query_hash: String,
+    /// Namespace is kept on the trace to prevent identical queries in
+    /// different scopes from being evaluated against one another.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    pub rewritten_terms: Vec<String>,
+    pub keyword_candidates: usize,
+    pub vector_candidates: usize,
+    pub graph_candidates: usize,
+    pub effective_weights: RetrievalWeights,
+    pub fallback_reasons: Vec<String>,
+    pub result_ids: Vec<String>,
+}
+
+impl RetrievalTrace {
+    pub fn for_query(query: &str, weights: RetrievalWeights) -> Self {
+        let mut digest = Sha256::new();
+        digest.update(query.as_bytes());
+        Self {
+            id: Uuid::new_v4().to_string(),
+            query_hash: format!("{:x}", digest.finalize()),
+            namespace: None,
+            rewritten_terms: rewrite_fts_query(query).terms,
+            keyword_candidates: 0,
+            vector_candidates: 0,
+            graph_candidates: 0,
+            effective_weights: weights,
+            fallback_reasons: Vec::new(),
+            result_ids: Vec::new(),
+        }
+    }
+}
+
+/// Deterministic FTS rewrite. It splits camelCase, dotted identifiers, and
+/// letter/digit boundaries so `gpt5.6` and `GPT-5.6` share `gpt`, `5`, `6`.
+/// Only a small, explicit synonym set is expanded to avoid semantic drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsRewrite {
+    pub terms: Vec<String>,
+    pub fts_query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RetrievalEvaluationReport {
+    pub sample_count: usize,
+    pub precision_at_5: f32,
+    pub phrasing_miss_rate: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RetrievalGoldenItem {
+    pub id: String,
+    pub query_hash: String,
+    pub query_terms: Vec<String>,
+    pub relevant_memory_ids: Vec<String>,
+    pub namespace: Option<String>,
+}
+
+const FTS_REWRITE_STOPWORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can", "could", "did", "do",
+    "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "into", "is", "it", "its",
+    "of", "on", "or", "that", "the", "this", "to", "was", "were", "what", "where", "which", "who",
+    "why", "will", "with", "would", "you", "your", "user", "happen", "appear", "must", "every",
+    "provide", "use", "again", "already", "asked", "back", "come", "exactly", "know", "like",
+    "multiple", "remember", "right", "said", "say", "still", "stuff", "sure", "tell", "told",
+    "thing", "things", "times", "well", "yes", "yet",
+];
+
+fn rewrite_token(raw: &str) -> Vec<String> {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for (index, ch) in chars.iter().enumerate() {
+        let previous = chars.get(index.wrapping_sub(1)).copied();
+        let next = chars.get(index + 1).copied();
+        let boundary = !ch.is_alphanumeric()
+            || (previous.is_some_and(|p| p.is_ascii_lowercase()) && ch.is_ascii_uppercase())
+            || (previous.is_some_and(|p| p.is_ascii_alphabetic()) && ch.is_ascii_digit())
+            || (previous.is_some_and(|p| p.is_ascii_digit()) && ch.is_ascii_alphabetic())
+            || (ch.is_ascii_uppercase()
+                && next.is_some_and(|n| n.is_ascii_lowercase())
+                && previous.is_some_and(|p| p.is_ascii_uppercase()));
+        if boundary {
+            if !current.is_empty() {
+                parts.push(std::mem::take(&mut current));
+            }
+            if ch.is_alphanumeric() {
+                current.push(ch.to_ascii_lowercase());
+            }
+        } else {
+            current.push(ch.to_ascii_lowercase());
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+fn synonym(term: &str) -> Option<&'static str> {
+    match term {
+        "embedding" | "embeddings" => Some("vector"),
+        "vector" | "vectors" => Some("embedding"),
+        "error" | "errors" => Some("failure"),
+        "failure" | "failures" => Some("error"),
+        _ => None,
+    }
+}
+
+pub fn rewrite_fts_query(query: &str) -> FtsRewrite {
+    let mut terms = Vec::new();
+    for raw in query.split_whitespace() {
+        let parts = rewrite_token(raw);
+        let has_version_boundary = parts.len() > 1
+            && parts[0]
+                .chars()
+                .all(|character| character.is_ascii_alphabetic())
+            && parts[1].chars().all(|character| character.is_ascii_digit());
+        for term in parts.iter().cloned().chain(
+            has_version_boundary
+                .then(|| format!("{}{}", parts[0], parts[1]))
+                .into_iter(),
+        ) {
+            if (term.len() < 2 && !term.chars().all(|character| character.is_ascii_digit()))
+                || FTS_REWRITE_STOPWORDS.contains(&term.as_str())
+            {
+                continue;
+            }
+            if !terms.contains(&term) {
+                terms.push(term.clone());
+            }
+            if let Some(alias) = synonym(&term) {
+                if !terms.iter().any(|existing| existing == alias) {
+                    terms.push(alias.to_string());
+                }
+            }
+        }
+    }
+    if terms.is_empty() {
+        terms = query
+            .split_whitespace()
+            .flat_map(rewrite_token)
+            .filter(|term| !term.is_empty())
+            .collect();
+    }
+    terms.truncate(32);
+    let fts_query = terms
+        .iter()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    FtsRewrite { terms, fts_query }
+}
 
 /// Default multiplier applied when a candidate covers none of the query's
 /// content terms. Below 1.0 so pure noise matches are demoted.
@@ -220,6 +401,30 @@ mod tests {
             embedding: None,
             embedding_model: String::new(),
         }
+    }
+
+    #[test]
+    fn rewrites_camel_case_and_equivalent_versions_deterministically() {
+        let compact = rewrite_fts_query("gpt5.6");
+        let dotted = rewrite_fts_query("GPT-5.6");
+        assert_eq!(compact.terms, dotted.terms);
+        assert!(compact.terms.contains(&"gpt".to_string()));
+        assert!(compact.terms.contains(&"gpt5".to_string()));
+        assert!(compact.terms.contains(&"6".to_string()));
+        assert!(compact.fts_query.contains("\"gpt5\""));
+        assert_eq!(rewrite_fts_query("camelCase").terms, vec!["camel", "case"]);
+    }
+
+    #[test]
+    fn expands_only_safe_retrieval_synonyms() {
+        assert_eq!(
+            rewrite_fts_query("embedding").terms,
+            vec!["embedding", "vector"]
+        );
+        assert_eq!(
+            rewrite_fts_query("vector").terms,
+            vec!["vector", "embedding"]
+        );
     }
 
     #[test]

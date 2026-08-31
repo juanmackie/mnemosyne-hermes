@@ -441,7 +441,7 @@ impl MemoryManager {
             summary,
             keywords: Vec::new(),
             tags: config.tags.clone(),
-            context: String::new(),
+            context: "User-provided memory".to_string(),
             memory_type: config
                 .memory_type
                 .unwrap_or(crate::types::MemoryType::Insight),
@@ -463,24 +463,34 @@ impl MemoryManager {
 
         let note_id = note.id;
 
-        // Persist via StorageBackend trait
-        {
+        // Persist via StorageBackend trait. The integrity gate may merge the
+        // request into an existing parent, so resolve the canonical ID before
+        // returning it to callers.
+        let stored_id = {
             let guard = self.storage.lock().await;
             let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
             <crate::storage::libsql::LibsqlStorage as StorageBackend>::store_memory(inner, &note)
                 .await?;
-        }
+            match inner.get_memory(note_id).await {
+                Ok(_) => note_id,
+                Err(MnemosyneError::MemoryNotFound(_)) => inner
+                    .find_memory_by_content(&ns, &content_str, config.memory_class)
+                    .await?
+                    .unwrap_or(note_id),
+                Err(error) => return Err(error),
+            }
+        };
 
         // Optional embedding
         if !config.skip_enrich {
             let guard = self.storage.lock().await;
             let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
             let _ = inner
-                .generate_and_store_embedding(&note_id, &content_str)
+                .generate_and_store_embedding(&stored_id, &content_str)
                 .await;
         }
 
-        Ok(note_id)
+        Ok(stored_id)
     }
 
     /// Natural-language alias for [`store`].
@@ -858,16 +868,10 @@ impl MemoryManager {
         ))
     }
 
-    /// Sync a completed turn to memory — store a user+assistant exchange
-    /// so the agent's persistent memory captures what happened this turn.
-    ///
-    /// Mirrors `MemoryManager::sync_all` in hermes-agent.  The exchange is
-    /// stored as a single memory note tagged `\"turn_sync\"` in the agent's
-    /// default namespace.  Enrichment (LLM summary/embedding) is skipped for
-    /// speed — call `mnemosyne embed` or run evolution to backfill later.
-    ///
-    /// Errors are returned (not swallowed) so the agent can decide, but the
-    /// call is cheap: it is a single INSERT.
+    /// Sync a completed turn through the durable transcript tier and the
+    /// deterministic write-time distiller. The raw compatibility source keeps
+    /// provenance/retry behavior stable but is excluded from recall and
+    /// embeddings; only extracted records become ranked memories.
     pub async fn sync(&self, user_text: &str, assistant_text: &str) -> Result<MemoryId> {
         self.sync_with_config(user_text, assistant_text, MemoryConfig::new())
             .await
@@ -880,65 +884,24 @@ impl MemoryManager {
         assistant_text: &str,
         config: MemoryConfig,
     ) -> Result<MemoryId> {
-        let ns = config
-            .namespace
-            .unwrap_or_else(|| self.default_namespace.clone());
-        let content = format!(
-            "User: {}\n\nAssistant: {}",
-            user_text.trim(),
-            assistant_text.trim()
-        );
-        let now = chrono::Utc::now();
-        let note = MemoryNote {
-            id: MemoryId::new(),
-            namespace: ns.clone(),
-            created_at: now,
-            updated_at: now,
-            content: content.clone(),
-            summary: crate::utils::string::truncate_at_char_boundary(&content, 200),
-            keywords: Vec::new(),
-            tags: {
-                let mut tags = vec!["turn_sync".to_string()];
-                tags.extend(config.tags);
-                tags
-            },
-            context: "Agent turn sync".to_string(),
-            memory_type: config
-                .memory_type
-                .unwrap_or(crate::types::MemoryType::Insight),
-            // A raw turn is always factual source material; derived policy
-            // notes use InteractionPolicy explicitly.
-            memory_class: MemoryClass::Knowledge,
-            provenance: None,
-            importance: 5,
-            confidence: 0.7,
-            links: Vec::new(),
-            related_files: Vec::new(),
-            related_entities: Vec::new(),
-            access_count: 0,
-            last_accessed_at: now,
-            expires_at: None,
-            is_archived: false,
-            superseded_by: None,
-            embedding: None,
-            embedding_model: String::new(),
-        };
-
-        let note_id = note.id;
-        {
-            let guard = self.storage.lock().await;
-            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
-            <crate::storage::libsql::LibsqlStorage as StorageBackend>::store_memory(inner, &note)
-                .await?;
-        }
-
-        Ok(note_id)
+        // Keep the legacy return type while routing all captured turns through
+        // the same durable transcript and deterministic distillation path.
+        let result = self
+            .sync_and_learn_with_config_metadata(user_text, assistant_text, config, None, None)
+            .await?;
+        // Return a recallable distilled record when one was emitted. The raw
+        // source ID remains available from `sync_and_learn*`, but is excluded
+        // from ranked recall by design.
+        Ok(result
+            .derived_ids
+            .first()
+            .copied()
+            .unwrap_or(result.source_memory_id))
     }
 
-    /// Synchronize a completed turn, then perform one strict LLM extraction.
-    /// The raw turn is durable even when authentication, transport, or parsing
-    /// fails; failed extraction returns a retryable status and writes no
-    /// derived memory.
+    /// Synchronize a completed turn, then run the cheap deterministic
+    /// distiller. No LLM or credential is consulted. The raw turn is durable
+    /// before derived writes, preserving retry behavior and provenance.
     pub async fn sync_and_learn(
         &self,
         user_text: &str,
@@ -972,7 +935,8 @@ impl MemoryManager {
         .await
     }
 
-    /// Learn a turn in an explicit namespace without changing legacy `sync`.
+    /// Learn a turn in an explicit namespace without changing the legacy
+    /// return type of `sync`.
     pub async fn sync_and_learn_with_config(
         &self,
         user_text: &str,
@@ -994,13 +958,37 @@ impl MemoryManager {
         let (derived_ids, policy_ids): (Vec<_>, Vec<_>) = existing
             .into_iter()
             .partition(|(_, class)| *class == MemoryClass::Knowledge);
+        let mut derived_ids: Vec<_> = derived_ids.into_iter().map(|(id, _)| id).collect();
+        let mut policy_ids: Vec<_> = policy_ids.into_iter().map(|(id, _)| id).collect();
+        derived_ids.sort_by_key(|id| id.to_string());
+        policy_ids.sort_by_key(|id| id.to_string());
         Some(TurnLearningResult {
             source_memory_id,
-            derived_ids: derived_ids.into_iter().map(|(id, _)| id).collect(),
-            policy_ids: policy_ids.into_iter().map(|(id, _)| id).collect(),
+            derived_ids,
+            policy_ids,
             policy_proposal_ids,
             extraction_status: ExtractionStatus::Succeeded,
         })
+    }
+
+    /// Full-text search the durable transcript tier without mixing raw turns
+    /// into ranked memory recall.
+    pub async fn search_session_transcripts(
+        &self,
+        query: impl Into<String>,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::storage::libsql::SessionTranscriptRecord>> {
+        let guard = self.storage.lock().await;
+        let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+        inner
+            .search_session_transcripts(
+                &query.into(),
+                Some(self.default_namespace.clone()),
+                session_id,
+                limit,
+            )
+            .await
     }
 
     async fn sync_and_learn_with_config_metadata(
@@ -1158,44 +1146,51 @@ impl MemoryManager {
             }
         }
 
+        // Keep a structured transcript copy for full-text session inspection;
+        // the compatibility source memory below remains the provenance anchor.
+        let transcript = crate::storage::libsql::SessionTranscriptRecord {
+            id: source_memory_id,
+            namespace: target_namespace.clone(),
+            source_memory_id,
+            session_id: session_id.map(str::to_owned),
+            turn_id: turn_id.map(str::to_owned),
+            user_text: user_text.to_owned(),
+            assistant_text: assistant_text.to_owned(),
+            content: raw_content.clone(),
+            observed_at: now,
+            valid_from: now,
+            valid_until: crate::session_extract::temporal_valid_until(&raw_content),
+            created_at: now,
+        };
+        {
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            inner.store_session_transcript(&transcript).await?;
+        }
+
         let messages = vec![
             SessionMessage::new("user", user_text),
             SessionMessage::new("assistant", assistant_text),
         ];
-        let extraction = match crate::services::LlmService::with_default() {
-            Ok(service) => match service.extract_turn(&messages).await {
-                Ok(extraction) => extraction,
-                Err(error) => {
-                    return Ok(TurnLearningResult {
-                        source_memory_id,
-                        derived_ids: Vec::new(),
-                        policy_ids: Vec::new(),
-                        policy_proposal_ids: Vec::new(),
-                        extraction_status: ExtractionStatus::FailedRetryable {
-                            error: error.to_string(),
-                        },
-                    })
-                }
-            },
-            Err(error) => {
-                return Ok(TurnLearningResult {
-                    source_memory_id,
-                    derived_ids: Vec::new(),
-                    policy_ids: Vec::new(),
-                    policy_proposal_ids: Vec::new(),
-                    extraction_status: ExtractionStatus::FailedRetryable {
-                        error: error.to_string(),
-                    },
-                })
-            }
-        };
+        let extraction = crate::session_extract::distill_turn(&messages);
+        if let Err(error) = extraction.validate(&messages) {
+            return Ok(TurnLearningResult {
+                source_memory_id,
+                derived_ids: Vec::new(),
+                policy_ids: Vec::new(),
+                policy_proposal_ids: Vec::new(),
+                extraction_status: ExtractionStatus::FailedRetryable {
+                    error: error.to_string(),
+                },
+            });
+        }
 
         // Build and validate the complete derived batch in memory first. No
         // derived row is written until every candidate and entity is ready.
         // Resolve exact/near duplicates before materializing new rows. This
-        // intentionally uses a bounded lexical pass: the strict extractor is
-        // still the source of candidate meaning, while duplicate suppression
-        // remains deterministic and does not require another LLM call.
+        // intentionally uses a bounded lexical pass: the deterministic gate
+        // supplies candidate meaning, while duplicate suppression remains
+        // local and bounded.
         let existing_knowledge = {
             let guard = self.storage.lock().await;
             let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
@@ -1229,6 +1224,8 @@ impl MemoryManager {
             accepted_contents.push(candidate.content.clone());
             let id = MemoryId::new();
             let candidate_kind = candidate.kind.clone();
+            let valid_until =
+                crate::session_extract::temporal_valid_until(&candidate.evidence_quote);
             let entities: Vec<crate::types::MemoryEntity> = candidate
                 .entities
                 .iter()
@@ -1247,7 +1244,7 @@ impl MemoryManager {
                 content: candidate.content.clone(),
                 summary: crate::utils::string::truncate_at_char_boundary(&candidate.content, 200),
                 keywords: Vec::new(),
-                tags: vec!["extracted".into()],
+                tags: vec!["extracted".into(), "distilled".into()],
                 context: candidate_kind.clone(),
                 memory_type: match candidate_kind.as_str() {
                     "preference" => MemoryType::Preference,
@@ -1268,7 +1265,7 @@ impl MemoryManager {
                     },
                     observed_at: now,
                     evidence_quote: candidate.evidence_quote,
-                    extractor_model: Some("configured-anthropic".into()),
+                    extractor_model: Some("deterministic-v1".into()),
                     extraction_schema_version: Some(
                         crate::session_extract::EXTRACTION_SCHEMA_VERSION.into(),
                     ),
@@ -1291,7 +1288,7 @@ impl MemoryManager {
                     .collect(),
                 access_count: 0,
                 last_accessed_at: now,
-                expires_at: None,
+                expires_at: valid_until,
                 is_archived: false,
                 superseded_by: None,
                 embedding: None,
@@ -1354,8 +1351,12 @@ impl MemoryManager {
         {
             let guard = self.storage.lock().await;
             let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
-            inner.store_learning_batch(&items, None, None).await?;
+            derived_ids = inner
+                .store_learning_batch_with_ids(&items, None, None)
+                .await?;
         }
+        derived_ids.sort_by_key(|id| id.to_string());
+        derived_ids.dedup();
 
         let mut policy_proposal_ids = Vec::new();
         if let Some(policy) = policy_proposal {

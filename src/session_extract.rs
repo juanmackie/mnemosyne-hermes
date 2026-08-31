@@ -10,7 +10,8 @@
 //!    memories from the conversation, vector pre-filter similar existing
 //!    memories, make per-item dedup decisions (`skip / create / merge /
 //!    delete`), and emit a [`MemoryDiff`] audit record of every mutation for
-//!    rollback.
+//!    rollback. The write-time turn path uses [`distill_turn`] as a cheap,
+//!    deterministic gate and keeps its raw transcript in a separate tier.
 //!
 //! Candidate generation here is heuristic (preference/decision statement
 //! detection) so the pipeline works offline; an LLM extractor can replace
@@ -112,6 +113,135 @@ pub fn lexical_similarity(a: &str, b: &str) -> f32 {
 pub const EXTRACTION_SCHEMA_VERSION: &str = "turn-extraction.v1";
 const MAX_CANDIDATES: usize = 32;
 
+/// Deterministic write-time extraction. This gate deliberately uses no model,
+/// network, or credential: captured turns are durable even when no candidate
+/// is strong enough to become recallable knowledge.
+pub fn distill_turn(messages: &[SessionMessage]) -> TurnExtraction {
+    let mut candidates = Vec::new();
+    for message in messages {
+        let role = message.role.to_ascii_lowercase();
+        if !matches!(role.as_str(), "user" | "assistant" | "system") {
+            continue;
+        }
+        for sentence in split_source_sentences(&message.text) {
+            let lower = sentence.to_ascii_lowercase();
+            let kind = if role == "user"
+                && PREFERENCE_MARKERS
+                    .iter()
+                    .any(|marker| lower.contains(marker))
+            {
+                Some("preference")
+            } else if CONSTRAINT_MARKERS
+                .iter()
+                .any(|marker| lower.contains(marker))
+            {
+                Some("constraint")
+            } else if DECISION_MARKERS.iter().any(|marker| lower.contains(marker)) {
+                Some("decision")
+            } else if FACT_MARKERS.iter().any(|marker| lower.contains(marker)) {
+                Some("fact")
+            } else {
+                None
+            };
+            let Some(kind) = kind else { continue };
+            candidates.push(ExtractedMemoryCandidate {
+                content: sentence.clone(),
+                kind: kind.into(),
+                confidence: match kind {
+                    "constraint" => 0.92,
+                    "preference" => 0.90,
+                    "decision" => 0.88,
+                    _ => 0.82,
+                },
+                evidence_quote: sentence,
+                source_role: role.clone(),
+                entities: extract_entities(&message.text),
+            });
+            if candidates.len() == MAX_CANDIDATES {
+                break;
+            }
+        }
+        if candidates.len() == MAX_CANDIDATES {
+            break;
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|candidate| seen.insert(normalize_for_dedup(&candidate.content)));
+    TurnExtraction {
+        schema_version: EXTRACTION_SCHEMA_VERSION.into(),
+        candidates,
+        response_feedback: None,
+    }
+}
+
+/// Extract an explicit date bound from a statement without guessing one.
+pub fn temporal_valid_until(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for (index, word) in words.iter().enumerate() {
+        if !matches!(word.to_ascii_lowercase().as_str(), "until" | "through") {
+            continue;
+        }
+        let date = words
+            .get(index + 1)?
+            .trim_matches(|c: char| !c.is_ascii_digit() && c != '-');
+        let date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+        return Some(date.and_hms_opt(23, 59, 59)?.and_utc());
+    }
+    None
+}
+
+fn split_source_sentences(text: &str) -> Vec<String> {
+    text.split(|c: char| matches!(c, '.' | '\n' | '!' | '?'))
+        .map(str::trim)
+        .filter(|sentence| sentence.chars().count() > 8)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
+    let known = [
+        "rust",
+        "sqlite",
+        "libsql",
+        "turso",
+        "python",
+        "typescript",
+        "javascript",
+        "postgres",
+        "postgresql",
+        "docker",
+        "claude",
+        "mnemosyne",
+    ];
+    let mut entities = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (index, raw) in text.split_whitespace().enumerate() {
+        let token = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+        if token.chars().count() < 3
+            || (index == 0 && !known.contains(&token.to_ascii_lowercase().as_str()))
+        {
+            continue;
+        }
+        let normalized = token.to_ascii_lowercase();
+        let proper = token.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+        if !proper && !known.contains(&normalized.as_str()) {
+            continue;
+        }
+        if seen.insert(normalized.clone()) {
+            entities.push(ExtractedEntity {
+                display_name: token.to_owned(),
+                normalized_key: normalized,
+                role: "mentioned".into(),
+                confidence: 0.75,
+            });
+        }
+        if entities.len() == 16 {
+            break;
+        }
+    }
+    entities
+}
+
 /// A bounded entity attached to an extracted candidate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -212,7 +342,7 @@ impl ExtractedResponseFeedback {
     }
 }
 
-/// Strict result returned by the one-call turn extractor.
+/// Structured result returned by the turn distiller or an optional extractor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurnExtraction {
@@ -405,6 +535,29 @@ const DECISION_MARKERS: &[&str] = &[
     "root cause",
     "the fix was",
     "lesson learned",
+];
+
+const CONSTRAINT_MARKERS: &[&str] = &[
+    "must ",
+    "required",
+    "cannot ",
+    "can't ",
+    "do not ",
+    "don't ",
+    "should not ",
+    "avoid ",
+    "constraint",
+];
+
+const FACT_MARKERS: &[&str] = &[
+    " is ",
+    " are ",
+    " has ",
+    " have ",
+    " uses ",
+    " runs on ",
+    "located in ",
+    "version ",
 ];
 
 /// Extract candidate memories from a session transcript.
@@ -676,6 +829,39 @@ mod tests {
             "we chose postgres storage engine today",
         );
         assert!(s > 0.2 && s < 0.9);
+    }
+
+    #[test]
+    fn deterministic_distiller_emits_typed_evidence_without_a_model() {
+        let messages = vec![
+            SessionMessage::new("user", "I prefer Rust for this service until 2030-01-02."),
+            SessionMessage::new(
+                "assistant",
+                "We decided to keep SQLite for the durable log.",
+            ),
+        ];
+        let extraction = distill_turn(&messages);
+        assert!(extraction.validate(&messages).is_ok());
+        assert_eq!(extraction.candidates.len(), 2);
+        assert!(extraction
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind == "preference"));
+        assert!(extraction
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind == "decision"));
+        assert!(extraction
+            .candidates
+            .iter()
+            .all(|candidate| !candidate.entities.is_empty()));
+        assert_eq!(
+            temporal_valid_until(&messages[0].text)
+                .unwrap()
+                .date_naive()
+                .to_string(),
+            "2030-01-02"
+        );
     }
 
     #[test]

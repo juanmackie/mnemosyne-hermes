@@ -23,6 +23,7 @@ use crate::agents::access_control::{ModificationLog, ModificationType};
 use crate::agents::AgentRole;
 use crate::error::Result;
 use crate::types::{MemoryClass, MemoryId, MemoryNote, Namespace, SearchResult};
+use crate::utils::retrieval::{RetrievalTrace, RetrievalWeights};
 use async_trait::async_trait;
 
 /// Storage backend trait defining all required operations
@@ -129,6 +130,44 @@ pub trait StorageBackend: Send + Sync {
     /// Search global interaction guidance independently from factual recall.
     /// Alternate backends may return an empty list until policy storage is
     /// implemented; the default keeps the existing trait backwards compatible.
+    /// Persist an explain trace for a recall operation. Alternate backends may
+    /// no-op, preserving compatibility while LibSQL provides durable storage.
+    async fn record_retrieval_trace(&self, _trace: RetrievalTrace) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return persisted adaptive weights, or safe defaults when unavailable.
+    async fn retrieval_weights(&self) -> RetrievalWeights {
+        RetrievalWeights::default()
+    }
+
+    /// Mark recalled results as useful for the latest matching traces.
+    async fn record_retrieval_use(&self, _memory_ids: &[MemoryId]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Add a local user-confirmed item to the bounded retrieval golden set.
+    async fn harvest_retrieval_golden_item(
+        &self,
+        _query: &str,
+        _relevant_memory_ids: &[MemoryId],
+        _namespace: Option<Namespace>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Run the weekly bounded retrieval evaluation.
+    async fn run_retrieval_evaluation(
+        &self,
+        _max_samples: usize,
+    ) -> Result<crate::utils::retrieval::RetrievalEvaluationReport> {
+        Ok(crate::utils::retrieval::RetrievalEvaluationReport {
+            sample_count: 0,
+            precision_at_5: 0.0,
+            phrasing_miss_rate: 0.0,
+        })
+    }
+
     async fn interaction_policy_search(
         &self,
         _query: &str,

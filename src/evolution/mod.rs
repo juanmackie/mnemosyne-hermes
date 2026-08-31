@@ -27,7 +27,8 @@ pub use importance::ImportanceRecalibrator;
 pub use links::LinkDecayJob;
 pub use maintenance::{
     MaintenanceConfig, MaintenanceError, MaintenanceFinding, MaintenanceKind, MaintenanceReport,
-    MaintenanceRunner, MaintenanceStatus, MAX_ITEMS_PER_RUN, MAX_RETRIES_PER_RUN,
+    MaintenanceRunner, MaintenanceStatus, NightlyOrphanRepairJob, MAX_ITEMS_PER_RUN,
+    MAX_RETRIES_PER_RUN,
 };
 #[cfg(feature = "python")]
 pub use memory_evolution_dspy_adapter::MemoryEvolutionDSpyAdapter;
