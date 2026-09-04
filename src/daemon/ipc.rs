@@ -2,9 +2,12 @@ use super::orchestration::OrchestrationStatus;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
+#[cfg(unix)]
 use tracing::{error, info, warn};
 
 /// IPC Message for internal communication between IPC server and Orchestration engine
@@ -34,6 +37,7 @@ pub enum IpcCommand {
 }
 
 /// Start the IPC server
+#[cfg(unix)]
 pub async fn start_ipc_server(socket_path: PathBuf, tx: mpsc::Sender<IpcMessage>) -> Result<()> {
     // Remove existing socket if present
     if socket_path.exists() {
@@ -218,6 +222,7 @@ pub async fn start_ipc_server(socket_path: PathBuf, tx: mpsc::Sender<IpcMessage>
 }
 
 /// Client to query status via IPC
+#[cfg(unix)]
 pub async fn query_status(socket_path: &Path) -> Result<OrchestrationStatus> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
@@ -256,6 +261,7 @@ pub async fn query_status(socket_path: &Path) -> Result<OrchestrationStatus> {
 }
 
 /// Client to create an invite via IPC
+#[cfg(unix)]
 pub async fn create_invite(socket_path: &Path) -> Result<String> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
@@ -295,6 +301,7 @@ pub async fn create_invite(socket_path: &Path) -> Result<String> {
 }
 
 /// Client to join a peer via IPC
+#[cfg(unix)]
 pub async fn join_peer(socket_path: &Path, ticket: String) -> Result<String> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
@@ -331,4 +338,32 @@ pub async fn join_peer(socket_path: &Path, ticket: String) -> Result<String> {
             "IPC socket closed without response".to_string(),
         ))
     }
+}
+
+#[cfg(not(unix))]
+pub async fn start_ipc_server(_socket_path: PathBuf, _tx: mpsc::Sender<IpcMessage>) -> Result<()> {
+    Err(crate::error::MnemosyneError::Other(
+        "IPC server is only supported on Unix systems".to_string(),
+    ))
+}
+
+#[cfg(not(unix))]
+pub async fn query_status(_socket_path: &Path) -> Result<OrchestrationStatus> {
+    Err(crate::error::MnemosyneError::Other(
+        "IPC is only supported on Unix systems".to_string(),
+    ))
+}
+
+#[cfg(not(unix))]
+pub async fn create_invite(_socket_path: &Path) -> Result<String> {
+    Err(crate::error::MnemosyneError::Other(
+        "IPC is only supported on Unix systems".to_string(),
+    ))
+}
+
+#[cfg(not(unix))]
+pub async fn join_peer(_socket_path: &Path, _ticket: String) -> Result<String> {
+    Err(crate::error::MnemosyneError::Other(
+        "IPC is only supported on Unix systems".to_string(),
+    ))
 }

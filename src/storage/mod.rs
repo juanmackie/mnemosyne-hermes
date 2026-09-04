@@ -4,6 +4,8 @@
 //! embeddings, links, and audit logs.
 
 pub mod libsql;
+pub mod quantized;
+pub use quantized::QuantizedVectorIndex;
 // Legacy vector storage using rusqlite + sqlite-vec.
 // Gated behind the `legacy-vector-store` feature: this module bundles a second
 // copy of SQLite that conflicts with libsql's (duplicate symbols, and the

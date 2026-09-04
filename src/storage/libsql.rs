@@ -376,6 +376,37 @@ fn bounded_recency_score(
     (0.75 * creation_freshness + 0.25 * access_freshness).clamp(0.0, 1.0)
 }
 
+/// Compute Reciprocal Rank Fusion (RRF) scores from multiple ranked lists.
+///
+/// RRF score = Σ 1/(k + rank_i) for each channel i, where k=60 is the
+/// smoothing constant that dampens the advantage of very high ranks.
+///
+/// Unlike linear score combination, RRF is robust to score-magnitude
+/// differences across retrieval channels (keyword BM25 vs cosine similarity)
+/// and degrades gracefully when a channel is absent for a candidate.
+fn compute_rrf_ranking(
+    keyword_ranks: &std::collections::HashMap<MemoryId, usize>,
+    vector_ranks: &std::collections::HashMap<MemoryId, usize>,
+    graph_ranks: &std::collections::HashMap<MemoryId, usize>,
+    k: f32,
+) -> std::collections::HashMap<MemoryId, f32> {
+    let mut rrf_scores: std::collections::HashMap<MemoryId, f32> =
+        std::collections::HashMap::new();
+
+    // Accumulate 1/(k + rank) from each channel that has the candidate.
+    for (id, &rank) in keyword_ranks {
+        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+    }
+    for (id, &rank) in vector_ranks {
+        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+    }
+    for (id, &rank) in graph_ranks {
+        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+    }
+
+    rrf_scores
+}
+
 // ---------------------------------------------------------------------------
 // Migration SQL embedded at compile time via include_str!
 // Eliminates runtime file I/O during database initialization — critical for
@@ -8114,6 +8145,30 @@ impl StorageBackend for LibsqlStorage {
         let candidate_ids: Vec<MemoryId> = memory_scores.keys().copied().collect();
         let memories = self.get_memories_batch(&candidate_ids).await?;
 
+        // Build rank maps for RRF fusion.
+        // Keyword results are Vec<SearchResult> ordered best-first.
+        // Vector results are Vec<(MemoryId, f32)> ordered best-first.
+        // Graph-expanded candidates get a rank based on their depth signal.
+        let keyword_ranks: std::collections::HashMap<MemoryId, usize> = keyword_results
+            .iter()
+            .enumerate()
+            .map(|(rank, r)| (r.memory.id, rank + 1))
+            .collect();
+        let vector_ranks: std::collections::HashMap<MemoryId, usize> = vector_results
+            .iter()
+            .enumerate()
+            .map(|(rank, (id, _))| (*id, rank + 1))
+            .collect();
+        // Candidates that are only graph-expanded get a rank proportional to depth.
+        let graph_ranks: std::collections::HashMap<MemoryId, usize> = memory_scores
+            .iter()
+            .filter(|(_, (_, _, graph_score, _))| *graph_score > 0.0)
+            .enumerate()
+            .map(|(rank, (id, (_, _, _, depth)))| (*id, (rank + 1) + (*depth as usize)))
+            .collect();
+
+        let rrf_scores = compute_rrf_ranking(&keyword_ranks, &vector_ranks, &graph_ranks, 60.0);
+
         // Compute final scores
         let now = Utc::now();
         let mut scored_results = Vec::new();
@@ -8131,7 +8186,11 @@ impl StorageBackend for LibsqlStorage {
                 continue;
             }
 
-            // Compute component scores
+            // Base RRF score from rank fusion across all channels.
+            let rrf_base = rrf_scores.get(&memory_id).copied().unwrap_or(0.0);
+
+            // Domain calibrators: multiplicative signals that up-weight based on
+            // non-rank signals (importance, recency) and hard-boost entity anchors.
             let importance_score = memory.importance as f32 / 10.0;
             let recency_score =
                 bounded_recency_score(now, memory.created_at, memory.last_accessed_at);
@@ -8140,28 +8199,33 @@ impl StorageBackend for LibsqlStorage {
             } else {
                 0.0
             };
-
-            // Compute weighted final score using config weights
-            let entity_score = if entity_ids.contains(&memory_id) {
-                1.0
+            let entity_boost = if entity_ids.contains(&memory_id) {
+                1.5_f32 // entity-anchor: hard 50% multiplicative boost
             } else {
-                0.0
+                1.0_f32
             };
-            let final_score = (effective_weights.keyword * keyword_score
-                + effective_weights.vector * vector_score
-                + effective_weights.graph * graph_depth_score
+
+            // Compose: RRF base × entity_boost, then add calibration addends.
+            // We scale rrf_base into [0,1] range (max single-channel RRF score
+            // with k=60 and rank=1 is 1/61 ≈ 0.016; three channels max ≈ 0.049).
+            // Normalise by dividing by 3/61 so peak RRF maps to ≈1.0 before calibration.
+            let rrf_normalised = (rrf_base * 61.0 / 3.0).min(1.0);
+            let final_score = (rrf_normalised * entity_boost
                 + self.search_config.importance_weight * importance_score
                 + self.search_config.recency_weight * recency_score
-                + 0.15 * entity_score)
+                + effective_weights.graph * graph_depth_score)
                 .clamp(0.0, 1.0);
 
             // Determine match reason
+            let entity_score = if entity_ids.contains(&memory_id) { 1.0_f32 } else { 0.0_f32 };
             let match_reason = if entity_score > 0.0 {
-                format!("entity_anchor ({:.2})", final_score)
-            } else if vector_score > keyword_score && vector_score > graph_depth_score {
-                format!("vector_similarity ({:.2})", final_score)
+                format!("entity_anchor+rrf ({:.2})", final_score)
+            } else if vector_ranks.contains_key(&memory_id) && keyword_ranks.contains_key(&memory_id) {
+                format!("hybrid_rrf ({:.2})", final_score)
+            } else if vector_score > 0.0 {
+                format!("vector_rrf ({:.2})", final_score)
             } else if keyword_score > 0.0 {
-                format!("keyword_match ({:.2})", final_score)
+                format!("keyword_rrf ({:.2})", final_score)
             } else {
                 format!("graph_expansion ({:.2})", final_score)
             };

@@ -56,6 +56,8 @@ libsql_migration = { version = "0.2", features = ["dir"] }
 rusqlite = { version = "0.32", optional = true, features = ["bundled", "vtab"] }
 sqlite-vec = { version = "0.1.1", optional = true }
 deadpool-sqlite = { version = "0.9", optional = true }  # Connection pooling for rusqlite
+# Fast vector quantization with 2-4 bit compression and SIMD search
+turbovec = "1.0.0"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

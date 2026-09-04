@@ -44,7 +44,7 @@ impl std::fmt::Display for MemoryId {
 ///
 /// Namespaces provide project-aware isolation while allowing global knowledge sharing.
 /// Priority determines retrieval order (Session > Project > Global).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Namespace {
     /// Global memories accessible across all projects
@@ -175,7 +175,7 @@ impl std::fmt::Display for Namespace {
 /// This is deliberately orthogonal to [`MemoryType`], so existing callers can
 /// continue using their current classification while policy memories are kept
 /// out of factual recall.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryClass {
     #[default]

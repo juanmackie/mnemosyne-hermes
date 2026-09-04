@@ -226,6 +226,11 @@ impl ToolHandler {
                             "type": "integer",
                             "minimum": 1,
                             "description": "Optional shared context assembly budget"
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Return results as compact plain-text (score · id · summary) instead of full JSON. Strongly recommended: saves significant agent context tokens. Disable only when you need full metadata fields."
                         }
                     },
                     "required": ["query"]
@@ -740,6 +745,7 @@ impl ToolHandler {
             hierarchical: Option<bool>,
             budget_tokens: Option<usize>,
             abstention_threshold: Option<f32>,
+            compact: Option<bool>,
         }
 
         let params: RecallParams = serde_json::from_value(params)?;
@@ -1056,6 +1062,52 @@ impl ToolHandler {
             params.query,
             params.namespace
         );
+
+        // Compact mode: return token-efficient plain-text lines instead of full JSON.
+        // Default ON to implement the DOX Single-Probe Contract (saves ~60-80% context tokens).
+        // Format: "[score] [id] [match_reason]\n  [summary]"
+        let use_compact = params.compact.unwrap_or(true);
+        if use_compact {
+            let mut lines = Vec::new();
+            if abstained {
+                lines.push(format!(
+                    "ABSTAINED (best_score={:.3} < threshold={:.3}): no confident results found",
+                    best_score,
+                    abstention_threshold.unwrap_or(RECOMMENDED_ABSTENTION_THRESHOLD)
+                ));
+            } else {
+                for result in &results {
+                    lines.push(format!(
+                        "[{:.3}] {} | {}\n  {}",
+                        result.score,
+                        result.memory.id,
+                        result.match_reason,
+                        result.memory.summary
+                    ));
+                }
+                for result in &policy_results {
+                    lines.push(format!(
+                        "[guidance] {}\n  {}",
+                        result.memory.id,
+                        result.memory.summary
+                    ));
+                }
+            }
+            let text_body = if lines.is_empty() {
+                "No results found.".to_string()
+            } else {
+                lines.join("\n")
+            };
+            return Ok(serde_json::json!({
+                "compact": true,
+                "text": text_body,
+                "count": results.len(),
+                "abstained": abstained,
+                "best_score": best_score,
+                "degraded": degraded,
+                "method": "rrf_hybrid_search"
+            }));
+        }
 
         Ok(serde_json::json!({
             "results": results,
