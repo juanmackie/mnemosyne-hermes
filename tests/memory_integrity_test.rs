@@ -199,3 +199,93 @@ async fn orphan_repair_is_bounded_and_reports_counts() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn merged_near_duplicate_keeps_append_only_evidence_and_source() {
+    let storage = LibsqlStorage::new_with_validation(
+        ConnectionMode::Local(format!(
+            "/tmp/mnemosyne_integrity_{}.db",
+            uuid::Uuid::new_v4()
+        )),
+        true,
+    )
+    .await
+    .unwrap();
+
+    // Two distinct raw sources so provenance source references validate.
+    let source_a = note("Source A original transcript", 0.5);
+    storage.store_memory(&source_a).await.unwrap();
+    let source_b = note("Source B original transcript", 0.5);
+    storage.store_memory(&source_b).await.unwrap();
+
+    // Parent with its own primary provenance pointing at source A.
+    let mut parent = note("Rust memory storage uses a durable index", 0.8);
+    parent.embedding = Some(vec![1.0, 0.0, 0.0]);
+    parent.provenance = Some(MemoryProvenance {
+        source_kind: ProvenanceSourceKind::Turn,
+        source_memory_id: Some(source_a.id),
+        session_id: Some("sess-a".into()),
+        turn_id: Some("turn-a".into()),
+        source_role: ProvenanceSourceRole::User,
+        observed_at: Utc::now(),
+        evidence_quote: "A alpha evidence".into(),
+        extractor_model: Some("t-1".into()),
+        extraction_schema_version: Some("1".into()),
+    });
+    storage.store_memory(&parent).await.unwrap();
+
+    // Near-duplicate carrying its OWN distinct evidence from source B; it
+    // must merge into the parent without destroying the parent's attribution.
+    let mut child = note("Rust memory storage uses a durable WAL index", 0.9);
+    child.embedding = Some(vec![0.98, 0.2, 0.0]);
+    child.provenance = Some(MemoryProvenance {
+        source_kind: ProvenanceSourceKind::Turn,
+        source_memory_id: Some(source_b.id),
+        session_id: Some("sess-b".into()),
+        turn_id: Some("turn-b".into()),
+        source_role: ProvenanceSourceRole::User,
+        observed_at: Utc::now(),
+        evidence_quote: "B beta evidence".into(),
+        extractor_model: Some("t-2".into()),
+        extraction_schema_version: Some("1".into()),
+    });
+    storage.store_memory(&child).await.unwrap();
+
+    // Both statements collapsed into the single parent row.
+    assert_eq!(storage.count_memories(None).await.unwrap(), 1);
+
+    let merged = storage.get_memory(parent.id).await.unwrap();
+    assert!(merged.content.contains("Rust memory storage uses a durable index"));
+    assert!(merged.content.contains("WAL index"));
+    // The parent's OWN primary provenance must survive the merge.
+    let parent_prov = merged.provenance.as_ref().expect("parent provenance kept");
+    assert_eq!(parent_prov.evidence_quote, "A alpha evidence");
+    assert_eq!(parent_prov.source_memory_id, Some(source_a.id));
+
+    // Append-only evidence keeps the merged statement's attribution too.
+    let evidence = storage
+        .list_memory_evidence(parent.id)
+        .await
+        .unwrap();
+    let beta = evidence
+        .iter()
+        .find(|e| e.evidence_quote == "B beta evidence")
+        .expect("merged statement evidence retained");
+    assert_eq!(beta.source_memory_id, Some(source_b.id));
+
+    // Deleting an individual source must not misattribute surviving content.
+    storage.purge_memory(&source_b.id).await.unwrap();
+    let after = storage.list_memory_evidence(parent.id).await.unwrap();
+    let beta = after
+        .iter()
+        .find(|e| e.evidence_quote == "B beta evidence")
+        .expect("surviving evidence kept");
+    // The deleted source reference is cleared, NOT reassigned to parent/source A.
+    assert_eq!(beta.source_memory_id, None);
+    let still_parent = storage.get_memory(parent.id).await.unwrap();
+    assert_eq!(
+        still_parent.provenance.as_ref().unwrap().evidence_quote,
+        "A alpha evidence",
+        "surviving parent attribution unchanged after source purge"
+    );
+}

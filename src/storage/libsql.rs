@@ -2224,6 +2224,48 @@ impl LibsqlStorage {
         }))
     }
 
+    /// One append-only evidence association retained for a merged statement.
+    #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+    pub struct MemoryEvidence {
+        pub source_memory_id: Option<MemoryId>,
+        pub evidence_quote: String,
+        pub observed_at: DateTime<Utc>,
+    }
+
+    /// Return every append-only evidence association retained for a memory.
+    /// Merged near-duplicate statements accumulate multiple rows here, unlike
+    /// the single primary provenance row keyed by memory_id.
+    pub async fn list_memory_evidence(
+        &self,
+        memory_id: MemoryId,
+    ) -> Result<Vec<MemoryEvidence>> {
+        if !self.table_exists("memory_evidence").await? {
+            return Ok(Vec::new());
+        }
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT source_memory_id, evidence_quote, observed_at FROM memory_evidence WHERE memory_id = ? ORDER BY observed_at, evidence_quote",
+                params![memory_id.to_string()],
+            )
+            .await?;
+        let mut evidence = Vec::new();
+        while let Some(row) = rows.next().await? {
+            evidence.push(MemoryEvidence {
+                source_memory_id: row
+                    .get::<Option<String>>(0)?
+                    .and_then(|value| MemoryId::from_string(&value).ok()),
+                evidence_quote: row.get(1)?,
+                observed_at: DateTime::parse_from_rfc3339(&row.get::<String>(2)?)
+                    .map_err(|e| {
+                        MnemosyneError::Other(format!("Invalid evidence timestamp: {e}"))
+                    })?
+                    .with_timezone(&Utc),
+            });
+        }
+        Ok(evidence)
+    }
+
     /// Convert a stable memory projection to a MemoryNote.
     async fn row_to_memory(&self, row: &libsql::Row) -> Result<MemoryNote> {
         // Extract all fields from row
@@ -2780,6 +2822,20 @@ impl LibsqlStorage {
             .await?;
             tx.execute(
                 "DELETE FROM memory_provenance WHERE memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("memory_evidence") {
+            // Clear the reference when this memory was a source so surviving
+            // content is not misattributed to it after purge.
+            tx.execute(
+                "UPDATE memory_evidence SET source_memory_id = NULL WHERE source_memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+            tx.execute(
+                "DELETE FROM memory_evidence WHERE memory_id = ?",
                 params![id_str.as_str()],
             )
             .await?;
