@@ -176,7 +176,10 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
     );
     // The assembler's selection drives both modes; disclose content budget
     // and protocol overhead in the ledger.
-    assert!(payload["count"].as_u64().unwrap_or(0) >= 1, "selected count");
+    assert!(
+        payload["count"].as_u64().unwrap_or(0) >= 1,
+        "selected count"
+    );
     assert!(
         payload["token_ledger"]["content_budget_tokens"].is_number()
             && payload["token_ledger"]["protocol_overhead_tokens"].is_number(),

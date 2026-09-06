@@ -401,8 +401,7 @@ fn compute_rrf_ranking(
     weights: crate::utils::retrieval::RetrievalWeights,
     k: f32,
 ) -> std::collections::HashMap<MemoryId, f32> {
-    let mut rrf_scores: std::collections::HashMap<MemoryId, f32> =
-        std::collections::HashMap::new();
+    let mut rrf_scores: std::collections::HashMap<MemoryId, f32> = std::collections::HashMap::new();
 
     // Accumulate weight × 1/(k + rank) from each channel that has the
     // candidate. Weighting each channel scales its RRF contribution so a
@@ -437,7 +436,10 @@ fn graph_deterministic_ranks(
         .filter(|(_, (_, _, graph_score, _))| *graph_score > 0.0)
         .map(|(id, (_, _, _, depth))| (*id, *depth as usize))
         .collect();
-    candidates.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.to_string().cmp(&b.0.to_string())));
+    candidates.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+    });
     candidates
         .iter()
         .enumerate()
@@ -2263,10 +2265,7 @@ impl LibsqlStorage {
     /// Return every append-only evidence association retained for a memory.
     /// Merged near-duplicate statements accumulate multiple rows here, unlike
     /// the single primary provenance row keyed by memory_id.
-    pub async fn list_memory_evidence(
-        &self,
-        memory_id: MemoryId,
-    ) -> Result<Vec<MemoryEvidence>> {
+    pub async fn list_memory_evidence(&self, memory_id: MemoryId) -> Result<Vec<MemoryEvidence>> {
         if !self.table_exists("memory_evidence").await? {
             return Ok(Vec::new());
         }
@@ -2285,9 +2284,7 @@ impl LibsqlStorage {
                     .and_then(|value| MemoryId::from_string(&value).ok()),
                 evidence_quote: row.get(1)?,
                 observed_at: DateTime::parse_from_rfc3339(&row.get::<String>(2)?)
-                    .map_err(|e| {
-                        MnemosyneError::Other(format!("Invalid evidence timestamp: {e}"))
-                    })?
+                    .map_err(|e| MnemosyneError::Other(format!("Invalid evidence timestamp: {e}")))?
                     .with_timezone(&Utc),
             });
         }
@@ -2689,7 +2686,9 @@ impl LibsqlStorage {
                 params![embedding_model, memory_id.to_string()],
             )
             .await
-            .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding model: {}", e)))?;
+            .map_err(|e| {
+                MnemosyneError::Database(format!("Failed to store embedding model: {}", e))
+            })?;
         }
         Ok(())
     }
@@ -3224,7 +3223,13 @@ impl LibsqlStorage {
             let ns_json = serde_json::to_string(ns)?;
             conn.query(
                 &sql,
-                params![query_json, ns_json, active_model.clone(), active_model, limit as i64],
+                params![
+                    query_json,
+                    ns_json,
+                    active_model.clone(),
+                    active_model,
+                    limit as i64
+                ],
             )
             .await?
         } else {
@@ -3768,26 +3773,19 @@ impl LibsqlStorage {
             // exceeds `query_batch` ids (2 params per id: source + target).
             let mut next_frontier: HashSet<String> = HashSet::new();
             for chunk in frontier.chunks(query_batch) {
-                let placeholders = chunk
-                    .iter()
-                    .map(|_| "?")
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
                     "SELECT source_id, target_id, strength FROM memory_links \
                      WHERE strength > 0 AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
                 );
-                let mut params: Vec<libsql::Value> =
-                    Vec::with_capacity(chunk.len() * 2);
+                let mut params: Vec<libsql::Value> = Vec::with_capacity(chunk.len() * 2);
                 for id in chunk.iter() {
                     params.push(libsql::Value::Text(id.clone()));
                 }
                 for id in chunk.iter() {
                     params.push(libsql::Value::Text(id.clone()));
                 }
-                let mut rows = conn
-                    .query(&sql, libsql::params_from_iter(params))
-                    .await?;
+                let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
 
                 while let Some(row) = rows.next().await? {
                     let source: String = row.get(0)?;
@@ -3801,15 +3799,11 @@ impl LibsqlStorage {
                     } else {
                         (target, source)
                     };
-                    if seen_edges.insert((a.clone(), b.clone()))
-                        && edges.len() < edge_budget
-                    {
+                    if seen_edges.insert((a.clone(), b.clone())) && edges.len() < edge_budget {
                         edges.push((a.clone(), b.clone(), strength as f32));
                     }
                     visited.insert(a.clone());
-                    if visited.len() < node_budget
-                        && visited.insert(b.clone())
-                    {
+                    if visited.len() < node_budget && visited.insert(b.clone()) {
                         next_frontier.insert(b);
                     }
                 }
@@ -3831,8 +3825,7 @@ impl LibsqlStorage {
         edges: &[(String, String, f32)],
         namespace: Option<Namespace>,
     ) -> Result<crate::utils::ppr::WeightedAdjacency> {
-        let kept =
-            Self::active_ppr_nodes(conn, visited, namespace.as_ref()).await?;
+        let kept = Self::active_ppr_nodes(conn, visited, namespace.as_ref()).await?;
         let mut nodes: HashSet<String> = kept;
         let mut adjacency: crate::utils::ppr::WeightedAdjacency =
             crate::utils::ppr::WeightedAdjacency::new();
@@ -3840,8 +3833,14 @@ impl LibsqlStorage {
             if !nodes.contains(a) || !nodes.contains(b) {
                 continue;
             }
-            adjacency.entry(a.clone()).or_default().push((b.clone(), *w));
-            adjacency.entry(b.clone()).or_default().push((a.clone(), *w));
+            adjacency
+                .entry(a.clone())
+                .or_default()
+                .push((b.clone(), *w));
+            adjacency
+                .entry(b.clone())
+                .or_default()
+                .push((a.clone(), *w));
         }
         // Ensure isolated-but-kept nodes (seeds) still appear as keys with no
         // neighbors so PPR can seed them.
@@ -3858,11 +3857,7 @@ impl LibsqlStorage {
         visited: &HashSet<String>,
         namespace: Option<&Namespace>,
     ) -> Result<HashSet<String>> {
-        let placeholders = visited
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = visited.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let namespace_filter = if namespace.is_some() {
             "AND m.namespace = ?"
         } else {
@@ -3883,16 +3878,13 @@ impl LibsqlStorage {
         if let Some(ns) = namespace {
             params.push(libsql::Value::Text(serde_json::to_string(ns)?));
         }
-        let mut rows = conn
-            .query(&sql, libsql::params_from_iter(params))
-            .await?;
+        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
         let mut kept = HashSet::new();
         while let Some(row) = rows.next().await? {
             kept.insert(row.get::<String>(0)?);
         }
         Ok(kept)
     }
-
 
     async fn graph_traverse_with_limit(
         &self,
@@ -8165,8 +8157,11 @@ impl StorageBackend for LibsqlStorage {
             )
             .await?
         } else {
-            conn.query(&sql, params![query_embedding, active_model.clone(), active_model])
-                .await?
+            conn.query(
+                &sql,
+                params![query_embedding, active_model.clone(), active_model],
+            )
+            .await?
         };
 
         let mut results = Vec::new();
@@ -8630,8 +8625,7 @@ impl StorageBackend for LibsqlStorage {
         // Candidates that are only graph-expanded get a rank proportional to
         // depth, ordered deterministically by (depth, id) instead of the
         // randomized HashMap iteration order.
-        let graph_ranks =
-            graph_deterministic_ranks(&memory_scores);
+        let graph_ranks = graph_deterministic_ranks(&memory_scores);
 
         let rrf_scores = compute_rrf_ranking(
             &keyword_ranks,
@@ -8663,8 +8657,8 @@ impl StorageBackend for LibsqlStorage {
                     )
                     .await
                 {
-                    Ok(adjacency) => crate::utils::ppr::normalize_ppr(
-                        &crate::utils::ppr::personalized_ppr(
+                    Ok(adjacency) => {
+                        crate::utils::ppr::normalize_ppr(&crate::utils::ppr::personalized_ppr(
                             &ppr_seeds
                                 .iter()
                                 .map(|id| id.to_string())
@@ -8672,8 +8666,8 @@ impl StorageBackend for LibsqlStorage {
                             &adjacency,
                             crate::utils::ppr::DEFAULT_DAMPING,
                             crate::utils::ppr::DEFAULT_ITERATIONS,
-                        ),
-                    ),
+                        ))
+                    }
                     Err(e) => {
                         debug!("PPR blend skipped: {}", e);
                         std::collections::HashMap::new()
@@ -8728,7 +8722,7 @@ impl StorageBackend for LibsqlStorage {
             let weight_sum = (effective_weights.keyword.max(0.0)
                 + effective_weights.vector.max(0.0)
                 + effective_weights.graph.max(0.0))
-                .max(f32::EPSILON);
+            .max(f32::EPSILON);
             let rrf_normalised = (rrf_base * 61.0 / weight_sum).min(1.0);
             let final_score = (rrf_normalised * entity_boost
                 + self.search_config.importance_weight * importance_score
@@ -8737,10 +8731,16 @@ impl StorageBackend for LibsqlStorage {
                 .clamp(0.0, 1.0);
 
             // Determine match reason
-            let entity_score = if entity_ids.contains(&memory_id) { 1.0_f32 } else { 0.0_f32 };
+            let entity_score = if entity_ids.contains(&memory_id) {
+                1.0_f32
+            } else {
+                0.0_f32
+            };
             let match_reason = if entity_score > 0.0 {
                 format!("entity_anchor+rrf ({:.2})", final_score)
-            } else if vector_ranks.contains_key(&memory_id) && keyword_ranks.contains_key(&memory_id) {
+            } else if vector_ranks.contains_key(&memory_id)
+                && keyword_ranks.contains_key(&memory_id)
+            {
                 format!("hybrid_rrf ({:.2})", final_score)
             } else if vector_score > 0.0 {
                 format!("vector_rrf ({:.2})", final_score)
@@ -8889,7 +8889,8 @@ impl StorageBackend for LibsqlStorage {
         limit: usize,
         sort_by: crate::storage::MemorySortOrder,
     ) -> Result<Vec<MemoryNote>> {
-        self.list_memories_window(namespace, limit, 0, sort_by).await
+        self.list_memories_window(namespace, limit, 0, sort_by)
+            .await
     }
 
     async fn list_memories_page(
@@ -8899,7 +8900,8 @@ impl StorageBackend for LibsqlStorage {
         offset: usize,
         sort_by: crate::storage::MemorySortOrder,
     ) -> Result<Vec<MemoryNote>> {
-        self.list_memories_window(namespace, limit, offset, sort_by).await
+        self.list_memories_window(namespace, limit, offset, sort_by)
+            .await
     }
 
     async fn store_modification_log(
@@ -9949,7 +9951,8 @@ impl LibsqlStorage {
         };
 
         let mut rows = if params_vec.is_empty() {
-            conn.query(&sql, params![limit as i64, offset as i64]).await?
+            conn.query(&sql, params![limit as i64, offset as i64])
+                .await?
         } else {
             conn.query(
                 &sql,
@@ -10053,7 +10056,11 @@ mod fts_query_tests {
             &keyword_ranks,
             &vector_ranks,
             &graph_ranks,
-            RetrievalWeights { keyword: 1.0, vector: 1.0, graph: 0.0 },
+            RetrievalWeights {
+                keyword: 1.0,
+                vector: 1.0,
+                graph: 0.0,
+            },
             60.0,
         );
         assert!((balanced[&a] - balanced[&b]).abs() < 1e-6);
@@ -10063,7 +10070,11 @@ mod fts_query_tests {
             &keyword_ranks,
             &vector_ranks,
             &graph_ranks,
-            RetrievalWeights { keyword: 1.0, vector: 0.0, graph: 0.0 },
+            RetrievalWeights {
+                keyword: 1.0,
+                vector: 0.0,
+                graph: 0.0,
+            },
             60.0,
         );
         assert!(keyword_heavy[&a] > keyword_heavy[&b]);
@@ -10073,7 +10084,11 @@ mod fts_query_tests {
             &keyword_ranks,
             &vector_ranks,
             &graph_ranks,
-            RetrievalWeights { keyword: 0.0, vector: 1.0, graph: 0.0 },
+            RetrievalWeights {
+                keyword: 0.0,
+                vector: 1.0,
+                graph: 0.0,
+            },
             60.0,
         );
         assert!(vector_heavy[&b] > vector_heavy[&a]);

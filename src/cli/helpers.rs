@@ -283,36 +283,38 @@ pub async fn start_mcp_server(db_path_arg: Option<String>) -> Result<()> {
                 // Owner mode: We successfully bound port 3000, start API server
                 drop(listener); // Release the listener, ApiServer will rebind
 
-            let api_server = ApiServer::new(api_config);
-            let event_broadcaster = api_server.broadcaster().clone();
+                let api_server = ApiServer::new(api_config);
+                let event_broadcaster = api_server.broadcaster().clone();
 
-            info!("API server starting on port 3000 (owner mode)");
-            info!("Dashboard: mnemosyne-dash --api http://127.0.0.1:3000");
+                info!("API server starting on port 3000 (owner mode)");
+                info!("Dashboard: mnemosyne-dash --api http://127.0.0.1:3000");
 
-            let api_task = tokio::spawn(async move {
-                if let Err(e) = api_server.serve().await {
-                    warn!("API server error: {}", e);
+                let api_task = tokio::spawn(async move {
+                    if let Err(e) = api_server.serve().await {
+                        warn!("API server error: {}", e);
+                    }
+                });
+
+                (EventSink::Local(event_broadcaster), Some(api_task))
+            }
+            Err(_) => {
+                // Port taken, try to connect to existing API server (client mode)
+                if let Some(api_url) = detect_api_server().await {
+                    info!(
+                        "Connecting to existing API server at {} (client mode)",
+                        api_url
+                    );
+                    let client = reqwest::Client::new();
+                    (EventSink::Remote { client, api_url }, None)
+                } else {
+                    warn!(
+                        "Port 3000 in use but no API server found - events will not be broadcast"
+                    );
+                    warn!("Dashboard may not show activity from this MCP server");
+                    (EventSink::None, None)
                 }
-            });
-
-            (EventSink::Local(event_broadcaster), Some(api_task))
-        }
-        Err(_) => {
-            // Port taken, try to connect to existing API server (client mode)
-            if let Some(api_url) = detect_api_server().await {
-                info!(
-                    "Connecting to existing API server at {} (client mode)",
-                    api_url
-                );
-                let client = reqwest::Client::new();
-                (EventSink::Remote { client, api_url }, None)
-            } else {
-                warn!("Port 3000 in use but no API server found - events will not be broadcast");
-                warn!("Dashboard may not show activity from this MCP server");
-                (EventSink::None, None)
             }
         }
-    }
     };
 
     // Initialize the handler with the validated process scope. Tool calls

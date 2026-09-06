@@ -220,8 +220,7 @@ impl StateManager {
                 match event_rx.recv().await {
                     Ok(event) => {
                         if let Err(e) =
-                            Self::apply_event_static(event, &agents, &context_files, &metrics)
-                                .await
+                            Self::apply_event_static(event, &agents, &context_files, &metrics).await
                         {
                             tracing::warn!("Failed to apply event to state: {}", e);
                         }

@@ -57,8 +57,8 @@ pub mod diagnostics; // Memory profiling and resource tracking
 pub mod embeddings;
 pub mod error;
 pub mod evaluation;
-pub mod extractors;
 pub mod evolution;
+pub mod extractors;
 pub mod health; // Health check system
 pub mod hierarchy; // Topic-tree memory organization + hierarchical retrieval
 pub mod icons; // Nerd Font icons with ASCII fallbacks

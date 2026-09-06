@@ -189,7 +189,11 @@ impl MemoryLinker {
         // is disabled it returns no candidates and the hook degrades to a no-op.
         let candidates = self
             .storage
-            .vector_search(embedding, self.on_insert.k, Some(new_memory.namespace.clone()))
+            .vector_search(
+                embedding,
+                self.on_insert.k,
+                Some(new_memory.namespace.clone()),
+            )
             .await?
             .into_iter()
             .map(|result| result.memory)

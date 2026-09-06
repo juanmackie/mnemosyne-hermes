@@ -209,7 +209,9 @@ struct MockEmbedService {
 impl MockEmbedService {
     fn vec(&self) -> Vec<f32> {
         // Deterministic unit-ish vector of `dim` length in this model's space.
-        (0..self.dim).map(|i| (((i + 1) as f32) / 16.0) - 0.5).collect()
+        (0..self.dim)
+            .map(|i| (((i + 1) as f32) / 16.0) - 0.5)
+            .collect()
     }
 }
 
@@ -295,7 +297,10 @@ async fn test_vector_search_restricts_to_active_model_equal_dimensions() {
         dim: 4,
     }));
 
-    let results = storage.vector_search(&[0.1, 0.2, 0.3, 0.4], 10, None).await.unwrap();
+    let results = storage
+        .vector_search(&[0.1, 0.2, 0.3, 0.4], 10, None)
+        .await
+        .unwrap();
     let ids: Vec<MemoryId> = results.iter().map(|(id, _)| *id).collect();
     assert_eq!(
         ids,
@@ -307,8 +312,16 @@ async fn test_vector_search_restricts_to_active_model_equal_dimensions() {
     // Coverage exposes both models (incomplete-migration visibility).
     let coverage = storage.embedding_model_coverage().await.unwrap();
     let mut lookup: std::collections::HashMap<String, usize> = coverage.into_iter().collect();
-    assert_eq!(lookup.remove("model-A"), Some(1), "expected 1 model-A vector");
-    assert_eq!(lookup.remove("model-B"), Some(1), "expected 1 model-B vector");
+    assert_eq!(
+        lookup.remove("model-A"),
+        Some(1),
+        "expected 1 model-A vector"
+    );
+    assert_eq!(
+        lookup.remove("model-B"),
+        Some(1),
+        "expected 1 model-B vector"
+    );
 
     println!("✅ Equal-dimension model isolation passed; ids: {:?}", ids);
 }
@@ -339,9 +352,20 @@ async fn test_vector_search_restricts_to_active_model_different_dimensions() {
     }));
 
     // Must return only the dim-4 model-A vector, with no dimension clash from model-B.
-    let results = storage.vector_search(&[0.1, 0.2, 0.3, 0.4], 10, None).await.unwrap();
+    let results = storage
+        .vector_search(&[0.1, 0.2, 0.3, 0.4], 10, None)
+        .await
+        .unwrap();
     let ids: Vec<MemoryId> = results.iter().map(|(id, _)| *id).collect();
-    assert_eq!(ids, vec![mem_a.id], "Expected only model-A vector; got {:?}", ids);
+    assert_eq!(
+        ids,
+        vec![mem_a.id],
+        "Expected only model-A vector; got {:?}",
+        ids
+    );
 
-    println!("✅ Different-dimension model isolation passed; ids: {:?}", ids);
+    println!(
+        "✅ Different-dimension model isolation passed; ids: {:?}",
+        ids
+    );
 }

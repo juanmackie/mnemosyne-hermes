@@ -38,7 +38,10 @@ fn commands_resolve_to_same_db_from_env() {
     );
     assert!(db.exists(), "init did not create the DB at the env path");
 
-    let remember = run_with_db(db_str, &["remember", "--content", "delivery e2e", "--no-enrich"]);
+    let remember = run_with_db(
+        db_str,
+        &["remember", "--content", "delivery e2e", "--no-enrich"],
+    );
     assert!(
         remember.status.success(),
         "remember failed: {}",

@@ -78,7 +78,10 @@ async fn merged_near_duplicate_with_new_detail_invalidates_stale_embedding() {
     // Still near-duplicate enough to merge, but carries genuinely new detail:
     // canonical content differs, so the parent's content is appended and its
     // vector describing the OLD content must be invalidated (set to NULL).
-    let mut duplicate = note("Rust memory storage uses a durable index and a WAL index", 0.9);
+    let mut duplicate = note(
+        "Rust memory storage uses a durable index and a WAL index",
+        0.9,
+    );
     duplicate.embedding = Some(vec![0.99, 0.1, 0.0]);
     storage.store_memory(&duplicate).await.unwrap();
     let merged = storage.get_memory(parent.id).await.unwrap();
@@ -287,7 +290,9 @@ async fn merged_near_duplicate_keeps_append_only_evidence_and_source() {
     assert_eq!(storage.count_memories(None).await.unwrap(), 3);
 
     let merged = storage.get_memory(parent.id).await.unwrap();
-    assert!(merged.content.contains("Rust memory storage uses a durable index"));
+    assert!(merged
+        .content
+        .contains("Rust memory storage uses a durable index"));
     assert!(merged.content.contains("WAL index"));
     // The parent's OWN primary provenance must survive the merge.
     let parent_prov = merged.provenance.as_ref().expect("parent provenance kept");
@@ -295,10 +300,7 @@ async fn merged_near_duplicate_keeps_append_only_evidence_and_source() {
     assert_eq!(parent_prov.source_memory_id, Some(source_a.id));
 
     // Append-only evidence keeps the merged statement's attribution too.
-    let evidence = storage
-        .list_memory_evidence(parent.id)
-        .await
-        .unwrap();
+    let evidence = storage.list_memory_evidence(parent.id).await.unwrap();
     let beta = evidence
         .iter()
         .find(|e| e.evidence_quote == "B beta evidence")

@@ -235,7 +235,11 @@ async fn query_batching_preserves_adjacency() {
         .await
         .unwrap();
 
-    assert_eq!(batched.len(), unlimited.len(), "batching must not drop nodes");
+    assert_eq!(
+        batched.len(),
+        unlimited.len(),
+        "batching must not drop nodes"
+    );
     let mut total_batched = 0usize;
     let mut total_unlimited = 0usize;
     for (id, nbrs) in &batched {
@@ -299,10 +303,7 @@ async fn ppr_blend_promotes_multi_hop_memory() {
         attach(
             storage,
             &b,
-            vec![
-                link(&a.id.to_string(), 0.9),
-                link(&c.id.to_string(), 0.9),
-            ],
+            vec![link(&a.id.to_string(), 0.9), link(&c.id.to_string(), 0.9)],
         )
         .await;
     }

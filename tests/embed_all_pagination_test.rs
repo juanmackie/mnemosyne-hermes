@@ -78,12 +78,10 @@ fn make_memory(ns: Namespace, id: MemoryId, content: String) -> MemoryNote {
 /// 50 records and asserts every one receives an embedding.
 #[tokio::test]
 async fn embed_all_processes_every_record_in_store_larger_than_50() {
-    let mut storage: LibsqlStorage = LibsqlStorage::new_with_validation(
-        ConnectionMode::InMemory,
-        true,
-    )
-    .await
-    .unwrap();
+    let mut storage: LibsqlStorage =
+        LibsqlStorage::new_with_validation(ConnectionMode::InMemory, true)
+            .await
+            .unwrap();
 
     let ns = Namespace::Project {
         name: "pagination-test".to_string(),
@@ -96,7 +94,11 @@ async fn embed_all_processes_every_record_in_store_larger_than_50() {
         let id = MemoryId::new();
         expected_ids.push(id);
         storage
-            .store_memory(&make_memory(ns.clone(), id, format!("memory content {}", i)))
+            .store_memory(&make_memory(
+                ns.clone(),
+                id,
+                format!("memory content {}", i),
+            ))
             .await
             .unwrap();
     }
@@ -134,7 +136,12 @@ async fn embed_all_processes_every_record_in_store_larger_than_50() {
     }
 
     // Stable pagination must have visited every stored record exactly once.
-    assert_eq!(processed.len(), COUNT, "expected all {} memories to be visited", COUNT);
+    assert_eq!(
+        processed.len(),
+        COUNT,
+        "expected all {} memories to be visited",
+        COUNT
+    );
     for id in &expected_ids {
         assert!(
             processed.contains(id),
@@ -152,4 +159,3 @@ async fn embed_all_processes_every_record_in_store_larger_than_50() {
     }
     assert_eq!(missing, 0, "{} memories left without an embedding", missing);
 }
-

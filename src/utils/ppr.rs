@@ -70,8 +70,7 @@ pub fn personalized_ppr(
             }
             let out: f32 = edges.iter().map(|(_, w)| w).sum();
             for (neighbor, weight) in edges {
-                *next.entry(neighbor.as_str()).or_insert(0.0) +=
-                    mass * weight / out * damping;
+                *next.entry(neighbor.as_str()).or_insert(0.0) += mass * weight / out * damping;
             }
         }
 
@@ -123,7 +122,10 @@ pub fn blend_ppr_scores(scores: &mut [SearchResult], ppr: &HashMap<String, f32>,
         return;
     }
     for result in scores.iter_mut() {
-        let mass = ppr.get(&result.memory.id.to_string()).copied().unwrap_or(0.0);
+        let mass = ppr
+            .get(&result.memory.id.to_string())
+            .copied()
+            .unwrap_or(0.0);
         if mass > 0.0 {
             result.score = (result.score + weight * mass).min(1.0);
         }
@@ -151,7 +153,12 @@ mod tests {
     fn toy_graph_direct_neighbor_beats_two_hop() {
         // seed A —(0.9)— B —(0.5)— C ; isolated D
         let adjacency = adj(&[("A", "B", 0.9), ("B", "C", 0.5)]);
-        let scores = personalized_ppr(&["A".into()], &adjacency, DEFAULT_DAMPING, DEFAULT_ITERATIONS);
+        let scores = personalized_ppr(
+            &["A".into()],
+            &adjacency,
+            DEFAULT_DAMPING,
+            DEFAULT_ITERATIONS,
+        );
 
         // Seeded at A, B is 1-hop and C is 2-hop. B (a degree-2 hub) may
         // legitimately out-rank the seed A — its hub mass is real signal.
@@ -166,15 +173,24 @@ mod tests {
     fn high_weight_path_beats_low_weight_path() {
         // A—B weak (0.1); A—C strong (1.0). B, C are 1-hop from A.
         let adjacency = adj(&[("A", "B", 0.1), ("A", "C", 1.0)]);
-        let scores = personalized_ppr(&["A".into()], &adjacency, DEFAULT_DAMPING, DEFAULT_ITERATIONS);
+        let scores = personalized_ppr(
+            &["A".into()],
+            &adjacency,
+            DEFAULT_DAMPING,
+            DEFAULT_ITERATIONS,
+        );
         assert!(scores["C"] > scores["B"]);
     }
 
     #[test]
     fn multiple_seeds_split_personalization() {
         let adjacency = adj(&[("A", "B", 1.0), ("C", "D", 1.0)]);
-        let scores =
-            personalized_ppr(&["A".into(), "C".into()], &adjacency, DEFAULT_DAMPING, DEFAULT_ITERATIONS);
+        let scores = personalized_ppr(
+            &["A".into(), "C".into()],
+            &adjacency,
+            DEFAULT_DAMPING,
+            DEFAULT_ITERATIONS,
+        );
         assert!(scores.contains_key("B") && scores.contains_key("D"));
         let close = (scores["B"] - scores["D"]).abs();
         assert!(close < 1e-5, "symmetric seeds must yield symmetric mass");
@@ -184,7 +200,12 @@ mod tests {
     fn dangling_component_mass_returns_to_seeds() {
         // Seed A has no edges at all.
         let adjacency: WeightedAdjacency = HashMap::new();
-        let scores = personalized_ppr(&["A".into()], &adjacency, DEFAULT_DAMPING, DEFAULT_ITERATIONS);
+        let scores = personalized_ppr(
+            &["A".into()],
+            &adjacency,
+            DEFAULT_DAMPING,
+            DEFAULT_ITERATIONS,
+        );
         assert!((scores["A"] - 1.0).abs() < 1e-5);
     }
 
@@ -236,14 +257,30 @@ mod tests {
             }
         }
         let mut results = vec![
-            SearchResult { memory: note("11111111-1111-1111-1111-111111111111", "a"), score: 0.5, match_reason: String::new() },
-            SearchResult { memory: note("22222222-2222-2222-2222-222222222222", "b"), score: 0.5, match_reason: String::new() },
-            SearchResult { memory: note("33333333-3333-3333-3333-333333333333", "c"), score: 0.5, match_reason: String::new() },
+            SearchResult {
+                memory: note("11111111-1111-1111-1111-111111111111", "a"),
+                score: 0.5,
+                match_reason: String::new(),
+            },
+            SearchResult {
+                memory: note("22222222-2222-2222-2222-222222222222", "b"),
+                score: 0.5,
+                match_reason: String::new(),
+            },
+            SearchResult {
+                memory: note("33333333-3333-3333-3333-333333333333", "c"),
+                score: 0.5,
+                match_reason: String::new(),
+            },
         ];
         let mut ppr = HashMap::new();
         ppr.insert("22222222-2222-2222-2222-222222222222".into(), 0.8);
         blend_ppr_scores(&mut results, &ppr, 0.5);
-        assert!((results[1].score - 0.9).abs() < 1e-6, "promoted: {}", results[1].score);
+        assert!(
+            (results[1].score - 0.9).abs() < 1e-6,
+            "promoted: {}",
+            results[1].score
+        );
         assert!((results[0].score - 0.5).abs() < 1e-6, "unlinked untouched");
         assert!((results[2].score - 0.5).abs() < 1e-6);
     }

@@ -104,7 +104,9 @@ impl HealthService for HealthServiceImpl {
         };
 
         let Some(storage) = &self.storage else {
-            return Ok(Response::new(GetStatsResponse { stats: Some(default) }));
+            return Ok(Response::new(GetStatsResponse {
+                stats: Some(default),
+            }));
         };
 
         self.storage_ops_total.fetch_add(1, Ordering::Relaxed);

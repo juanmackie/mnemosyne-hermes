@@ -53,11 +53,7 @@ async fn duplicate_write_returns_same_resolvable_canonical_id() {
 async fn distinct_writes_return_distinct_created_ids() {
     let storage = create_test_storage().await;
 
-    let a = sample_memory(
-        "distinct canonical id memory alpha",
-        MemoryType::Insight,
-        4,
-    );
+    let a = sample_memory("distinct canonical id memory alpha", MemoryType::Insight, 4);
     let b = sample_memory(
         "distinct canonical id memory beta - completely different wording",
         MemoryType::Insight,

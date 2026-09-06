@@ -314,9 +314,8 @@ impl QuantizedVectorIndex {
         let meta: DeserializedMetadata = serde_json::from_slice(&bytes[4..4 + meta_len])
             .map_err(|e| MnemosyneError::SerializationError(e.to_string()))?;
 
-        let index = IdMapIndex::from_bytes(&bytes[4 + meta_len..]).map_err(|e| {
-            MnemosyneError::Other(format!("Failed to restore IdMapIndex: {:?}", e))
-        })?;
+        let index = IdMapIndex::from_bytes(&bytes[4 + meta_len..])
+            .map_err(|e| MnemosyneError::Other(format!("Failed to restore IdMapIndex: {:?}", e)))?;
 
         let u64_to_uuid = meta.uuid_to_u64.iter().map(|(&u, &n)| (n, u)).collect();
 
@@ -364,8 +363,12 @@ mod tests {
         let v1 = generate_vector(dim, 1.0);
         let v2 = generate_vector(dim, 2.0);
 
-        index.add(id1, &v1, &ns, MemoryClass::Knowledge).expect("add v1");
-        index.add(id2, &v2, &ns, MemoryClass::Knowledge).expect("add v2");
+        index
+            .add(id1, &v1, &ns, MemoryClass::Knowledge)
+            .expect("add v1");
+        index
+            .add(id2, &v2, &ns, MemoryClass::Knowledge)
+            .expect("add v2");
 
         assert_eq!(index.len(), 2);
         assert!(index.contains(&id1));
@@ -379,7 +382,9 @@ mod tests {
         let bytes = index.to_bytes().expect("to_bytes");
         let restored = QuantizedVectorIndex::from_bytes(&bytes).expect("from_bytes");
         assert_eq!(restored.len(), 2);
-        let restored_results = restored.search(&v1, 2, None, None).expect("restored search");
+        let restored_results = restored
+            .search(&v1, 2, None, None)
+            .expect("restored search");
         assert_eq!(restored_results[0].0, id1);
     }
 
@@ -403,9 +408,15 @@ mod tests {
         let v_b = generate_vector(dim, 20.0);
         let v_pol = generate_vector(dim, 30.0);
 
-        index.add(id_a, &v_a, &ns_a, MemoryClass::Knowledge).unwrap();
-        index.add(id_b, &v_b, &ns_b, MemoryClass::Knowledge).unwrap();
-        index.add(id_policy, &v_pol, &ns_a, MemoryClass::InteractionPolicy).unwrap();
+        index
+            .add(id_a, &v_a, &ns_a, MemoryClass::Knowledge)
+            .unwrap();
+        index
+            .add(id_b, &v_b, &ns_b, MemoryClass::Knowledge)
+            .unwrap();
+        index
+            .add(id_policy, &v_pol, &ns_a, MemoryClass::InteractionPolicy)
+            .unwrap();
 
         // Search in ns_a only -> should match id_a and id_policy, not id_b
         let res_a = index.search(&v_b, 10, Some(&ns_a), None).unwrap();
@@ -430,16 +441,22 @@ mod tests {
 
         // Wrong dimension
         let short_vec = vec![0.0; 8];
-        assert!(index.add(id, &short_vec, &ns, MemoryClass::Knowledge).is_err());
+        assert!(index
+            .add(id, &short_vec, &ns, MemoryClass::Knowledge)
+            .is_err());
 
         // Non-finite coordinate
         let mut nan_vec = vec![0.0; 16];
         nan_vec[3] = f32::NAN;
-        assert!(index.add(id, &nan_vec, &ns, MemoryClass::Knowledge).is_err());
+        assert!(index
+            .add(id, &nan_vec, &ns, MemoryClass::Knowledge)
+            .is_err());
 
         // Extreme coordinate
         let mut big_vec = vec![0.0; 16];
         big_vec[0] = 1e17;
-        assert!(index.add(id, &big_vec, &ns, MemoryClass::Knowledge).is_err());
+        assert!(index
+            .add(id, &big_vec, &ns, MemoryClass::Knowledge)
+            .is_err());
     }
 }

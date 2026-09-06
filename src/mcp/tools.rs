@@ -1033,18 +1033,18 @@ impl ToolHandler {
                 if e.id.starts_with("policy-") {
                     return None;
                 }
-                results
-                    .iter()
-                    .find(|r| r.memory.id.to_string() == e.id)
+                results.iter().find(|r| r.memory.id.to_string() == e.id)
             })
             .collect();
         let selected_policy: Vec<&crate::types::SearchResult> = budget_plan
             .entries
             .iter()
             .filter_map(|e| {
-                e.id
-                    .strip_prefix("policy-")
-                    .and_then(|pid| policy_results.iter().find(|r| r.memory.id.to_string() == pid))
+                e.id.strip_prefix("policy-").and_then(|pid| {
+                    policy_results
+                        .iter()
+                        .find(|r| r.memory.id.to_string() == pid)
+                })
             })
             .collect();
 
@@ -1058,7 +1058,10 @@ impl ToolHandler {
                 .unwrap_or_else(|_| serde_json::json!({"budget_tokens": content_budget}));
             if let Some(l) = ledger.as_object_mut() {
                 l.insert("content_budget_tokens".into(), content_budget.into());
-                l.insert("protocol_overhead_tokens".into(), protocol_overhead_tokens.into());
+                l.insert(
+                    "protocol_overhead_tokens".into(),
+                    protocol_overhead_tokens.into(),
+                );
             }
             ledger
         };
@@ -1125,17 +1128,13 @@ impl ToolHandler {
                 for result in &selected {
                     lines.push(format!(
                         "[{:.3}] {} | {}\n  {}",
-                        result.score,
-                        result.memory.id,
-                        result.match_reason,
-                        result.memory.summary
+                        result.score, result.memory.id, result.match_reason, result.memory.summary
                     ));
                 }
                 for result in &selected_policy {
                     lines.push(format!(
                         "[guidance] {}\n  {}",
-                        result.memory.id,
-                        result.memory.summary
+                        result.memory.id, result.memory.summary
                     ));
                 }
             }

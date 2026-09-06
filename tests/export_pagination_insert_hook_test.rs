@@ -51,12 +51,10 @@ fn make_memory(ns: Namespace, id: MemoryId, content: String) -> MemoryNote {
 /// none duplicated across page boundaries.
 #[tokio::test]
 async fn export_pagination_walk_collects_every_row_exactly_once() {
-    let mut storage: LibsqlStorage = LibsqlStorage::new_with_validation(
-        ConnectionMode::InMemory,
-        true,
-    )
-    .await
-    .unwrap();
+    let mut storage: LibsqlStorage =
+        LibsqlStorage::new_with_validation(ConnectionMode::InMemory, true)
+            .await
+            .unwrap();
 
     let ns = Namespace::Project {
         name: "export-pagination-test".to_string(),
@@ -70,7 +68,11 @@ async fn export_pagination_walk_collects_every_row_exactly_once() {
         let id = MemoryId::new();
         expected_ids.insert(id);
         storage
-            .store_memory(&make_memory(ns.clone(), id, format!("memory content {}", i)))
+            .store_memory(&make_memory(
+                ns.clone(),
+                id,
+                format!("memory content {}", i),
+            ))
             .await
             .unwrap();
     }
@@ -80,7 +82,12 @@ async fn export_pagination_walk_collects_every_row_exactly_once() {
     let mut memories = Vec::new();
     loop {
         let page = storage
-            .list_memories_page(Some(ns.clone()), PAGE_SIZE, memories.len(), MemorySortOrder::Recent)
+            .list_memories_page(
+                Some(ns.clone()),
+                PAGE_SIZE,
+                memories.len(),
+                MemorySortOrder::Recent,
+            )
             .await
             .unwrap();
         let count = page.len();
@@ -90,7 +97,11 @@ async fn export_pagination_walk_collects_every_row_exactly_once() {
         }
     }
 
-    assert_eq!(memories.len(), COUNT, "page walk dropped or duplicated rows");
+    assert_eq!(
+        memories.len(),
+        COUNT,
+        "page walk dropped or duplicated rows"
+    );
 
     let collected: HashSet<MemoryId> = memories.into_iter().map(|m| m.id).collect();
     assert_eq!(
@@ -113,12 +124,10 @@ async fn export_pagination_walk_collects_every_row_exactly_once() {
 /// off-by-one at the boundary.
 #[tokio::test]
 async fn export_pagination_walk_exact_multiple_boundary() {
-    let mut storage: LibsqlStorage = LibsqlStorage::new_with_validation(
-        ConnectionMode::InMemory,
-        true,
-    )
-    .await
-    .unwrap();
+    let mut storage: LibsqlStorage =
+        LibsqlStorage::new_with_validation(ConnectionMode::InMemory, true)
+            .await
+            .unwrap();
 
     let ns = Namespace::Project {
         name: "export-pagination-boundary".to_string(),
@@ -140,7 +149,12 @@ async fn export_pagination_walk_exact_multiple_boundary() {
     let mut memories = Vec::new();
     loop {
         let page = storage
-            .list_memories_page(Some(ns.clone()), PAGE_SIZE, memories.len(), MemorySortOrder::Recent)
+            .list_memories_page(
+                Some(ns.clone()),
+                PAGE_SIZE,
+                memories.len(),
+                MemorySortOrder::Recent,
+            )
             .await
             .unwrap();
         let count = page.len();
@@ -157,12 +171,9 @@ async fn export_pagination_walk_exact_multiple_boundary() {
 /// must be constructible with a disabled config without promoting it.
 #[tokio::test]
 async fn insert_hook_is_experimental_and_disabled_by_default() {
-    let storage: LibsqlStorage = LibsqlStorage::new_with_validation(
-        ConnectionMode::InMemory,
-        true,
-    )
-    .await
-    .unwrap();
+    let storage: LibsqlStorage = LibsqlStorage::new_with_validation(ConnectionMode::InMemory, true)
+        .await
+        .unwrap();
     let backend: Arc<dyn StorageBackend> = Arc::new(storage);
 
     // Production path: plain `new` — hook stays off by default.

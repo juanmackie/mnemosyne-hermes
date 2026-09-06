@@ -14,8 +14,7 @@ use mnemosyne_core::{
     },
     rpc::{
         generated::{
-            health_service_server::HealthService,
-            memory_service_server::MemoryService,
+            health_service_server::HealthService, memory_service_server::MemoryService,
             ListMemoriesRequest, StoreMemoryRequest,
         },
         services::{HealthServiceImpl, MemoryServiceImpl},
@@ -32,7 +31,11 @@ use tonic::Request;
 
 /// Owned, unique temporary directory per test (never the dev's real home).
 fn temp_storage_path(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("mnemosyne_ancillary_{}_{}", label, uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!(
+        "mnemosyne_ancillary_{}_{}",
+        label,
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir.join("test.db")
 }
@@ -55,7 +58,9 @@ fn agent_info(id: &str, task: &str, meta_key: &str, meta_val: &str) -> AgentInfo
     metadata.insert(meta_key.to_string(), meta_val.to_string());
     AgentInfo {
         id: id.to_string(),
-        state: AgentState::Active { task: task.to_string() },
+        state: AgentState::Active {
+            task: task.to_string(),
+        },
         updated_at: chrono::Utc::now(),
         metadata,
         health: Some(AgentHealth {
@@ -71,7 +76,9 @@ fn project_namespace(name: &str) -> mnemosyne_core::rpc::generated::Namespace {
     use mnemosyne_core::rpc::generated::namespace::Namespace as Ns;
     use mnemosyne_core::rpc::generated::ProjectNamespace;
     mnemosyne_core::rpc::generated::Namespace {
-        namespace: Some(Ns::Project(ProjectNamespace { name: name.to_string() })),
+        namespace: Some(Ns::Project(ProjectNamespace {
+            name: name.to_string(),
+        })),
     }
 }
 
@@ -116,7 +123,10 @@ async fn test_b_agent_metadata_preserved_after_agent_started_event() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let got = manager.get_agent(&id).await.expect("agent present");
-    assert_eq!(got.metadata.get("role").map(|s| s.as_str()), Some("orchestrator"));
+    assert_eq!(
+        got.metadata.get("role").map(|s| s.as_str()),
+        Some("orchestrator")
+    );
     assert_eq!(got.health.as_ref().map(|h| h.error_count), Some(2));
 }
 
@@ -145,7 +155,9 @@ async fn test_b_context_errors_preserved_after_modified_event() {
         errors: vec!["line 12: syntax".to_string()],
     };
     manager.update_context_file(file).await;
-    events.broadcast(Event::context_modified(path.clone())).unwrap();
+    events
+        .broadcast(Event::context_modified(path.clone()))
+        .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -201,7 +213,10 @@ async fn test_e_list_memories_pagination_and_filter_rejection() {
             skip_llm_enrichment: true,
             ..Default::default()
         };
-        service.store_memory(Request::new(req)).await.expect("store");
+        service
+            .store_memory(Request::new(req))
+            .await
+            .expect("store");
     }
 
     // Page 1: limit 2, offset 0 -> has_more true, total = 5.
@@ -211,7 +226,10 @@ async fn test_e_list_memories_pagination_and_filter_rejection() {
         offset: 0,
         ..Default::default()
     };
-    let resp = service.list_memories(Request::new(page1_req)).await.unwrap();
+    let resp = service
+        .list_memories(Request::new(page1_req))
+        .await
+        .unwrap();
     let resp = resp.into_inner();
     assert_eq!(resp.memories.len(), 2);
     assert_eq!(resp.total_count, 5);
@@ -224,7 +242,10 @@ async fn test_e_list_memories_pagination_and_filter_rejection() {
         offset: 4,
         ..Default::default()
     };
-    let resp = service.list_memories(Request::new(page3_req)).await.unwrap();
+    let resp = service
+        .list_memories(Request::new(page3_req))
+        .await
+        .unwrap();
     let resp = resp.into_inner();
     assert_eq!(resp.memories.len(), 1);
     assert!(!resp.has_more);
@@ -252,12 +273,17 @@ async fn test_e_list_memories_pagination_and_filter_rejection() {
 async fn test_f_health_reports_unavailable_without_storage() {
     let service = HealthServiceImpl::new(); // no storage attached
     let resp = service
-        .health_check(Request::new(mnemosyne_core::rpc::generated::HealthCheckRequest {}))
+        .health_check(Request::new(
+            mnemosyne_core::rpc::generated::HealthCheckRequest {},
+        ))
         .await
         .unwrap()
         .into_inner();
     assert!(!resp.healthy);
-    assert_eq!(resp.components.get("storage").map(|s| s.as_str()), Some("unavailable"));
+    assert_eq!(
+        resp.components.get("storage").map(|s| s.as_str()),
+        Some("unavailable")
+    );
 }
 
 #[tokio::test]
@@ -275,20 +301,28 @@ async fn test_f_health_and_stats_real_with_storage() {
         skip_llm_enrichment: true,
         ..Default::default()
     };
-    mem_svc.store_memory(Request::new(store)).await.expect("store");
+    mem_svc
+        .store_memory(Request::new(store))
+        .await
+        .expect("store");
 
     let health = service
-        .health_check(Request::new(mnemosyne_core::rpc::generated::HealthCheckRequest {}))
+        .health_check(Request::new(
+            mnemosyne_core::rpc::generated::HealthCheckRequest {},
+        ))
         .await
         .unwrap()
         .into_inner();
     assert!(health.healthy);
-    assert_eq!(health.components.get("storage").map(|s| s.as_str()), Some("healthy"));
+    assert_eq!(
+        health.components.get("storage").map(|s| s.as_str()),
+        Some("healthy")
+    );
 
     let stats = service
-        .get_stats(Request::new(mnemosyne_core::rpc::generated::GetStatsRequest {
-            namespace: None,
-        }))
+        .get_stats(Request::new(
+            mnemosyne_core::rpc::generated::GetStatsRequest { namespace: None },
+        ))
         .await
         .unwrap()
         .into_inner();
@@ -304,6 +338,9 @@ async fn test_f_health_and_stats_real_with_storage() {
 async fn test_g_rpc_rejects_non_loopback_bind() {
     let storage = create_test_storage("rpc_g").await;
     let server = RpcServer::new(storage, None);
-    let err = server.serve("0.0.0.0:50051").await.expect_err("must reject non-loopback");
+    let err = server
+        .serve("0.0.0.0:50051")
+        .await
+        .expect_err("must reject non-loopback");
     assert!(err.to_string().contains("non-loopback") || err.to_string().contains("loopback"));
 }

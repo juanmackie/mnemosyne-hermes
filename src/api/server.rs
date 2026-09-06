@@ -17,7 +17,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt as _};
-use tower_http::{cors::{AllowOrigin, CorsLayer}, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing::{debug, info};
 
 /// API server configuration
@@ -206,7 +209,10 @@ impl ApiServer {
         // HTTP surface is experimental and off by default. Refuse to bind unless
         // explicitly opted in via the config (per memory profile).
         if !self.config.start_dashboard {
-            info!("Dashboard HTTP API disabled (opt-in); not starting on {}", self.config.addr);
+            info!(
+                "Dashboard HTTP API disabled (opt-in); not starting on {}",
+                self.config.addr
+            );
             return Ok(());
         }
 

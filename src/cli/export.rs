@@ -52,7 +52,12 @@ pub async fn handle(
     let mut memories = Vec::new();
     loop {
         let page = storage
-            .list_memories_page(ns.clone(), PAGE_SIZE, memories.len(), MemorySortOrder::Recent)
+            .list_memories_page(
+                ns.clone(),
+                PAGE_SIZE,
+                memories.len(),
+                MemorySortOrder::Recent,
+            )
             .await?;
         let count = page.len();
         memories.extend(page);

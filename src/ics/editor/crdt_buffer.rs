@@ -580,7 +580,8 @@ impl CrdtBuffer {
                     self.cursor.position.line -= 1;
                     // Clamp column to line length
                     if let Some(line) = lines.get(self.cursor.position.line) {
-                        self.cursor.position.column = self.cursor.position.column.min(line.chars().count());
+                        self.cursor.position.column =
+                            self.cursor.position.column.min(line.chars().count());
                     }
                 }
             }
@@ -589,7 +590,8 @@ impl CrdtBuffer {
                     self.cursor.position.line += 1;
                     // Clamp column to line length
                     if let Some(line) = lines.get(self.cursor.position.line) {
-                        self.cursor.position.column = self.cursor.position.column.min(line.chars().count());
+                        self.cursor.position.column =
+                            self.cursor.position.column.min(line.chars().count());
                     }
                 }
             }
@@ -693,7 +695,8 @@ impl CrdtBuffer {
                 }
                 // Clamp column to line length
                 if let Some(line) = lines.get(self.cursor.position.line) {
-                    self.cursor.position.column = self.cursor.position.column.min(line.chars().count());
+                    self.cursor.position.column =
+                        self.cursor.position.column.min(line.chars().count());
                 }
             }
             Movement::PageDown => {
@@ -707,7 +710,8 @@ impl CrdtBuffer {
                 }
                 // Clamp column to line length
                 if let Some(line) = lines.get(self.cursor.position.line) {
-                    self.cursor.position.column = self.cursor.position.column.min(line.chars().count());
+                    self.cursor.position.column =
+                        self.cursor.position.column.min(line.chars().count());
                 }
             }
             Movement::BufferStart => {
@@ -986,8 +990,13 @@ mod tests {
         // clamp the column to the target line's CHARACTER count (2), not its
         // byte length (4), and must not panic or overshoot in cursor_to_char_idx.
         let mut buffer = CrdtBuffer::new(0, Actor::Human, None).unwrap();
-        buffer.insert(0, "héllo
-hi").unwrap();
+        buffer
+            .insert(
+                0,
+                "héllo
+hi",
+            )
+            .unwrap();
         buffer.cursor.position = Position { line: 0, column: 5 };
 
         buffer.move_cursor(Movement::Down).unwrap();

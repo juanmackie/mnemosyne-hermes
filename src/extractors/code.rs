@@ -43,9 +43,16 @@ pub fn extract_symbols(code: &str, language: Option<&str>) -> Vec<ExtractedCodeS
 
 /// Detect language hint from code fences or content.
 fn detect_language_hint(code: &str) -> &'static str {
-    if code.contains("fn ") || code.contains("impl ") || code.contains("pub struct ") || code.contains("let mut ") {
+    if code.contains("fn ")
+        || code.contains("impl ")
+        || code.contains("pub struct ")
+        || code.contains("let mut ")
+    {
         "rust"
-    } else if code.contains("def ") || code.contains("class ") || code.contains("import ") && code.contains(":") {
+    } else if code.contains("def ")
+        || code.contains("class ")
+        || code.contains("import ") && code.contains(":")
+    {
         "python"
     } else {
         "unknown"
@@ -57,7 +64,10 @@ fn extract_rust_symbols(code: &str) -> Vec<ExtractedCodeSymbol> {
     use tree_sitter::Parser;
 
     let mut parser = Parser::new();
-    if parser.set_language(&tree_sitter_rust::LANGUAGE.into()).is_err() {
+    if parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .is_err()
+    {
         return extract_rust_symbols_fallback(code);
     }
 
@@ -197,7 +207,10 @@ fn extract_python_symbols(code: &str) -> Vec<ExtractedCodeSymbol> {
     use tree_sitter::Parser;
 
     let mut parser = Parser::new();
-    if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_err() {
+    if parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .is_err()
+    {
         return extract_python_symbols_fallback(code);
     }
 
@@ -319,7 +332,9 @@ fn extract_rust_symbols_fallback(code: &str) -> Vec<ExtractedCodeSymbol> {
 
     // Regex for struct, enum, trait, impl
     let type_regex = Regex::new(r#"(?m)(?:pub\s+)?(struct|enum|trait)\s+([a-zA-Z0-9_]+)"#).unwrap();
-    let impl_regex = Regex::new(r#"(?m)impl(?:<[^>]+>)?\s+(?:[a-zA-Z0-9_:]+\s+for\s+)?([a-zA-Z0-9_]+)"#).unwrap();
+    let impl_regex =
+        Regex::new(r#"(?m)impl(?:<[^>]+>)?\s+(?:[a-zA-Z0-9_:]+\s+for\s+)?([a-zA-Z0-9_]+)"#)
+            .unwrap();
     let fn_regex = Regex::new(r#"(?m)(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z0-9_]+)\s*(?:<[^>]+>)?\s*(\([^\)]*\))(?:\s*->\s*([^{;]+))?"#).unwrap();
 
     let mut current_impl: Option<String> = None;
@@ -357,7 +372,10 @@ fn extract_rust_symbols_fallback(code: &str) -> Vec<ExtractedCodeSymbol> {
         if let Some(caps) = fn_regex.captures(trimmed) {
             let name = caps[1].to_string();
             let params = caps[2].to_string();
-            let _ret = caps.get(3).map(|m| format!(" -> {}", m.as_str().trim())).unwrap_or_default();
+            let _ret = caps
+                .get(3)
+                .map(|m| format!(" -> {}", m.as_str().trim()))
+                .unwrap_or_default();
             let scope = current_impl.clone();
             let breadcrumb = match &scope {
                 Some(s) => format!("{}::{}", s, name),
@@ -380,7 +398,10 @@ fn extract_rust_symbols_fallback(code: &str) -> Vec<ExtractedCodeSymbol> {
 fn extract_python_symbols_fallback(code: &str) -> Vec<ExtractedCodeSymbol> {
     let mut symbols = Vec::new();
     let class_regex = Regex::new(r#"(?m)^class\s+([a-zA-Z0-9_]+)(?:\([^)]*\))?:"#).unwrap();
-    let fn_regex = Regex::new(r#"(?m)^(?:\s+)?(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*(\([^\)]*\))(?:\s*->\s*([^:]+))?:"#).unwrap();
+    let fn_regex = Regex::new(
+        r#"(?m)^(?:\s+)?(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*(\([^\)]*\))(?:\s*->\s*([^:]+))?:"#,
+    )
+    .unwrap();
 
     let mut current_class: Option<String> = None;
 
@@ -402,9 +423,16 @@ fn extract_python_symbols_fallback(code: &str) -> Vec<ExtractedCodeSymbol> {
         if let Some(caps) = fn_regex.captures(line) {
             let name = caps[1].to_string();
             let params = caps[2].to_string();
-            let _ret = caps.get(3).map(|m| format!(" -> {}", m.as_str().trim())).unwrap_or_default();
+            let _ret = caps
+                .get(3)
+                .map(|m| format!(" -> {}", m.as_str().trim()))
+                .unwrap_or_default();
             let is_method = line.starts_with("    ") || line.starts_with("\t");
-            let scope = if is_method { current_class.clone() } else { None };
+            let scope = if is_method {
+                current_class.clone()
+            } else {
+                None
+            };
             let breadcrumb = match &scope {
                 Some(s) => format!("{}.{}", s, name),
                 None => name.clone(),
@@ -479,7 +507,10 @@ impl QuantizedVectorIndex {
 "#;
         let symbols = extract_symbols(code, Some("rust"));
         assert!(!symbols.is_empty());
-        let fn_sym = symbols.iter().find(|s| s.name == "search").expect("found search fn");
+        let fn_sym = symbols
+            .iter()
+            .find(|s| s.name == "search")
+            .expect("found search fn");
         assert_eq!(fn_sym.kind, "fn");
         assert_eq!(fn_sym.scope.as_deref(), Some("QuantizedVectorIndex"));
         assert_eq!(fn_sym.breadcrumb, "QuantizedVectorIndex::search");
@@ -498,7 +529,10 @@ class MemoryRetriever:
 "#;
         let symbols = extract_symbols(code, Some("python"));
         assert!(!symbols.is_empty());
-        let fn_sym = symbols.iter().find(|s| s.name == "retrieve").expect("found retrieve fn");
+        let fn_sym = symbols
+            .iter()
+            .find(|s| s.name == "retrieve")
+            .expect("found retrieve fn");
         assert_eq!(fn_sym.kind, "fn");
         assert_eq!(fn_sym.scope.as_deref(), Some("MemoryRetriever"));
         assert_eq!(fn_sym.breadcrumb, "MemoryRetriever.retrieve");
@@ -506,8 +540,8 @@ class MemoryRetriever:
 
     #[test]
     fn test_enrich_memory_tags() {
+        use crate::types::{MemoryClass, MemoryId};
         use chrono::Utc;
-        use crate::types::{MemoryId, MemoryClass};
         let mut note = MemoryNote {
             id: MemoryId::new(),
             namespace: crate::types::Namespace::Global,

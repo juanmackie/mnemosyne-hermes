@@ -67,7 +67,12 @@ pub async fn handle(
             let mut memories = Vec::new();
             loop {
                 let page = storage
-                    .list_memories_page(ns.clone(), page_size, memories.len(), MemorySortOrder::Recent)
+                    .list_memories_page(
+                        ns.clone(),
+                        page_size,
+                        memories.len(),
+                        MemorySortOrder::Recent,
+                    )
                     .await?;
                 let n = page.len();
                 memories.extend(page);
@@ -155,12 +160,7 @@ pub async fn handle(
         println!("  Failed: {}", failed);
 
         if failed > 0 {
-            return Err(anyhow::anyhow!(
-                "{} of {} memories failed to embed",
-                failed,
-                total
-            )
-            .into());
+            return Err(anyhow::anyhow!("{} of {} memories failed to embed", failed, total).into());
         }
 
         Ok(())
