@@ -258,20 +258,21 @@ fn make_knowledge_memory(content: &str) -> MemoryNote {
     }
 }
 
-async fn make_storage() -> LibsqlStorage {
+async fn make_storage() -> (LibsqlStorage, TempDir) {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("model_identity.db");
-    LibsqlStorage::new_with_validation(
+    let storage = LibsqlStorage::new_with_validation(
         ConnectionMode::Local(db_path.to_str().unwrap().to_string()),
         true,
     )
     .await
-    .unwrap()
+    .unwrap();
+    (storage, temp_dir)
 }
 
 #[tokio::test]
 async fn test_vector_search_restricts_to_active_model_equal_dimensions() {
-    let mut storage = make_storage().await;
+    let (mut storage, _temp) = make_storage().await;
 
     let mem_a = make_knowledge_memory("Alpha project Rust");
     let mem_b = make_knowledge_memory("Beta project Python");
@@ -314,7 +315,7 @@ async fn test_vector_search_restricts_to_active_model_equal_dimensions() {
 
 #[tokio::test]
 async fn test_vector_search_restricts_to_active_model_different_dimensions() {
-    let mut storage = make_storage().await;
+    let (mut storage, _temp) = make_storage().await;
 
     let mem_a = make_knowledge_memory("Alpha Rust");
     let mem_b = make_knowledge_memory("Beta Python");
