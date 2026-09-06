@@ -398,20 +398,25 @@ fn compute_rrf_ranking(
     keyword_ranks: &std::collections::HashMap<MemoryId, usize>,
     vector_ranks: &std::collections::HashMap<MemoryId, usize>,
     graph_ranks: &std::collections::HashMap<MemoryId, usize>,
+    weights: crate::utils::retrieval::RetrievalWeights,
     k: f32,
 ) -> std::collections::HashMap<MemoryId, f32> {
     let mut rrf_scores: std::collections::HashMap<MemoryId, f32> =
         std::collections::HashMap::new();
 
-    // Accumulate 1/(k + rank) from each channel that has the candidate.
+    // Accumulate weight × 1/(k + rank) from each channel that has the
+    // candidate. Weighting each channel scales its RRF contribution so a
+    // raised adaptive weight (e.g. keyword = 1.0) predictably boosts that
+    // channel's top hits. Non-negative weights keep the sum monotonic in the
+    // rank signal.
     for (id, &rank) in keyword_ranks {
-        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+        *rrf_scores.entry(*id).or_insert(0.0) += weights.keyword.max(0.0) / (k + rank as f32);
     }
     for (id, &rank) in vector_ranks {
-        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+        *rrf_scores.entry(*id).or_insert(0.0) += weights.vector.max(0.0) / (k + rank as f32);
     }
     for (id, &rank) in graph_ranks {
-        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+        *rrf_scores.entry(*id).or_insert(0.0) += weights.graph.max(0.0) / (k + rank as f32);
     }
 
     rrf_scores
@@ -8590,7 +8595,13 @@ impl StorageBackend for LibsqlStorage {
         let graph_ranks =
             graph_deterministic_ranks(&memory_scores);
 
-        let rrf_scores = compute_rrf_ranking(&keyword_ranks, &vector_ranks, &graph_ranks, 60.0);
+        let rrf_scores = compute_rrf_ranking(
+            &keyword_ranks,
+            &vector_ranks,
+            &graph_ranks,
+            effective_weights,
+            60.0,
+        );
 
         // 5. PPR (Personalized PageRank, HippoRAG-style) subgraph scores.
         // When enabled, seed a damped power iteration at the top retrieval
