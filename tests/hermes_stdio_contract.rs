@@ -145,12 +145,15 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
         .to_string();
 
     // ---- 4. recall finds it -------------------------------------------
+    // COMPATIBILITY NOTE: mnemosyne.recall now defaults to `compact: true` (plain-text),
+    // so structured JSON must be requested explicitly via `compact: false`.
+    // The assembler applies the same budget selection to both modes.
     let resp = rpc(
         &mut reader,
         &mut stdin,
         &json!({
             "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-            "params": {"name": "mnemosyne.recall", "arguments": {"query": "vault launch code"}}
+            "params": {"name": "mnemosyne.recall", "arguments": {"query": "vault launch code", "compact": false}}
         }),
     )
     .await;
@@ -170,6 +173,40 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
     assert!(
         payload["abstention_threshold"].is_number(),
         "abstention guidance must be documented in responses"
+    );
+    // The assembler's selection drives both modes; disclose content budget
+    // and protocol overhead in the ledger.
+    assert!(payload["count"].as_u64().unwrap_or(0) >= 1, "selected count");
+    assert!(
+        payload["token_ledger"]["content_budget_tokens"].is_number()
+            && payload["token_ledger"]["protocol_overhead_tokens"].is_number(),
+        "ledger discloses content budget + protocol overhead"
+    );
+
+    // ---- 4b. compact lifecycle: same budget selection, plain-text output ---
+    let resp = rpc(
+        &mut reader,
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0", "id": 41, "method": "tools/call",
+            "params": {"name": "mnemosyne.recall", "arguments": {"query": "vault launch code", "compact": true}}
+        }),
+    )
+    .await;
+    let payload = tool_payload(&resp);
+    assert_eq!(payload["compact"], json!(true), "compact mode flag");
+    let text = payload["text"].as_str().expect("compact text body");
+    assert!(
+        text.contains(&memory_id),
+        "compact selection must include the stored memory id"
+    );
+    assert!(
+        payload["count"].as_u64().unwrap_or(0) >= 1,
+        "compact selected count"
+    );
+    assert!(
+        payload["token_ledger"]["content_budget_tokens"].is_number(),
+        "compact mode also discloses the content budget ledger"
     );
 
     // ---- 5. update ------------------------------------------------------
@@ -205,7 +242,7 @@ async fn hermes_stdio_full_lifecycle_and_malformed_tolerance() {
         &mut stdin,
         &json!({
             "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-            "params": {"name": "mnemosyne.recall", "arguments": {"query": "vault launch code"}}
+            "params": {"name": "mnemosyne.recall", "arguments": {"query": "vault launch code", "compact": false}}
         }),
     )
     .await;
