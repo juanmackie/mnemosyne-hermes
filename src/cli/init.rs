@@ -7,14 +7,17 @@ use std::path::PathBuf;
 use tracing::debug;
 
 use super::event_helpers;
-use super::helpers::get_default_db_path;
+use super::helpers::{expand_home, get_db_path};
 
 /// Handle database initialization command
 pub async fn handle(database: Option<String>, global_db_path: Option<String>) -> Result<()> {
-    // Use provided database path or fall back to global/default
-    let db_path = database
-        .or(global_db_path)
-        .unwrap_or_else(|| get_default_db_path().to_string_lossy().to_string());
+    // Resolve the same way every other command does (--db-path, then
+    // MNEMOSYNE_DB_PATH, then default) and expand a home-relative `~` so init
+    // and import/CLI/MCP all target the identical database.
+    let db_path = match database {
+        Some(db) => expand_home(&db),
+        None => get_db_path(global_db_path),
+    };
 
     event_helpers::with_event_lifecycle(
         "init",
