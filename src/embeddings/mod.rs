@@ -77,6 +77,10 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use super::*;
 
+    // Env-var tests share the process environment and run on parallel threads;
+    // serialize them so one test's set_var cannot leak into another's assertion.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn fallback_warning_starts_above_threshold() {
         assert!(fallback_embedding_warning(FALLBACK_EMBEDDING_WARNING_THRESHOLD).is_none());
@@ -98,6 +102,7 @@ mod tests {
 
     #[test]
     fn remote_embedding_config_requires_explicit_voyage_key() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // A configured Anthropic key must NOT enable the remote (Voyage) path.
         std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
         std::env::remove_var(VOYAGE_API_KEY_ENV);
@@ -110,6 +115,7 @@ mod tests {
 
     #[test]
     fn remote_embedding_config_ignores_empty_voyage_key() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var(VOYAGE_API_KEY_ENV, "   ");
         assert!(remote_embedding_config().is_none());
         std::env::remove_var(VOYAGE_API_KEY_ENV);
@@ -117,6 +123,7 @@ mod tests {
 
     #[test]
     fn remote_embedding_config_returns_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var(VOYAGE_API_KEY_ENV, "pa-voyage-test");
         std::env::set_var(VOYAGE_MODEL_ENV, "voyage-3.5");
         std::env::set_var(VOYAGE_BASE_URL_ENV, "https://voyage.example/v1");
