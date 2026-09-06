@@ -24,15 +24,19 @@ pub mod libsql_workitem_tests;
 use crate::agents::access_control::{ModificationLog, ModificationType};
 use crate::agents::AgentRole;
 use crate::error::Result;
-use crate::types::{MemoryClass, MemoryId, MemoryNote, Namespace, SearchResult};
+use crate::types::{
+    MemoryClass, MemoryId, MemoryNote, MemoryStoreResult, Namespace, SearchResult,
+};
 use crate::utils::retrieval::{RetrievalTrace, RetrievalWeights};
 use async_trait::async_trait;
 
 /// Storage backend trait defining all required operations
 #[async_trait]
 pub trait StorageBackend: Send + Sync {
-    /// Store a new memory
-    async fn store_memory(&self, memory: &MemoryNote) -> Result<()>;
+    /// Store a new memory, returning the canonical stored ID and status.
+    /// When the write merges into an existing parent, the returned ID is the
+    /// parent's ID (resolvable), not the caller's generated ID.
+    async fn store_memory(&self, memory: &MemoryNote) -> Result<MemoryStoreResult>;
 
     /// Retrieve a memory by ID
     async fn get_memory(&self, id: MemoryId) -> Result<MemoryNote>;

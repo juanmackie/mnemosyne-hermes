@@ -7009,7 +7009,7 @@ impl LibsqlStorage {
 
 #[async_trait]
 impl StorageBackend for LibsqlStorage {
-    async fn store_memory(&self, memory: &MemoryNote) -> Result<()> {
+    async fn store_memory(&self, memory: &MemoryNote) -> Result<crate::types::MemoryStoreResult> {
         debug!("Storing memory: {}", memory.id);
 
         let conn = self.get_conn().map_err(|e| {
@@ -7039,7 +7039,10 @@ impl StorageBackend for LibsqlStorage {
                 self.merge_integrity_parent(&tx, parent_id, memory, has_link_metadata)
                     .await?;
                 tx.commit().await?;
-                return Ok(());
+                return Ok(crate::types::MemoryStoreResult {
+                    id: parent_id,
+                    status: crate::types::MemoryStoreStatus::Merged,
+                });
             }
         }
         let memory_hash = content_hash(&memory.content);
@@ -7289,7 +7292,10 @@ impl StorageBackend for LibsqlStorage {
         }
 
         debug!("Memory stored successfully: {}", memory.id);
-        Ok(())
+        Ok(crate::types::MemoryStoreResult {
+            id: memory.id,
+            status: crate::types::MemoryStoreStatus::Created,
+        })
     }
 
     async fn get_memory(&self, id: MemoryId) -> Result<MemoryNote> {

@@ -1752,11 +1752,15 @@ impl ToolHandler {
         let embedding = self.embeddings.generate_embedding(&memory.content).await?;
         memory.embedding = Some(embedding);
 
-        // Store memory (with embedding)
-        self.storage.store_memory(&memory).await?;
+        // Store memory (with embedding). The canonical stored ID is returned
+        // and may differ from memory.id when the write near-merges into a
+        // parent; always report the resolvable canonical ID back to the client.
+        let stored = self.storage.store_memory(&memory).await?;
+        let canonical_id = stored.id;
 
         // Emit event through event sink
-        let event = crate::api::Event::memory_stored(memory.id.to_string(), memory.summary.clone());
+        let event =
+            crate::api::Event::memory_stored(canonical_id.to_string(), memory.summary.clone());
         if let Err(e) = self.event_sink.emit(event).await {
             warn!("Failed to emit memory stored event: {}", e);
         }
@@ -1770,7 +1774,8 @@ impl ToolHandler {
         );
 
         Ok(serde_json::json!({
-            "memory_id": memory.id.to_string(),
+            "memory_id": canonical_id.to_string(),
+            "merged": stored.status == crate::types::MemoryStoreStatus::Merged,
             "summary": memory.summary,
             "importance": memory.importance,
             "tags": memory.tags

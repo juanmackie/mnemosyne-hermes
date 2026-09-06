@@ -138,15 +138,16 @@ impl MemoryLinker {
             provenance: None,
         };
 
-        self.storage.store_memory(&memory).await?;
+        let stored = self.storage.store_memory(&memory).await?;
+        let canonical_id = stored.id;
 
         // A-MEM post-insert hook (cost-gated, best-effort). Any failure degrades
         // to a plain insert — the memory itself is already persisted.
         if self.on_insert.enabled && self.proposer.is_some() {
-            let _ = self.run_insert_hook(memory.id).await;
+            let _ = self.run_insert_hook(canonical_id).await;
         }
 
-        Ok(memory.id)
+        Ok(canonical_id)
     }
 
     /// Run the A-MEM post-insert link-proposal hook for `new_memory_id`.

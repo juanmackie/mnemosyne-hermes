@@ -223,13 +223,16 @@ pub async fn handle(
         }
     }
 
-    // Store memory
-    storage.store_memory(&memory).await?;
+    // Store memory. The store may deduplicate into an existing parent when
+    // content is a near-duplicate; the returned canonical ID is authoritative
+    // and always resolvable.
+    let stored = storage.store_memory(&memory).await?;
+    let canonical_id = stored.id;
 
     // Emit memory stored event
     let remember_event = AgentEvent::RememberExecuted {
         content_preview: memory.summary.chars().take(100).collect(),
-        memory_id: memory.id.clone(),
+        memory_id: canonical_id,
         importance: memory.importance,
     };
     let _ = event_bridge::emit_event(remember_event).await;
@@ -239,7 +242,8 @@ pub async fn handle(
         println!(
             "{}",
             serde_json::json!({
-                "id": memory.id.to_string(),
+                "id": canonical_id.to_string(),
+                "merged": stored.status == mnemosyne_core::MemoryStoreStatus::Merged,
                 "summary": memory.summary,
                 "importance": memory.importance,
                 "tags": memory.tags,
@@ -248,7 +252,11 @@ pub async fn handle(
         );
     } else {
         eprintln!("{} Memory saved", icons::status::success());
-        println!("ID: {}", memory.id);
+        if stored.status == mnemosyne_core::MemoryStoreStatus::Merged {
+            println!("ID: {} (merged into existing memory)", canonical_id);
+        } else {
+            println!("ID: {}", canonical_id);
+        }
         println!("Summary: {}", memory.summary);
         println!("Importance: {}/10", memory.importance);
         println!("Tags: {}", memory.tags.join(", "));
@@ -261,7 +269,7 @@ pub async fn handle(
         duration_ms,
         format!(
             "Stored memory {} (importance {})",
-            memory.id, memory.importance
+            canonical_id, memory.importance
         ),
     )
     .await;

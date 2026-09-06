@@ -156,8 +156,9 @@ pub use storage::{
 };
 pub use types::{
     ConsolidationDecision, InteractionPolicy, LinkType, MemoryClass, MemoryEntity, MemoryId,
-    MemoryLink, MemoryNote, MemoryProvenance, MemoryType, MemoryUpdates, Namespace, PolicyPolarity,
-    PolicySignalKind, ProvenanceSourceKind, ProvenanceSourceRole, SearchQuery, SearchResult,
+    MemoryLink, MemoryNote, MemoryProvenance, MemoryStoreResult, MemoryStoreStatus, MemoryType,
+    MemoryUpdates, Namespace, PolicyPolarity, PolicySignalKind, ProvenanceSourceKind,
+    ProvenanceSourceRole, SearchQuery, SearchResult,
 };
 pub use update::{prompt_for_install, prompt_for_update, UpdateManager, UpdateResult};
 pub use utils::{is_trivial_prompt, sanitize_context, string::truncate_at_char_boundary};

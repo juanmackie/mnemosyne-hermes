@@ -72,14 +72,17 @@ impl MemoryService for MemoryServiceImpl {
         // TODO: LLM enrichment if skip_llm_enrichment is false and llm is available
         // For now, just store as-is
 
-        // Store in backend
-        self.storage
+        // Store in backend. The canonical stored ID is authoritative and may
+        // differ from memory_id when the write near-merges into a parent.
+        let stored = self
+            .storage
             .store_memory(&memory)
             .await
             .map_err(|e| Status::from(e))?;
+        let canonical_id = stored.id;
 
         Ok(Response::new(StoreMemoryResponse {
-            memory_id: memory_id.to_string(),
+            memory_id: canonical_id.to_string(),
             memory: Some(memory_note_to_proto(memory)),
         }))
     }
