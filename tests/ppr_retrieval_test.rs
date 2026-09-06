@@ -362,7 +362,7 @@ async fn insert_hook_links_similar_memory_without_scheduler() {
     storage.store_memory(&existing).await.unwrap();
     let embedding = vec![0.9_f32, 0.1, 0.1];
     storage
-        .store_embedding(&existing.id, &embedding)
+        .store_embedding(&existing.id, &embedding, "test")
         .await
         .unwrap();
 
@@ -370,7 +370,7 @@ async fn insert_hook_links_similar_memory_without_scheduler() {
     let new_note = note("Beta: exponential backoff for network calls");
     storage.store_memory(&new_note).await.unwrap();
     storage
-        .store_embedding(&new_note.id, &embedding)
+        .store_embedding(&new_note.id, &embedding, "test")
         .await
         .unwrap();
 
