@@ -12,7 +12,6 @@ use mnemosyne_core::storage::{MemorySortOrder, StorageBackend};
 use mnemosyne_core::types::{MemoryId, MemoryNote, MemoryType, Namespace};
 use mnemosyne_core::{error::Result, MemoryClass};
 use std::sync::Arc;
-use tempfile::TempDir;
 
 /// Deterministic no-network embedding service so the test never touches a model.
 struct StubEmbeddings {
@@ -75,13 +74,12 @@ fn make_memory(ns: Namespace, id: MemoryId, content: String) -> MemoryNote {
     }
 }
 
+/// Runs the paginated embed-all flow against an in-memory store with more than
+/// 50 records and asserts every one receives an embedding.
 #[tokio::test]
 async fn embed_all_processes_every_record_in_store_larger_than_50() {
-    let temp_dir = TempDir::new().unwrap();
-    let db_path = temp_dir.path().join("embed_all_pagination.db");
-
     let mut storage: LibsqlStorage = LibsqlStorage::new_with_validation(
-        ConnectionMode::Local(db_path.to_str().unwrap().to_string()),
+        ConnectionMode::InMemory,
         true,
     )
     .await
@@ -154,3 +152,4 @@ async fn embed_all_processes_every_record_in_store_larger_than_50() {
     }
     assert_eq!(missing, 0, "{} memories left without an embedding", missing);
 }
+
