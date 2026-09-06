@@ -76,10 +76,6 @@ pub struct SearchConfig {
     /// Weight of the additive PPR mass term in hybrid ranking (0.0-1.0).
     pub ppr_weight: f32,
 
-    /// Nearest neighbours scored for link proposals per insertion by the
-    /// A-MEM-style insertion-time evolution hook.
-    pub insert_link_k: usize,
-
     /// Row cap for FTS5 keyword candidate retrieval before fusion. Larger
     /// pools let coverage/supersession reranking see candidates that pure
     /// BM25 position would discard, at linear scan cost per query.
@@ -109,7 +105,6 @@ impl Default for SearchConfig {
             // PPR starts off: measure retrieval gain before enabling.
             enable_ppr: false,
             ppr_weight: 0.15,
-            insert_link_k: 8,
             // Candidate pool for the FTS keyword channel. Relevant memories
             // must survive candidate selection before fusion/reranking; a
             // hard cap of 20 discarded deep BM25 matches on realistic stores.
@@ -155,13 +150,6 @@ impl SearchConfig {
                 format!("ppr_weight must be between 0.0 and 1.0, got {}", self.ppr_weight),
             )));
         }
-        if self.insert_link_k == 0 {
-            return Err(MnemosyneError::Config(config::ConfigError::Message(
-                "insert_link_k must be at least 1".to_string(),
-            )));
-        }
-
-        // Check graph depth
         if self.max_graph_depth == 0 {
             return Err(MnemosyneError::Config(config::ConfigError::Message(
                 "max_graph_depth must be at least 1".to_string(),

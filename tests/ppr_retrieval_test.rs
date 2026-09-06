@@ -9,10 +9,14 @@
 //! These live as integration tests so the real LibSQL schema (with
 //! `memory_links` strength/traversal columns) is exercised.
 
+use async_trait::async_trait;
 use mnemosyne_core::{
-    LibsqlStorage, LinkType, MemoryId, MemoryLink, MemoryNote, MemoryType, Namespace,
-    StorageBackend,
+    artifacts::{LinkProposer, MemoryLinker},
+    evolution::OnInsertConfig,
+    LibsqlStorage, LinkType, MemoryId, MemoryLink, MemoryNote, MemoryType, Namespace, Result,
+    SearchConfig, StorageBackend,
 };
+use std::sync::Arc;
 
 mod common;
 use common::{create_test_storage, sample_memory};
@@ -222,5 +226,88 @@ async fn ppr_blend_promotes_multi_hop_memory() {
     assert!(
         on_c > base_c,
         "PPR must boost the 2-hop linked memory (base {base_c}, ppr {on_c})"
+    );
+}
+
+/// A canned proposer: returns a fixed set of proposed links for any input.
+/// Lets the hook's orchestration be asserted deterministically without a live
+/// LLM API call.
+struct StubProposer {
+    links: Vec<MemoryLink>,
+}
+
+#[async_trait]
+impl LinkProposer for StubProposer {
+    async fn propose(
+        &self,
+        _new_memory: &MemoryNote,
+        _candidates: &[MemoryNote],
+    ) -> Result<Vec<MemoryLink>> {
+        Ok(self.links.clone())
+    }
+}
+
+/// `evolution.on_insert`: the A-MEM post-insert hook proposes cross-links
+/// between a freshly-inserted memory and the k nearest existing memories,
+/// *without* any scheduler run.
+///
+/// A new memory (embedding identical to an existing one's) is inserted, the
+/// stub proposer suggests a link from it to the nearest neighbour, and the
+/// hook materialises that link bidirectionally on both memories.
+#[tokio::test]
+async fn insert_hook_links_similar_memory_without_scheduler() {
+    let mut storage = create_test_storage().await;
+    storage.set_search_config(SearchConfig {
+        enable_vector_search: true,
+        ..Default::default()
+    });
+
+    // An existing, semantically-similar memory.
+    let existing = note("Alpha: retries with exponential backoff");
+    storage.store_memory(&existing).await.unwrap();
+    let embedding = vec![0.9_f32, 0.1, 0.1];
+    storage
+        .store_embedding(&existing.id, &embedding)
+        .await
+        .unwrap();
+
+    // The new memory whose insert triggers the hook. Same embedding -> nearest.
+    let new_note = note("Beta: exponential backoff for network calls");
+    storage.store_memory(&new_note).await.unwrap();
+    storage
+        .store_embedding(&new_note.id, &embedding)
+        .await
+        .unwrap();
+
+    let proposer = StubProposer {
+        links: vec![link(&existing.id.to_string(), 0.8)],
+    };
+    let linker = MemoryLinker::with_insert_hook(
+        Arc::new(storage),
+        Some(Arc::new(proposer)),
+        OnInsertConfig {
+            enabled: true,
+            k: 8,
+        },
+    );
+
+    let n_proposed = linker.run_insert_hook(new_note.id).await.unwrap();
+    assert_eq!(n_proposed, 1, "hook should propose exactly one cross-link");
+
+    // The new memory now carries an outgoing cross-link to the similar memory.
+    let after_new = linker.storage().get_memory(new_note.id).await.unwrap();
+    assert!(
+        after_new.links.iter().any(|l| l.target_id == existing.id),
+        "new memory should gain an outgoing cross-link to the nearest neighbour"
+    );
+
+    // The edge is bidirectional: the existing memory links back to the new one.
+    let after_existing = linker.storage().get_memory(existing.id).await.unwrap();
+    assert!(
+        after_existing
+            .links
+            .iter()
+            .any(|l| l.target_id == new_note.id),
+        "cross-link must be materialized bidirectionally"
     );
 }

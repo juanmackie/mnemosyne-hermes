@@ -21,7 +21,9 @@ pub mod memory_evolution_dspy_adapter;
 pub mod scheduler;
 
 pub use archival::ArchivalJob;
-pub use config::{ConfigError, ConsolidationConfig, DecisionMode, EvolutionConfig, JobConfig};
+pub use config::{
+    ConfigError, ConsolidationConfig, DecisionMode, EvolutionConfig, JobConfig, OnInsertConfig,
+};
 pub use consolidation::ConsolidationJob;
 pub use importance::ImportanceRecalibrator;
 pub use links::LinkDecayJob;

@@ -56,7 +56,7 @@ pub use checklist::{ChecklistItem, ChecklistSection, QualityChecklist};
 pub use clarification::{Clarification, ClarificationItem};
 pub use constitution::{Constitution, ConstitutionBuilder};
 pub use feature_spec::{FeatureSpec, FeatureSpecBuilder, UserScenario};
-pub use memory_link::MemoryLinker;
+pub use memory_link::{LinkProposer, LlmLinkProposer, MemoryLinker};
 pub use plan::{ArchitectureDecision, ImplementationPlan};
 pub use storage::{parse_frontmatter, serialize_frontmatter, ArtifactStorage};
 pub use tasks::{Task, TaskBreakdown, TaskPhase};

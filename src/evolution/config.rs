@@ -33,6 +33,10 @@ pub struct EvolutionConfig {
     #[serde(default)]
     pub consolidation_config: ConsolidationConfig,
 
+    /// A-MEM post-insert cross-link proposal hook (cost-gated; disabled by default)
+    #[serde(default)]
+    pub on_insert: OnInsertConfig,
+
     /// Importance recalibration job configuration
     pub importance: JobConfig,
 
@@ -105,6 +109,36 @@ impl Default for ConsolidationConfig {
     }
 }
 
+/// A-MEM on-insert cross-link proposal configuration
+///
+/// Runs only at insert time (not on a scheduler), so it is naturally cost-gated
+/// by `enabled`. When enabled, the k nearest existing memories are offered to the
+/// LLM, which proposes new cross-links between the freshly-inserted memory and
+/// the existing ones. Link decay subsequently prunes any weak auto-links.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnInsertConfig {
+    /// Enable the post-insert cross-link proposal hook
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Number of nearest existing memories to consider as link candidates
+    #[serde(default = "default_on_insert_k")]
+    pub k: usize,
+}
+
+fn default_on_insert_k() -> usize {
+    8
+}
+
+impl Default for OnInsertConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, // cost gate: off unless explicitly opted in
+            k: default_on_insert_k(),
+        }
+    }
+}
+
 // Custom serde module for Duration (serialize/deserialize as seconds)
 mod serde_duration {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -137,6 +171,7 @@ impl Default for EvolutionConfig {
                 max_duration: Duration::from_secs(300), // 5 minutes
             },
             consolidation_config: ConsolidationConfig::default(),
+            on_insert: OnInsertConfig::default(),
             importance: JobConfig {
                 enabled: true,
                 interval: Duration::from_secs(604800), // 7 days
