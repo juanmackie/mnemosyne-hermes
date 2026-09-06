@@ -9981,6 +9981,52 @@ mod fts_query_tests {
         assert_eq!(shallow, vec![2, 3, 4]);
         assert!(first.values().any(|&r| r == 7));
     }
+
+    #[test]
+    fn rrf_respects_adaptive_channel_weights() {
+        use super::compute_rrf_ranking;
+        use crate::utils::retrieval::RetrievalWeights;
+
+        // Candidate a ranks #1 in keyword but #2 in vector; candidate b is the
+        // reverse (a keyword #1 keyword for a, vector #1 for b). With equal
+        // weights the fused scores tie; tilting the weights toward one channel
+        // must predictably flip who ranks first.
+        let a = MemoryId::new();
+        let b = MemoryId::new();
+        let keyword_ranks = HashMap::from([(a.clone(), 1usize), (b.clone(), 2usize)]);
+        let vector_ranks = HashMap::from([(a.clone(), 2usize), (b.clone(), 1usize)]);
+        let graph_ranks = HashMap::new();
+
+        // Equal keyword/vector weight: both candidates tie in RRF.
+        let balanced = compute_rrf_ranking(
+            &keyword_ranks,
+            &vector_ranks,
+            &graph_ranks,
+            RetrievalWeights { keyword: 1.0, vector: 1.0, graph: 0.0 },
+            60.0,
+        );
+        assert!((balanced[&a] - balanced[&b]).abs() < 1e-6);
+
+        // Tilt toward keyword: a (keyword rank 1) must now lead b.
+        let keyword_heavy = compute_rrf_ranking(
+            &keyword_ranks,
+            &vector_ranks,
+            &graph_ranks,
+            RetrievalWeights { keyword: 1.0, vector: 0.0, graph: 0.0 },
+            60.0,
+        );
+        assert!(keyword_heavy[&a] > keyword_heavy[&b]);
+
+        // Tilt toward vector: b (vector rank 1) must now lead a.
+        let vector_heavy = compute_rrf_ranking(
+            &keyword_ranks,
+            &vector_ranks,
+            &graph_ranks,
+            RetrievalWeights { keyword: 0.0, vector: 1.0, graph: 0.0 },
+            60.0,
+        );
+        assert!(vector_heavy[&b] > vector_heavy[&a]);
+    }
 }
 
 // Additional implementation methods for LibsqlStorage
