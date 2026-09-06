@@ -8337,6 +8337,41 @@ impl StorageBackend for LibsqlStorage {
 
         let rrf_scores = compute_rrf_ranking(&keyword_ranks, &vector_ranks, &graph_ranks, 60.0);
 
+        // 5. PPR (Personalized PageRank, HippoRAG-style) subgraph scores.
+        // When enabled, seed a damped power iteration at the top retrieval
+        // hits and spread rank mass along weighted `memory_links` edges. The
+        // normalized mass (max = 1.0) is blended additively into final scores
+        // below, promoting multi-hop recall without letting link popularity
+        // dominate direct matches — candidates outside the seeded subgraph
+        // are left untouched. Best-effort: any query failure degrades to the
+        // un-blended ranking.
+        let ppr_scores: std::collections::HashMap<String, f32> =
+            if self.search_config.enable_ppr && !memory_scores.is_empty() {
+                let ppr_seeds = Self::select_graph_seed_ids(&memory_scores, 5);
+                match self
+                    .fetch_ppr_adjacency(&ppr_seeds, 2, namespace.clone())
+                    .await
+                {
+                    Ok(adjacency) => crate::utils::ppr::normalize_ppr(
+                        &crate::utils::ppr::personalized_ppr(
+                            &ppr_seeds
+                                .iter()
+                                .map(|id| id.to_string())
+                                .collect::<Vec<_>>(),
+                            &adjacency,
+                            crate::utils::ppr::DEFAULT_DAMPING,
+                            crate::utils::ppr::DEFAULT_ITERATIONS,
+                        ),
+                    ),
+                    Err(e) => {
+                        debug!("PPR blend skipped: {}", e);
+                        std::collections::HashMap::new()
+                    }
+                }
+            } else {
+                std::collections::HashMap::new()
+            };
+
         // Compute final scores
         let now = Utc::now();
         let mut scored_results = Vec::new();
@@ -8403,6 +8438,16 @@ impl StorageBackend for LibsqlStorage {
                 score: final_score,
                 match_reason,
             });
+        }
+
+        // Blended PPR mass into final scores (best-effort; no-op when feature
+        // is disabled or no subgraph nodes were reached).
+        if !ppr_scores.is_empty() {
+            crate::utils::ppr::blend_ppr_scores(
+                &mut scored_results,
+                &ppr_scores,
+                self.search_config.ppr_weight,
+            );
         }
 
         // Sort by score, apply query-term coverage rescoring (one-token OR

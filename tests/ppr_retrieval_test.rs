@@ -150,3 +150,77 @@ async fn depth_cap_limits_adjacency_reach() {
         "max_hops=1 must not reach 2-hop node C"
     );
 }
+
+/// Build a SearchConfig with deterministic channels (vector off) and PPR
+/// togglable, so the blend's effect can be isolated against an identical
+/// fixture.
+fn search_config(ppr_on: bool) -> mnemosyne_core::SearchConfig {
+    let mut config = mnemosyne_core::SearchConfig::default();
+    config.enable_vector_search = false; // no embedding service in this test
+    config.enable_graph_expansion = true; // ensure 2-hop node reaches candidates
+    config.enable_ppr = ppr_on;
+    config.ppr_weight = 0.5;
+    config
+}
+
+/// Run hybrid search for `query` against a storage, returning a map of
+/// memory content -> score for easy comparison.
+async fn run_search(
+    storage: &LibsqlStorage,
+    query: &str,
+) -> std::collections::HashMap<String, f32> {
+    let results = storage
+        .hybrid_search(query, Some(Namespace::Global), 20, true)
+        .await
+        .unwrap();
+    results
+        .into_iter()
+        .map(|r| (r.memory.content.clone(), r.score))
+        .collect()
+}
+
+#[tokio::test]
+async fn ppr_blend_promotes_multi_hop_memory() {
+    // A --0.9-- B --0.9-- C. Query "alpha" keyword-matches only A (the seed);
+    // C is two hops away and only appears because of graph expansion. PPR
+    // seeded at A should spread positive mass to C and boost its score.
+    let mut off = create_test_storage().await;
+    off.set_search_config(search_config(false));
+    let mut on = create_test_storage().await;
+    on.set_search_config(search_config(true));
+
+    for storage in [&off, &on] {
+        let a = note("alpha primary target");
+        let b = note("beta secondary");
+        let c = note("gamma tertiary");
+        storage.store_memory(&a).await.unwrap();
+        storage.store_memory(&b).await.unwrap();
+        storage.store_memory(&c).await.unwrap();
+        attach(storage, &a, vec![link(&b.id.to_string(), 0.9)]).await;
+        attach(
+            storage,
+            &b,
+            vec![
+                link(&a.id.to_string(), 0.9),
+                link(&c.id.to_string(), 0.9),
+            ],
+        )
+        .await;
+    }
+
+    let baseline = run_search(&off, "alpha").await;
+    let boosted = run_search(&on, "alpha").await;
+
+    // The 2-hop node must be present in both (graph-expanded) result sets.
+    let base_c = *baseline
+        .get("gamma tertiary")
+        .expect("2-hop node must be a candidate without PPR");
+    let on_c = *boosted
+        .get("gamma tertiary")
+        .expect("2-hop node must be a candidate with PPR");
+
+    assert!(
+        on_c > base_c,
+        "PPR must boost the 2-hop linked memory (base {base_c}, ppr {on_c})"
+    );
+}
