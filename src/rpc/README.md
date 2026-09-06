@@ -4,13 +4,13 @@ gRPC-based remote access to mnemosyne's memory system, enabling external applica
 
 ## Overview
 
-The RPC module provides a production-ready gRPC server with:
+The RPC module provides a gRPC server for local memory access (experimental):
 
 - **Full CRUD Operations**: Store, retrieve, update, and delete memories
 - **Advanced Search**: Semantic search, graph traversal, and hybrid recall
 - **Streaming APIs**: Progressive results for large datasets and progress tracking
 - **Type-Safe**: Protocol Buffers ensure schema validation and backward compatibility
-- **Production Ready**: Comprehensive error handling, input validation, and rate limiting
+- **Experimental**: No authentication or TLS. Binds to loopback only; intended for local, trusted clients.
 
 ## Architecture
 
@@ -141,15 +141,16 @@ mnemosyne-rpc
 # Custom port
 mnemosyne-rpc --port 8080
 
-# Listen on all interfaces
-mnemosyne-rpc --host 0.0.0.0 --port 9090
-
 # With LLM enrichment
 mnemosyne-rpc --enable-llm --anthropic-api-key <key>
 
 # Custom database path
 mnemosyne-rpc --db-path /path/to/mnemosyne.db
 ```
+
+> **Security**: The server is unauthenticated and has no TLS. It refuses to bind
+> to non-loopback addresses. Keep it on `127.0.0.1`/`::1` and reach remote
+> clients only through an authenticated TLS reverse proxy.
 
 ### Command-Line Options
 
@@ -322,27 +323,8 @@ except grpc.RpcError as e:
 
 ## Performance
 
-### Throughput
-
-- **Store operations**: ~1000 req/s (without LLM enrichment)
-- **Get operations**: ~5000 req/s (with caching)
-- **Search operations**: ~500 req/s (hybrid search with graph expansion)
-- **Stream operations**: ~2000 items/s
-
-### Latency (p50/p95/p99)
-
-- **Store**: 2ms / 5ms / 10ms
-- **Get**: 1ms / 2ms / 5ms
-- **Recall**: 10ms / 25ms / 50ms
-- **GraphTraverse**: 15ms / 35ms / 70ms
-
-### Resource Usage
-
-- **Memory**: ~50MB base + ~1KB per cached memory
-- **CPU**: <5% idle, ~30% under load (single core)
-- **Database**: LibSQL with WAL journaling
-
-### Optimization Tips
+The server has no published benchmark. Measure it in your environment before
+relying on any throughput or latency figures. For guidance:
 
 1. **Use streaming for large result sets**: Reduces memory pressure and improves responsiveness
 2. **Batch operations**: Store multiple memories in sequence rather than parallel
@@ -370,14 +352,14 @@ Future versions will support:
 
 ### TLS/SSL
 
-To enable TLS in production:
+TLS is **not** implemented and the server has no authentication. It therefore
+refuses to bind to non-loopback addresses. To expose it remotely, put an
+authenticated TLS reverse proxy (nginx/Envoy) in front of it and keep
+mnemosyne-rpc bound to `127.0.0.1`.
 
 ```bash
-# Generate certificates
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
-
-# Run server with TLS (TODO: not yet implemented)
-mnemosyne-rpc --tls-cert cert.pem --tls-key key.pem
+# Reverse proxy terminates TLS + auth; terminate recentproxy here not needed
+# mnemosyne-rpc stays on 127.0.0.1:50051
 ```
 
 ## Development
@@ -435,8 +417,9 @@ RUN cargo build --release --features rpc
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/mnemosyne-rpc /usr/local/bin/
-EXPOSE 50051
-CMD ["mnemosyne-rpc", "--host", "0.0.0.0"]
+# Unauthenticated server: bind loopback only; put an authenticated TLS reverse
+# proxy in front if remote access is required.
+CMD ["mnemosyne-rpc", "--host", "127.0.0.1", "--port", "50051"]
 ```
 
 ### systemd Service

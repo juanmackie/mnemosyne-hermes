@@ -27,6 +27,16 @@ pub struct ApiServerConfig {
     pub addr: SocketAddr,
     /// Event channel capacity
     pub event_capacity: usize,
+    /// Whether the dashboard HTTP API is enabled. Defaults to off; must be
+    /// explicitly opted in per memory profile. When off, `serve` refuses to
+    /// bind (the HTTP surface is experimental and unauthenticated by default).
+    pub start_dashboard: bool,
+    /// Optional bearer token required on state/events/mutating endpoints.
+    /// When `None`, the HTTP surface is not exposed (treated as disabled).
+    pub auth_token: Option<String>,
+    /// Allowed CORS origins for browser clients. Empty means no browser
+    /// cross-origin access (non-browser clients are unaffected).
+    pub allowed_origins: Vec<String>,
 }
 
 impl Default for ApiServerConfig {
@@ -34,6 +44,9 @@ impl Default for ApiServerConfig {
         Self {
             addr: ([127, 0, 0, 1], 3000).into(),
             event_capacity: 1000,
+            start_dashboard: false,
+            auth_token: None,
+            allowed_origins: Vec::new(),
         }
     }
 }
@@ -47,6 +60,10 @@ struct AppState {
     state: Arc<StateManager>,
     /// Instance ID
     instance_id: String,
+    /// Optional bearer token for state/events endpoints
+    auth_token: Option<String>,
+    /// Allowed CORS origins (empty => no browser cross-origin access)
+    allowed_origins: Vec<String>,
 }
 
 /// API server
@@ -104,6 +121,31 @@ impl ApiServer {
 
     /// Build router
     fn build_router(state: AppState) -> Router {
+        // Constrain CORS to explicitly allowed origins only. Empty list => no
+        // browser cross-origin access (the default). Never permissive.
+        let cors = {
+            let builder = CorsLayer::new()
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                ]);
+            if state.allowed_origins.is_empty() {
+                builder.allow_origin(false)
+            } else {
+                builder.allow_origin(
+                    state
+                        .allowed_origins
+                        .iter()
+                        .filter_map(|o| o.parse::<axum::http::HeaderValue>().ok())
+                        .collect::<Vec<_>>(),
+                )
+            }
+        };
+
+        // Token-check middleware applied to state/events/emit (not /health).
+        let auth = axum::middleware::from_fn_with_state(state.clone(), auth_middleware);
+
         Router::new()
             // Event streaming
             .route("/events", get(events_handler))
@@ -120,13 +162,39 @@ impl ApiServer {
             .route("/metrics/memory-ops", get(memory_ops_series_handler))
             .route("/metrics/skills", get(skills_series_handler))
             .route("/metrics/work", get(work_series_handler))
-            // Health check
-            .route("/health", get(health_handler))
             // State
+            .with_state(state.clone())
+            // Token check on the protected routes registered so far.
+            // /health is registered after this layer and stays open (liveness).
+            .route_layer(auth)
+            // Health check (liveness only, no auth)
+            .route("/health", get(health_handler))
             .with_state(state)
-            // Middleware
-            .layer(CorsLayer::permissive())
+            .layer(cors)
             .layer(TraceLayer::new_for_http())
+    }
+
+    /// Bearer-token gate for the experimental HTTP state/events surface.
+    /// No token configured => requests pass through (surface not bound anyway
+    /// unless explicitly opted in).
+    async fn auth_middleware(
+        State(state): State<AppState>,
+        req: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> impl IntoResponse {
+        if let Some(expected) = &state.auth_token {
+            let supplied = req
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(str::to_string)
+                .unwrap_or_default();
+            if supplied != *expected {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
+        next.run(req).await
     }
 
     /// Start serving with dynamic port allocation
@@ -134,10 +202,19 @@ impl ApiServer {
     /// Tries the configured address first, then attempts alternative ports
     /// if the primary port is unavailable (e.g., when multiple instances are running).
     pub async fn serve(mut self) -> anyhow::Result<()> {
+        // HTTP surface is experimental and off by default. Refuse to bind unless
+        // explicitly opted in via the config (per memory profile).
+        if !self.config.start_dashboard {
+            info!("Dashboard HTTP API disabled (opt-in); not starting on {}", self.config.addr);
+            return Ok(());
+        }
+
         let state = AppState {
             events: self.events.clone(),
             state: self.state.clone(),
             instance_id: self.instance_id.clone(),
+            auth_token: self.config.auth_token.clone(),
+            allowed_origins: self.config.allowed_origins.clone(),
         };
 
         let router = Self::build_router(state.clone());
@@ -238,7 +315,14 @@ async fn events_handler(
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
     debug!("New SSE client connected, sending state snapshot");
 
-    // Get current state snapshot
+    // Subscribe to the live event stream FIRST, before capturing the state
+    // snapshot. This prevents missing intervening events that arrive between
+    // snapshot read and stream start (previous code lost them).
+    let rx = state.events.subscribe();
+    let live_stream = BroadcastStream::new(rx);
+
+    // Get current state snapshot (reconciles against the live subscription's
+    // observation point; StateManager projects events into this state).
     let agents = state.state.list_agents().await;
     let context_files = state.state.list_context_files().await;
 
@@ -248,7 +332,7 @@ async fn events_handler(
         context_files.len()
     );
 
-    // Create synthetic snapshot events for current state
+    // Synthetic snapshot events for current state (replay for late joiners).
     let mut snapshot_events = Vec::new();
 
     // Agent heartbeat events (so StateManager sees them as alive)
@@ -272,17 +356,14 @@ async fn events_handler(
         snapshot_events.len()
     );
 
-    // Subscribe to live event stream
-    let rx = state.events.subscribe();
-    let live_stream = BroadcastStream::new(rx);
-
     let live_event_stream = live_stream.filter_map(|result| match result {
         Ok(event) => {
             // Convert Event to SSE Event
             let data = serde_json::to_string(&event).ok()?;
             Some(Ok(SseEvent::default().data(data).id(event.id)))
         }
-        Err(_) => None, // Skip lagged messages
+        // Lagged: skip the missed window; ids are UUIDs so order is preserved.
+        Err(_) => None,
     });
 
     // Combine snapshot + live events
@@ -452,10 +533,24 @@ mod tests {
             events: EventBroadcaster::default(),
             state: Arc::new(StateManager::new()),
             instance_id: "test-instance".to_string(),
+            auth_token: None,
+            allowed_origins: Vec::new(),
         };
 
         let response = health_handler(State(state)).await;
         assert_eq!(response.0.status, "ok");
         assert_eq!(response.0.instance_id, "test-instance");
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_opt_in_disabled_by_default() {
+        // Default config must NOT start the HTTP surface.
+        let config = ApiServerConfig::default();
+        assert!(!config.start_dashboard);
+        assert!(config.auth_token.is_none());
+        assert!(config.allowed_origins.is_empty());
+        let server = ApiServer::new(config);
+        // serve() returns early without binding when disabled
+        let _ = server.serve().await.unwrap();
     }
 }

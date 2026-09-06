@@ -748,13 +748,19 @@ async fn main() -> Result<()> {
             // Define agent names
             let agent_names = ["Orchestrator", "Optimizer", "Reviewer", "Executor"];
 
-            // Create API server for dashboard connectivity
+            // Create API server for dashboard connectivity (opt-in; off by default)
             let socket_addr: SocketAddr = "127.0.0.1:3000"
                 .parse()
                 .expect("Invalid default API address");
+            let dashboard_enabled = std::env::var("MNEMOSYNE_DASHBOARD")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
             let api_config = ApiServerConfig {
                 addr: socket_addr,
                 event_capacity: 1000,
+                start_dashboard: dashboard_enabled,
+                auth_token: None,
+                allowed_origins: Vec::new(),
             };
             let api_server = ApiServer::new(api_config);
             let event_broadcaster = api_server.broadcaster().clone();

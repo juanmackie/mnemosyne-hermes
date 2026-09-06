@@ -254,7 +254,13 @@ pub async fn start_mcp_server(db_path_arg: Option<String>) -> Result<()> {
         }
     };
 
-    // Try to start API server for dashboard connectivity
+    // Try to start API server for dashboard connectivity.
+    // Dashboard HTTP is experimental and OFF by default; it only starts when
+    // explicitly opted in (e.g. MNEMOSYNE_DASHBOARD=1). MCP no longer silently
+    // auto-starts an unauthenticated listener.
+    let dashboard_enabled = std::env::var("MNEMOSYNE_DASHBOARD")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     use mnemosyne_core::api::{ApiServer, ApiServerConfig};
     use mnemosyne_core::mcp::tools::EventSink;
     use std::net::SocketAddr;
@@ -263,13 +269,19 @@ pub async fn start_mcp_server(db_path_arg: Option<String>) -> Result<()> {
     let api_config = ApiServerConfig {
         addr: socket_addr,
         event_capacity: 1000,
+        start_dashboard: dashboard_enabled,
+        auth_token: None,
+        allowed_origins: Vec::new(),
     };
 
-    // Try to bind port 3000 (owner mode) or connect to existing server (client mode)
-    let (event_sink, api_server_task) = match tokio::net::TcpListener::bind(socket_addr).await {
-        Ok(listener) => {
-            // Owner mode: We successfully bound port 3000, start API server
-            drop(listener); // Release the listener, ApiServer will rebind
+    // When the dashboard is not opted in, do not bind at all.
+    let (event_sink, api_server_task) = if !dashboard_enabled {
+        (EventSink::None, None)
+    } else {
+        match tokio::net::TcpListener::bind(socket_addr).await {
+            Ok(listener) => {
+                // Owner mode: We successfully bound port 3000, start API server
+                drop(listener); // Release the listener, ApiServer will rebind
 
             let api_server = ApiServer::new(api_config);
             let event_broadcaster = api_server.broadcaster().clone();
@@ -300,6 +312,7 @@ pub async fn start_mcp_server(db_path_arg: Option<String>) -> Result<()> {
                 (EventSink::None, None)
             }
         }
+    }
     };
 
     // Initialize the handler with the validated process scope. Tool calls
@@ -405,6 +418,9 @@ pub async fn start_mcp_server_with_api(
     let api_config = ApiServerConfig {
         addr: socket_addr,
         event_capacity: api_capacity,
+        start_dashboard: true,
+        auth_token: None,
+        allowed_origins: Vec::new(),
     };
     let api_server = ApiServer::new(api_config);
     let event_broadcaster = api_server.broadcaster().clone();
