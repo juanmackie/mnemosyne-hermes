@@ -49,6 +49,8 @@ pub struct OrphanRepairReport {
     pub fts_rows_removed: u64,
     pub provenance_rows_removed: u64,
     pub provenance_sources_cleared: u64,
+    pub evidence_rows_removed: u64,
+    pub evidence_sources_cleared: u64,
     pub entity_rows_removed: u64,
     pub policy_rows_removed: u64,
     pub policy_evidence_rows_removed: u64,
@@ -431,6 +433,7 @@ static LIBSQL_MIGRATION_NAMES: &[&str] = &[
     "026_retrieval_evaluation.sql",
     "027_memory_integrity.sql",
     "028_retrieval_trace_namespace.sql",
+    "029_memory_evidence.sql",
 ];
 
 /// Migration file names for StandardSQLite schema
@@ -455,6 +458,7 @@ static SQLITE_MIGRATION_NAMES: &[&str] = &[
     "026_retrieval_evaluation.sql",
     "027_memory_integrity.sql",
     "028_retrieval_trace_namespace.sql",
+    "029_memory_evidence.sql",
 ];
 
 /// (filename, SQL content) pairs for LibSQL migrations — SQL embedded at
@@ -523,6 +527,10 @@ static LIBSQL_MIGRATIONS: &[(&str, &str)] = &[
     (
         "028_retrieval_trace_namespace.sql",
         include_str!("../../migrations/libsql/028_retrieval_trace_namespace.sql"),
+    ),
+    (
+        "029_memory_evidence.sql",
+        include_str!("../../migrations/libsql/029_memory_evidence.sql"),
     ),
 ];
 
@@ -607,6 +615,10 @@ static SQLITE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "028_retrieval_trace_namespace.sql",
         include_str!("../../migrations/sqlite/028_retrieval_trace_namespace.sql"),
+    ),
+    (
+        "029_memory_evidence.sql",
+        include_str!("../../migrations/sqlite/029_memory_evidence.sql"),
     ),
 ];
 
@@ -4680,7 +4692,33 @@ impl LibsqlStorage {
         if let Some(provenance) = &memory.provenance {
             provenance.validate()?;
             self.validate_provenance_source(tx, provenance).await?;
-            tx.execute("INSERT OR REPLACE INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![parent_id.to_string(), serde_json::to_value(provenance.source_kind)?.as_str().unwrap_or("manual"), provenance.source_memory_id.map(|id| id.to_string()), provenance.session_id.clone(), provenance.turn_id.clone(), serde_json::to_value(provenance.source_role)?.as_str().unwrap_or("unknown"), provenance.observed_at.to_rfc3339(), provenance.evidence_quote.clone(), provenance.extractor_model.clone(), provenance.extraction_schema_version.clone()]).await?;
+            // Append-only evidence for THIS merged statement. memory_provenance
+            // holds one primary row per memory, so writing the merged
+            // statement's provenance keyed to the parent would overwrite (and
+            // destroy) the parent's own attribution. Retain every merged
+            // statement's evidence association here instead, and only set the
+            // primary provenance row when the parent has none yet.
+            if self.table_exists_tx(tx, "memory_evidence").await? {
+                tx.execute(
+                    "INSERT INTO memory_evidence (memory_id, source_memory_id, evidence_quote, observed_at) VALUES (?, ?, ?, ?) ON CONFLICT(memory_id, source_memory_id, evidence_quote) DO NOTHING",
+                    params![
+                        parent_id.to_string(),
+                        provenance.source_memory_id.map(|id| id.to_string()),
+                        provenance.evidence_quote.clone(),
+                        provenance.observed_at.to_rfc3339(),
+                    ],
+                )
+                .await?;
+            }
+            let mut existing = tx
+                .query(
+                    "SELECT 1 FROM memory_provenance WHERE memory_id = ?",
+                    params![parent_id.to_string()],
+                )
+                .await?;
+            if existing.next().await?.is_none() {
+                tx.execute("INSERT INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![parent_id.to_string(), serde_json::to_value(provenance.source_kind)?.as_str().unwrap_or("manual"), provenance.source_memory_id.map(|id| id.to_string()), provenance.session_id.clone(), provenance.turn_id.clone(), serde_json::to_value(provenance.source_role)?.as_str().unwrap_or("unknown"), provenance.observed_at.to_rfc3339(), provenance.evidence_quote.clone(), provenance.extractor_model.clone(), provenance.extraction_schema_version.clone()]).await?;
+            }
         }
         tx.execute("INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)", params![parent_id.to_string(), serde_json::json!({"event":"integrity_enrichment", "source_memory_id":memory.id, "content_hash":content_hash(&memory.content)}).to_string()]).await?;
         if self.table_exists_tx(tx, "memory_facts").await? {
@@ -4787,6 +4825,18 @@ impl LibsqlStorage {
             )
             .await?;
         }
+        if has("memory_evidence") {
+            report.evidence_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_evidence e LEFT JOIN memories m ON m.id = e.memory_id WHERE m.id IS NULL",
+            )
+            .await?;
+            report.evidence_sources_cleared = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_evidence e LEFT JOIN memories s ON s.id = e.source_memory_id WHERE e.source_memory_id IS NOT NULL AND s.id IS NULL",
+            )
+            .await?;
+        }
         if has("memory_entities") {
             report.entity_rows_removed = scalar_count(
                 &conn,
@@ -4857,6 +4907,18 @@ impl LibsqlStorage {
             report.provenance_sources_cleared = tx
                 .execute(
                     "UPDATE memory_provenance SET source_memory_id = NULL WHERE rowid IN (SELECT p.rowid FROM memory_provenance p LEFT JOIN memories s ON s.id = p.source_memory_id WHERE p.source_memory_id IS NOT NULL AND s.id IS NULL LIMIT ?)",
+                    params![limit],
+                )
+                .await?;
+        }
+        if self.table_exists_tx(&tx, "memory_evidence").await? {
+            report.evidence_rows_removed = tx.execute("DELETE FROM memory_evidence WHERE rowid IN (SELECT rowid FROM memory_evidence WHERE memory_id NOT IN (SELECT id FROM memories) LIMIT ?)", params![limit]).await?;
+            // Mirror provenance: keep the surviving observation but clear the
+            // dangling source reference instead of reassigning it, so content
+            // is never misattributed to a surviving but unrelated memory.
+            report.evidence_sources_cleared = tx
+                .execute(
+                    "UPDATE memory_evidence SET source_memory_id = NULL WHERE rowid IN (SELECT e.rowid FROM memory_evidence e LEFT JOIN memories s ON s.id = e.source_memory_id WHERE e.source_memory_id IS NOT NULL AND s.id IS NULL LIMIT ?)",
                     params![limit],
                 )
                 .await?;
