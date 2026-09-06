@@ -174,17 +174,31 @@ Focus on orchestration strategy, not implementation details."""
             # Execute coordination using existing method
             result = await self.coordinate_workflow(work_plan)
 
-            # Convert result to WorkResult format with JSON serialization
+            # The orchestrator has no persisted prior-phase work products to carry
+            # into subsequent phases (tasks/agents above are generic placeholders,
+            # never actual artifacts). "Advancing" with that generic data would let
+            # callers mistake a planning run for a real cross-phase product handoff,
+            # so automatic phase advancement is unsupported: surface it instead of
+            # silently reporting success. (ponytail: keep planning by wiring a real
+            # artifact store per phase when products are actually persisted.)
+            executed = result.get("results", {}).get("executed", 0)
+            status = result.get("status")
+            if status == "success" and executed == 0:
+                status = "unsupported_advancement"
+
             return WorkResult(
-                success=result.get("status") == "success",
+                success=status == "success",
                 data=json.dumps({
-                    "status": result.get("status"),
-                    "executed": result.get("results", {}).get("executed", 0),
+                    "status": status,
+                    "executed": executed,
                     "checkpoints": result.get("checkpoints", 0),
-                    "planning_analysis": str(result.get("planning_analysis", []))[:500]
+                    "planning_analysis": str(result.get("planning_analysis", []))[:500],
+                    "note": "No real phase work products: cross-phase automatic "
+                            "advancement is unsupported."
                 }),
                 memory_ids=[],  # Orchestrator stores memories internally
-                error=None if result.get("status") == "success" else "Orchestration failed"
+                error=None if status == "success" else "Orchestration did not advance phases: "
+                                                        "no persisted work products."
             )
 
         except Exception as e:
