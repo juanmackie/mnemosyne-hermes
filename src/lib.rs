@@ -111,8 +111,8 @@ pub use diagnostics::{
     global_memory_tracker, start_memory_monitoring, MemorySnapshot, MemoryStatus,
 };
 pub use embeddings::{
-    cosine_similarity, EmbeddingService, LocalEmbeddingService, RemoteEmbeddingService,
-    VOYAGE_EMBEDDING_DIM,
+    cosine_similarity, remote_embedding_config, EmbeddingService, LocalEmbeddingService,
+    RemoteEmbeddingService, VOYAGE_EMBEDDING_DIM,
 };
 pub use error::{MnemosyneError, Result};
 pub use evaluation::{

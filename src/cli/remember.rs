@@ -1,9 +1,9 @@
 //! Memory creation command
 
 use mnemosyne_core::{
-    error::Result, icons, orchestration::events::AgentEvent, ConnectionMode, EmbeddingConfig,
-    EmbeddingService, LibsqlStorage, LlmConfig, LlmService, LocalEmbeddingService, MemoryNote,
-    RemoteEmbeddingService, StorageBackend,
+    error::Result, icons, orchestration::events::AgentEvent, remote_embedding_config,
+    ConnectionMode, EmbeddingConfig, EmbeddingService, LibsqlStorage, LlmConfig, LlmService,
+    LocalEmbeddingService, MemoryNote, RemoteEmbeddingService, StorageBackend,
 };
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -188,9 +188,13 @@ pub async fn handle(
         memory.tags.extend(custom_tags);
     }
 
-    // Generate embedding if API key available
-    if has_api_key {
-        match RemoteEmbeddingService::new(llm_config.api_key.clone(), None, None) {
+    // Generate embedding. The remote (Voyage) provider is used ONLY when an
+    // explicit Voyage credential is configured (MNEMOSYNE_VOYAGE_API_KEY); an
+    // Anthropic LLM key never routes here. Otherwise we default to local
+    // embeddings, so a configured Anthropic key no longer blocks the local
+    // fallback.
+    if let Some((voyage_key, model, base_url)) = remote_embedding_config() {
+        match RemoteEmbeddingService::new(voyage_key, model, base_url) {
             Ok(embedding_service) => match embedding_service.embed(&memory.content).await {
                 Ok(embedding) => memory.embedding = Some(embedding),
                 Err(_) => {
@@ -202,8 +206,8 @@ pub async fn handle(
             }
         }
     } else {
-        // No remote API key — try local embeddings for offline personal agents.
-        debug!("No API key — attempting local embedding");
+        // No remote provider configured — local embeddings for offline agents.
+        debug!("No Voyage key — attempting local embedding");
         let embed_config = EmbeddingConfig {
             show_download_progress: false,
             ..EmbeddingConfig::default()

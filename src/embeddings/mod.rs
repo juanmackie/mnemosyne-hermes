@@ -22,6 +22,40 @@ pub fn fallback_embedding_warning(memory_count: usize) -> Option<String> {
 pub use local::LocalEmbeddingService;
 pub use remote::{EmbeddingService, RemoteEmbeddingService, VOYAGE_EMBEDDING_DIM};
 
+/// Environment variable holding an explicit Voyage embedding credential.
+///
+/// Voyage is a separate provider from the Anthropic LLM used for enrichment. An
+/// LLM key is never a valid Voyage credential, so Voyage is only used when this
+/// dedicated variable is present.
+pub const VOYAGE_API_KEY_ENV: &str = "MNEMOSYNE_VOYAGE_API_KEY";
+/// Optional Voyage model override (defaults to \"voyage-3-large\").
+pub const VOYAGE_MODEL_ENV: &str = "MNEMOSYNE_VOYAGE_MODEL";
+/// Optional Voyage base URL override (defaults to the Voyage AI endpoint).
+pub const VOYAGE_BASE_URL_ENV: &str = "MNEMOSYNE_VOYAGE_BASE_URL";
+
+/// Resolve the remote (Voyage) embedding credential, if explicitly configured.
+///
+/// Returns `None` unless `MNEMOSYNE_VOYAGE_API_KEY` is set to a non-empty
+/// value. This deliberately decouples Voyage credentials from the Anthropic
+/// LLM key: a configured `ANTHROPIC_API_KEY` never enables (or blocks) the
+/// remote embedding path, which defaults to the local provider instead.
+///
+/// Returns `(api_key, model, base_url)` suitable for
+/// `RemoteEmbeddingService::new`.
+pub fn remote_embedding_config() -> Option<(String, Option<String>, Option<String>)> {
+    let api_key = std::env::var(VOYAGE_API_KEY_ENV).ok()?;
+    if api_key.trim().is_empty() {
+        return None;
+    }
+    let model = std::env::var(VOYAGE_MODEL_ENV)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let base_url = std::env::var(VOYAGE_BASE_URL_ENV)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    Some((api_key, model, base_url))
+}
+
 /// Calculate cosine similarity between two vectors
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
@@ -60,6 +94,41 @@ mod tests {
 
         // Orthogonal vectors
         assert!((cosine_similarity(&vec1, &vec3) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn remote_embedding_config_requires_explicit_voyage_key() {
+        // A configured Anthropic key must NOT enable the remote (Voyage) path.
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+        std::env::remove_var(VOYAGE_API_KEY_ENV);
+
+        assert!(remote_embedding_config().is_none());
+
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var(VOYAGE_API_KEY_ENV);
+    }
+
+    #[test]
+    fn remote_embedding_config_ignores_empty_voyage_key() {
+        std::env::set_var(VOYAGE_API_KEY_ENV, "   ");
+        assert!(remote_embedding_config().is_none());
+        std::env::remove_var(VOYAGE_API_KEY_ENV);
+    }
+
+    #[test]
+    fn remote_embedding_config_returns_overrides() {
+        std::env::set_var(VOYAGE_API_KEY_ENV, "pa-voyage-test");
+        std::env::set_var(VOYAGE_MODEL_ENV, "voyage-3.5");
+        std::env::set_var(VOYAGE_BASE_URL_ENV, "https://voyage.example/v1");
+
+        let cfg = remote_embedding_config().expect("voyage key set");
+        assert_eq!(cfg.0, "pa-voyage-test");
+        assert_eq!(cfg.1.as_deref(), Some("voyage-3.5"));
+        assert_eq!(cfg.2.as_deref(), Some("https://voyage.example/v1"));
+
+        std::env::remove_var(VOYAGE_API_KEY_ENV);
+        std::env::remove_var(VOYAGE_MODEL_ENV);
+        std::env::remove_var(VOYAGE_BASE_URL_ENV);
     }
 
     #[test]
