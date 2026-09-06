@@ -369,11 +369,16 @@ enum Commands {
         #[arg(long, default_value = "32")]
         batch_size: usize,
 
+        /// Resume from this record offset (skip already-processed memories)
+        #[arg(long, default_value = "0")]
+        offset: usize,
+
         /// Show progress bar
         #[arg(long)]
         progress: bool,
     },
 
+    /// Generate embeddings
     /// Manage embedding models
     Models {
         #[command(subcommand)]
@@ -679,6 +684,7 @@ async fn main() -> Result<()> {
             memory_id,
             namespace,
             batch_size,
+            offset,
             progress,
         }) => {
             cli::embed::handle(
@@ -686,6 +692,7 @@ async fn main() -> Result<()> {
                 memory_id,
                 namespace,
                 batch_size,
+                offset,
                 progress,
                 cli.db_path.clone(),
             )

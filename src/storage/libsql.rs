@@ -8806,25 +8806,50 @@ impl StorageBackend for LibsqlStorage {
         limit: usize,
         sort_by: crate::storage::MemorySortOrder,
     ) -> Result<Vec<MemoryNote>> {
+        self.list_memories_window(namespace, limit, 0, sort_by).await
+    }
+
+    async fn list_memories_page(
+        &self,
+        namespace: Option<Namespace>,
+        limit: usize,
+        offset: usize,
+        sort_by: crate::storage::MemorySortOrder,
+    ) -> Result<Vec<MemoryNote>> {
+        self.list_memories_window(namespace, limit, offset, sort_by).await
+    }
+
+    /// Shared paginated listing with a stable, offset-based window.
+    /// Ordering always includes the unique `id` tiebreaker so pages do not
+    /// overlap or skip rows when timestamps collide.
+    async fn list_memories_window(
+        &self,
+        namespace: Option<Namespace>,
+        limit: usize,
+        offset: usize,
+        sort_by: crate::storage::MemorySortOrder,
+    ) -> Result<Vec<MemoryNote>> {
         use crate::storage::MemorySortOrder;
 
         debug!(
-            "Listing memories (namespace: {:?}, limit: {}, sort: {:?})",
-            namespace, limit, sort_by
+            "Listing memories (namespace: {:?}, limit: {}, offset: {}, sort: {:?})",
+            namespace, limit, offset, sort_by
         );
 
         let conn = self.get_conn()?;
-        let order_clause = match sort_by {
+        let order_by = match sort_by {
             MemorySortOrder::Recent => "created_at DESC",
             MemorySortOrder::Importance => "importance DESC, created_at DESC",
             MemorySortOrder::AccessCount => "access_count DESC, created_at DESC",
         };
+        // Unique id tiebreaker guarantees stability across pages.
+        let order_clause = format!("{}, id ASC", order_by);
 
         let (sql, params_vec) = if let Some(ns) = namespace {
             let ns_str = serde_json::to_string(&ns)?;
             (
                 format!(
-                    "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ?",
+                    "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ? OFFSET ?",
                     self.memory_columns(""),
                     order_clause
                 ),
@@ -8833,7 +8858,7 @@ impl StorageBackend for LibsqlStorage {
         } else {
             (
                 format!(
-                    "SELECT {} FROM memories WHERE is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ?",
+                    "SELECT {} FROM memories WHERE is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ? OFFSET ?",
                     self.memory_columns(""),
                     order_clause
                 ),
@@ -8842,10 +8867,13 @@ impl StorageBackend for LibsqlStorage {
         };
 
         let mut rows = if params_vec.is_empty() {
-            conn.query(&sql, params![limit as i64]).await?
+            conn.query(&sql, params![limit as i64, offset as i64]).await?
         } else {
-            conn.query(&sql, params![params_vec[0].clone(), limit as i64])
-                .await?
+            conn.query(
+                &sql,
+                params![params_vec[0].clone(), limit as i64, offset as i64],
+            )
+            .await?
         };
 
         let mut memories = Vec::new();

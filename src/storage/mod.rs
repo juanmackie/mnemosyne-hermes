@@ -201,6 +201,18 @@ pub trait StorageBackend: Send + Sync {
         sort_by: MemorySortOrder,
     ) -> Result<Vec<MemoryNote>>;
 
+    /// List memories in a stable, paginated window (offset-based).
+    ///
+    /// Unlike `list_memories`, ordering includes a unique id tiebreaker so
+    /// consecutive pages do not overlap or skip rows when timestamps collide.
+    async fn list_memories_page(
+        &self,
+        namespace: Option<Namespace>,
+        limit: usize,
+        offset: usize,
+        sort_by: MemorySortOrder,
+    ) -> Result<Vec<MemoryNote>>;
+
     /// Store a modification log entry in the audit trail
     async fn store_modification_log(&self, log: &ModificationLog) -> Result<()>;
 

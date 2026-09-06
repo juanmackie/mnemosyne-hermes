@@ -1,9 +1,10 @@
 //! Embedding generation command
 
 use mnemosyne_core::orchestration::events::AgentEvent;
+use mnemosyne_core::storage::MemorySortOrder;
 use mnemosyne_core::{
     error::Result, ConnectionMode, EmbeddingConfig, LibsqlStorage, LocalEmbeddingService, MemoryId,
-    StorageBackend,
+    Namespace, StorageBackend,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -17,10 +18,15 @@ pub async fn handle(
     memory_id: Option<String>,
     namespace: Option<String>,
     batch_size: usize,
+    offset: usize,
     progress: bool,
     global_db_path: Option<String>,
 ) -> Result<()> {
     event_helpers::with_event_lifecycle("embed", vec![], async {
+        if batch_size == 0 {
+            return Err(anyhow::anyhow!("batch_size must be greater than zero"));
+        }
+
         // Initialize embedding service
         println!("Initializing local embedding service...");
         let embedding_config = EmbeddingConfig::default();
@@ -35,15 +41,15 @@ pub async fn handle(
         storage.set_embedding_service(embedding_service.clone());
 
         // Determine which memories to embed
-        let memories = if let Some(id_str) = memory_id {
+        let memories: Vec<mnemosyne_core::types::MemoryNote> = if let Some(id_str) = memory_id {
             // Single memory
             let uuid = Uuid::parse_str(&id_str)
                 .map_err(|e| anyhow::anyhow!("Invalid memory ID: {}", e))?;
             let id = MemoryId(uuid);
             vec![storage.get_memory(id).await?]
         } else {
-            // Fetch all memories using search with empty query
-            let ns = if let Some(ns_str) = namespace {
+            // Resolve namespace filter
+            let ns: Option<Namespace> = if let Some(ns_str) = namespace {
                 println!("Fetching memories in namespace '{}'...", ns_str);
                 Some(parse_namespace(&ns_str)?)
             } else if all {
@@ -54,9 +60,27 @@ pub async fn handle(
                 std::process::exit(1);
             };
 
-            // Use hybrid_search with empty query to get all memories
-            let results = storage.hybrid_search("", ns, 10000, false).await?;
-            results.into_iter().map(|r| r.memory).collect()
+            // Stable, paginated enumeration over the memories table instead of
+            // search-based listing (which caps candidates). Process every record.
+            println!("Enumerating memories...");
+            let page_size = 1000usize;
+            let mut memories = Vec::new();
+            loop {
+                let page = storage
+                    .list_memories_page(ns.clone(), page_size, memories.len(), MemorySortOrder::Recent)
+                    .await?;
+                let n = page.len();
+                memories.extend(page);
+                if n < page_size {
+                    break;
+                }
+            }
+
+            // Resumption: skip records already embedded in a prior interrupted run.
+            if offset > 0 {
+                memories.drain(0..offset.min(memories.len()));
+            }
+            memories
         };
 
         let total = memories.len();
@@ -129,6 +153,14 @@ pub async fn handle(
         println!("  Total: {}", total);
         println!("  Succeeded: {}", succeeded);
         println!("  Failed: {}", failed);
+
+        if failed > 0 {
+            return Err(anyhow::anyhow!(
+                "{} of {} memories failed to embed",
+                failed,
+                total
+            ));
+        }
 
         Ok(())
     })
