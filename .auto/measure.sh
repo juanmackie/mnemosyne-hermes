@@ -3,6 +3,9 @@
 # profiles separately. A single-profile run no longer hides which backend a
 # result came from.
 #
+# NOTE: numbers from eval_dev/eval_heldout_* are DEVELOPMENT/regression
+# evidence, not an independent test oracle. See .auto/DEV_EVAL.md.
+#
 #   keyless-default : `--release` (default features) -> deterministic hash
 #                     fallback embeddings. No model runtime or download.
 #   model-backed    : `--release --features local-embeddings` -> fastembed
