@@ -8675,10 +8675,16 @@ impl StorageBackend for LibsqlStorage {
             };
 
             // Compose: RRF base × entity_boost, then add calibration addends.
-            // We scale rrf_base into [0,1] range (max single-channel RRF score
-            // with k=60 and rank=1 is 1/61 ≈ 0.016; three channels max ≈ 0.049).
-            // Normalise by dividing by 3/61 so peak RRF maps to ≈1.0 before calibration.
-            let rrf_normalised = (rrf_base * 61.0 / 3.0).min(1.0);
+            // We scale rrf_base into [0,1] range (max weighted RRF contribution
+            // with k=60 and rank=1 is sum(weights)/61). Normalise by dividing
+            // by (sum_of_weights/61) so peak weighted RRF maps to ≈1.0 before
+            // calibration — adaptive weights encode relative channel emphasis
+            // without changing the score's overall magnitude.
+            let weight_sum = (effective_weights.keyword.max(0.0)
+                + effective_weights.vector.max(0.0)
+                + effective_weights.graph.max(0.0))
+                .max(f32::EPSILON);
+            let rrf_normalised = (rrf_base * 61.0 / weight_sum).min(1.0);
             let final_score = (rrf_normalised * entity_boost
                 + self.search_config.importance_weight * importance_score
                 + self.search_config.recency_weight * recency_score
