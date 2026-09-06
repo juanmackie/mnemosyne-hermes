@@ -3690,6 +3690,17 @@ impl LibsqlStorage {
         }
     }
 
+    /// Default budgets for the PPR traversal (`fetch_ppr_adjacency`). PPR is
+    /// behind `enable_ppr` (OFF by default). These cap the worst case two-hop
+    /// BFS on a high-degree `memory_links` graph: bounded SQL parameter lists
+    /// (`QUERY_BATCH` ids per batched query) and a bounded power-iteration
+    /// subgraph (node/edge caps).
+    pub const PPR_NODE_BUDGET: usize = 200;
+    /// Upper bound on edges collected for the PPR subgraph.
+    pub const PPR_EDGE_BUDGET: usize = 400;
+    /// Max frontier ids per batched SQL query (keeps `IN (...)` lists small).
+    pub const PPR_QUERY_BATCH: usize = 50;
+
     /// Build a weighted undirected adjacency graph around a set of seed ids
     /// (HippoRAG-style PPR retrieval support, depth ≤ 2 cap).
     ///
@@ -3704,24 +3715,43 @@ impl LibsqlStorage {
     ///
     /// Archived/expired memories are excluded so PPR mass never lands on rows
     /// that hybrid ranking would discard anyway.
+    ///
+    /// PPR is OFF by default (behind `enable_ppr`). The two-hop BFS on a
+    /// high-degree `memory_links` graph can otherwise explode the frontier into
+    /// huge SQL `IN (...)` lists and an oversized power-iteration graph, so the
+    /// traversal is bounded by `node_budget`/`edge_budget`/`query_batch`:
+    /// `query_batch` chunks the frontier so no single SQL parameter list exceeds
+    /// it, and the node/edge budgets cap total subgraph size.
     pub async fn fetch_ppr_adjacency(
         &self,
         seed_ids: &[MemoryId],
         max_hops: usize,
         namespace: Option<Namespace>,
+        node_budget: usize,
+        edge_budget: usize,
+        query_batch: usize,
     ) -> Result<crate::utils::ppr::WeightedAdjacency> {
-        if seed_ids.is_empty() || max_hops == 0 {
+        if seed_ids.is_empty()
+            || max_hops == 0
+            || node_budget == 0
+            || edge_budget == 0
+            || query_batch == 0
+        {
             return Ok(crate::utils::ppr::WeightedAdjacency::new());
         }
         let max_hops = max_hops.min(2);
+        let query_batch = query_batch.max(1);
         let conn = self.get_conn()?;
 
         // Seed nodes must survive in the graph as PPR teleport targets even
         // when they have no edges (assemble_ppr_adjacency adds isolated kept
-        // nodes back as keys).
+        // nodes back as keys). Seeds are capped by the node budget.
         let mut visited: HashSet<String> = HashSet::new();
         let mut frontier: Vec<String> = Vec::new();
         for id in seed_ids {
+            if visited.len() >= node_budget {
+                break;
+            }
             let s = id.to_string();
             if visited.insert(s.clone()) {
                 frontier.push(s);
@@ -3734,46 +3764,54 @@ impl LibsqlStorage {
             if frontier.is_empty() {
                 break;
             }
-            let placeholders = frontier
-                .iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT source_id, target_id, strength FROM memory_links \
-                 WHERE strength > 0 AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
-            );
-            let mut params: Vec<libsql::Value> =
-                Vec::with_capacity(frontier.len() * 2);
-            for id in frontier.iter() {
-                params.push(libsql::Value::Text(id.clone()));
-            }
-            for id in frontier.iter() {
-                params.push(libsql::Value::Text(id.clone()));
-            }
-            let mut rows = conn
-                .query(&sql, libsql::params_from_iter(params))
-                .await?;
-
+            // Batch the frontier so no single SQL `IN (...)` parameter list
+            // exceeds `query_batch` ids (2 params per id: source + target).
             let mut next_frontier: HashSet<String> = HashSet::new();
-            while let Some(row) = rows.next().await? {
-                let source: String = row.get(0)?;
-                let target: String = row.get(1)?;
-                let strength: f64 = row.get(2)?;
-                if strength <= 0.0 {
-                    continue;
+            for chunk in frontier.chunks(query_batch) {
+                let placeholders = chunk
+                    .iter()
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT source_id, target_id, strength FROM memory_links \
+                     WHERE strength > 0 AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
+                );
+                let mut params: Vec<libsql::Value> =
+                    Vec::with_capacity(chunk.len() * 2);
+                for id in chunk.iter() {
+                    params.push(libsql::Value::Text(id.clone()));
                 }
-                let (a, b) = if frontier.contains(&source) {
-                    (source, target)
-                } else {
-                    (target, source)
-                };
-                if seen_edges.insert((a.clone(), b.clone())) {
-                    edges.push((a.clone(), b.clone(), strength as f32));
+                for id in chunk.iter() {
+                    params.push(libsql::Value::Text(id.clone()));
                 }
-                visited.insert(a.clone());
-                if visited.insert(b.clone()) {
-                    next_frontier.insert(b);
+                let mut rows = conn
+                    .query(&sql, libsql::params_from_iter(params))
+                    .await?;
+
+                while let Some(row) = rows.next().await? {
+                    let source: String = row.get(0)?;
+                    let target: String = row.get(1)?;
+                    let strength: f64 = row.get(2)?;
+                    if strength <= 0.0 {
+                        continue;
+                    }
+                    let (a, b) = if chunk.contains(&source) {
+                        (source, target)
+                    } else {
+                        (target, source)
+                    };
+                    if seen_edges.insert((a.clone(), b.clone()))
+                        && edges.len() < edge_budget
+                    {
+                        edges.push((a.clone(), b.clone(), strength as f32));
+                    }
+                    visited.insert(a.clone());
+                    if visited.len() < node_budget
+                        && visited.insert(b.clone())
+                    {
+                        next_frontier.insert(b);
+                    }
                 }
             }
             frontier = next_frontier.into_iter().collect();
@@ -8615,7 +8653,14 @@ impl StorageBackend for LibsqlStorage {
             if self.search_config.enable_ppr && !memory_scores.is_empty() {
                 let ppr_seeds = Self::select_graph_seed_ids(&memory_scores, 5);
                 match self
-                    .fetch_ppr_adjacency(&ppr_seeds, 2, namespace.clone())
+                    .fetch_ppr_adjacency(
+                        &ppr_seeds,
+                        2,
+                        namespace.clone(),
+                        Self::PPR_NODE_BUDGET,
+                        Self::PPR_EDGE_BUDGET,
+                        Self::PPR_QUERY_BATCH,
+                    )
                     .await
                 {
                     Ok(adjacency) => crate::utils::ppr::normalize_ppr(
