@@ -4731,7 +4731,28 @@ impl LibsqlStorage {
             // only genuinely new near-duplicate detail is appended.
             format!("{}\n\n{}", old_content, memory.content.trim())
         };
+        // Appending new detail changes canonical content; the existing vector
+        // now describes the OLD content and would surface stale matches.
+        // Invalidate it transactionally so a later regeneration runs against
+        // the freshly committed content. (StandardSQLite stores the vector in
+        // memory_embeddings; LibSQL inlines it.)
+        let content_changed = content != old_content;
         tx.execute("UPDATE memories SET content = ?, content_hash = ?, summary = CASE WHEN length(?) > length(summary) THEN ? ELSE summary END, keywords = ?, tags = ?, context = CASE WHEN length(?) > length(context) THEN ? ELSE context END, related_files = ?, related_entities = ?, importance = MAX(importance, ?), confidence = MAX(confidence, ?), updated_at = ? WHERE id = ?", params![content.clone(), content_hash(&content), memory.summary.clone(), memory.summary.clone(), serde_json::to_string(&keywords)?, serde_json::to_string(&tags)?, memory.context.clone(), memory.context.clone(), serde_json::to_string(&files)?, serde_json::to_string(&entities)?, memory.importance as i64, memory.confidence as f64, Utc::now().to_rfc3339(), parent_id.to_string()]).await?;
+        if content_changed {
+            if self.schema_type == SchemaType::LibSQL {
+                tx.execute(
+                    "UPDATE memories SET embedding = NULL WHERE id = ?",
+                    params![parent_id.to_string()],
+                )
+                .await?;
+            } else {
+                tx.execute(
+                    "DELETE FROM memory_embeddings WHERE memory_id = ?",
+                    params![parent_id.to_string()],
+                )
+                .await?;
+            }
+        }
         let namespace = serde_json::to_string(&memory.namespace)?;
         if self.table_exists_tx(tx, "memory_entities").await? {
             self.add_integrity_entities(

@@ -62,6 +62,37 @@ async fn exact_and_near_duplicates_enrich_one_parent() {
 }
 
 #[tokio::test]
+async fn merged_near_duplicate_with_new_detail_invalidates_stale_embedding() {
+    let storage = LibsqlStorage::new_with_validation(
+        ConnectionMode::Local(format!(
+            "/tmp/mnemosyne_integrity_{}.db",
+            uuid::Uuid::new_v4()
+        )),
+        true,
+    )
+    .await
+    .unwrap();
+    let mut parent = note("Rust memory storage uses a durable index", 0.8);
+    parent.embedding = Some(vec![1.0, 0.0, 0.0]);
+    storage.store_memory(&parent).await.unwrap();
+    // Still near-duplicate enough to merge, but carries genuinely new detail:
+    // canonical content differs, so the parent's content is appended and its
+    // vector describing the OLD content must be invalidated (set to NULL).
+    let mut duplicate = note("Rust memory storage uses a durable index and a WAL index", 0.9);
+    duplicate.embedding = Some(vec![0.99, 0.1, 0.0]);
+    storage.store_memory(&duplicate).await.unwrap();
+    let merged = storage.get_memory(parent.id).await.unwrap();
+    assert!(merged.content.contains("WAL index"));
+    assert!(storage.get_memory(duplicate.id).await.is_err());
+    // The stale vector must not survive the append: mark the embedding as
+    // pending regeneration against the newly committed content.
+    assert!(
+        storage.get_embedding(&parent.id).await.unwrap().is_none(),
+        "stale embedding left searchable after near-duplicate merge appended content"
+    );
+}
+
+#[tokio::test]
 async fn entities_links_and_fact_supersession_are_centralized() {
     let storage = LibsqlStorage::new_with_validation(
         ConnectionMode::Local(format!(
