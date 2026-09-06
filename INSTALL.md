@@ -275,6 +275,14 @@ mnemosyne init
 2. `MNEMOSYNE_DB_PATH` environment variable
 3. Default: `~/.local/share/mnemosyne/mnemosyne.db`
 
+The database path may be absolute, relative, or home-relative. A leading `~`
+(or `~/...`) in `--db-path` or `MNEMOSYNE_DB_PATH` is expanded to your home
+directory, so install, import, CLI, and the Hermes/MCP server all resolve to
+**the same database** regardless of which value form you use. Prefer absolute
+paths for shared or scripted configuration; home-relative paths are a
+convenient shorthand for a personal default (for example
+`~/.local/share/mnemosyne/mnemosyne.db`).
+
 ### Step 4: Configure API Key
 
 See [Configuration](#configuration) section below.

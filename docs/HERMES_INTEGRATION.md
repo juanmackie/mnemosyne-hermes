@@ -139,7 +139,10 @@ TUI/dashboard binaries), then run `mnemosyne embed --all`.
 
 ## Configuration and namespaces
 
-- `MNEMOSYNE_DB_PATH` selects the local SQLite/LibSQL database.
+- `MNEMOSYNE_DB_PATH` selects the local SQLite/LibSQL database. The value may
+  be absolute, relative, or home-relative; a leading `~` is expanded to your
+  home directory so CLI, import, and the MCP server all resolve to the same
+  database. Absolute paths are recommended for shared or scripted config.
 - `global` stores personal facts shared across projects.
 - `agent:hermes` isolates a Hermes identity.
 - `project:<name>` isolates a workspace.

@@ -36,9 +36,33 @@ pub fn get_mcp_namespace() -> Result<Namespace> {
     }
 }
 
-/// Get the database path from CLI arg, env var, project dir, or default
+/// Expand a leading `~` in a path to the user's home directory. A bare `~`
+/// (home root) and `~/...` are both supported; anything else is returned
+/// unchanged. Callers should prefer absolute paths, but home-relative paths
+/// are a natural fit for config files and env vars.
+pub fn expand_home(path: &str) -> String {
+    if path == "~" {
+        dirs::home_dir()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string())
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        match dirs::home_dir() {
+            Some(home) => home.join(rest).to_string_lossy().into_owned(),
+            None => path.to_string(),
+        }
+    } else {
+        path.to_string()
+    }
+}
+
+/// Get the database path from CLI arg, env var, project dir, or default.
+///
+/// The returned path is a concrete filesystem path: a leading `~` in the CLI
+/// arg, `MNEMOSYNE_DB_PATH`, or `DATABASE_URL` value is expanded to the
+/// user's home directory so that every caller (CLI, import, MCP) resolves to
+/// the same database regardless of how the value was written.
 pub fn get_db_path(cli_path: Option<String>) -> String {
-    cli_path
+    let path = cli_path
         .or_else(|| std::env::var("MNEMOSYNE_DB_PATH").ok())
         .or_else(|| {
             // Check DATABASE_URL for test compatibility
@@ -67,7 +91,8 @@ pub fn get_db_path(cli_path: Option<String>) -> String {
                 None
             }
         })
-        .unwrap_or_else(|| get_default_db_path().to_string_lossy().to_string())
+        .unwrap_or_else(|| get_default_db_path().to_string_lossy().to_string());
+    expand_home(&path)
 }
 
 /// Process structured JSON work plan
@@ -450,5 +475,40 @@ pub fn parse_memory_type(type_str: &str) -> mnemosyne_core::MemoryType {
         "clarification" | "clarify" => mnemosyne_core::MemoryType::Clarification,
         // Default to Insight for unknown types
         _ => mnemosyne_core::MemoryType::Insight,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_home_handles_bare_tilde_and_prefix() {
+        let home = dirs::home_dir().expect("home dir is available in test env");
+        let home = home.to_string_lossy();
+        // A bare `~` resolves to the home directory root.
+        assert_eq!(expand_home("~"), home.as_ref());
+        // A `~/...` path resolves relative to home.
+        assert_eq!(
+            expand_home("~/mnemosyne/memories.db"),
+            format!("{}/mnemosyne/memories.db", home)
+        );
+        // Non-home paths are returned unchanged.
+        assert_eq!(expand_home("/absolute/path.db"), "/absolute/path.db");
+        assert_eq!(expand_home("relative.db"), "relative.db");
+        // A middle `~` is not expanded (only a leading home marker).
+        assert_eq!(expand_home("/tmp/~/x.db"), "/tmp/~/x.db");
+    }
+
+    #[test]
+    fn get_db_path_expands_home_in_env_value() {
+        // MNEMOSYNE_DB_PATH with a literal `~` must resolve to a concrete
+        // home-relative path so CLI, import, and MCP agree on the same DB.
+        std::env::set_var("MNEMOSYNE_DB_PATH", "~/hermes.db");
+        let db_path = get_db_path(None);
+        std::env::remove_var("MNEMOSYNE_DB_PATH");
+        let home = dirs::home_dir().expect("home dir is available in test env");
+        let expected = home.join("hermes.db").to_string_lossy().into_owned();
+        assert_eq!(db_path, expected);
     }
 }
