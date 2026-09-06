@@ -417,6 +417,29 @@ fn compute_rrf_ranking(
     rrf_scores
 }
 
+/// Build deterministic ranks for graph-expanded candidates from the fused
+/// score map. Ranks are assigned by sorting on depth (closeness to the seed)
+/// with the memory ID as a stable tie-breaker, rather than by enumerating the
+/// backing HashMap (whose iteration order is randomized per process and would
+/// make repeated searches over an unchanged fixture produce differing order).
+/// Higher (worse) rank = lower fusion contribution, matching prior semantics
+/// of `rank + 1 + depth`.
+fn graph_deterministic_ranks(
+    memory_scores: &std::collections::HashMap<MemoryId, (f32, f32, f32, f32)>,
+) -> std::collections::HashMap<MemoryId, usize> {
+    let mut candidates: Vec<(MemoryId, usize)> = memory_scores
+        .iter()
+        .filter(|(_, (_, _, graph_score, _))| *graph_score > 0.0)
+        .map(|(id, (_, _, _, depth))| (*id, *depth as usize))
+        .collect();
+    candidates.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.to_string().cmp(&b.0.to_string())));
+    candidates
+        .iter()
+        .enumerate()
+        .map(|(rank, (id, depth))| (*id, rank + 1 + *depth))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Migration SQL embedded at compile time via include_str!
 // Eliminates runtime file I/O during database initialization — critical for
@@ -8561,13 +8584,11 @@ impl StorageBackend for LibsqlStorage {
             .enumerate()
             .map(|(rank, (id, _))| (*id, rank + 1))
             .collect();
-        // Candidates that are only graph-expanded get a rank proportional to depth.
-        let graph_ranks: std::collections::HashMap<MemoryId, usize> = memory_scores
-            .iter()
-            .filter(|(_, (_, _, graph_score, _))| *graph_score > 0.0)
-            .enumerate()
-            .map(|(rank, (id, (_, _, _, depth)))| (*id, (rank + 1) + (*depth as usize)))
-            .collect();
+        // Candidates that are only graph-expanded get a rank proportional to
+        // depth, ordered deterministically by (depth, id) instead of the
+        // randomized HashMap iteration order.
+        let graph_ranks =
+            graph_deterministic_ranks(&memory_scores);
 
         let rrf_scores = compute_rrf_ranking(&keyword_ranks, &vector_ranks, &graph_ranks, 60.0);
 
@@ -9918,6 +9939,36 @@ mod fts_query_tests {
         scores.insert(high, (0.8, 0.7, 0.0, 0.0));
 
         assert_eq!(LibsqlStorage::select_graph_seed_ids(&scores, 1), vec![high]);
+    }
+
+    #[test]
+    fn graph_ranks_are_deterministic_across_repeats() {
+        use super::graph_deterministic_ranks;
+
+        let id1 = MemoryId::new();
+        let id2 = MemoryId::new();
+        let id3 = MemoryId::new();
+        let mut scores = HashMap::new();
+        // Same depth for all: only the stable ID tie-breaker should decide.
+        scores.insert(id1, (0.5, 0.0, 1.0, 1.0));
+        scores.insert(id2, (0.5, 0.0, 1.0, 1.0));
+        scores.insert(id3, (0.5, 0.0, 1.0, 1.0));
+        // A deeper (worse) candidate sorts after the shallow ones.
+        scores.insert(MemoryId::new(), (0.0, 0.0, 1.0, 3.0));
+        // A non-graph candidate must be excluded.
+        scores.insert(MemoryId::new(), (0.9, 0.8, 0.0, 0.0));
+
+        let first = graph_deterministic_ranks(&scores);
+        let second = graph_deterministic_ranks(&scores);
+        // Determinism: two passes over the same map produce identical ranks.
+        assert_eq!(first, second);
+
+        // Shallow candidates (depth 1) tie at rank 2 regardless of ID order;
+        // the deep candidate (depth 3) must rank strictly worse.
+        assert_eq!(first[&id1], 2);
+        assert_eq!(first[&id2], 2);
+        assert_eq!(first[&id3], 2);
+        assert!(first.values().any(|&r| r > 2));
     }
 }
 
