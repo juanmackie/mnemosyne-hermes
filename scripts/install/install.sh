@@ -438,6 +438,29 @@ build_binary() {
 }
 
 # Install binary
+# Run a command with a timeout, portable across GNU (coreutils) and macOS
+# (BSD) where GNU `timeout` is not available. Uses a background killer so the
+# command is killed if it exceeds the limit; returns the command's exit code.
+run_with_timeout() {
+    local limit="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$limit" "$@"
+        return $?
+    fi
+    # Portable fallback: run the command in the background and kill it if it
+    # outlives the limit.
+    "$@" &
+    local pid=$!
+    ( sleep "$limit"; kill -9 "$pid" 2>/dev/null ) &
+    local killer=$!
+    wait "$pid" 2>/dev/null
+    local rc=$?
+    kill "$killer" 2>/dev/null
+    wait "$killer" 2>/dev/null
+    return "$rc"
+}
+
 install_binary() {
     print_header "Installing binary"
 
@@ -445,37 +468,48 @@ install_binary() {
     echo "Using 'cargo install' to properly handle dependencies..."
     echo ""
 
-    # Determine install root based on BIN_DIR
-    # If BIN_DIR is ~/.local/bin, install to ~/.local (cargo adds /bin)
-    # If BIN_DIR is ~/.cargo/bin or default, let cargo use its default (~/.cargo)
-    # Otherwise, use parent of BIN_DIR
-    local install_root=""
-    if [ "$BIN_DIR" = "${HOME}/.local/bin" ]; then
-        install_root="${HOME}/.local"
-    elif [ "$BIN_DIR" = "${HOME}/.cargo/bin" ] || [ "$BIN_DIR" = "$DEFAULT_BIN_DIR" ]; then
-        # Let cargo use default location
-        install_root=""
-    else
-        # Custom directory - use parent as root
-        install_root="$(dirname "$BIN_DIR")"
+    # Normalize a literal `~` in --bin-dir to the real home path so the exact
+    # destination is honored regardless of how it was written.
+    if [[ "$BIN_DIR" == "~"* ]]; then
+        BIN_DIR="${HOME}${BIN_DIR#\~}"
     fi
 
-    # Run cargo install with appropriate options
     cd "$PROJECT_ROOT"
-    if [ -n "$install_root" ]; then
-        echo "Installing to: ${install_root}/bin"
-        if ! cargo install --path . --locked --force --root "$install_root"; then
+    if [ "$BIN_DIR" = "${HOME}/.local/bin" ]; then
+        # ~/.local/bin default: cargo adds /bin under the ~/.local root.
+        echo "Installing to: ${HOME}/.local/bin (default)"
+        if ! cargo install --path . --locked --force --root "${HOME}/.local"; then
             print_error "Failed to install binary"
             exit 1
         fi
-        BIN_DIR="${install_root}/bin"
-    else
+        BIN_DIR="${HOME}/.local/bin"
+    elif [ "$BIN_DIR" = "${HOME}/.cargo/bin" ]; then
+        # Let cargo use its default location (~/.cargo/bin).
         echo "Installing to: ${HOME}/.cargo/bin (default)"
         if ! cargo install --path . --locked --force; then
             print_error "Failed to install binary"
             exit 1
         fi
         BIN_DIR="${HOME}/.cargo/bin"
+    else
+        # Custom --bin-dir: honor the exact destination. cargo install always
+        # places binaries under <root>/bin, so stage into a temp root and move
+        # the built binary to exactly $BIN_DIR.
+        echo "Installing to custom directory: ${BIN_DIR}"
+        local staging
+        staging="$(mktemp -d)"
+        if ! cargo install --path . --locked --force --root "$staging"; then
+            print_error "Failed to install binary"
+            rm -rf "$staging"
+            exit 1
+        fi
+        mkdir -p "$BIN_DIR"
+        if ! mv "$staging/bin/mnemosyne" "$BIN_DIR/mnemosyne"; then
+            print_error "Failed to install binary to ${BIN_DIR}/mnemosyne"
+            rm -rf "$staging"
+            exit 1
+        fi
+        rm -rf "$staging"
     fi
 
     print_success "Installed to ${BIN_DIR}/mnemosyne"
@@ -489,7 +523,7 @@ install_binary() {
     # Test that binary actually runs
     echo ""
     echo "Verifying binary executes..."
-    if ! timeout 5 "${BIN_DIR}/mnemosyne" --version &>/dev/null; then
+    if ! run_with_timeout 5 "${BIN_DIR}/mnemosyne" --version &>/dev/null; then
         print_error "Binary won't execute (possible SIGKILL or dependency issue)"
         echo ""
         echo "Diagnostics:"
