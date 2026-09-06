@@ -1,6 +1,6 @@
 # Mnemosyne Documentation Index
 
-**Last Updated**: 2025-11-08
+**Last Updated**: 2026-09-06
 
 Navigate the Mnemosyne documentation efficiently with this comprehensive index.
 
