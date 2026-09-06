@@ -3528,6 +3528,172 @@ impl LibsqlStorage {
         }
     }
 
+    /// Build a weighted undirected adjacency graph around a set of seed ids
+    /// (HippoRAG-style PPR retrieval support, depth ≤ 2 cap).
+    ///
+    /// Returns node → [(neighbor, strength)] for every memory within `max_hops`
+    /// of the seeds, plus the edges among them. Strengths come straight from
+    /// `memory_links` and double as the PPR edge weights; traversal tracking in
+    /// `src/evolution/links.rs` reinforces them over time. The graph is
+    /// undirected (
+    /// both directions of every row are materialised) so a power iteration over
+    /// it can diffuse mass both toward and away from the seeds without double
+    /// counting directionality.
+    ///
+    /// Archived/expired memories are excluded so PPR mass never lands on rows
+    /// that hybrid ranking would discard anyway.
+    pub async fn fetch_ppr_adjacency(
+        &self,
+        seed_ids: &[MemoryId],
+        max_hops: usize,
+        namespace: Option<Namespace>,
+    ) -> Result<crate::utils::ppr::WeightedAdjacency> {
+        if seed_ids.is_empty() || max_hops == 0 {
+            return Ok(crate::utils::ppr::WeightedAdjacency::new());
+        }
+        let max_hops = max_hops.min(2);
+        let conn = self.get_conn()?;
+
+        // Seed nodes must survive in the graph as PPR teleport targets even
+        // when they have no edges (assemble_ppr_adjacency adds isolated kept
+        // nodes back as keys).
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut frontier: Vec<String> = Vec::new();
+        for id in seed_ids {
+            let s = id.to_string();
+            if visited.insert(s.clone()) {
+                frontier.push(s);
+            }
+        }
+        let mut edges: Vec<(String, String, f32)> = Vec::new();
+        let mut seen_edges: HashSet<(String, String)> = HashSet::new();
+
+        for _hop in 0..max_hops {
+            if frontier.is_empty() {
+                break;
+            }
+            let placeholders = frontier
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT source_id, target_id, strength FROM memory_links \
+                 WHERE strength > 0 AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
+            );
+            let mut params: Vec<libsql::Value> =
+                Vec::with_capacity(frontier.len() * 2);
+            for id in frontier.iter() {
+                params.push(libsql::Value::Text(id.clone()));
+            }
+            for id in frontier.iter() {
+                params.push(libsql::Value::Text(id.clone()));
+            }
+            let mut rows = conn
+                .query(&sql, libsql::params_from_iter(params))
+                .await?;
+
+            let mut next_frontier: HashSet<String> = HashSet::new();
+            while let Some(row) = rows.next().await? {
+                let source: String = row.get(0)?;
+                let target: String = row.get(1)?;
+                let strength: f64 = row.get(2)?;
+                if strength <= 0.0 {
+                    continue;
+                }
+                let (a, b) = if frontier.contains(&source) {
+                    (source, target)
+                } else {
+                    (target, source)
+                };
+                if seen_edges.insert((a.clone(), b.clone())) {
+                    edges.push((a.clone(), b.clone(), strength as f32));
+                }
+                visited.insert(a.clone());
+                if visited.insert(b.clone()) {
+                    next_frontier.insert(b);
+                }
+            }
+            frontier = next_frontier.into_iter().collect();
+        }
+
+        // Optional namespace guard over visited nodes.
+        Ok(Self::assemble_ppr_adjacency(&conn, &visited, &edges, namespace).await?)
+    }
+
+    /// Assemble an undirected weighted adjacency map from a visited node set
+    /// and edge list, then prune nodes that belong to a different namespace or
+    /// are archived/expired (so PPR mass never lands on rows hybrid ranking
+    /// would discard).
+    async fn assemble_ppr_adjacency(
+        conn: &Connection,
+        visited: &HashSet<String>,
+        edges: &[(String, String, f32)],
+        namespace: Option<Namespace>,
+    ) -> Result<crate::utils::ppr::WeightedAdjacency> {
+        let kept =
+            Self::active_ppr_nodes(conn, visited, namespace.as_ref()).await?;
+        let mut nodes: HashSet<String> = kept;
+        let mut adjacency: crate::utils::ppr::WeightedAdjacency =
+            crate::utils::ppr::WeightedAdjacency::new();
+        for (a, b, w) in edges {
+            if !nodes.contains(a) || !nodes.contains(b) {
+                continue;
+            }
+            adjacency.entry(a.clone()).or_default().push((b.clone(), *w));
+            adjacency.entry(b.clone()).or_default().push((a.clone(), *w));
+        }
+        // Ensure isolated-but-kept nodes (seeds) still appear as keys with no
+        // neighbors so PPR can seed them.
+        for node in nodes {
+            adjacency.entry(node).or_default();
+        }
+        Ok(adjacency)
+    }
+
+    /// Determine which visited node strings correspond to live (non-archived,
+    /// non-expired, namespace-matched if requested) memories.
+    async fn active_ppr_nodes(
+        conn: &Connection,
+        visited: &HashSet<String>,
+        namespace: Option<&Namespace>,
+    ) -> Result<HashSet<String>> {
+        let placeholders = visited
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let namespace_filter = if namespace.is_some() {
+            "AND m.namespace = ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT m.id FROM memories m \
+             WHERE m.id IN ({placeholders}) AND m.is_archived = 0 \
+               AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) \
+               {namespace_filter}",
+            placeholders = placeholders,
+            namespace_filter = namespace_filter
+        );
+        let mut params: Vec<libsql::Value> = visited
+            .iter()
+            .map(|s| libsql::Value::Text(s.clone()))
+            .collect();
+        if let Some(ns) = namespace {
+            params.push(libsql::Value::Text(serde_json::to_string(ns)?));
+        }
+        let mut rows = conn
+            .query(&sql, libsql::params_from_iter(params))
+            .await?;
+        let mut kept = HashSet::new();
+        while let Some(row) = rows.next().await? {
+            kept.insert(row.get::<String>(0)?);
+        }
+        Ok(kept)
+    }
+
+
     async fn graph_traverse_with_limit(
         &self,
         seed_ids: &[MemoryId],
@@ -4272,11 +4438,13 @@ impl LibsqlStorage {
                 if link.user_created { 1i64 } else { 0i64 }
             ];
             if has_link_metadata {
-                tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", values).await?;
-                tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![link.target_id.to_string(), source_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339(), link.last_traversed_at.map(|value| value.to_rfc3339()), if link.user_created { 1i64 } else { 0i64 }]).await?;
+                let n = tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", values).await?;
+                let n2 = tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![link.target_id.to_string(), source_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339(), link.last_traversed_at.map(|value| value.to_rfc3339()), if link.user_created { 1i64 } else { 0i64 }]).await?;
+                let _ = (n, n2);
             } else {
-                tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)", params![source_id.to_string(), link.target_id.to_string(), link_type.clone(), link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339()]).await?;
-                tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)", params![link.target_id.to_string(), source_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339()]).await?;
+                let n = tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)", params![source_id.to_string(), link.target_id.to_string(), link_type.clone(), link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339()]).await?;
+                let n2 = tx.execute("INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)", params![link.target_id.to_string(), source_id.to_string(), link_type, link.strength as f64, link.reason.clone(), link.created_at.to_rfc3339()]).await?;
+                let _ = (n, n2);
             }
         }
         Ok(())
