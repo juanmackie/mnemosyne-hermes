@@ -24,7 +24,7 @@ pub async fn handle(
 ) -> Result<()> {
     event_helpers::with_event_lifecycle("embed", vec![], async {
         if batch_size == 0 {
-            return Err(anyhow::anyhow!("batch_size must be greater than zero"));
+            return Err(anyhow::anyhow!("batch_size must be greater than zero").into());
         }
 
         // Initialize embedding service
@@ -159,7 +159,8 @@ pub async fn handle(
                 "{} of {} memories failed to embed",
                 failed,
                 total
-            ));
+            )
+            .into());
         }
 
         Ok(())
