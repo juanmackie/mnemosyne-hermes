@@ -57,6 +57,14 @@ pub struct OrphanRepairReport {
     pub fact_rows_removed: u64,
 }
 
+/// One append-only evidence association retained for a merged statement.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MemoryEvidence {
+    pub source_memory_id: Option<MemoryId>,
+    pub evidence_quote: String,
+    pub observed_at: DateTime<Utc>,
+}
+
 fn canonical_content(content: &str) -> String {
     content
         .split_whitespace()
@@ -2222,14 +2230,6 @@ impl LibsqlStorage {
             extractor_model: row.get(7)?,
             extraction_schema_version: row.get(8)?,
         }))
-    }
-
-    /// One append-only evidence association retained for a merged statement.
-    #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-    pub struct MemoryEvidence {
-        pub source_memory_id: Option<MemoryId>,
-        pub evidence_quote: String,
-        pub observed_at: DateTime<Utc>,
     }
 
     /// Return every append-only evidence association retained for a memory.
