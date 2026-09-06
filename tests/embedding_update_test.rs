@@ -189,3 +189,158 @@ async fn test_embedding_consistency() {
         similarity
     );
 }
+
+// ---------------------------------------------------------------------------
+// Model identity enforcement
+//
+// Verifies the Fix 3 behavior: vectors carry an embedding_model label at write
+// time, and vector_search is restricted to vectors produced by the currently
+// active embedding model. Regression guard for audits flagging that vectors
+// from different models/dimensions could silently share a search space.
+// ---------------------------------------------------------------------------
+
+/// Deterministic in-memory embedding service so tests control model + dimension
+/// without any network or model provider.
+struct MockEmbedService {
+    model: &'static str,
+    dim: usize,
+}
+
+impl MockEmbedService {
+    fn vec(&self) -> Vec<f32> {
+        // Deterministic unit-ish vector of `dim` length in this model's space.
+        (0..self.dim).map(|i| (((i + 1) as f32) / 16.0) - 0.5).collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl mnemosyne_core::embeddings::EmbeddingService for MockEmbedService {
+    async fn embed(&self, _text: &str) -> mnemosyne_core::Result<Vec<f32>> {
+        Ok(self.vec())
+    }
+    async fn embed_batch(&self, texts: &[&str]) -> mnemosyne_core::Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|_| self.vec()).collect())
+    }
+    fn dimensions(&self) -> usize {
+        self.dim
+    }
+    fn model_name(&self) -> &str {
+        self.model
+    }
+}
+
+fn make_knowledge_memory(content: &str) -> MemoryNote {
+    MemoryNote {
+        id: MemoryId::new(),
+        namespace: Namespace::Global,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        content: content.to_string(),
+        summary: format!("Summary: {}", content),
+        keywords: vec!["kw".to_string()],
+        tags: vec!["test".to_string()],
+        context: "model identity test".to_string(),
+        memory_type: MemoryType::Insight,
+        importance: 5,
+        confidence: 0.9,
+        links: vec![],
+        related_files: vec![],
+        related_entities: vec![],
+        access_count: 0,
+        last_accessed_at: chrono::Utc::now(),
+        expires_at: None,
+        is_archived: false,
+        superseded_by: None,
+        embedding: None,
+        embedding_model: String::new(),
+        memory_class: mnemosyne_core::MemoryClass::Knowledge,
+        provenance: None,
+    }
+}
+
+async fn make_storage() -> LibsqlStorage {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("model_identity.db");
+    LibsqlStorage::new_with_validation(
+        ConnectionMode::Local(db_path.to_str().unwrap().to_string()),
+        true,
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn test_vector_search_restricts_to_active_model_equal_dimensions() {
+    let mut storage = make_storage().await;
+
+    let mem_a = make_knowledge_memory("Alpha project Rust");
+    let mem_b = make_knowledge_memory("Beta project Python");
+    storage.store_memory(&mem_a).await.unwrap();
+    storage.store_memory(&mem_b).await.unwrap();
+
+    // Vectors: SAME dimension (4) but different models.
+    storage
+        .store_embedding(&mem_a.id, &[0.1, 0.2, 0.3, 0.4], "model-A")
+        .await
+        .unwrap();
+    storage
+        .store_embedding(&mem_b.id, &[0.9, 0.8, 0.7, 0.6], "model-B")
+        .await
+        .unwrap();
+
+    // Active model = A (dim 4). Query vec is in model-A space.
+    storage.set_embedding_service(Arc::new(MockEmbedService {
+        model: "model-A",
+        dim: 4,
+    }));
+
+    let results = storage.vector_search(&[0.1, 0.2, 0.3, 0.4], 10, None).await.unwrap();
+    let ids: Vec<MemoryId> = results.iter().map(|(id, _)| *id).collect();
+    assert_eq!(
+        ids,
+        vec![mem_a.id],
+        "Expected only the active model-A vector; got {:?}",
+        ids
+    );
+
+    // Coverage exposes both models (incomplete-migration visibility).
+    let coverage = storage.embedding_model_coverage().await.unwrap();
+    let mut lookup: std::collections::HashMap<String, usize> = coverage.into_iter().collect();
+    assert_eq!(lookup.remove("model-A"), Some(1), "expected 1 model-A vector");
+    assert_eq!(lookup.remove("model-B"), Some(1), "expected 1 model-B vector");
+
+    println!("✅ Equal-dimension model isolation passed; ids: {:?}", ids);
+}
+
+#[tokio::test]
+async fn test_vector_search_restricts_to_active_model_different_dimensions() {
+    let mut storage = make_storage().await;
+
+    let mem_a = make_knowledge_memory("Alpha Rust");
+    let mem_b = make_knowledge_memory("Beta Python");
+    storage.store_memory(&mem_a).await.unwrap();
+    storage.store_memory(&mem_b).await.unwrap();
+
+    // Vectors: DIFFERENT dimensions (A=4, B=8) imply different model spaces.
+    storage
+        .store_embedding(&mem_a.id, &[0.1, 0.2, 0.3, 0.4], "model-A")
+        .await
+        .unwrap();
+    storage
+        .store_embedding(&mem_b.id, &[0.1; 8], "model-B")
+        .await
+        .unwrap();
+
+    // Active model = A (dim 4).
+    storage.set_embedding_service(Arc::new(MockEmbedService {
+        model: "model-A",
+        dim: 4,
+    }));
+
+    // Must return only the dim-4 model-A vector, with no dimension clash from model-B.
+    let results = storage.vector_search(&[0.1, 0.2, 0.3, 0.4], 10, None).await.unwrap();
+    let ids: Vec<MemoryId> = results.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, vec![mem_a.id], "Expected only model-A vector; got {:?}", ids);
+
+    println!("✅ Different-dimension model isolation passed; ids: {:?}", ids);
+}
