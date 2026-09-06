@@ -1,47 +1,105 @@
 #!/usr/bin/env bash
+# Measure retrieval quality/latency across the THREE embedding/feature
+# profiles separately. A single-profile run no longer hides which backend a
+# result came from.
+#
+#   keyless-default : `--release` (default features) -> deterministic hash
+#                     fallback embeddings. No model runtime or download.
+#   model-backed    : `--release --features local-embeddings` -> fastembed
+#                     ONNX, model from MNEMOSYNE_EMBEDDING_MODEL.
+#   python-provider : `--release --features python` -> DSPy/Python-backed
+#                     modules enabled.
+#
+# Override with AUTO_MEASURE_PROFILES="label|features|model" (space-separated)
+# to run only a subset, e.g. for CI.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# Live stack contract: local bge-small-en-v1.5 (384-dim). Do not change the
-# model for ranking experiments; encoder swaps are out of scope this session.
+# Live stack contract: local bge-small-en-v1.5 (384-dim). Keep the model for
+# ranking experiments; encoder swaps are out of scope this session.
 export MNEMOSYNE_EMBEDDING_MODEL="${MNEMOSYNE_EMBEDDING_MODEL:-bge-small-en-v1.5}"
 
-# Build the candidate before measuring so stale binaries cannot pass.
-cargo build --release --locked --features local-embeddings --bin mnemosyne >/dev/null
+PROFILES="${AUTO_MEASURE_PROFILES:-
+keyless-default||bge-small-en-v1.5
+model-backed|local-embeddings|bge-small-en-v1.5
+python-provider|python|bge-small-en-v1.5
+}"
 
-# Rebuild the fixed corpus only when its fingerprint changes (corpus content,
-# embedding model, or setup version). Ranking-only iterations reuse the cache.
-python3 .auto/setup_data.py >/dev/null
+declare -a LOGS=()
+trap 'rm -f "${LOGS[@]}"' EXIT
 
-cli_log="$(mktemp)"
-mcp_log="$(mktemp)"
-trap 'rm -f "$cli_log" "$mcp_log"' EXIT
+for entry in $PROFILES; do
+  IFS='|' read -r label features model <<<"$entry"
+  echo "== profile: $label (features='${features:-<default>}', model=$model) =="
 
-for dataset in eval_dev eval_heldout_a eval_heldout_b; do
-  python3 .auto/evaluate.py \
-    --binary target/release/mnemosyne \
-    --db .auto/data/template.db \
-    --dataset ".auto/${dataset}.jsonl" \
-    --workers 6 | tee -a "$cli_log" >/dev/null
+  # Build only the profile's own feature set; copy aside so each profile has a
+  # distinct binary and later passes cannot reuse a stale one.
+  if [ -n "$features" ]; then
+    cargo build --release --locked --features "$features" --bin mnemosyne >/dev/null
+  else
+    cargo build --release --locked --bin mnemosyne >/dev/null
+  fi
+  bin="target/release/mnemosyne-${label}"
+  cp -f target/release/mnemosyne "$bin"
+
+  export MNEMOSYNE_EMBEDDING_MODEL="$model"
+  export MNEMOSYNE_EVAL_BIN="$bin"
+  export MNEMOSYNE_EVAL_DB=".auto/data/template-${label}.db"
+  export MNEMOSYNE_EVAL_LABEL="$label"
+
+  # Rebuild the fixed corpus only when its fingerprint changes; the profile
+  # label is part of the fingerprint so profiles never share a stale DB.
+  python3 .auto/setup_data.py >/dev/null
+
+  db=".auto/data/template-${label}.db"
+  cli_log="$(mktemp)"
+  mcp_log="$(mktemp)"
+  rss_log="$(mktemp)"
+  LOGS+=("$cli_log" "$mcp_log" "$rss_log")
+
+  # Peak RSS, opportunistic: only where GNU time (-v) is available.
+  measure_rss() { # $1 binary; appends peak RSS (KB) to $rss_log
+    local bin="$1"
+    if command -v /usr/bin/time >/dev/null 2>&1; then
+      /usr/bin/time -v -- "$bin" --help >/dev/null 2>"$rss_log.t" || true
+      grep -Eo 'Maximum resident set size.*[0-9]+' "$rss_log.t" \
+        | grep -Eo '[0-9]+' >>"$rss_log" || true
+    else
+      echo 0 >>"$rss_log"
+    fi
+  }
+  measure_rss "$bin"
+
+  for dataset in eval_dev eval_heldout_a eval_heldout_b; do
+    python3 .auto/evaluate.py \
+      --binary "$bin" --db "$db" \
+      --dataset ".auto/${dataset}.jsonl" \
+      --workers 6 | tee -a "$cli_log" >/dev/null
+  done
+
+  # The live Hermes agent talks through MCP; measure held-out splits there too.
+  for dataset in eval_heldout_a eval_heldout_b; do
+    python3 .auto/evaluate_mcp.py \
+      --binary "$bin" --db "$db" \
+      --dataset ".auto/${dataset}.jsonl" \
+      --workers 6 | tee -a "$mcp_log" >/dev/null
+  done
+  unset MNEMOSYNE_EVAL_BIN MNEMOSYNE_EVAL_DB MNEMOSYNE_EVAL_LABEL
 done
 
-# The live Hermes agent talks through MCP; measure held-out splits there too.
-for dataset in eval_heldout_a eval_heldout_b; do
-  python3 .auto/evaluate_mcp.py \
-    --binary target/release/mnemosyne \
-    --db .auto/data/template.db \
-    --dataset ".auto/${dataset}.jsonl" \
-    --workers 6 | tee -a "$mcp_log" >/dev/null
-done
-
-python3 - "$cli_log" "$mcp_log" <<'PY'
+python3 - "${PROFILES}" "${LOGS[@]}" <<'PY'
 import json
 import pathlib
 import statistics
 import sys
+
+# argv: labels string (entry list), then per profile: cli_log, mcp_log, rss_log.
+lines = sys.argv[1].split()
+per = 3
+pairs = [tuple(sys.argv[2 + per * i: 2 + per * (i + 1)]) for i in range(len(lines))]
 
 
 def read(path):
@@ -49,27 +107,43 @@ def read(path):
     return {pathlib.Path(row["dataset"]).name: row for row in rows}
 
 
-cli = read(sys.argv[1])
-mcp = read(sys.argv[2])
+def rss_kb(path):
+    vals = [int(v) for v in pathlib.Path(path).read_text().split() if v.isdigit()]
+    return max(vals) if vals else 0
+
+
+def size_bytes(bin_path):
+    try:
+        return pathlib.Path(bin_path).stat().st_size
+    except OSError:
+        return 0
+
+
 heldout_names = ("eval_heldout_a.jsonl", "eval_heldout_b.jsonl")
-cli_heldout = [cli[name] for name in heldout_names]
-mcp_heldout = [mcp[name] for name in heldout_names]
-mean = lambda key, items: statistics.mean(item[key] for item in items)
 
-print(f"METRIC realquery_heldout_mrr={statistics.mean([mean('mrr', cli_heldout), mean('mrr', mcp_heldout)]):.6f}")
-print(f"METRIC realquery_cli_heldout_mrr={mean('mrr', cli_heldout):.6f}")
-print(f"METRIC realquery_mcp_heldout_mrr={mean('mrr', mcp_heldout):.6f}")
-print(f"METRIC realquery_dev_mrr={cli['eval_dev.jsonl']['mrr']:.6f}")
-print(f"METRIC realquery_heldout_hit5={statistics.mean([mean('hit5', cli_heldout), mean('hit5', mcp_heldout)]):.6f}")
-print(f"METRIC realquery_heldout_hit1={statistics.mean([mean('hit1', cli_heldout), mean('hit1', mcp_heldout)]):.6f}")
-print(f"METRIC recall_latency_p95_ms={max([row['latency_p95_ms'] for row in cli.values()] + [row['latency_p95_ms'] for row in mcp.values()]):.3f}")
-
-# Per-category diagnostics across CLI+MCP held-out splits: where the next
-# yield is hiding. Emitted as INFO lines (not METRIC) for ASI annotation.
-cats = {}
-for source in cli_heldout + mcp_heldout:
-    for cat, stats_row in source["by_category"].items():
-        cats.setdefault(cat, []).append(stats_row["mrr"])
-for cat in sorted(cats):
-    print(f"INFO category_mrr[{cat}]={statistics.mean(cats[cat]):.4f}")
+for label, (cli_path, mcp_path, rss_path) in zip(lines, pairs):
+    cli = read(cli_path)
+    mcp = read(mcp_path)
+    cli_heldout = [cli[name] for name in heldout_names]
+    mcp_heldout = [mcp[name] for name in heldout_names]
+    cli_dev = cli.get("eval_dev.jsonl", {})
+    mean = statistics.mean
+    cli_mrr = mean(row["mrr"] for row in cli_heldout)
+    mcp_mrr = mean(row["mrr"] for row in mcp_heldout)
+    latency = max([row["latency_p95_ms"] for row in cli.values()]
+                  + [row["latency_p95_ms"] for row in mcp.values()])
+    empty = sum(row["empty"] for row in cli.values() + mcp.values())
+    print(f"METRIC {label}_cli_heldout_mrr={cli_mrr:.6f}")
+    print(f"METRIC {label}_mcp_heldout_mrr={mcp_mrr:.6f}")
+    print(f"METRIC {label}_dev_mrr={cli_dev.get('mrr', 0.0):.6f}")
+    print(f"METRIC {label}_heldout_hit5={mean([mean(row.get('hit5', 0) for row in cli_heldout), mean(row.get('hit5', 0) for row in mcp_heldout)]):.6f}")
+    print(f"METRIC {label}_heldout_hit1={mean([mean(row.get('hit1', 0) for row in cli_heldout), mean(row.get('hit1', 0) for row in mcp_heldout)]):.6f}")
+    print(f"METRIC {label}_recall_latency_p95_ms={latency:.3f}")
+    # Abstention proxy: recall returning zero results is arguably the model
+    # refusing/being unable to retrieve anything for that query.
+    print(f"METRIC {label}_empty_results={empty}")
+    # Resource proxy: on-disk binary size (portable) and, where GNU time was
+    # available, peak RSS (KB) measured at startup.
+    print(f"METRIC {label}_binary_bytes={size_bytes('target/release/mnemosyne-%s' % label)}")
+    print(f"METRIC {label}_peak_rss_kb={rss_kb(rss_path)}")
 PY

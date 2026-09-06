@@ -19,16 +19,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = ROOT / "target" / "release" / "mnemosyne"
 DATA_DIR = ROOT / ".auto" / "data"
-DB = DATA_DIR / "template.db"
 CORPUS = ROOT / ".auto" / "corpus.jsonl"
 NAMESPACE = "project:personal-agent-eval"
 MODEL = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "bge-small-en-v1.5")
 
+# Overridable per profile (see measure.sh matrix): a profile label is part of
+# the fingerprint so keyless-default / model-backed / python-provider builds
+# never share a stale cached DB.
+BIN = Path(os.environ.get("MNEMOSYNE_EVAL_BIN", "") or str(ROOT / "target" / "release" / "mnemosyne"))
+DB = Path(os.environ.get("MNEMOSYNE_EVAL_DB", "") or str(DATA_DIR / "template.db"))
+LABEL = os.environ.get("MNEMOSYNE_EVAL_LABEL", "default")
+
 
 def fingerprint() -> str:
-    payload = CORPUS.read_bytes() + f"|model={MODEL}|v3".encode()
+    payload = CORPUS.read_bytes() + f"|model={MODEL}|label={LABEL}|v3".encode()
     return hashlib.sha256(payload).hexdigest()
 
 
