@@ -485,9 +485,8 @@ mod tests {
     #[test]
     fn expand_home_handles_bare_tilde_and_prefix() {
         let home = dirs::home_dir().expect("home dir is available in test env");
-        let home = home.to_string_lossy();
         // A bare `~` resolves to the home directory root.
-        assert_eq!(expand_home("~"), home.as_ref());
+        assert_eq!(expand_home("~"), home.to_string_lossy());
         // A `~/...` path resolves relative to home. Compare via PathBuf so the
         // assertion is correct across path separators (Windows vs. POSIX).
         let expanded = expand_home("~/mnemosyne/memories.db");
