@@ -490,7 +490,10 @@ mod tests {
         // A `~/...` path resolves relative to home. Compare via PathBuf so the
         // assertion is correct across path separators (Windows vs. POSIX).
         let expanded = expand_home("~/mnemosyne/memories.db");
-        let expected = home.join("mnemosyne/memories.db").to_string_lossy().into_owned();
+        let expected = home
+            .join("mnemosyne/memories.db")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(expanded, expected);
         // Non-home paths are returned unchanged.
         assert_eq!(expand_home("/absolute/path.db"), "/absolute/path.db");
