@@ -112,7 +112,7 @@ async fn embed_all_processes_every_record_in_store_larger_than_50() {
     let mut offset = 0usize;
     loop {
         let page = storage
-            .list_memories_page(ns.clone(), page_size, offset, MemorySortOrder::Recent)
+            .list_memories_page(Some(ns.clone()), page_size, offset, MemorySortOrder::Recent)
             .await
             .unwrap();
         let n = page.len();
