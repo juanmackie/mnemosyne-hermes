@@ -67,6 +67,19 @@ pub struct SearchConfig {
     /// Maximum graph traversal depth
     pub max_graph_depth: usize,
 
+    /// Enable Personalized PageRank blending into hybrid ranking
+    /// (HippoRAG-style multi-hop recall over the link graph). Deliberately
+    /// off by default — the additive PPR term must measure a retrieval
+    /// gain over the flat graph channel before being shipped on.
+    pub enable_ppr: bool,
+
+    /// Weight of the additive PPR mass term in hybrid ranking (0.0-1.0).
+    pub ppr_weight: f32,
+
+    /// Nearest neighbours scored for link proposals per insertion by the
+    /// A-MEM-style insertion-time evolution hook.
+    pub insert_link_k: usize,
+
     /// Row cap for FTS5 keyword candidate retrieval before fusion. Larger
     /// pools let coverage/supersession reranking see candidates that pure
     /// BM25 position would discard, at linear scan cost per query.
@@ -93,6 +106,10 @@ impl Default for SearchConfig {
             enable_vector_search: true,
             enable_graph_expansion: true,
             max_graph_depth: 2,
+            // PPR starts off: measure retrieval gain before enabling.
+            enable_ppr: false,
+            ppr_weight: 0.15,
+            insert_link_k: 8,
             // Candidate pool for the FTS keyword channel. Relevant memories
             // must survive candidate selection before fusion/reranking; a
             // hard cap of 20 discarded deep BM25 matches on realistic stores.
@@ -130,6 +147,18 @@ impl SearchConfig {
                 "Search weights sum to {}, not 1.0. Results may be scaled unexpectedly.",
                 sum
             );
+        }
+
+        // Check ppr_weight range
+        if self.ppr_weight < 0.0 || self.ppr_weight > 1.0 {
+            return Err(MnemosyneError::Config(config::ConfigError::Message(
+                format!("ppr_weight must be between 0.0 and 1.0, got {}", self.ppr_weight),
+            )));
+        }
+        if self.insert_link_k == 0 {
+            return Err(MnemosyneError::Config(config::ConfigError::Message(
+                "insert_link_k must be at least 1".to_string(),
+            )));
         }
 
         // Check graph depth

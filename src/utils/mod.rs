@@ -1,6 +1,7 @@
 //! Utility functions and helpers
 
 pub mod hotness;
+pub mod ppr;
 pub mod retrieval;
 pub mod string;
 pub use string::{is_trivial_prompt, sanitize_context};
