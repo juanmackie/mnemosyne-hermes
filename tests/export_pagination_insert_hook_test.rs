@@ -13,7 +13,7 @@ use mnemosyne_core::evolution::config::OnInsertConfig;
 use mnemosyne_core::storage::libsql::{ConnectionMode, LibsqlStorage};
 use mnemosyne_core::storage::{MemorySortOrder, StorageBackend};
 use mnemosyne_core::types::{MemoryId, MemoryNote, MemoryType, Namespace};
-use mnemosyne_core::{error::Result, MemoryClass};
+use mnemosyne_core::MemoryClass;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -80,7 +80,7 @@ async fn export_pagination_walk_collects_every_row_exactly_once() {
     let mut memories = Vec::new();
     loop {
         let page = storage
-            .list_memories_page(ns.clone(), PAGE_SIZE, memories.len(), MemorySortOrder::Recent)
+            .list_memories_page(Some(ns.clone()), PAGE_SIZE, memories.len(), MemorySortOrder::Recent)
             .await
             .unwrap();
         let count = page.len();
@@ -140,7 +140,7 @@ async fn export_pagination_walk_exact_multiple_boundary() {
     let mut memories = Vec::new();
     loop {
         let page = storage
-            .list_memories_page(ns.clone(), PAGE_SIZE, memories.len(), MemorySortOrder::Recent)
+            .list_memories_page(Some(ns.clone()), PAGE_SIZE, memories.len(), MemorySortOrder::Recent)
             .await
             .unwrap();
         let count = page.len();
@@ -184,7 +184,7 @@ async fn insert_hook_is_experimental_and_disabled_by_default() {
     };
     let _ = production
         .create_artifact_memory(
-            MemoryType::Specification,
+            MemoryType::Insight,
             "artifact content for task b".to_string(),
             ns.clone(),
             "/tmp/fix11-artifact.md".to_string(),
