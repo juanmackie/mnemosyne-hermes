@@ -1057,8 +1057,8 @@ impl ToolHandler {
             let mut ledger = serde_json::to_value(&budget_plan.ledger)
                 .unwrap_or_else(|_| serde_json::json!({"budget_tokens": content_budget}));
             if let Some(l) = ledger.as_object_mut() {
-                l.insert("content_budget_tokens".into(), json!(content_budget));
-                l.insert("protocol_overhead_tokens".into(), json!(protocol_overhead_tokens));
+                l.insert("content_budget_tokens".into(), content_budget.into());
+                l.insert("protocol_overhead_tokens".into(), protocol_overhead_tokens.into());
             }
             ledger
         };
