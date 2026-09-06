@@ -85,6 +85,13 @@ impl MemoryLinker {
     /// Create a memory linker that will run the A-MEM post-insert hook when
     /// `on_insert.enabled` is `true`.
     ///
+    /// **EXPERIMENTAL — do not use in production.**
+    ///
+    /// This constructor is explicitly experimental and is intentionally NOT
+    /// wired into normal production construction (production uses
+    /// [`MemoryLinker::new`], which leaves the hook disabled). It exists only for
+    /// opt-in evaluation; do not promote or enable it by default.
+    ///
     /// `proposer` supplies the link-proposal strategy (typically an
     /// [`LlmLinkProposer`] wrapping the existing `LlmService`).
     pub fn with_insert_hook(
