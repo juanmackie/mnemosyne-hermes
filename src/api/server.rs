@@ -17,7 +17,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt as _};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{cors::{AllowOrigin, CorsLayer}, trace::TraceLayer};
 use tracing::{debug, info};
 
 /// API server configuration
@@ -131,20 +131,21 @@ impl ApiServer {
                     axum::http::header::AUTHORIZATION,
                 ]);
             if state.allowed_origins.is_empty() {
-                builder.allow_origin(false)
+                // No explicit origins => tower-http default (no cross-origin), which
+                // is what we want; do NOT add a permissive allow_origin.
+                builder
             } else {
-                builder.allow_origin(
+                builder.allow_origin(AllowOrigin::list(
                     state
                         .allowed_origins
                         .iter()
-                        .filter_map(|o| o.parse::<axum::http::HeaderValue>().ok())
-                        .collect::<Vec<_>>(),
-                )
+                        .filter_map(|o| o.parse::<axum::http::HeaderValue>().ok()),
+                ))
             }
         };
 
         // Token-check middleware applied to state/events/emit (not /health).
-        let auth = axum::middleware::from_fn_with_state(state.clone(), auth_middleware);
+        let auth = axum::middleware::from_fn_with_state(state.clone(), Self::auth_middleware);
 
         Router::new()
             // Event streaming

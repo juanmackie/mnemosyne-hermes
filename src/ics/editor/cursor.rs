@@ -5,7 +5,7 @@
 pub struct Position {
     /// Line number (0-indexed)
     pub line: usize,
-    /// Column number (0-indexed, UTF-8 byte offset)
+    /// Column number (0-indexed, character offset — not UTF-8 byte offset)
     pub column: usize,
 }
 

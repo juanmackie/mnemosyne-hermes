@@ -580,7 +580,7 @@ impl CrdtBuffer {
                     self.cursor.position.line -= 1;
                     // Clamp column to line length
                     if let Some(line) = lines.get(self.cursor.position.line) {
-                        self.cursor.position.column = self.cursor.position.column.min(line.len());
+                        self.cursor.position.column = self.cursor.position.column.min(line.chars().count());
                     }
                 }
             }
@@ -589,7 +589,7 @@ impl CrdtBuffer {
                     self.cursor.position.line += 1;
                     // Clamp column to line length
                     if let Some(line) = lines.get(self.cursor.position.line) {
-                        self.cursor.position.column = self.cursor.position.column.min(line.len());
+                        self.cursor.position.column = self.cursor.position.column.min(line.chars().count());
                     }
                 }
             }
@@ -600,13 +600,13 @@ impl CrdtBuffer {
                     // Move to end of previous line
                     self.cursor.position.line -= 1;
                     if let Some(line) = lines.get(self.cursor.position.line) {
-                        self.cursor.position.column = line.len();
+                        self.cursor.position.column = line.chars().count();
                     }
                 }
             }
             Movement::Right => {
                 if let Some(line) = lines.get(self.cursor.position.line) {
-                    if self.cursor.position.column < line.len() {
+                    if self.cursor.position.column < line.chars().count() {
                         self.cursor.position.column += 1;
                     } else if self.cursor.position.line < line_count.saturating_sub(1) {
                         // Move to start of next line
@@ -620,7 +620,7 @@ impl CrdtBuffer {
             }
             Movement::LineEnd => {
                 if let Some(line) = lines.get(self.cursor.position.line) {
-                    self.cursor.position.column = line.len();
+                    self.cursor.position.column = line.chars().count();
                 }
             }
             Movement::WordLeft => {
@@ -652,7 +652,7 @@ impl CrdtBuffer {
                     // Move to end of previous line
                     self.cursor.position.line -= 1;
                     if let Some(line) = lines.get(self.cursor.position.line) {
-                        self.cursor.position.column = line.len();
+                        self.cursor.position.column = line.chars().count();
                     }
                 }
             }
@@ -693,7 +693,7 @@ impl CrdtBuffer {
                 }
                 // Clamp column to line length
                 if let Some(line) = lines.get(self.cursor.position.line) {
-                    self.cursor.position.column = self.cursor.position.column.min(line.len());
+                    self.cursor.position.column = self.cursor.position.column.min(line.chars().count());
                 }
             }
             Movement::PageDown => {
@@ -707,7 +707,7 @@ impl CrdtBuffer {
                 }
                 // Clamp column to line length
                 if let Some(line) = lines.get(self.cursor.position.line) {
-                    self.cursor.position.column = self.cursor.position.column.min(line.len());
+                    self.cursor.position.column = self.cursor.position.column.min(line.chars().count());
                 }
             }
             Movement::BufferStart => {
@@ -717,7 +717,7 @@ impl CrdtBuffer {
             Movement::BufferEnd => {
                 self.cursor.position.line = line_count.saturating_sub(1);
                 if let Some(line) = lines.get(self.cursor.position.line) {
-                    self.cursor.position.column = line.len();
+                    self.cursor.position.column = line.chars().count();
                 }
             }
             Movement::WordEnd => {
@@ -958,6 +958,47 @@ mod tests {
         buffer.move_cursor(Movement::BufferEnd).unwrap();
         assert_eq!(buffer.cursor.position.line, 2);
         assert_eq!(buffer.cursor.position.column, 6); // End of "Line 3"
+    }
+
+    #[test]
+    fn test_unicode_end_of_line_uses_character_count() {
+        // Multi-byte line: byte length (9) > char count (8). The column is a
+        // CHARACTER offset, so EndOfLine must land at the char count, not the
+        // byte length.
+        let mut buffer = CrdtBuffer::new(0, Actor::Human, None).unwrap();
+        buffer.insert(0, "héllo\nhi").unwrap();
+        buffer.cursor.position = Position { line: 0, column: 2 };
+
+        buffer.move_cursor(Movement::LineEnd).unwrap();
+        // 5 chars: h, é, l, l, o  (byte len would be 6)
+        assert_eq!(buffer.cursor.position.column, 5);
+
+        // Inserting at end-of-line cursor must place text after the last char
+        // and advance the character column, not throw an out-of-range panic.
+        buffer.insert_at_cursor("!").unwrap();
+        assert_eq!(buffer.text().unwrap(), "héllo!\nhi");
+        assert_eq!(buffer.cursor.position.column, 6);
+    }
+
+    #[test]
+    fn test_unicode_move_down_clamps_to_character_count() {
+        // Moving Down from a wider multi-byte line onto a narrower one must
+        // clamp the column to the target line's CHARACTER count (2), not its
+        // byte length (4), and must not panic or overshoot in cursor_to_char_idx.
+        let mut buffer = CrdtBuffer::new(0, Actor::Human, None).unwrap();
+        buffer.insert(0, "héllo
+hi").unwrap();
+        buffer.cursor.position = Position { line: 0, column: 5 };
+
+        buffer.move_cursor(Movement::Down).unwrap();
+        assert_eq!(buffer.cursor.position.line, 1);
+        assert_eq!(buffer.cursor.position.column, 2); // char count of "hi"
+
+        // Routing this clamped position back through cursor_to_char_idx must
+        // resolve to a valid index without panicking (regression for the
+        // byte-based clamp that overshot the char line).
+        buffer.insert_at_cursor("!").unwrap();
+        assert_eq!(buffer.text().unwrap(), "héllo\nhi!");
     }
 
     #[test]
