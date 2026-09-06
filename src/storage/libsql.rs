@@ -9963,12 +9963,12 @@ mod fts_query_tests {
         // Determinism: two passes over the same map produce identical ranks.
         assert_eq!(first, second);
 
-        // Shallow candidates (depth 1) tie at rank 2 regardless of ID order;
-        // the deep candidate (depth 3) must rank strictly worse.
-        assert_eq!(first[&id1], 2);
-        assert_eq!(first[&id2], 2);
-        assert_eq!(first[&id3], 2);
-        assert!(first.values().any(|&r| r > 2));
+        // The three depth-1 candidates get consecutive ranks 2,3,4 (tie-broken
+        // by ID), and the deeper depth-3 candidate must rank strictly worse.
+        let mut shallow: Vec<usize> = [&id1, &id2, &id3].iter().map(|k| first[k]).collect();
+        shallow.sort();
+        assert_eq!(shallow, vec![2, 3, 4]);
+        assert!(first.values().any(|&r| r == 7));
     }
 }
 
