@@ -251,8 +251,9 @@ async fn merged_near_duplicate_keeps_append_only_evidence_and_source() {
     });
     storage.store_memory(&child).await.unwrap();
 
-    // Both statements collapsed into the single parent row.
-    assert_eq!(storage.count_memories(None).await.unwrap(), 1);
+    // Both statements collapsed into the single parent row. The two raw
+    // source memories still exist, so total is parent + 2 sources = 3.
+    assert_eq!(storage.count_memories(None).await.unwrap(), 3);
 
     let merged = storage.get_memory(parent.id).await.unwrap();
     assert!(merged.content.contains("Rust memory storage uses a durable index"));
