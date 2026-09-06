@@ -2438,6 +2438,40 @@ impl LibsqlStorage {
         self.embedding_service = Some(service);
     }
 
+    /// The provider/model identity currently configured on this storage, or an
+    /// empty string when no embedding service is active. `vector_search`
+    /// restricts results to vectors carrying this model so incompatible model
+    /// spaces never silently share a search.
+    fn active_embedding_model(&self) -> String {
+        self.embedding_service
+            .as_ref()
+            .map(|s| s.model_name().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Report how many active knowledge vectors carry each embedding model.
+    ///
+    /// A non-empty entry with an empty-string model, or a mix of models after
+    /// a provider/version change, indicates an incomplete embedding migration
+    /// or backfill. Returns `(embedding_model, count)` pairs; the empty-string
+    /// model denotes vectors written without (or before) a model label.
+    pub async fn embedding_model_coverage(&self) -> Result<Vec<(String, usize)>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT embedding_model, COUNT(*) FROM memories WHERE embedding IS NOT NULL AND is_archived = 0 AND memory_class = 'knowledge' AND tags NOT LIKE '%\"turn_sync\"%' AND (expires_at IS NULL OR datetime(expires_at) > datetime('now')) GROUP BY embedding_model",
+                params![],
+            )
+            .await?;
+        let mut coverage = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let model: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            coverage.push((model, count as usize));
+        }
+        Ok(coverage)
+    }
+
     async fn is_raw_turn(&self, memory_id: &MemoryId) -> Result<bool> {
         let conn = self.get_conn()?;
         // Tags cover legacy/raw callers that predate typed provenance.
@@ -2498,8 +2532,10 @@ impl LibsqlStorage {
         debug!("Generating embedding for memory: {}", memory_id);
         let embedding = service.embed(content).await?;
 
-        // Store in memory_vectors table
-        self.store_embedding(memory_id, &embedding).await?;
+        // Store in memory_vectors table, recording the provider/model identity
+        // used to generate this vector so queries stay in a compatible space.
+        self.store_embedding(memory_id, &embedding, service.model_name())
+            .await?;
 
         info!(
             "Successfully generated and stored embedding for memory: {}",
@@ -2516,7 +2552,15 @@ impl LibsqlStorage {
     /// # Arguments
     /// * `memory_id` - The ID of the memory
     /// * `embedding` - The embedding vector (must match configured dimensions)
-    pub async fn store_embedding(&self, memory_id: &MemoryId, embedding: &[f32]) -> Result<()> {
+    /// * `embedding_model` - The provider/model identity of the embedding (e.g.
+    ///   "voyage-3-large" or "local:fastembed:BAAI/bge-small-en-v1.5"). Persisted
+    ///   so vector queries can be restricted to a compatible model space.
+    pub async fn store_embedding(
+        &self,
+        memory_id: &MemoryId,
+        embedding: &[f32],
+        embedding_model: &str,
+    ) -> Result<()> {
         // Keep the low-level path safe too: CLI/backfill callers must not
         // accidentally embed a raw turn.
         if self.is_raw_turn(memory_id).await? {
@@ -2539,14 +2583,15 @@ impl LibsqlStorage {
                 .flat_map(|value| value.to_le_bytes())
                 .collect();
             conn.execute(
-                "UPDATE memories SET embedding = ? WHERE id = ?",
-                params![bytes, memory_id.to_string()],
+                "UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ?",
+                params![bytes, embedding_model, memory_id.to_string()],
             )
             .await
             .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding: {}", e)))?;
         } else {
             // StandardSQLite stores the raw f32 bytes plus their dimension in
-            // its companion table.
+            // its companion table, and records the model identity on the memory
+            // row so vector queries can filter on a compatible model space.
             let bytes: Vec<u8> = embedding
                 .iter()
                 .flat_map(|value| value.to_le_bytes())
@@ -2557,6 +2602,12 @@ impl LibsqlStorage {
             )
             .await
             .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding: {}", e)))?;
+            conn.execute(
+                "UPDATE memories SET embedding_model = ? WHERE id = ?",
+                params![embedding_model, memory_id.to_string()],
+            )
+            .await
+            .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding model: {}", e)))?;
         }
         Ok(())
     }
@@ -3034,6 +3085,12 @@ impl LibsqlStorage {
         // Convert query embedding to JSON for libsql vector functions
         let query_json = serde_json::to_string(query_embedding)?;
 
+        // Restrict to vectors produced by the currently active embedding model
+        // so incompatible model spaces never silently share a search. When no
+        // model is active (empty) the `OR ? = ''` makes the predicate a no-op,
+        // preserving prior behavior.
+        let active_model = self.active_embedding_model();
+
         // Build query using native libsql vector functions (no vec0 extension needed)
         // Queries the memories table's embedding column (F32_BLOB)
         let sql = if namespace.is_some() {
@@ -3046,6 +3103,7 @@ impl LibsqlStorage {
               AND tags NOT LIKE '%\"turn_sync\"%'
               AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
               AND namespace = ?
+              AND (embedding_model = ? OR ? = '')
             ORDER BY distance ASC
             LIMIT ?
             "#
@@ -3059,6 +3117,7 @@ impl LibsqlStorage {
               AND memory_class = 'knowledge'
               AND tags NOT LIKE '%\"turn_sync\"%'
               AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+              AND (embedding_model = ? OR ? = '')
             ORDER BY distance ASC
             LIMIT ?
             "#
@@ -3067,10 +3126,17 @@ impl LibsqlStorage {
 
         let mut rows = if let Some(ns) = &namespace {
             let ns_json = serde_json::to_string(ns)?;
-            conn.query(&sql, params![query_json, ns_json, limit as i64])
-                .await?
+            conn.query(
+                &sql,
+                params![query_json, ns_json, active_model.clone(), active_model, limit as i64],
+            )
+            .await?
         } else {
-            conn.query(&sql, params![query_json, limit as i64]).await?
+            conn.query(
+                &sql,
+                params![query_json, active_model.clone(), active_model, limit as i64],
+            )
+            .await?
         };
 
         let mut results = Vec::new();
@@ -3967,22 +4033,35 @@ impl LibsqlStorage {
     ) -> Result<Vec<SearchResult>> {
         let conn = self.get_conn()?;
         let columns = self.memory_columns("m");
+        // Restrict to vectors produced by the currently active embedding model.
+        let active_model = self.active_embedding_model();
+        let model_clause = " AND (m.embedding_model = ? OR ? = '')";
         let sql = if namespace.is_some() {
             format!(
-                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))",
-                columns = columns
+                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')){model_clause}",
+                columns = columns,
+                model_clause = model_clause,
             )
         } else {
             format!(
-                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))",
-                columns = columns
+                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')){model_clause}",
+                columns = columns,
+                model_clause = model_clause,
             )
         };
         let mut rows = if let Some(namespace) = namespace {
-            conn.query(&sql, params![serde_json::to_string(&namespace)?])
-                .await?
+            conn.query(
+                &sql,
+                params![
+                    serde_json::to_string(&namespace)?,
+                    active_model.clone(),
+                    active_model
+                ],
+            )
+            .await?
         } else {
-            conn.query(&sql, params![]).await?
+            conn.query(&sql, params![active_model.clone(), active_model])
+                .await?
         };
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -7825,6 +7904,9 @@ impl StorageBackend for LibsqlStorage {
         let conn = self.get_conn()?;
         let query_embedding = serde_json::to_string(embedding)?;
 
+        // Restrict to vectors produced by the currently active embedding model.
+        let active_model = self.active_embedding_model();
+
         let sql = if namespace.is_some() {
             format!(
                 r#"
@@ -7841,6 +7923,7 @@ impl StorageBackend for LibsqlStorage {
                   AND tags NOT LIKE '%\"turn_sync\"%'
                   AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
                   AND namespace = ?
+                  AND (embedding_model = ? OR ? = '')
                 ORDER BY distance ASC
                 LIMIT {}
                 "#,
@@ -7861,6 +7944,7 @@ impl StorageBackend for LibsqlStorage {
                   AND memory_class = 'knowledge'
                   AND tags NOT LIKE '%\"turn_sync\"%'
                   AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+                  AND (embedding_model = ? OR ? = '')
                 ORDER BY distance ASC
                 LIMIT {}
                 "#,
@@ -7870,9 +7954,14 @@ impl StorageBackend for LibsqlStorage {
 
         let mut rows = if let Some(ref ns) = namespace {
             let ns_json = serde_json::to_string(ns)?;
-            conn.query(&sql, params![query_embedding, ns_json]).await?
+            conn.query(
+                &sql,
+                params![query_embedding, ns_json, active_model.clone(), active_model],
+            )
+            .await?
         } else {
-            conn.query(&sql, params![query_embedding]).await?
+            conn.query(&sql, params![query_embedding, active_model.clone(), active_model])
+                .await?
         };
 
         let mut results = Vec::new();
