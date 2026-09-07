@@ -16,16 +16,62 @@ fi
 
 pass=0
 fail=0
+
+# Per-check timeout in seconds. GNU `timeout` may be absent on macOS, so we
+# provide a portable runner that kills the command if it exceeds the limit.
+CHECK_TIMEOUT="${CHECK_TIMEOUT:-60}"
+
+# Run a command with a timeout, portable across GNU coreutils and macOS BSD
+# (where GNU `timeout` is unavailable). Returns the command's exit code;
+# nonzero if it was killed or failed.
+run_with_timeout() {
+    local limit="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$limit" "$@"
+        return $?
+    fi
+    "$@" &
+    local pid=$!
+    ( sleep "$limit"; kill -9 "$pid" 2>/dev/null ) &
+    local killer=$!
+    wait "$pid" 2>/dev/null
+    local rc=$?
+    kill "$killer" 2>/dev/null
+    wait "$killer" 2>/dev/null
+    return "$rc"
+}
+
+# A check function must report a well-formed pass/fail: exit code 0 (pass) or
+# any nonzero (fail). We run it under a timeout so a hanging check cannot block
+# the whole harness. A nonzero return (or a timeout kill) is counted as a
+# failure; there is no third/ambiguous state, so malformed results cannot be
+# accepted as a pass.
 check() {
   local name="$1"
   shift
-  if "$@"; then
+  if run_with_timeout "$CHECK_TIMEOUT" "$@"; then
     echo "CHECK ${name}=1"
     pass=$((pass + 1))
   else
     echo "CHECK ${name}=0"
     fail=$((fail + 1))
   fi
+}
+
+# Validate that a value is a non-negative integer (well-formed protocol
+# counter). Used to reject malformed metric/check output before exiting.
+is_natural() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+# A deliberately failing binary must be detected: the harness runner must
+# return nonzero, which the final exit gate turns into a nonzero script exit.
+# Guards against a harness that silently swallows failures.
+deliberate_failure_is_detected() {
+    local rc=0
+    run_with_timeout 5 /bin/false || rc=$?
+    [ "$rc" -ne 0 ]
 }
 
 has_release_workflow() {
@@ -508,5 +554,31 @@ fi
 
 # The primary metric is deliberately a small, behavior-oriented score rather
 # than a retrieval benchmark. It cannot pass by changing labels or answers.
+# A deliberately failing binary must yield a nonzero harness exit; verify the
+# detection path works end-to-end.
+if deliberate_failure_is_detected; then
+  echo "CHECK deliberate_failure_detected=1"
+  pass=$((pass + 1))
+else
+  echo "CHECK deliberate_failure_detected=0"
+  fail=$((fail + 1))
+fi
+
+# Reject malformed protocol output: the final counters must be well-formed
+# non-negative integers, otherwise a broken harness could report a green
+# result. Any malformed value is treated as a hard failure.
+if ! is_natural "$pass" || ! is_natural "$fail"; then
+  echo "ERROR: malformed protocol output (pass=$pass fail=$fail) is not numeric" >&2
+  exit 2
+fi
+
 echo "METRIC hermes_phase1_gates=${pass}"
 echo "METRIC hermes_phase1_failures=${fail}"
+
+# Fail closed: any required check that failed must yield a nonzero exit so CI
+# and orchestration cannot go green on a broken build.
+if [ "$fail" -gt 0 ]; then
+  echo "ERROR: ${fail} required check(s) failed" >&2
+  exit 1
+fi
+exit 0

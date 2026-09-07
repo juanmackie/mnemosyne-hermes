@@ -2,9 +2,11 @@
 
 use mnemosyne_core::{build_memory_context_block, is_trivial_prompt, RecallBundle, RecallChannel};
 use mnemosyne_core::{
-    embeddings::fallback_embedding_warning, orchestration::events::AgentEvent,
-    utils::string::truncate_at_char_boundary, ConnectionMode, EmbeddingConfig, EmbeddingService,
-    LibsqlStorage, LlmConfig, LocalEmbeddingService, RemoteEmbeddingService, StorageBackend,
+    embeddings::{fallback_embedding_warning, remote_embedding_config},
+    orchestration::events::AgentEvent,
+    utils::string::truncate_at_char_boundary,
+    ConnectionMode, EmbeddingConfig, EmbeddingService, LibsqlStorage, LocalEmbeddingService,
+    RemoteEmbeddingService, StorageBackend,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,10 +42,6 @@ pub async fn handle(
     let db_path = get_db_path(global_db_path);
     let storage = LibsqlStorage::new(ConnectionMode::Local(db_path.clone())).await?;
 
-    // Check if API key is available for vector search
-    let embedding_service_config = LlmConfig::default();
-    let has_api_key = !embedding_service_config.api_key.is_empty();
-
     // Parse namespace strictly so a typo cannot expose global memories.
     let ns = namespace.as_deref().map(parse_namespace).transpose()?;
 
@@ -53,95 +51,97 @@ pub async fn handle(
         .await?;
     let keyword_candidate_count = keyword_results.len();
 
-    let mut embedding_mode = if has_api_key {
-        "llm-concept"
-    } else {
-        "unavailable"
-    };
+    // Vector search credential resolution. The remote (Voyage) provider is used
+    // ONLY when an explicit Voyage credential (MNEMOSYNE_VOYAGE_API_KEY) is
+    // configured; an Anthropic LLM key never routes here. Otherwise we default
+    // to local embeddings, so a configured Anthropic key no longer blocks the
+    // local fallback path.
+    let mut embedding_mode = "unavailable";
     let mut embedding_warning = None;
 
-    // Vector search (optional - only if API key available).
+    // Vector search. Voyage remote embeddings are tried only when an explicit
+    // Voyage credential is configured; otherwise local embeddings are used.
     // Dispatch through the StorageBackend trait so this path returns full
     // SearchResult objects and avoids the per-ID fetch that the inherent
     // LibsqlStorage::vector_search would trigger.
-    let vector_results: Vec<mnemosyne_core::types::SearchResult> = if has_api_key {
-        match RemoteEmbeddingService::new(
-            embedding_service_config.api_key.clone(),
-            None, // Use default model
-            None, // Use default base URL
-        ) {
-            Ok(embedding_service) => match embedding_service.embed(&query).await {
-                Ok(query_embedding) => (&storage as &dyn StorageBackend)
-                    // Wide candidate pool: fusion sees deep vector matches
-                    // instead of only limit*2 nearest rows.
-                    .vector_search(&query_embedding, limit * 4, ns.clone())
-                    .await
-                    .unwrap_or_default(),
-                Err(_) => Vec::new(),
-            },
-            Err(_) => Vec::new(),
-        }
-    } else {
-        // No remote API key — try local embeddings for personal agents working offline.
-        debug!("No API key — attempting local embedding for vector search");
-        let local_config = EmbeddingConfig {
-            show_download_progress: false,
-            ..EmbeddingConfig::default()
-        };
-        match LocalEmbeddingService::new(local_config).await {
-            Ok(emb) => {
-                if emb.uses_model_backed_embeddings() {
-                    embedding_mode = "local-model";
-                } else {
-                    embedding_mode = "deterministic-hash-fallback";
-                    if let Ok(memory_count) = storage.count_memories(ns.clone()).await {
-                        embedding_warning = fallback_embedding_warning(memory_count);
-                        if let Some(warning) = &embedding_warning {
-                            tracing::warn!("{}", warning);
-                        }
-                    }
-                }
-                // Hash fallback vectors preserve the API shape but are not
-                // semantic embeddings: collisions can pull unrelated rows
-                // above a strong lexical match. Keep deterministic offline
-                // recall on the ranked FTS signal until a model-backed local
-                // embedding is available.
-                if !emb.uses_model_backed_embeddings() {
-                    Vec::new()
-                } else {
-                    let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
-                    match emb_svc.embed(&query).await {
+    let vector_results: Vec<mnemosyne_core::types::SearchResult> =
+        if let Some((voyage_key, model, base_url)) = remote_embedding_config() {
+            match RemoteEmbeddingService::new(voyage_key, model, base_url) {
+                Ok(embedding_service) => {
+                    embedding_mode = "voyage";
+                    match embedding_service.embed(&query).await {
                         Ok(query_embedding) => (&storage as &dyn StorageBackend)
-                            // Wide candidate pool for local-model recall too.
+                            // Wide candidate pool: fusion sees deep vector matches
+                            // instead of only limit*2 nearest rows.
                             .vector_search(&query_embedding, limit * 4, ns.clone())
                             .await
                             .unwrap_or_default(),
-                        Err(e) => {
-                            debug!("Local embedding generation failed: {}", e);
-                            if format != "json" {
-                                eprintln!(
-                                    "{} Local embedding failed, vector search skipped",
-                                    mnemosyne_core::icons::status::warning()
-                                );
+                        Err(_) => Vec::new(),
+                    }
+                }
+                Err(_) => Vec::new(),
+            }
+        } else {
+            // No remote API key — try local embeddings for personal agents working offline.
+            debug!("No API key — attempting local embedding for vector search");
+            let local_config = EmbeddingConfig {
+                show_download_progress: false,
+                ..EmbeddingConfig::default()
+            };
+            match LocalEmbeddingService::new(local_config).await {
+                Ok(emb) => {
+                    if emb.uses_model_backed_embeddings() {
+                        embedding_mode = "local-model";
+                    } else {
+                        embedding_mode = "deterministic-hash-fallback";
+                        if let Ok(memory_count) = storage.count_memories(ns.clone()).await {
+                            embedding_warning = fallback_embedding_warning(memory_count);
+                            if let Some(warning) = &embedding_warning {
+                                tracing::warn!("{}", warning);
                             }
-                            Vec::new()
+                        }
+                    }
+                    // Hash fallback vectors preserve the API shape but are not
+                    // semantic embeddings: collisions can pull unrelated rows
+                    // above a strong lexical match. Keep deterministic offline
+                    // recall on the ranked FTS signal until a model-backed local
+                    // embedding is available.
+                    if !emb.uses_model_backed_embeddings() {
+                        Vec::new()
+                    } else {
+                        let emb_svc: Arc<dyn EmbeddingService> = Arc::new(emb);
+                        match emb_svc.embed(&query).await {
+                            Ok(query_embedding) => (&storage as &dyn StorageBackend)
+                                // Wide candidate pool for local-model recall too.
+                                .vector_search(&query_embedding, limit * 4, ns.clone())
+                                .await
+                                .unwrap_or_default(),
+                            Err(e) => {
+                                debug!("Local embedding generation failed: {}", e);
+                                if format != "json" {
+                                    eprintln!(
+                                        "{} Local embedding failed, vector search skipped",
+                                        mnemosyne_core::icons::status::warning()
+                                    );
+                                }
+                                Vec::new()
+                            }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                debug!("Local embedding service unavailable: {}", e);
-                embedding_mode = "unavailable";
-                if format != "json" {
-                    eprintln!(
-                        "{} Local embeddings unavailable, using keyword search only",
-                        mnemosyne_core::icons::status::warning()
-                    );
+                Err(e) => {
+                    debug!("Local embedding service unavailable: {}", e);
+                    embedding_mode = "unavailable";
+                    if format != "json" {
+                        eprintln!(
+                            "{} Local embeddings unavailable, using keyword search only",
+                            mnemosyne_core::icons::status::warning()
+                        );
+                    }
+                    Vec::new()
                 }
-                Vec::new()
             }
-        }
-    };
+        };
 
     let vector_candidate_count = vector_results.len();
     let retrieval_weights = storage.retrieval_weights().await;

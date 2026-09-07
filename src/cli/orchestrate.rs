@@ -62,6 +62,9 @@ pub async fn handle(
         let api_config = ApiServerConfig {
             addr: ([127, 0, 0, 1], 3000).into(),
             event_capacity: 1000,
+            start_dashboard: true,
+            auth_token: None,
+            allowed_origins: Vec::new(),
         };
 
         let api_server = ApiServer::new(api_config);

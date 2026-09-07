@@ -17,7 +17,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use mnemosyne_core::utils::ppr::{
-    normalize_ppr, personalized_ppr, DEFAULT_DAMPING, DEFAULT_ITERATIONS, WeightedAdjacency,
+    normalize_ppr, personalized_ppr, WeightedAdjacency, DEFAULT_DAMPING, DEFAULT_ITERATIONS,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -44,7 +44,9 @@ fn build_store_graph(n: usize, degree: usize, seed: u64) -> WeightedAdjacency {
             }
             let tid = format!("mem_{}", j);
             let strength = 0.95_f32.powf(((i as isize - j as isize).unsigned_abs() % 64) as f32);
-            adj.entry(id.clone()).or_default().push((tid.clone(), strength));
+            adj.entry(id.clone())
+                .or_default()
+                .push((tid.clone(), strength));
             adj.entry(tid).or_default().push((id.clone(), strength));
         }
     }
@@ -55,7 +57,11 @@ fn build_store_graph(n: usize, degree: usize, seed: u64) -> WeightedAdjacency {
 /// Extract the 2-hop seed subgraph exactly like the storage layer's
 /// `fetch_ppr_adjacency` (Rust BFS, `max_hops` capped at 2), then convert it
 /// into the undirected weighted adjacency the power iteration consumes.
-fn two_hop_subgraph(graph: &WeightedAdjacency, seeds: &[String], max_hops: usize) -> WeightedAdjacency {
+fn two_hop_subgraph(
+    graph: &WeightedAdjacency,
+    seeds: &[String],
+    max_hops: usize,
+) -> WeightedAdjacency {
     let mut reachable: HashSet<String> = HashSet::new();
     let mut frontier: HashSet<String> = seeds.iter().cloned().collect();
     reachable.extend(frontier.iter().cloned());
@@ -105,12 +111,7 @@ fn bench_ppr_blend_10k(c: &mut Criterion) {
 
     c.bench_function("ppr_blend_10k (5 seeds, 2-hop subgraph)", |b| {
         b.iter(|| {
-            let scores = personalized_ppr(
-                &seeds,
-                &subgraph,
-                DEFAULT_DAMPING,
-                DEFAULT_ITERATIONS,
-            );
+            let scores = personalized_ppr(&seeds, &subgraph, DEFAULT_DAMPING, DEFAULT_ITERATIONS);
             black_box(normalize_ppr(&scores))
         })
     });

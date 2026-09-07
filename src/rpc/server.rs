@@ -18,14 +18,24 @@ pub struct RpcServer {
 impl RpcServer {
     pub fn new(storage: Arc<dyn StorageBackend>, llm: Option<Arc<LlmService>>) -> Self {
         Self {
-            health_service: HealthServiceImpl::new(),
+            health_service: HealthServiceImpl::new().with_storage(Arc::clone(&storage)),
             memory_service: MemoryServiceImpl::new(storage, llm),
         }
     }
 
     pub async fn serve(self, addr: impl Into<String>) -> Result<()> {
         let addr_str = addr.into();
-        let addr = addr_str.parse()?;
+        let addr: std::net::SocketAddr = addr_str.parse()?;
+
+        // The RPC surface has no TLS or auth. Refuse non-loopback binds until
+        // a protected deployment (reverse proxy w/ TLS+auth) is configured.
+        if !addr.ip().is_loopback() {
+            anyhow::bail!(
+                "Refusing to bind unauthenticated RPC server to non-loopback \
+                 address {addr}. Bind to a loopback address or front it with an \
+                 authenticated TLS reverse proxy."
+            );
+        }
 
         info!("Starting mnemosyne RPC server on {}", addr);
 

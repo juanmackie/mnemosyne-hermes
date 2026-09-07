@@ -57,8 +57,8 @@ pub mod diagnostics; // Memory profiling and resource tracking
 pub mod embeddings;
 pub mod error;
 pub mod evaluation;
-pub mod extractors;
 pub mod evolution;
+pub mod extractors;
 pub mod health; // Health check system
 pub mod hierarchy; // Topic-tree memory organization + hierarchical retrieval
 pub mod icons; // Nerd Font icons with ASCII fallbacks
@@ -111,8 +111,8 @@ pub use diagnostics::{
     global_memory_tracker, start_memory_monitoring, MemorySnapshot, MemoryStatus,
 };
 pub use embeddings::{
-    cosine_similarity, EmbeddingService, LocalEmbeddingService, RemoteEmbeddingService,
-    VOYAGE_EMBEDDING_DIM,
+    cosine_similarity, remote_embedding_config, EmbeddingService, LocalEmbeddingService,
+    RemoteEmbeddingService, VOYAGE_EMBEDDING_DIM,
 };
 pub use error::{MnemosyneError, Result};
 pub use evaluation::{
@@ -156,8 +156,9 @@ pub use storage::{
 };
 pub use types::{
     ConsolidationDecision, InteractionPolicy, LinkType, MemoryClass, MemoryEntity, MemoryId,
-    MemoryLink, MemoryNote, MemoryProvenance, MemoryType, MemoryUpdates, Namespace, PolicyPolarity,
-    PolicySignalKind, ProvenanceSourceKind, ProvenanceSourceRole, SearchQuery, SearchResult,
+    MemoryLink, MemoryNote, MemoryProvenance, MemoryStoreResult, MemoryStoreStatus, MemoryType,
+    MemoryUpdates, Namespace, PolicyPolarity, PolicySignalKind, ProvenanceSourceKind,
+    ProvenanceSourceRole, SearchQuery, SearchResult,
 };
 pub use update::{prompt_for_install, prompt_for_update, UpdateManager, UpdateResult};
 pub use utils::{is_trivial_prompt, sanitize_context, string::truncate_at_char_boundary};

@@ -40,6 +40,25 @@ impl std::fmt::Display for MemoryId {
     }
 }
 
+/// Outcome of a memory write that may have deduplicated into an existing row.
+/// The canonical stored ID is authoritative; a client-side generated ID may
+/// differ when the write merged into a parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryStoreResult {
+    /// The ID that is actually stored and resolvable via a read.
+    pub id: MemoryId,
+    /// Whether this write inserted a fresh row or merged into an existing one.
+    pub status: MemoryStoreStatus,
+}
+
+/// Whether a store operation created a new row or merged into a parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryStoreStatus {
+    Created,
+    Merged,
+}
+
 /// Namespace hierarchy: Global > Project > Session
 ///
 /// Namespaces provide project-aware isolation while allowing global knowledge sharing.

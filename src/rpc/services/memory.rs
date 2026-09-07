@@ -72,14 +72,17 @@ impl MemoryService for MemoryServiceImpl {
         // TODO: LLM enrichment if skip_llm_enrichment is false and llm is available
         // For now, just store as-is
 
-        // Store in backend
-        self.storage
+        // Store in backend. The canonical stored ID is authoritative and may
+        // differ from memory_id when the write near-merges into a parent.
+        let stored = self
+            .storage
             .store_memory(&memory)
             .await
             .map_err(|e| Status::from(e))?;
+        let canonical_id = stored.id;
 
         Ok(Response::new(StoreMemoryResponse {
-            memory_id: memory_id.to_string(),
+            memory_id: canonical_id.to_string(),
             memory: Some(memory_note_to_proto(memory)),
         }))
     }
@@ -200,6 +203,20 @@ impl MemoryService for MemoryServiceImpl {
             None => None,
         };
 
+        // Body/branch: the schema advertises filters we do not implement.
+        // Reject them explicitly instead of silently returning unfiltered data.
+        if !req.memory_types.is_empty()
+            || !req.tags.is_empty()
+            || req.min_importance.is_some()
+            || req.include_archived
+            || req.sort_desc
+        {
+            return Err(Status::unimplemented(
+                "list_memories filters (memory_types, tags, min_importance, \
+                 include_archived, sort_desc) are not supported by this build",
+            ));
+        }
+
         // Convert sort order
         let sort_by = match req.sort_by.as_str() {
             "importance" => MemorySortOrder::Importance,
@@ -207,23 +224,30 @@ impl MemoryService for MemoryServiceImpl {
             _ => MemorySortOrder::Recent,
         };
 
-        // List memories
+        let limit = req.limit.min(1000) as usize;
+        let offset = req.offset as usize;
+
+        // Stable offset-based window; total count from storage so has_more is
+        // real rather than hardcoded false.
         let memories = self
             .storage
-            .list_memories(
-                namespace,
-                req.limit.min(1000) as usize, // Cap at 1000
-                sort_by,
-            )
+            .list_memories_page(namespace.clone(), limit, offset, sort_by)
             .await
             .map_err(|e| Status::from(e))?;
 
-        let total_count = memories.len();
+        let total_count = self
+            .storage
+            .count_memories(namespace.clone())
+            .await
+            .map_err(|e| Status::from(e))?;
+
+        let fetched = memories.len();
+        let has_more = offset + fetched < total_count;
 
         Ok(Response::new(ListMemoriesResponse {
             memories: memories.into_iter().map(memory_note_to_proto).collect(),
             total_count: total_count as u32,
-            has_more: false, // TODO: Implement pagination
+            has_more,
         }))
     }
 
@@ -585,10 +609,26 @@ impl MemoryService for MemoryServiceImpl {
             _ => MemorySortOrder::Recent,
         };
 
-        // List memories
+        // Same schema-conformance as list_memories: reject unimplemented filters
+        // explicitly rather than silently streaming unfiltered data.
+        if !req.memory_types.is_empty()
+            || !req.tags.is_empty()
+            || req.min_importance.is_some()
+            || req.include_archived
+            || req.sort_desc
+        {
+            return Err(Status::unimplemented(
+                "list_memories_stream filters (memory_types, tags, min_importance, \
+                 include_archived, sort_desc) are not supported by this build",
+            ));
+        }
+
+        let offset = req.offset as usize;
+
+        // Stable offset-based window.
         let memories = self
             .storage
-            .list_memories(namespace, req.limit.min(1000) as usize, sort_by)
+            .list_memories_page(namespace, req.limit.min(1000) as usize, offset, sort_by)
             .await
             .map_err(|e| Status::from(e))?;
 
@@ -658,30 +698,11 @@ impl MemoryService for MemoryServiceImpl {
             let memory_id = MemoryId::new();
             let now = chrono::Utc::now();
 
-            // Stage 2: LLM Enrichment (30-60%)
-            if !skip_enrichment && llm.is_some() {
-                let _ = tx
-                    .send(Ok(StoreMemoryProgress {
-                        stage: "enriching".to_string(),
-                        percent: 30,
-                        memory_id: None,
-                        memory: None,
-                    }))
-                    .await;
-
-                // TODO: Implement LLM enrichment when llm service is available
-                // For now, skip enrichment
-            }
-
-            // Stage 3: Embedding generation (60-80%)
-            let _ = tx
-                .send(Ok(StoreMemoryProgress {
-                    stage: "embedding".to_string(),
-                    percent: 60,
-                    memory_id: None,
-                    memory: None,
-                }))
-                .await;
+            // Enrichment/embedding are NOT performed in this build (summary,
+            // keywords and embedding are left empty). Do not report fake
+            // "enriching"/"embedding" progress for work that never runs.
+            let _ = skip_enrichment;
+            let _ = llm;
 
             // Create memory note
             let memory = InternalMemoryNote {

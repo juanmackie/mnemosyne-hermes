@@ -61,6 +61,12 @@ async fn start_test_api_server() -> (
     let config = ApiServerConfig {
         addr: ([127, 0, 0, 1], port).into(),
         event_capacity: 100,
+        // This test drives the HTTP surface (POST /events/emit), so it must opt
+        // in: `serve()` returns without binding when this is false. Loopback
+        // only, no bearer token, no browser origins (reqwest sends no Origin).
+        start_dashboard: true,
+        auth_token: None,
+        allowed_origins: Vec::new(),
     };
 
     let server = ApiServer::new(config);

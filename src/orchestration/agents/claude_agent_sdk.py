@@ -6,6 +6,13 @@ to interact with the Claude API through the official Anthropic SDK.
 
 Future: This wrapper will be replaced with the official claude-agent-sdk
 when it becomes available.
+
+DEPRECATED: As of the Hermes-first direction, this module has NO importers in
+the codebase (grep for `claude_agent_sdk` matches only this file, its README
+tree listing, and architecture docs). It is retained, not deleted, so the
+architecture/PHASE5 and PYTHON_BRIDGE docs that describe the wrapping approach
+remain accurate. Remove it together with those doc sections in a future
+cleanup; do not add new importers.
 """
 
 import os

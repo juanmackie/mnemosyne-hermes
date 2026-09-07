@@ -198,6 +198,9 @@ class ExecutorConfig:
     challenge_vague_requirements: bool = True
     auto_commit_checkpoints: bool = True
     validation_required: bool = True
+    # Trusted execution boundary: all file tools and commands are confined to
+    # this directory. None -> current working directory at agent construction.
+    working_dir: Optional[str] = None
     # Anthropic API key (injected from Rust via environment)
     api_key: Optional[str] = None
 
@@ -272,6 +275,12 @@ Always follow best practices and validate your work before marking it complete."
         # Store API key (injected from Rust environment)
         import os
         self.api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
+
+        # Trusted execution boundary root (resolve symlinks so path containment
+        # checks cannot be bypassed via .. or symlink escapes). Default to the
+        # current working directory when not configured.
+        self._boundary_root = os.path.realpath(config.working_dir or os.getcwd())
+        self._boundary_root = os.path.normpath(self._boundary_root)
 
         # Register with coordinator
         self.coordinator.register_agent(config.agent_id)
@@ -665,6 +674,23 @@ Always follow best practices and validate your work before marking it complete."
             }
         ]
 
+    def _resolve_within_boundary(self, path: str) -> str:
+        """Resolve a path to an absolute path confined to the trusted boundary.
+
+        Raises ValueError if the resolved path escapes the boundary root. This
+        keeps file tools and command working dirs inside the configured
+        workspace so the executor cannot touch the host filesystem at will.
+        """
+        import os
+        resolved = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+        root = self._boundary_root
+        # A path is inside iff it equals the root or is under root + sep.
+        if resolved != root and not resolved.startswith(root + os.sep):
+            raise ValueError(
+                f"Path escapes trusted execution boundary ({root}): {path}"
+            )
+        return resolved
+
     async def _execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a tool and return the result.
@@ -676,7 +702,6 @@ Always follow best practices and validate your work before marking it complete."
         Returns:
             Tool execution result
         """
-        import subprocess
         import os
 
         logger.info(f"[Executor] Executing tool: {tool_name}")
@@ -686,6 +711,8 @@ Always follow best practices and validate your work before marking it complete."
             if tool_name == "read_file":
                 file_path = tool_input["file_path"]
                 logger.info(f"[Executor] Reading file: {file_path}")
+
+                file_path = self._resolve_within_boundary(file_path)
 
                 if not os.path.exists(file_path):
                     return {
@@ -707,8 +734,14 @@ Always follow best practices and validate your work before marking it complete."
                 content = tool_input["content"]
                 logger.info(f"[Executor] Creating file: {file_path}")
 
-                # Create parent directories if needed
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                file_path = self._resolve_within_boundary(file_path)
+
+                # Create parent directories if needed; skip when the parent is
+                # empty (a plain relative filename has no parent directory, and
+                # os.makedirs("") would crash).
+                parent = os.path.dirname(file_path)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
 
                 with open(file_path, 'w') as f:
                     f.write(content)
@@ -724,6 +757,8 @@ Always follow best practices and validate your work before marking it complete."
                 old_text = tool_input["old_text"]
                 new_text = tool_input["new_text"]
                 logger.info(f"[Executor] Editing file: {file_path}")
+
+                file_path = self._resolve_within_boundary(file_path)
 
                 if not os.path.exists(file_path):
                     return {
@@ -757,20 +792,37 @@ Always follow best practices and validate your work before marking it complete."
                 working_dir = tool_input.get("working_dir", os.getcwd())
                 logger.info(f"[Executor] Running command: {command}")
 
-                result = subprocess.run(
+                # Confine the command's working directory to the trusted boundary.
+                working_dir = self._resolve_within_boundary(working_dir)
+
+                # Bounded async subprocess with cancellation: never block the
+                # event loop, kill on timeout, and honour task cancellation.
+                proc = await asyncio.create_subprocess_shell(
                     command,
-                    shell=True,
                     cwd=working_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=30  # 30 second timeout
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
+                try:
+                    stdout_b, stderr_b = await asyncio.wait_for(
+                        proc.communicate(), timeout=30
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    proc.kill()
+                    await proc.wait()
+                    return {
+                        "success": False,
+                        "error": "Command execution timeout/cancelled (30s limit)"
+                    }
+
+                stdout = stdout_b.decode(errors="replace") if stdout_b else ""
+                stderr = stderr_b.decode(errors="replace") if stderr_b else ""
 
                 return {
-                    "success": result.returncode == 0,
-                    "exit_code": result.returncode,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr
+                    "success": proc.returncode == 0,
+                    "exit_code": proc.returncode,
+                    "stdout": stdout,
+                    "stderr": stderr
                 }
 
             else:
@@ -779,12 +831,6 @@ Always follow best practices and validate your work before marking it complete."
                     "error": f"Unknown tool: {tool_name}"
                 }
 
-        except subprocess.TimeoutExpired:
-            logger.error(f"[Executor] Command timeout: {tool_input.get('command', 'unknown')}")
-            return {
-                "success": False,
-                "error": "Command execution timeout (30s limit)"
-            }
         except Exception as e:
             logger.error(f"[Executor] Tool execution failed: {e}", exc_info=True)
             return {

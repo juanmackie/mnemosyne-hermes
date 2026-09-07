@@ -49,10 +49,20 @@ pub struct OrphanRepairReport {
     pub fts_rows_removed: u64,
     pub provenance_rows_removed: u64,
     pub provenance_sources_cleared: u64,
+    pub evidence_rows_removed: u64,
+    pub evidence_sources_cleared: u64,
     pub entity_rows_removed: u64,
     pub policy_rows_removed: u64,
     pub policy_evidence_rows_removed: u64,
     pub fact_rows_removed: u64,
+}
+
+/// One append-only evidence association retained for a merged statement.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MemoryEvidence {
+    pub source_memory_id: Option<MemoryId>,
+    pub evidence_quote: String,
+    pub observed_at: DateTime<Utc>,
 }
 
 fn canonical_content(content: &str) -> String {
@@ -388,23 +398,53 @@ fn compute_rrf_ranking(
     keyword_ranks: &std::collections::HashMap<MemoryId, usize>,
     vector_ranks: &std::collections::HashMap<MemoryId, usize>,
     graph_ranks: &std::collections::HashMap<MemoryId, usize>,
+    weights: crate::utils::retrieval::RetrievalWeights,
     k: f32,
 ) -> std::collections::HashMap<MemoryId, f32> {
-    let mut rrf_scores: std::collections::HashMap<MemoryId, f32> =
-        std::collections::HashMap::new();
+    let mut rrf_scores: std::collections::HashMap<MemoryId, f32> = std::collections::HashMap::new();
 
-    // Accumulate 1/(k + rank) from each channel that has the candidate.
+    // Accumulate weight × 1/(k + rank) from each channel that has the
+    // candidate. Weighting each channel scales its RRF contribution so a
+    // raised adaptive weight (e.g. keyword = 1.0) predictably boosts that
+    // channel's top hits. Non-negative weights keep the sum monotonic in the
+    // rank signal.
     for (id, &rank) in keyword_ranks {
-        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+        *rrf_scores.entry(*id).or_insert(0.0) += weights.keyword.max(0.0) / (k + rank as f32);
     }
     for (id, &rank) in vector_ranks {
-        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+        *rrf_scores.entry(*id).or_insert(0.0) += weights.vector.max(0.0) / (k + rank as f32);
     }
     for (id, &rank) in graph_ranks {
-        *rrf_scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f32);
+        *rrf_scores.entry(*id).or_insert(0.0) += weights.graph.max(0.0) / (k + rank as f32);
     }
 
     rrf_scores
+}
+
+/// Build deterministic ranks for graph-expanded candidates from the fused
+/// score map. Ranks are assigned by sorting on depth (closeness to the seed)
+/// with the memory ID as a stable tie-breaker, rather than by enumerating the
+/// backing HashMap (whose iteration order is randomized per process and would
+/// make repeated searches over an unchanged fixture produce differing order).
+/// Higher (worse) rank = lower fusion contribution, matching prior semantics
+/// of `rank + 1 + depth`.
+fn graph_deterministic_ranks(
+    memory_scores: &std::collections::HashMap<MemoryId, (f32, f32, f32, f32)>,
+) -> std::collections::HashMap<MemoryId, usize> {
+    let mut candidates: Vec<(MemoryId, usize)> = memory_scores
+        .iter()
+        .filter(|(_, (_, _, graph_score, _))| *graph_score > 0.0)
+        .map(|(id, (_, _, _, depth))| (*id, *depth as usize))
+        .collect();
+    candidates.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+    });
+    candidates
+        .iter()
+        .enumerate()
+        .map(|(rank, (id, depth))| (*id, rank + 1 + *depth))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +471,7 @@ static LIBSQL_MIGRATION_NAMES: &[&str] = &[
     "026_retrieval_evaluation.sql",
     "027_memory_integrity.sql",
     "028_retrieval_trace_namespace.sql",
+    "029_memory_evidence.sql",
 ];
 
 /// Migration file names for StandardSQLite schema
@@ -455,6 +496,7 @@ static SQLITE_MIGRATION_NAMES: &[&str] = &[
     "026_retrieval_evaluation.sql",
     "027_memory_integrity.sql",
     "028_retrieval_trace_namespace.sql",
+    "029_memory_evidence.sql",
 ];
 
 /// (filename, SQL content) pairs for LibSQL migrations — SQL embedded at
@@ -523,6 +565,10 @@ static LIBSQL_MIGRATIONS: &[(&str, &str)] = &[
     (
         "028_retrieval_trace_namespace.sql",
         include_str!("../../migrations/libsql/028_retrieval_trace_namespace.sql"),
+    ),
+    (
+        "029_memory_evidence.sql",
+        include_str!("../../migrations/libsql/029_memory_evidence.sql"),
     ),
 ];
 
@@ -607,6 +653,10 @@ static SQLITE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "028_retrieval_trace_namespace.sql",
         include_str!("../../migrations/sqlite/028_retrieval_trace_namespace.sql"),
+    ),
+    (
+        "029_memory_evidence.sql",
+        include_str!("../../migrations/sqlite/029_memory_evidence.sql"),
     ),
 ];
 
@@ -2271,6 +2321,35 @@ impl LibsqlStorage {
         }))
     }
 
+    /// Return every append-only evidence association retained for a memory.
+    /// Merged near-duplicate statements accumulate multiple rows here, unlike
+    /// the single primary provenance row keyed by memory_id.
+    pub async fn list_memory_evidence(&self, memory_id: MemoryId) -> Result<Vec<MemoryEvidence>> {
+        if !self.table_exists("memory_evidence").await? {
+            return Ok(Vec::new());
+        }
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT source_memory_id, evidence_quote, observed_at FROM memory_evidence WHERE memory_id = ? ORDER BY observed_at, evidence_quote",
+                params![memory_id.to_string()],
+            )
+            .await?;
+        let mut evidence = Vec::new();
+        while let Some(row) = rows.next().await? {
+            evidence.push(MemoryEvidence {
+                source_memory_id: row
+                    .get::<Option<String>>(0)?
+                    .and_then(|value| MemoryId::from_string(&value).ok()),
+                evidence_quote: row.get(1)?,
+                observed_at: DateTime::parse_from_rfc3339(&row.get::<String>(2)?)
+                    .map_err(|e| MnemosyneError::Other(format!("Invalid evidence timestamp: {e}")))?
+                    .with_timezone(&Utc),
+            });
+        }
+        Ok(evidence)
+    }
+
     /// Convert a stable memory projection to a MemoryNote.
     async fn row_to_memory(&self, row: &libsql::Row) -> Result<MemoryNote> {
         // Extract all fields from row
@@ -2497,6 +2576,40 @@ impl LibsqlStorage {
         self.embedding_service = Some(service);
     }
 
+    /// The provider/model identity currently configured on this storage, or an
+    /// empty string when no embedding service is active. `vector_search`
+    /// restricts results to vectors carrying this model so incompatible model
+    /// spaces never silently share a search.
+    fn active_embedding_model(&self) -> String {
+        self.embedding_service
+            .as_ref()
+            .map(|s| s.model_name().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Report how many active knowledge vectors carry each embedding model.
+    ///
+    /// A non-empty entry with an empty-string model, or a mix of models after
+    /// a provider/version change, indicates an incomplete embedding migration
+    /// or backfill. Returns `(embedding_model, count)` pairs; the empty-string
+    /// model denotes vectors written without (or before) a model label.
+    pub async fn embedding_model_coverage(&self) -> Result<Vec<(String, usize)>> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT embedding_model, COUNT(*) FROM memories WHERE embedding IS NOT NULL AND is_archived = 0 AND memory_class = 'knowledge' AND tags NOT LIKE '%\"turn_sync\"%' AND (expires_at IS NULL OR datetime(expires_at) > datetime('now')) GROUP BY embedding_model",
+                params![],
+            )
+            .await?;
+        let mut coverage = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let model: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            coverage.push((model, count as usize));
+        }
+        Ok(coverage)
+    }
+
     async fn is_raw_turn(&self, memory_id: &MemoryId) -> Result<bool> {
         let conn = self.get_conn()?;
         // Tags cover legacy/raw callers that predate typed provenance.
@@ -2557,8 +2670,10 @@ impl LibsqlStorage {
         debug!("Generating embedding for memory: {}", memory_id);
         let embedding = service.embed(content).await?;
 
-        // Store in memory_vectors table
-        self.store_embedding(memory_id, &embedding).await?;
+        // Store in memory_vectors table, recording the provider/model identity
+        // used to generate this vector so queries stay in a compatible space.
+        self.store_embedding(memory_id, &embedding, service.model_name())
+            .await?;
 
         info!(
             "Successfully generated and stored embedding for memory: {}",
@@ -2575,7 +2690,15 @@ impl LibsqlStorage {
     /// # Arguments
     /// * `memory_id` - The ID of the memory
     /// * `embedding` - The embedding vector (must match configured dimensions)
-    pub async fn store_embedding(&self, memory_id: &MemoryId, embedding: &[f32]) -> Result<()> {
+    /// * `embedding_model` - The provider/model identity of the embedding (e.g.
+    ///   "voyage-3-large" or "local:fastembed:BAAI/bge-small-en-v1.5"). Persisted
+    ///   so vector queries can be restricted to a compatible model space.
+    pub async fn store_embedding(
+        &self,
+        memory_id: &MemoryId,
+        embedding: &[f32],
+        embedding_model: &str,
+    ) -> Result<()> {
         // Keep the low-level path safe too: CLI/backfill callers must not
         // accidentally embed a raw turn.
         if self.is_raw_turn(memory_id).await? {
@@ -2598,14 +2721,15 @@ impl LibsqlStorage {
                 .flat_map(|value| value.to_le_bytes())
                 .collect();
             conn.execute(
-                "UPDATE memories SET embedding = ? WHERE id = ?",
-                params![bytes, memory_id.to_string()],
+                "UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ?",
+                params![bytes, embedding_model, memory_id.to_string()],
             )
             .await
             .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding: {}", e)))?;
         } else {
             // StandardSQLite stores the raw f32 bytes plus their dimension in
-            // its companion table.
+            // its companion table, and records the model identity on the memory
+            // row so vector queries can filter on a compatible model space.
             let bytes: Vec<u8> = embedding
                 .iter()
                 .flat_map(|value| value.to_le_bytes())
@@ -2616,6 +2740,14 @@ impl LibsqlStorage {
             )
             .await
             .map_err(|e| MnemosyneError::Database(format!("Failed to store embedding: {}", e)))?;
+            conn.execute(
+                "UPDATE memories SET embedding_model = ? WHERE id = ?",
+                params![embedding_model, memory_id.to_string()],
+            )
+            .await
+            .map_err(|e| {
+                MnemosyneError::Database(format!("Failed to store embedding model: {}", e))
+            })?;
         }
         Ok(())
     }
@@ -2776,6 +2908,20 @@ impl LibsqlStorage {
             .await?;
             tx.execute(
                 "DELETE FROM memory_provenance WHERE memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+        }
+        if has("memory_evidence") {
+            // Clear the reference when this memory was a source so surviving
+            // content is not misattributed to it after purge.
+            tx.execute(
+                "UPDATE memory_evidence SET source_memory_id = NULL WHERE source_memory_id = ?",
+                params![id_str.as_str()],
+            )
+            .await?;
+            tx.execute(
+                "DELETE FROM memory_evidence WHERE memory_id = ?",
                 params![id_str.as_str()],
             )
             .await?;
@@ -3093,6 +3239,12 @@ impl LibsqlStorage {
         // Convert query embedding to JSON for libsql vector functions
         let query_json = serde_json::to_string(query_embedding)?;
 
+        // Restrict to vectors produced by the currently active embedding model
+        // so incompatible model spaces never silently share a search. When no
+        // model is active (empty) the `OR ? = ''` makes the predicate a no-op,
+        // preserving prior behavior.
+        let active_model = self.active_embedding_model();
+
         // Build query using native libsql vector functions (no vec0 extension needed)
         // Queries the memories table's embedding column (F32_BLOB)
         let sql = if namespace.is_some() {
@@ -3105,6 +3257,7 @@ impl LibsqlStorage {
               AND tags NOT LIKE '%\"turn_sync\"%'
               AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
               AND namespace = ?
+              AND (embedding_model = ? OR ? = '')
             ORDER BY distance ASC
             LIMIT ?
             "#
@@ -3118,6 +3271,7 @@ impl LibsqlStorage {
               AND memory_class = 'knowledge'
               AND tags NOT LIKE '%\"turn_sync\"%'
               AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+              AND (embedding_model = ? OR ? = '')
             ORDER BY distance ASC
             LIMIT ?
             "#
@@ -3126,10 +3280,23 @@ impl LibsqlStorage {
 
         let mut rows = if let Some(ns) = &namespace {
             let ns_json = serde_json::to_string(ns)?;
-            conn.query(&sql, params![query_json, ns_json, limit as i64])
-                .await?
+            conn.query(
+                &sql,
+                params![
+                    query_json,
+                    ns_json,
+                    active_model.clone(),
+                    active_model,
+                    limit as i64
+                ],
+            )
+            .await?
         } else {
-            conn.query(&sql, params![query_json, limit as i64]).await?
+            conn.query(
+                &sql,
+                params![query_json, active_model.clone(), active_model, limit as i64],
+            )
+            .await?
         };
 
         let mut results = Vec::new();
@@ -3587,6 +3754,17 @@ impl LibsqlStorage {
         }
     }
 
+    /// Default budgets for the PPR traversal (`fetch_ppr_adjacency`). PPR is
+    /// behind `enable_ppr` (OFF by default). These cap the worst case two-hop
+    /// BFS on a high-degree `memory_links` graph: bounded SQL parameter lists
+    /// (`QUERY_BATCH` ids per batched query) and a bounded power-iteration
+    /// subgraph (node/edge caps).
+    pub const PPR_NODE_BUDGET: usize = 200;
+    /// Upper bound on edges collected for the PPR subgraph.
+    pub const PPR_EDGE_BUDGET: usize = 400;
+    /// Max frontier ids per batched SQL query (keeps `IN (...)` lists small).
+    pub const PPR_QUERY_BATCH: usize = 50;
+
     /// Build a weighted undirected adjacency graph around a set of seed ids
     /// (HippoRAG-style PPR retrieval support, depth ≤ 2 cap).
     ///
@@ -3601,24 +3779,43 @@ impl LibsqlStorage {
     ///
     /// Archived/expired memories are excluded so PPR mass never lands on rows
     /// that hybrid ranking would discard anyway.
+    ///
+    /// PPR is OFF by default (behind `enable_ppr`). The two-hop BFS on a
+    /// high-degree `memory_links` graph can otherwise explode the frontier into
+    /// huge SQL `IN (...)` lists and an oversized power-iteration graph, so the
+    /// traversal is bounded by `node_budget`/`edge_budget`/`query_batch`:
+    /// `query_batch` chunks the frontier so no single SQL parameter list exceeds
+    /// it, and the node/edge budgets cap total subgraph size.
     pub async fn fetch_ppr_adjacency(
         &self,
         seed_ids: &[MemoryId],
         max_hops: usize,
         namespace: Option<Namespace>,
+        node_budget: usize,
+        edge_budget: usize,
+        query_batch: usize,
     ) -> Result<crate::utils::ppr::WeightedAdjacency> {
-        if seed_ids.is_empty() || max_hops == 0 {
+        if seed_ids.is_empty()
+            || max_hops == 0
+            || node_budget == 0
+            || edge_budget == 0
+            || query_batch == 0
+        {
             return Ok(crate::utils::ppr::WeightedAdjacency::new());
         }
         let max_hops = max_hops.min(2);
+        let query_batch = query_batch.max(1);
         let conn = self.get_conn()?;
 
         // Seed nodes must survive in the graph as PPR teleport targets even
         // when they have no edges (assemble_ppr_adjacency adds isolated kept
-        // nodes back as keys).
+        // nodes back as keys). Seeds are capped by the node budget.
         let mut visited: HashSet<String> = HashSet::new();
         let mut frontier: Vec<String> = Vec::new();
         for id in seed_ids {
+            if visited.len() >= node_budget {
+                break;
+            }
             let s = id.to_string();
             if visited.insert(s.clone()) {
                 frontier.push(s);
@@ -3631,46 +3828,43 @@ impl LibsqlStorage {
             if frontier.is_empty() {
                 break;
             }
-            let placeholders = frontier
-                .iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT source_id, target_id, strength FROM memory_links \
-                 WHERE strength > 0 AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
-            );
-            let mut params: Vec<libsql::Value> =
-                Vec::with_capacity(frontier.len() * 2);
-            for id in frontier.iter() {
-                params.push(libsql::Value::Text(id.clone()));
-            }
-            for id in frontier.iter() {
-                params.push(libsql::Value::Text(id.clone()));
-            }
-            let mut rows = conn
-                .query(&sql, libsql::params_from_iter(params))
-                .await?;
-
+            // Batch the frontier so no single SQL `IN (...)` parameter list
+            // exceeds `query_batch` ids (2 params per id: source + target).
             let mut next_frontier: HashSet<String> = HashSet::new();
-            while let Some(row) = rows.next().await? {
-                let source: String = row.get(0)?;
-                let target: String = row.get(1)?;
-                let strength: f64 = row.get(2)?;
-                if strength <= 0.0 {
-                    continue;
+            for chunk in frontier.chunks(query_batch) {
+                let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT source_id, target_id, strength FROM memory_links \
+                     WHERE strength > 0 AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
+                );
+                let mut params: Vec<libsql::Value> = Vec::with_capacity(chunk.len() * 2);
+                for id in chunk.iter() {
+                    params.push(libsql::Value::Text(id.clone()));
                 }
-                let (a, b) = if frontier.contains(&source) {
-                    (source, target)
-                } else {
-                    (target, source)
-                };
-                if seen_edges.insert((a.clone(), b.clone())) {
-                    edges.push((a.clone(), b.clone(), strength as f32));
+                for id in chunk.iter() {
+                    params.push(libsql::Value::Text(id.clone()));
                 }
-                visited.insert(a.clone());
-                if visited.insert(b.clone()) {
-                    next_frontier.insert(b);
+                let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+
+                while let Some(row) = rows.next().await? {
+                    let source: String = row.get(0)?;
+                    let target: String = row.get(1)?;
+                    let strength: f64 = row.get(2)?;
+                    if strength <= 0.0 {
+                        continue;
+                    }
+                    let (a, b) = if chunk.contains(&source) {
+                        (source, target)
+                    } else {
+                        (target, source)
+                    };
+                    if seen_edges.insert((a.clone(), b.clone())) && edges.len() < edge_budget {
+                        edges.push((a.clone(), b.clone(), strength as f32));
+                    }
+                    visited.insert(a.clone());
+                    if visited.len() < node_budget && visited.insert(b.clone()) {
+                        next_frontier.insert(b);
+                    }
                 }
             }
             frontier = next_frontier.into_iter().collect();
@@ -3690,8 +3884,7 @@ impl LibsqlStorage {
         edges: &[(String, String, f32)],
         namespace: Option<Namespace>,
     ) -> Result<crate::utils::ppr::WeightedAdjacency> {
-        let kept =
-            Self::active_ppr_nodes(conn, visited, namespace.as_ref()).await?;
+        let kept = Self::active_ppr_nodes(conn, visited, namespace.as_ref()).await?;
         let mut nodes: HashSet<String> = kept;
         let mut adjacency: crate::utils::ppr::WeightedAdjacency =
             crate::utils::ppr::WeightedAdjacency::new();
@@ -3699,8 +3892,14 @@ impl LibsqlStorage {
             if !nodes.contains(a) || !nodes.contains(b) {
                 continue;
             }
-            adjacency.entry(a.clone()).or_default().push((b.clone(), *w));
-            adjacency.entry(b.clone()).or_default().push((a.clone(), *w));
+            adjacency
+                .entry(a.clone())
+                .or_default()
+                .push((b.clone(), *w));
+            adjacency
+                .entry(b.clone())
+                .or_default()
+                .push((a.clone(), *w));
         }
         // Ensure isolated-but-kept nodes (seeds) still appear as keys with no
         // neighbors so PPR can seed them.
@@ -3717,11 +3916,7 @@ impl LibsqlStorage {
         visited: &HashSet<String>,
         namespace: Option<&Namespace>,
     ) -> Result<HashSet<String>> {
-        let placeholders = visited
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = visited.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let namespace_filter = if namespace.is_some() {
             "AND m.namespace = ?"
         } else {
@@ -3742,16 +3937,13 @@ impl LibsqlStorage {
         if let Some(ns) = namespace {
             params.push(libsql::Value::Text(serde_json::to_string(ns)?));
         }
-        let mut rows = conn
-            .query(&sql, libsql::params_from_iter(params))
-            .await?;
+        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
         let mut kept = HashSet::new();
         while let Some(row) = rows.next().await? {
             kept.insert(row.get::<String>(0)?);
         }
         Ok(kept)
     }
-
 
     async fn graph_traverse_with_limit(
         &self,
@@ -4026,22 +4218,35 @@ impl LibsqlStorage {
     ) -> Result<Vec<SearchResult>> {
         let conn = self.get_conn()?;
         let columns = self.memory_columns("m");
+        // Restrict to vectors produced by the currently active embedding model.
+        let active_model = self.active_embedding_model();
+        let model_clause = " AND (m.embedding_model = ? OR ? = '')";
         let sql = if namespace.is_some() {
             format!(
-                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))",
-                columns = columns
+                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.namespace = ? AND m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')){model_clause}",
+                columns = columns,
+                model_clause = model_clause,
             )
         } else {
             format!(
-                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))",
-                columns = columns
+                "SELECT {columns}, e.embedding FROM memories m JOIN memory_embeddings e ON e.memory_id = m.id WHERE m.is_archived = 0 AND m.memory_class = 'knowledge' AND m.tags NOT LIKE '%\"turn_sync\"%' AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')){model_clause}",
+                columns = columns,
+                model_clause = model_clause,
             )
         };
         let mut rows = if let Some(namespace) = namespace {
-            conn.query(&sql, params![serde_json::to_string(&namespace)?])
-                .await?
+            conn.query(
+                &sql,
+                params![
+                    serde_json::to_string(&namespace)?,
+                    active_model.clone(),
+                    active_model
+                ],
+            )
+            .await?
         } else {
-            conn.query(&sql, params![]).await?
+            conn.query(&sql, params![active_model.clone(), active_model])
+                .await?
         };
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -4643,7 +4848,28 @@ impl LibsqlStorage {
             // only genuinely new near-duplicate detail is appended.
             format!("{}\n\n{}", old_content, memory.content.trim())
         };
+        // Appending new detail changes canonical content; the existing vector
+        // now describes the OLD content and would surface stale matches.
+        // Invalidate it transactionally so a later regeneration runs against
+        // the freshly committed content. (StandardSQLite stores the vector in
+        // memory_embeddings; LibSQL inlines it.)
+        let content_changed = content != old_content;
         tx.execute("UPDATE memories SET content = ?, content_hash = ?, summary = CASE WHEN length(?) > length(summary) THEN ? ELSE summary END, keywords = ?, tags = ?, context = CASE WHEN length(?) > length(context) THEN ? ELSE context END, related_files = ?, related_entities = ?, importance = MAX(importance, ?), confidence = MAX(confidence, ?), updated_at = ? WHERE id = ?", params![content.clone(), content_hash(&content), memory.summary.clone(), memory.summary.clone(), serde_json::to_string(&keywords)?, serde_json::to_string(&tags)?, memory.context.clone(), memory.context.clone(), serde_json::to_string(&files)?, serde_json::to_string(&entities)?, memory.importance as i64, memory.confidence as f64, Utc::now().to_rfc3339(), parent_id.to_string()]).await?;
+        if content_changed {
+            if self.schema_type == SchemaType::LibSQL {
+                tx.execute(
+                    "UPDATE memories SET embedding = NULL WHERE id = ?",
+                    params![parent_id.to_string()],
+                )
+                .await?;
+            } else {
+                tx.execute(
+                    "DELETE FROM memory_embeddings WHERE memory_id = ?",
+                    params![parent_id.to_string()],
+                )
+                .await?;
+            }
+        }
         let namespace = serde_json::to_string(&memory.namespace)?;
         if self.table_exists_tx(tx, "memory_entities").await? {
             self.add_integrity_entities(
@@ -4660,7 +4886,33 @@ impl LibsqlStorage {
         if let Some(provenance) = &memory.provenance {
             provenance.validate()?;
             self.validate_provenance_source(tx, provenance).await?;
-            tx.execute("INSERT OR REPLACE INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![parent_id.to_string(), serde_json::to_value(provenance.source_kind)?.as_str().unwrap_or("manual"), provenance.source_memory_id.map(|id| id.to_string()), provenance.session_id.clone(), provenance.turn_id.clone(), serde_json::to_value(provenance.source_role)?.as_str().unwrap_or("unknown"), provenance.observed_at.to_rfc3339(), provenance.evidence_quote.clone(), provenance.extractor_model.clone(), provenance.extraction_schema_version.clone()]).await?;
+            // Append-only evidence for THIS merged statement. memory_provenance
+            // holds one primary row per memory, so writing the merged
+            // statement's provenance keyed to the parent would overwrite (and
+            // destroy) the parent's own attribution. Retain every merged
+            // statement's evidence association here instead, and only set the
+            // primary provenance row when the parent has none yet.
+            if self.table_exists_tx(tx, "memory_evidence").await? {
+                tx.execute(
+                    "INSERT INTO memory_evidence (memory_id, source_memory_id, evidence_quote, observed_at) VALUES (?, ?, ?, ?) ON CONFLICT(memory_id, source_memory_id, evidence_quote) DO NOTHING",
+                    params![
+                        parent_id.to_string(),
+                        provenance.source_memory_id.map(|id| id.to_string()),
+                        provenance.evidence_quote.clone(),
+                        provenance.observed_at.to_rfc3339(),
+                    ],
+                )
+                .await?;
+            }
+            let mut existing = tx
+                .query(
+                    "SELECT 1 FROM memory_provenance WHERE memory_id = ?",
+                    params![parent_id.to_string()],
+                )
+                .await?;
+            if existing.next().await?.is_none() {
+                tx.execute("INSERT INTO memory_provenance (memory_id, source_kind, source_memory_id, session_id, turn_id, source_role, observed_at, evidence_quote, extractor_model, extraction_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![parent_id.to_string(), serde_json::to_value(provenance.source_kind)?.as_str().unwrap_or("manual"), provenance.source_memory_id.map(|id| id.to_string()), provenance.session_id.clone(), provenance.turn_id.clone(), serde_json::to_value(provenance.source_role)?.as_str().unwrap_or("unknown"), provenance.observed_at.to_rfc3339(), provenance.evidence_quote.clone(), provenance.extractor_model.clone(), provenance.extraction_schema_version.clone()]).await?;
+            }
         }
         tx.execute("INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('update', ?, ?)", params![parent_id.to_string(), serde_json::json!({"event":"integrity_enrichment", "source_memory_id":memory.id, "content_hash":content_hash(&memory.content)}).to_string()]).await?;
         if self.table_exists_tx(tx, "memory_facts").await? {
@@ -4767,6 +5019,18 @@ impl LibsqlStorage {
             )
             .await?;
         }
+        if has("memory_evidence") {
+            report.evidence_rows_removed = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_evidence e LEFT JOIN memories m ON m.id = e.memory_id WHERE m.id IS NULL",
+            )
+            .await?;
+            report.evidence_sources_cleared = scalar_count(
+                &conn,
+                "SELECT COUNT(*) FROM memory_evidence e LEFT JOIN memories s ON s.id = e.source_memory_id WHERE e.source_memory_id IS NOT NULL AND s.id IS NULL",
+            )
+            .await?;
+        }
         if has("memory_entities") {
             report.entity_rows_removed = scalar_count(
                 &conn,
@@ -4837,6 +5101,18 @@ impl LibsqlStorage {
             report.provenance_sources_cleared = tx
                 .execute(
                     "UPDATE memory_provenance SET source_memory_id = NULL WHERE rowid IN (SELECT p.rowid FROM memory_provenance p LEFT JOIN memories s ON s.id = p.source_memory_id WHERE p.source_memory_id IS NOT NULL AND s.id IS NULL LIMIT ?)",
+                    params![limit],
+                )
+                .await?;
+        }
+        if self.table_exists_tx(&tx, "memory_evidence").await? {
+            report.evidence_rows_removed = tx.execute("DELETE FROM memory_evidence WHERE rowid IN (SELECT rowid FROM memory_evidence WHERE memory_id NOT IN (SELECT id FROM memories) LIMIT ?)", params![limit]).await?;
+            // Mirror provenance: keep the surviving observation but clear the
+            // dangling source reference instead of reassigning it, so content
+            // is never misattributed to a surviving but unrelated memory.
+            report.evidence_sources_cleared = tx
+                .execute(
+                    "UPDATE memory_evidence SET source_memory_id = NULL WHERE rowid IN (SELECT e.rowid FROM memory_evidence e LEFT JOIN memories s ON s.id = e.source_memory_id WHERE e.source_memory_id IS NOT NULL AND s.id IS NULL LIMIT ?)",
                     params![limit],
                 )
                 .await?;
@@ -7068,7 +7344,7 @@ impl LibsqlStorage {
 
 #[async_trait]
 impl StorageBackend for LibsqlStorage {
-    async fn store_memory(&self, memory: &MemoryNote) -> Result<()> {
+    async fn store_memory(&self, memory: &MemoryNote) -> Result<crate::types::MemoryStoreResult> {
         debug!("Storing memory: {}", memory.id);
 
         let conn = self.get_conn().map_err(|e| {
@@ -7098,7 +7374,10 @@ impl StorageBackend for LibsqlStorage {
                 self.merge_integrity_parent(&tx, parent_id, memory, has_link_metadata)
                     .await?;
                 tx.commit().await?;
-                return Ok(());
+                return Ok(crate::types::MemoryStoreResult {
+                    id: parent_id,
+                    status: crate::types::MemoryStoreStatus::Merged,
+                });
             }
         }
         let memory_hash = content_hash(&memory.content);
@@ -7348,7 +7627,10 @@ impl StorageBackend for LibsqlStorage {
         }
 
         debug!("Memory stored successfully: {}", memory.id);
-        Ok(())
+        Ok(crate::types::MemoryStoreResult {
+            id: memory.id,
+            status: crate::types::MemoryStoreStatus::Created,
+        })
     }
 
     async fn get_memory(&self, id: MemoryId) -> Result<MemoryNote> {
@@ -7878,6 +8160,9 @@ impl StorageBackend for LibsqlStorage {
         let conn = self.get_conn()?;
         let query_embedding = serde_json::to_string(embedding)?;
 
+        // Restrict to vectors produced by the currently active embedding model.
+        let active_model = self.active_embedding_model();
+
         let sql = if namespace.is_some() {
             format!(
                 r#"
@@ -7894,6 +8179,7 @@ impl StorageBackend for LibsqlStorage {
                   AND tags NOT LIKE '%\"turn_sync\"%'
                   AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
                   AND namespace = ?
+                  AND (embedding_model = ? OR ? = '')
                 ORDER BY distance ASC
                 LIMIT {}
                 "#,
@@ -7914,6 +8200,7 @@ impl StorageBackend for LibsqlStorage {
                   AND memory_class = 'knowledge'
                   AND tags NOT LIKE '%\"turn_sync\"%'
                   AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+                  AND (embedding_model = ? OR ? = '')
                 ORDER BY distance ASC
                 LIMIT {}
                 "#,
@@ -7923,9 +8210,17 @@ impl StorageBackend for LibsqlStorage {
 
         let mut rows = if let Some(ref ns) = namespace {
             let ns_json = serde_json::to_string(ns)?;
-            conn.query(&sql, params![query_embedding, ns_json]).await?
+            conn.query(
+                &sql,
+                params![query_embedding, ns_json, active_model.clone(), active_model],
+            )
+            .await?
         } else {
-            conn.query(&sql, params![query_embedding]).await?
+            conn.query(
+                &sql,
+                params![query_embedding, active_model.clone(), active_model],
+            )
+            .await?
         };
 
         let mut results = Vec::new();
@@ -8386,15 +8681,18 @@ impl StorageBackend for LibsqlStorage {
             .enumerate()
             .map(|(rank, (id, _))| (*id, rank + 1))
             .collect();
-        // Candidates that are only graph-expanded get a rank proportional to depth.
-        let graph_ranks: std::collections::HashMap<MemoryId, usize> = memory_scores
-            .iter()
-            .filter(|(_, (_, _, graph_score, _))| *graph_score > 0.0)
-            .enumerate()
-            .map(|(rank, (id, (_, _, _, depth)))| (*id, (rank + 1) + (*depth as usize)))
-            .collect();
+        // Candidates that are only graph-expanded get a rank proportional to
+        // depth, ordered deterministically by (depth, id) instead of the
+        // randomized HashMap iteration order.
+        let graph_ranks = graph_deterministic_ranks(&memory_scores);
 
-        let rrf_scores = compute_rrf_ranking(&keyword_ranks, &vector_ranks, &graph_ranks, 60.0);
+        let rrf_scores = compute_rrf_ranking(
+            &keyword_ranks,
+            &vector_ranks,
+            &graph_ranks,
+            effective_weights,
+            60.0,
+        );
 
         // 5. PPR (Personalized PageRank, HippoRAG-style) subgraph scores.
         // When enabled, seed a damped power iteration at the top retrieval
@@ -8408,11 +8706,18 @@ impl StorageBackend for LibsqlStorage {
             if self.search_config.enable_ppr && !memory_scores.is_empty() {
                 let ppr_seeds = Self::select_graph_seed_ids(&memory_scores, 5);
                 match self
-                    .fetch_ppr_adjacency(&ppr_seeds, 2, namespace.clone())
+                    .fetch_ppr_adjacency(
+                        &ppr_seeds,
+                        2,
+                        namespace.clone(),
+                        Self::PPR_NODE_BUDGET,
+                        Self::PPR_EDGE_BUDGET,
+                        Self::PPR_QUERY_BATCH,
+                    )
                     .await
                 {
-                    Ok(adjacency) => crate::utils::ppr::normalize_ppr(
-                        &crate::utils::ppr::personalized_ppr(
+                    Ok(adjacency) => {
+                        crate::utils::ppr::normalize_ppr(&crate::utils::ppr::personalized_ppr(
                             &ppr_seeds
                                 .iter()
                                 .map(|id| id.to_string())
@@ -8420,8 +8725,8 @@ impl StorageBackend for LibsqlStorage {
                             &adjacency,
                             crate::utils::ppr::DEFAULT_DAMPING,
                             crate::utils::ppr::DEFAULT_ITERATIONS,
-                        ),
-                    ),
+                        ))
+                    }
                     Err(e) => {
                         debug!("PPR blend skipped: {}", e);
                         std::collections::HashMap::new()
@@ -8468,10 +8773,16 @@ impl StorageBackend for LibsqlStorage {
             };
 
             // Compose: RRF base × entity_boost, then add calibration addends.
-            // We scale rrf_base into [0,1] range (max single-channel RRF score
-            // with k=60 and rank=1 is 1/61 ≈ 0.016; three channels max ≈ 0.049).
-            // Normalise by dividing by 3/61 so peak RRF maps to ≈1.0 before calibration.
-            let rrf_normalised = (rrf_base * 61.0 / 3.0).min(1.0);
+            // We scale rrf_base into [0,1] range (max weighted RRF contribution
+            // with k=60 and rank=1 is sum(weights)/61). Normalise by dividing
+            // by (sum_of_weights/61) so peak weighted RRF maps to ≈1.0 before
+            // calibration — adaptive weights encode relative channel emphasis
+            // without changing the score's overall magnitude.
+            let weight_sum = (effective_weights.keyword.max(0.0)
+                + effective_weights.vector.max(0.0)
+                + effective_weights.graph.max(0.0))
+            .max(f32::EPSILON);
+            let rrf_normalised = (rrf_base * 61.0 / weight_sum).min(1.0);
             let final_score = (rrf_normalised * entity_boost
                 + self.search_config.importance_weight * importance_score
                 + self.search_config.recency_weight * recency_score
@@ -8479,10 +8790,16 @@ impl StorageBackend for LibsqlStorage {
                 .clamp(0.0, 1.0);
 
             // Determine match reason
-            let entity_score = if entity_ids.contains(&memory_id) { 1.0_f32 } else { 0.0_f32 };
+            let entity_score = if entity_ids.contains(&memory_id) {
+                1.0_f32
+            } else {
+                0.0_f32
+            };
             let match_reason = if entity_score > 0.0 {
                 format!("entity_anchor+rrf ({:.2})", final_score)
-            } else if vector_ranks.contains_key(&memory_id) && keyword_ranks.contains_key(&memory_id) {
+            } else if vector_ranks.contains_key(&memory_id)
+                && keyword_ranks.contains_key(&memory_id)
+            {
                 format!("hybrid_rrf ({:.2})", final_score)
             } else if vector_score > 0.0 {
                 format!("vector_rrf ({:.2})", final_score)
@@ -8631,55 +8948,19 @@ impl StorageBackend for LibsqlStorage {
         limit: usize,
         sort_by: crate::storage::MemorySortOrder,
     ) -> Result<Vec<MemoryNote>> {
-        use crate::storage::MemorySortOrder;
+        self.list_memories_window(namespace, limit, 0, sort_by)
+            .await
+    }
 
-        debug!(
-            "Listing memories (namespace: {:?}, limit: {}, sort: {:?})",
-            namespace, limit, sort_by
-        );
-
-        let conn = self.get_conn()?;
-        let order_clause = match sort_by {
-            MemorySortOrder::Recent => "created_at DESC",
-            MemorySortOrder::Importance => "importance DESC, created_at DESC",
-            MemorySortOrder::AccessCount => "access_count DESC, created_at DESC",
-        };
-
-        let (sql, params_vec) = if let Some(ns) = namespace {
-            let ns_str = serde_json::to_string(&ns)?;
-            (
-                format!(
-                    "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ?",
-                    self.memory_columns(""),
-                    order_clause
-                ),
-                vec![ns_str],
-            )
-        } else {
-            (
-                format!(
-                    "SELECT {} FROM memories WHERE is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ?",
-                    self.memory_columns(""),
-                    order_clause
-                ),
-                vec![],
-            )
-        };
-
-        let mut rows = if params_vec.is_empty() {
-            conn.query(&sql, params![limit as i64]).await?
-        } else {
-            conn.query(&sql, params![params_vec[0].clone(), limit as i64])
-                .await?
-        };
-
-        let mut memories = Vec::new();
-        while let Some(row) = rows.next().await? {
-            memories.push(self.row_to_memory(&row).await?);
-        }
-
-        debug!("Listed {} memories", memories.len());
-        Ok(memories)
+    async fn list_memories_page(
+        &self,
+        namespace: Option<Namespace>,
+        limit: usize,
+        offset: usize,
+        sort_by: crate::storage::MemorySortOrder,
+    ) -> Result<Vec<MemoryNote>> {
+        self.list_memories_window(namespace, limit, offset, sort_by)
+            .await
     }
 
     async fn store_modification_log(
@@ -9679,6 +9960,76 @@ impl StorageBackend for LibsqlStorage {
     }
 }
 
+impl LibsqlStorage {
+    /// Shared paginated listing with a stable, offset-based window (private
+    /// helper backing both `list_memories` and `list_memories_page`).
+    /// Ordering always includes the unique `id` tiebreaker so consecutive
+    /// pages do not overlap or skip rows when timestamps collide.
+    async fn list_memories_window(
+        &self,
+        namespace: Option<Namespace>,
+        limit: usize,
+        offset: usize,
+        sort_by: crate::storage::MemorySortOrder,
+    ) -> Result<Vec<MemoryNote>> {
+        use crate::storage::MemorySortOrder;
+
+        debug!(
+            "Listing memories (namespace: {:?}, limit: {}, offset: {}, sort: {:?})",
+            namespace, limit, offset, sort_by
+        );
+
+        let conn = self.get_conn()?;
+        let order_by = match sort_by {
+            MemorySortOrder::Recent => "created_at DESC",
+            MemorySortOrder::Importance => "importance DESC, created_at DESC",
+            MemorySortOrder::AccessCount => "access_count DESC, created_at DESC",
+        };
+        // Unique id tiebreaker guarantees stability across pages.
+        let order_clause = format!("{}, id ASC", order_by);
+
+        let (sql, params_vec) = if let Some(ns) = namespace {
+            let ns_str = serde_json::to_string(&ns)?;
+            (
+                format!(
+                    "SELECT {} FROM memories WHERE namespace = ? AND is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ? OFFSET ?",
+                    self.memory_columns(""),
+                    order_clause
+                ),
+                vec![ns_str],
+            )
+        } else {
+            (
+                format!(
+                    "SELECT {} FROM memories WHERE is_archived = 0 AND tags NOT LIKE '%\"turn_sync\"%' ORDER BY {} LIMIT ? OFFSET ?",
+                    self.memory_columns(""),
+                    order_clause
+                ),
+                vec![],
+            )
+        };
+
+        let mut rows = if params_vec.is_empty() {
+            conn.query(&sql, params![limit as i64, offset as i64])
+                .await?
+        } else {
+            conn.query(
+                &sql,
+                params![params_vec[0].clone(), limit as i64, offset as i64],
+            )
+            .await?
+        };
+
+        let mut memories = Vec::new();
+        while let Some(row) = rows.next().await? {
+            memories.push(self.row_to_memory(&row).await?);
+        }
+
+        debug!("Listed {} memories", memories.len());
+        Ok(memories)
+    }
+}
+
 #[cfg(test)]
 mod fts_query_tests {
     use super::{LibsqlStorage, MemoryId};
@@ -9712,6 +10063,94 @@ mod fts_query_tests {
         scores.insert(high, (0.8, 0.7, 0.0, 0.0));
 
         assert_eq!(LibsqlStorage::select_graph_seed_ids(&scores, 1), vec![high]);
+    }
+
+    #[test]
+    fn graph_ranks_are_deterministic_across_repeats() {
+        use super::graph_deterministic_ranks;
+
+        let id1 = MemoryId::new();
+        let id2 = MemoryId::new();
+        let id3 = MemoryId::new();
+        let mut scores = HashMap::new();
+        // Same depth for all: only the stable ID tie-breaker should decide.
+        scores.insert(id1, (0.5, 0.0, 1.0, 1.0));
+        scores.insert(id2, (0.5, 0.0, 1.0, 1.0));
+        scores.insert(id3, (0.5, 0.0, 1.0, 1.0));
+        // A deeper (worse) candidate sorts after the shallow ones.
+        scores.insert(MemoryId::new(), (0.0, 0.0, 1.0, 3.0));
+        // A non-graph candidate must be excluded.
+        scores.insert(MemoryId::new(), (0.9, 0.8, 0.0, 0.0));
+
+        let first = graph_deterministic_ranks(&scores);
+        let second = graph_deterministic_ranks(&scores);
+        // Determinism: two passes over the same map produce identical ranks.
+        assert_eq!(first, second);
+
+        // The three depth-1 candidates get consecutive ranks 2,3,4 (tie-broken
+        // by ID), and the deeper depth-3 candidate must rank strictly worse.
+        let mut shallow: Vec<usize> = [&id1, &id2, &id3].iter().map(|k| first[k]).collect();
+        shallow.sort();
+        assert_eq!(shallow, vec![2, 3, 4]);
+        assert!(first.values().any(|&r| r == 7));
+    }
+
+    #[test]
+    fn rrf_respects_adaptive_channel_weights() {
+        use super::compute_rrf_ranking;
+        use crate::utils::retrieval::RetrievalWeights;
+
+        // Candidate a ranks #1 in keyword but #2 in vector; candidate b is the
+        // reverse (a keyword #1 keyword for a, vector #1 for b). With equal
+        // weights the fused scores tie; tilting the weights toward one channel
+        // must predictably flip who ranks first.
+        let a = MemoryId::new();
+        let b = MemoryId::new();
+        let keyword_ranks = HashMap::from([(a.clone(), 1usize), (b.clone(), 2usize)]);
+        let vector_ranks = HashMap::from([(a.clone(), 2usize), (b.clone(), 1usize)]);
+        let graph_ranks = HashMap::new();
+
+        // Equal keyword/vector weight: both candidates tie in RRF.
+        let balanced = compute_rrf_ranking(
+            &keyword_ranks,
+            &vector_ranks,
+            &graph_ranks,
+            RetrievalWeights {
+                keyword: 1.0,
+                vector: 1.0,
+                graph: 0.0,
+            },
+            60.0,
+        );
+        assert!((balanced[&a] - balanced[&b]).abs() < 1e-6);
+
+        // Tilt toward keyword: a (keyword rank 1) must now lead b.
+        let keyword_heavy = compute_rrf_ranking(
+            &keyword_ranks,
+            &vector_ranks,
+            &graph_ranks,
+            RetrievalWeights {
+                keyword: 1.0,
+                vector: 0.0,
+                graph: 0.0,
+            },
+            60.0,
+        );
+        assert!(keyword_heavy[&a] > keyword_heavy[&b]);
+
+        // Tilt toward vector: b (vector rank 1) must now lead a.
+        let vector_heavy = compute_rrf_ranking(
+            &keyword_ranks,
+            &vector_ranks,
+            &graph_ranks,
+            RetrievalWeights {
+                keyword: 0.0,
+                vector: 1.0,
+                graph: 0.0,
+            },
+            60.0,
+        );
+        assert!(vector_heavy[&b] > vector_heavy[&a]);
     }
 }
 

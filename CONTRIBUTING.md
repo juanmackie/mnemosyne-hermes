@@ -162,20 +162,19 @@ cargo build --release
 
 | Category | Time | Primary Crates |
 |----------|------|----------------|
-| Apache Arrow/Parquet | ~250s | arrow-cast, parquet, arrow-ord, arrow-select, arrow-arith |
-| LLM Integration | ~122s | rig-core, dspy-rs |
-| P2P Networking | ~82s | iroh-net, iroh-docs, iroh-blobs |
-| Database | ~79s | libsql, libsqlite3-sys, libsql-ffi |
-| Embeddings/ML | ~90s | tokenizers, fastembed, image |
-| **Main binary** | ~176s | mnemosyne (links all dependencies) |
-| **Total** | ~397s | 6.6 minutes for clean release build |
+| Database | ~80s | libsql, libsqlite3-sys, libsql-ffi |
+| Embeddings/ML (optional `local-embeddings`) | ~90s | tokenizers, fastembed, ort |
+| P2P Networking (optional `distributed`) | ~82s | iroh-net, iroh-docs, iroh-blobs |
+| **Main binary** | ~176s | mnemosyne (links non-optional dependencies) |
+| **Total (default build)** | ~6-7 min | heavy crates above are feature-gated and not compiled by default |
 
-**Why these are necessary**:
-- **Arrow/Parquet**: Used for efficient vector search and data processing
-- **LLM Integration**: Core functionality for memory enrichment
-- **P2P Networking**: Required for distributed orchestration (Phase 4)
-- **Database**: LibSQL provides scalable storage with vector support
-- **Embeddings**: Fast local embeddings (nomic-embed-text-v1.5)
+**Why these matter**:
+- **Database**: LibSQL provides scalable storage with native vector support
+- **Embeddings/ML**: Fast local embeddings (nomic-embed-text-v1.5); gated behind `local-embeddings`
+- **P2P Networking**: Optional distributed orchestration (`distributed`)
+
+The default release excludes the heavy optional crates unless the
+corresponding feature is enabled — see the optional dependency model below.
 
 ### Optimizing Your Development Workflow
 
@@ -209,12 +208,32 @@ cargo test --jobs 4
 - ✅ Build script optimization (`opt-level = 3` for build.rs)
 - ✅ Fast-release profile for quick testing
 - ✅ Parallel compilation (`jobs = 0` uses all CPU cores)
+- ✅ Optional dependency features: the default build stays small and keyless
 
-**Not recommended** (breaks functionality):
-- ❌ Making Arrow/fastembed optional (core to vector search)
-- ❌ Making iroh optional (required for Phase 4 distributed features)
-- ❌ Making dspy-rs optional (core LLM integration)
+**Optional dependency model** — the default build is intentionally minimal and
+keyless. Heavy/optional deps are gated behind `cargo` features and only compile
+when enabled:
+
+| Feature | Optional deps it pulls | Effect on default build |
+|---|---|---|
+| `local-embeddings` | `fastembed` (ONNX runtime) | Default off; uses deterministic hash embeddings |
+| `distributed` | `iroh`, `ractor_cluster` | Default off; peer networking |
+| `rpc` | `tonic`, `prost` | Default off; gRPC server |
+| `ics-syntax` | tree-sitter grammars | Default off; full ICS syntax highlighting |
+| `legacy-vector-store` | `rusqlite`, `sqlite-vec` | Default off; legacy vector store |
+| `keyring-fallback` | `keyring` | Default off; OS keyring |
+| `python` | `pyo3` | Default off; Python bridge |
+
+The aggregated `full` feature enables all local opt-in features (`local-embeddings`,
+`ics-syntax`, `dashboard`). See the `[features]` table in `Cargo.toml` for the
+canonical list. We recommend leaving heavy crates feature-gated and only enabling
+what a given binary needs.
+
+**Not recommended**:
 - ❌ Disabling LTO in release builds (30-40% performance regression)
+- ❌ Unconditionally bundling the legacy `rusqlite`/`sqlite-vec` vector store
+  alongside libsql (can produce duplicate symbols and drop libsql's native
+  vector functions at link time)
 
 ### Build Troubleshooting
 

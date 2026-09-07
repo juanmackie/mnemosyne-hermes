@@ -337,7 +337,8 @@ async fn test_recall_abstains_when_no_result_meets_threshold() {
     let params = serde_json::json!({
         "query": "no matching memory exists",
         "namespace": "global",
-        "abstention_threshold": 0.01
+        "abstention_threshold": 0.01,
+        "compact": false
     });
 
     let result = handler.execute("mnemosyne.recall", params).await.unwrap();

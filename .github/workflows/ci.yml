@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "fix/**"
+      - "release/**"
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Cloud-dependent tests (live LLM API keys, DSPy/Python bridges, the running
+# API server, and P2P networking) are marked `#[ignore]` or are gated behind
+# optional features, so the default `cargo test` jobs below exercise only the
+# repo's self-contained core tests. Opting into them explicitly (e.g.
+# `cargo test -- --ignored` with the required environment/features) keeps the
+# PR signal green while the heavy/cloud paths stay reviewable on demand.
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  lint:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Surfaced, but not `-D warnings`: the repo carries pre-existing warnings
+      # (mostly dead code) that a hard deny would fail the PR on unrelated debt.
+      - name: cargo clippy (default features)
+        run: cargo clippy --all-targets --no-deps
+
+  test:
+    name: Core + CLI/MCP contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build binary
+        run: cargo build --locked --bin mnemosyne
+      - name: Run core, CLI, and MCP contract tests (self-contained; #[ignore] cloud tests excluded)
+        run: cargo test --locked
+
+  features:
+    name: Supported feature compilation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - "local-embeddings"
+          - "ics-syntax"
+          - "dashboard"
+          - "rpc"
+          - "legacy-vector-store"
+          - "full"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo check --features ${{ matrix.features }}
+        run: cargo check --locked --features "${{ matrix.features }}"

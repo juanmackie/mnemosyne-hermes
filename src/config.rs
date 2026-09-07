@@ -147,7 +147,10 @@ impl SearchConfig {
         // Check ppr_weight range
         if self.ppr_weight < 0.0 || self.ppr_weight > 1.0 {
             return Err(MnemosyneError::Config(config::ConfigError::Message(
-                format!("ppr_weight must be between 0.0 and 1.0, got {}", self.ppr_weight),
+                format!(
+                    "ppr_weight must be between 0.0 and 1.0, got {}",
+                    self.ppr_weight
+                ),
             )));
         }
         if self.max_graph_depth == 0 {

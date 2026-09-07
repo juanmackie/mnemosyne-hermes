@@ -79,7 +79,14 @@ async fn ppr_adjacency_is_weighted_and_undirected() {
 
     // Seed at A, collect 2 hops.
     let adjacency = storage
-        .fetch_ppr_adjacency(&[a.id], 2, Some(Namespace::Global))
+        .fetch_ppr_adjacency(
+            &[a.id],
+            2,
+            Some(Namespace::Global),
+            LibsqlStorage::PPR_NODE_BUDGET,
+            LibsqlStorage::PPR_EDGE_BUDGET,
+            LibsqlStorage::PPR_QUERY_BATCH,
+        )
         .await
         .unwrap();
 
@@ -144,7 +151,14 @@ async fn depth_cap_limits_adjacency_reach() {
     .await;
 
     let adjacency = storage
-        .fetch_ppr_adjacency(&[a.id], 1, Some(Namespace::Global))
+        .fetch_ppr_adjacency(
+            &[a.id],
+            1,
+            Some(Namespace::Global),
+            LibsqlStorage::PPR_NODE_BUDGET,
+            LibsqlStorage::PPR_EDGE_BUDGET,
+            LibsqlStorage::PPR_QUERY_BATCH,
+        )
         .await
         .unwrap();
 
@@ -152,6 +166,91 @@ async fn depth_cap_limits_adjacency_reach() {
     assert!(
         !adjacency.contains_key(&c.id.to_string()),
         "max_hops=1 must not reach 2-hop node C"
+    );
+}
+
+/// Traversal budgets bound the PPR subgraph on a high-degree `memory_links`
+/// graph, so two-hop BFS can't explode into an unbounded graph. Seeding a hub
+/// that links to many neighbors with a tiny `node_budget` must cap the number
+/// of visited nodes (seed counts against the budget).
+#[tokio::test]
+async fn node_budget_caps_traversal_on_high_degree_graph() {
+    let storage = create_test_storage().await;
+
+    // Hub H linked to many neighbors; H is stored and then linked out to all.
+    let hub = note("hub");
+    storage.store_memory(&hub).await.unwrap();
+    let mut hub_links = Vec::new();
+    for i in 0..10 {
+        let n = note(&format!("neighbor_{}", i));
+        storage.store_memory(&n).await.unwrap();
+        hub_links.push(link(&n.id.to_string(), 0.9));
+    }
+    attach(&storage, &hub, hub_links).await;
+
+    // node_budget=3 : seed (hub) + at most 2 more nodes may be visited.
+    let adjacency = storage
+        .fetch_ppr_adjacency(&[hub.id], 1, Some(Namespace::Global), 3, 400, 50)
+        .await
+        .unwrap();
+
+    assert!(
+        adjacency.len() <= 3,
+        "node budget must cap subgraph size, got {}",
+        adjacency.len()
+    );
+    assert!(
+        adjacency.contains_key(&hub.id.to_string()),
+        "seed must always survive"
+    );
+}
+
+/// Batching the frontier into small SQL `IN (...)` lists must not change the
+/// resulting graph: a tiny `query_batch` should return the same adjacency as
+/// an effectively unlimited one for a small chain.
+#[tokio::test]
+async fn query_batching_preserves_adjacency() {
+    let storage = create_test_storage().await;
+
+    let a = note("alpha");
+    let b = note("beta");
+    let c = note("gamma");
+    storage.store_memory(&a).await.unwrap();
+    storage.store_memory(&b).await.unwrap();
+    storage.store_memory(&c).await.unwrap();
+    attach(&storage, &a, vec![link(&b.id.to_string(), 0.9)]).await;
+    attach(
+        &storage,
+        &b,
+        vec![link(&a.id.to_string(), 0.9), link(&c.id.to_string(), 0.5)],
+    )
+    .await;
+
+    let unlimited = storage
+        .fetch_ppr_adjacency(&[a.id], 2, Some(Namespace::Global), 500, 400, 100)
+        .await
+        .unwrap();
+    let batched = storage
+        .fetch_ppr_adjacency(&[a.id], 2, Some(Namespace::Global), 500, 400, 1)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        batched.len(),
+        unlimited.len(),
+        "batching must not drop nodes"
+    );
+    let mut total_batched = 0usize;
+    let mut total_unlimited = 0usize;
+    for (id, nbrs) in &batched {
+        let un = &unlimited[id];
+        total_batched += nbrs.len();
+        total_unlimited += un.len();
+        assert_eq!(nbrs.len(), un.len(), "edge count differs for {}", id);
+    }
+    assert_eq!(
+        total_batched, total_unlimited,
+        "batching must not change total edges"
     );
 }
 
@@ -204,10 +303,7 @@ async fn ppr_blend_promotes_multi_hop_memory() {
         attach(
             storage,
             &b,
-            vec![
-                link(&a.id.to_string(), 0.9),
-                link(&c.id.to_string(), 0.9),
-            ],
+            vec![link(&a.id.to_string(), 0.9), link(&c.id.to_string(), 0.9)],
         )
         .await;
     }
@@ -267,7 +363,7 @@ async fn insert_hook_links_similar_memory_without_scheduler() {
     storage.store_memory(&existing).await.unwrap();
     let embedding = vec![0.9_f32, 0.1, 0.1];
     storage
-        .store_embedding(&existing.id, &embedding)
+        .store_embedding(&existing.id, &embedding, "test")
         .await
         .unwrap();
 
@@ -275,7 +371,7 @@ async fn insert_hook_links_similar_memory_without_scheduler() {
     let new_note = note("Beta: exponential backoff for network calls");
     storage.store_memory(&new_note).await.unwrap();
     storage
-        .store_embedding(&new_note.id, &embedding)
+        .store_embedding(&new_note.id, &embedding, "test")
         .await
         .unwrap();
 

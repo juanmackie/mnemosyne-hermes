@@ -40,10 +40,39 @@ pub async fn handle(
     // Parse namespace strictly so a typo cannot export global memories.
     let ns = namespace.map(|value| parse_namespace(&value)).transpose()?;
 
-    // Query all memories (or filtered by namespace)
-    let memories = storage
-        .list_memories(ns, 10000, MemorySortOrder::Recent)
-        .await?;
+    // NOTE: this export is a scoped snapshot (all memories, or a single
+    // namespace), NOT a complete database backup. It does not include link
+    // metadata, embeddings, revisions, or audit history. For a full point-in-time
+    // backup use a dedicated backup/restore path (e.g. copying the underlying
+    // database file) rather than relying on this command.
+
+    // Query all memories (or filtered by namespace) using a stable, offset-based
+    // page walk so no rows are silently dropped above the old 10,000-row cap.
+    const PAGE_SIZE: usize = 1000;
+    let mut memories = Vec::new();
+    loop {
+        let page = storage
+            .list_memories_page(
+                ns.clone(),
+                PAGE_SIZE,
+                memories.len(),
+                MemorySortOrder::Recent,
+            )
+            .await?;
+        let count = page.len();
+        memories.extend(page);
+        if count < PAGE_SIZE {
+            break;
+        }
+    }
+
+    // State the export scope so the caller knows exactly what this snapshot
+    // covers (name of the namespace, or "global" when none was filtered).
+    let scope_label = match &ns {
+        Some(n) => format!("namespace {:?}", n),
+        None => "global (all namespaces)".to_string(),
+    };
+    debug!("Exporting {} memories from {}", memories.len(), scope_label);
 
     // Determine output format and destination
     let (format, use_stdout) = if let Some(ref path) = output {

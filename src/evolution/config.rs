@@ -111,10 +111,16 @@ impl Default for ConsolidationConfig {
 
 /// A-MEM on-insert cross-link proposal configuration
 ///
+/// **EXPERIMENTAL — do not enable in production.**
+///
 /// Runs only at insert time (not on a scheduler), so it is naturally cost-gated
 /// by `enabled`. When enabled, the k nearest existing memories are offered to the
 /// LLM, which proposes new cross-links between the freshly-inserted memory and
 /// the existing ones. Link decay subsequently prunes any weak auto-links.
+///
+/// This feature is experimental and intentionally disabled by default; it is not
+/// wired into normal production construction. Do not enable it except for
+/// opt-in evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OnInsertConfig {
     /// Enable the post-insert cross-link proposal hook

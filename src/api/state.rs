@@ -213,11 +213,31 @@ impl StateManager {
         tokio::spawn(async move {
             tracing::info!("StateManager subscribed to event stream");
 
-            while let Ok(event) = event_rx.recv().await {
-                if let Err(e) =
-                    Self::apply_event_static(event, &agents, &context_files, &metrics).await
-                {
-                    tracing::warn!("Failed to apply event to state: {}", e);
+            loop {
+                // Distinguish "lagged" (missed events, resync and continue) from
+                // "closed" (all senders dropped, terminate). One transient lag must
+                // never permanently stop state updates.
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        if let Err(e) =
+                            Self::apply_event_static(event, &agents, &context_files, &metrics).await
+                        {
+                            tracing::warn!("Failed to apply event to state: {}", e);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            "StateManager lagged by {} events; resynchronizing from next event",
+                            skipped
+                        );
+                        // ponytail: full resync would replay missed events; we continue
+                        // from the next event. Add a state-snapshot replay if gaps must
+                        // be backfilled deterministically.
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
                 }
             }
 
@@ -237,20 +257,34 @@ impl StateManager {
         match event.event_type {
             EventType::AgentStarted { agent_id, task, .. } => {
                 let mut agents_map = agents.write().await;
-                agents_map.insert(
-                    agent_id.clone(),
-                    AgentInfo {
-                        id: agent_id.clone(),
-                        state: if let Some(task_desc) = task {
+                match agents_map.get_mut(&agent_id) {
+                    Some(existing) => {
+                        // Non-destructive: preserve metadata/health submitted via the
+                        // HTTP state endpoint. Only the state transition is applied.
+                        existing.state = if let Some(task_desc) = task {
                             AgentState::Active { task: task_desc }
                         } else {
                             AgentState::Idle
-                        },
-                        updated_at: Utc::now(),
-                        metadata: HashMap::new(),
-                        health: Some(AgentHealth::default()), // Initialize healthy
-                    },
-                );
+                        };
+                        existing.updated_at = Utc::now();
+                    }
+                    None => {
+                        agents_map.insert(
+                            agent_id.clone(),
+                            AgentInfo {
+                                id: agent_id.clone(),
+                                state: if let Some(task_desc) = task {
+                                    AgentState::Active { task: task_desc }
+                                } else {
+                                    AgentState::Idle
+                                },
+                                updated_at: Utc::now(),
+                                metadata: HashMap::new(),
+                                health: Some(AgentHealth::default()), // Initialize healthy
+                            },
+                        );
+                    }
+                }
                 tracing::debug!("State updated: agent {} started", agent_id);
             }
             EventType::AgentCompleted {
@@ -367,14 +401,20 @@ impl StateManager {
             }
             EventType::ContextModified { file, .. } => {
                 let mut files_map = context_files.write().await;
-                files_map.insert(
-                    file.clone(),
-                    ContextFile {
-                        path: file,
-                        modified_at: Utc::now(),
-                        errors: vec![],
-                    },
-                );
+                // Non-destructive: preserve existing validation errors. A plain
+                // "modified" event must not clear validation state.
+                if let Some(existing) = files_map.get_mut(&file) {
+                    existing.modified_at = Utc::now();
+                } else {
+                    files_map.insert(
+                        file.clone(),
+                        ContextFile {
+                            path: file,
+                            modified_at: Utc::now(),
+                            errors: vec![],
+                        },
+                    );
+                }
                 tracing::debug!("State updated: context file modified");
             }
             EventType::ContextValidated { file, errors, .. } => {

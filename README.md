@@ -200,7 +200,7 @@ verifies SHA-256 checksums, and leaves MCP configuration to the agent runtime.
 
 **Manual Source Build**:
 ```bash
-# Prerequisites: Rust 1.75+, Python 3.10-3.14, uv
+# Prerequisites: Rust 1.75+
 cargo build --release
 
 # Copy binary to PATH
@@ -209,9 +209,14 @@ cp target/release/mnemosyne ~/.local/bin/
 # Initialize database
 mnemosyne init
 
-# Configure secrets (optional for LLM enrichment)
-mnemosyne secrets set --provider anthropic --key sk-ant-...
+# (Optional) Enable model-backed embeddings for higher retrieval quality
+cargo build --release --features local-embeddings
+cp target/release/mnemosyne ~/.local/bin/
+mnemosyne embed --all
 ```
+
+A source build is pure Rust; no Python or uv toolchain is required unless you
+opt in to the `python` (PyO3) feature.
 
 **Migration**:
 ```bash
@@ -625,9 +630,9 @@ ConnectionMode::EmbeddedReplica { ... }  // Local replica with sync
 
 ### Specifications
 - [docs/specs/background-processing-spec.md](docs/specs/background-processing-spec.md) - Tier 3 background processing
-- [docs/specs/ics-integration-spec.md](docs/specs/ics-integration-spec.md) - ICS integration specification
+- [docs/features/ics-integration-spec.md](docs/features/ics-integration-spec.md) - ICS integration specification
 - [docs/specs/incremental-analysis-spec.md](docs/specs/incremental-analysis-spec.md) - Incremental semantic analysis
-- [docs/specs/semantic-highlighter-test-plan.md](docs/specs/semantic-highlighter-test-plan.md) - Testing strategy
+- [docs/features/semantic-highlighter-test-plan.md](docs/features/semantic-highlighter-test-plan.md) - Semantic highlighter testing strategy
 - [docs/specs/tier3-llm-integration-spec.md](docs/specs/tier3-llm-integration-spec.md) - LLM integration architecture
 
 ### Development
@@ -645,7 +650,7 @@ ConnectionMode::EmbeddedReplica { ... }  // Local replica with sync
 cargo test --lib
 
 # Integration tests
-cargo test --test integration_ics --features test-utils
+cargo test --test ics_integration_test
 
 # E2E tests
 bash tests/e2e/human_workflow_1_new_project.sh
@@ -767,96 +772,29 @@ See LICENSE file for details.
 
 ## Status
 
-**Current Version**: 2.3.1
+**Current Version**: 2.3.3
 
-**v2.4.0 Release (2025-11-23)** - Distributed Coordination:
-- ✅ **Peer Discovery**: Iroh-based P2P discovery and connection management
-- ✅ **Work Delegation**: Distributed task execution across connected peers
-- ✅ **Network Visualization**: TUI-based network graph and status monitoring
-- ✅ **Documentation**: Updated guides for distributed setup and usage
+Hermes is the primary target runtime. The native release is keyless and
+local-first by default; distributed Iroh networking and model-backed
+embeddings are opt-in `cargo` features.
 
-**v2.3.1 Release (2025-11-09)** - Dashboard Crash Fix:
-- ✅ **Critical Bug Fix**: Fixed dashboard crash from NaN values in health metrics
-- ✅ **Terminal Corruption Prevention**: Added panic handler to restore terminal state
-- ✅ **Floating-Point Safety**: Fixed unsafe `partial_cmp().unwrap()` patterns
-- ✅ **Enhanced Error Handling**: SSE bounds checking, graceful error recovery
-- ✅ **Comprehensive Tests**: 11 sparkline tests + 8 anaphora tests passing
-- ✅ **Documentation**: Troubleshooting guide + development best practices
+### Support matrix
 
-**v2.3.0 Release (2025-11-08)** - Dashboard Redesign & CLI Operations Tracking:
-- ✅ **Dashboard Redesign**: 4-panel layout replacing 7-panel "wall of garbage"
-  - System Overview (top): At-a-glance health metrics
-  - Activity Stream (left, 60%): Intelligent event log with filtering
-  - Agent Details (right-top, 40%): Per-agent status and work queues
-  - Operations (right-bottom, 40%): CLI command history with outcomes
-- ✅ **Smart Event Filtering**: 8 categories, compound AND/OR/NOT logic, filter presets
-- ✅ **Event Correlation Engine**: Links start→complete events, duration tracking, slow operation detection
-- ✅ **CLI Operations Tracking**: Real-time CLI command visibility in dashboard
-- ✅ **Full Keyboard Control**: Interactive navigation (q/Esc, 0-3 panel toggles, c to clear)
-- ✅ **Production Quality**: 124+ tests, 6,122 lines of code, comprehensive error handling
-- ✅ **Documentation**: `docs/DASHBOARD.md` (300+ lines) with architecture, features, troubleshooting
+| Aspect | Supported | Notes |
+|---|---|---|
+| Primary runtime | Hermes MCP stdio | `command: mnemosyne`, `args: ["mcp"]` |
+| Other MCP clients | Claude Code, Cursor, Codex, Windsurf | standard `mcpServers` config |
+| Platforms | Linux x86_64/aarch64, macOS x86_64/arm64 | checksum-verified release binaries |
+| Storage | Local SQLite/LibSQL | no cloud service required |
+| Vector search | LibSQL native vector ops | deterministic fallback in default release |
+| Default release | local-only, keyless | no ONNX runtime, no network access |
+| Opt-in features | `local-embeddings`, `full`, `rpc`, `distributed` | see [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) |
+| Python | optional `python` (PyO3) feature only | not needed for the Hermes memory provider |
 
-**v2.2.0 Release (2025-11-08)** - gRPC Remote Access:
-- ✅ **gRPC Server**: Production-ready gRPC server for remote memory access
-- ✅ **MemoryService**: 13 RPC methods (CRUD, search, streaming operations)
-- ✅ **HealthService**: System monitoring, metrics, statistics
-- ✅ **Language-Agnostic**: Protocol buffer API for Rust, Python, Go, TypeScript, etc.
-- ✅ **Feature-Gated**: Optional `rpc` feature, no impact on default builds
-- ✅ **Test Suite**: 11 RPC integration tests passing, 728 library tests passing
-- ✅ **Documentation**: 1,868 lines of comprehensive RPC documentation
-
-**v2.1.2 Release (2025-11-06)** - Clean Build & Repository Cleanup:
-- ✅ **Clean Build**: Fixed all 6 compiler warnings (unused variables, imports, fields)
-- ✅ **Repository Cleanup**: Removed temporary files (.bak, .DS_Store) and stale branches
-- ✅ **Documentation Updates**: Updated ROADMAP, README, CHANGELOG for v2.1.2
-- ✅ **Test Suite**: 715 unit tests passing, 0 failures
-- ✅ **Build**: 0 warnings, 0 errors
-
-**v2.1.1 Release (2025-11-06)** - Python Bridge Architecture & Production Hardening:
-- ✅ **Python Bridge Complete**: PyO3 integration with Claude SDK agents
-- ✅ **Phase 5 Production Hardening**: 8/8 tasks complete (100%)
-  - Structured logging, enhanced errors, validation, metrics
-  - E2E validation with actual Claude API calls (5/5 tests passing)
-  - Comprehensive troubleshooting guide (628 lines)
-- ✅ **Test Suite**: 715 unit tests + 10 integration/E2E tests passing
-- ✅ **Documentation**: 2,200+ lines across 5 major documents
-- ✅ **Clean Build**: 0 warnings, 0 errors
-- ✅ **Stability Fixes**: File descriptor leak prevention, robust process management
-- ✅ **Production-ready**: Fully validated with actual Claude API calls
-
-**Completed (v2.1.0)**:
-- ✅ Core storage and memory system with LibSQL vector search
-- ✅ Multi-agent orchestration (Ractor-based 4-agent system)
-- ✅ **LLM-Enhanced Reviewer** with requirement extraction and semantic validation
-- ✅ Evolution system (consolidation, importance, archival)
-- ✅ Evaluation system (privacy-preserving online learning)
-- ✅ **ICS Standalone Binary** (`mnemosyne-ics`) with template system
-- ✅ **3-Tier Semantic Highlighting** (Structural/Relational/Analytical, 7,500+ lines)
-- ✅ **HTTP API Server** (`:3000`) with SSE event streaming
-- ✅ **Real-time Monitoring Dashboard** (`mnemosyne-dash`)
-- ✅ **Composable Tools Architecture** (Unix philosophy, zero conflicts)
-- ✅ **Event Bridging** (orchestration events → SSE → dashboard)
-- ✅ TUI wrapper mode (deprecated, use composable tools)
-- ✅ CLI commands (remember, recall, evolve, orchestrate, ics, tui)
-- ✅ Installation/uninstallation scripts
-- ✅ Read-only database support
-- ✅ **715 tests passing** (up from 474, +241 new tests)
-- ✅ MCP server integration
-- ✅ **11 new documentation files** (5,000+ lines)
-
-**Known Issues (v2.3.1)**:
-- ⚠️ PyO3 0.22.6 doesn't support Python 3.14+ (use Python 3.9-3.13)
-- ⚠️ Tier 3 LLM integration is scaffolding only (not fully functional)
-
-**Roadmap** (post-v2.3.1):
-- ⏳ Tier 3 LLM integration completion
-- ⏳ Incremental semantic analysis scheduling
-- ⏳ ICS-semantic highlighter integration
-- ⏳ Performance benchmarks for semantic highlighting
-- ⏳ Advanced observability and metrics
-- ⏳ Dynamic agent scaling
-- ⏳ Distributed orchestration
-- ⏳ WebAssembly deployment target
+Full historical release notes (previously listed here) are superseded by
+[CHANGELOG.md](CHANGELOG.md), the single source of truth for release history.
+Older superseded status reports live in [docs/archive/](docs/archive/). Current
+roadmap and known issues are tracked in [TODO_TRACKING.md](TODO_TRACKING.md).
 
 ---
 

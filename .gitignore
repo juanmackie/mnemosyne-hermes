@@ -43,6 +43,10 @@ tests/e2e/results/*/
 
 # Logs
 *.log
+
+# Generated test-result/status scratch docs
+DSPy_Integration_Test_Results.md
+docs/VALIDATION_RESULTS.md
 .beads/daemon.log
 .claude/memory-state.json
 

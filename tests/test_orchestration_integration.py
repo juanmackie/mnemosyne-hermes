@@ -67,14 +67,14 @@ class TestToolExecution:
             pass
         
         # Create executor
-        config = ExecutorConfig(agent_id="test_executor")
+        config = ExecutorConfig(agent_id="test_executor", working_dir=temp_workspace)
         executor = ExecutorAgent(
             config=config,
             coordinator=MockCoordinator(),
             storage=MockStorage(),
             parallel_executor=MockParallelExecutor()
         )
-        
+
         # Test tool directly
         test_file = os.path.join(temp_workspace, "test.txt")
         result = await executor._execute_tool(
@@ -109,14 +109,14 @@ class TestToolExecution:
             def register_agent(self, agent_id): pass
             def update_agent_state(self, agent_id, state): pass
         
-        config = ExecutorConfig(agent_id="test_executor")
+        config = ExecutorConfig(agent_id="test_executor", working_dir=temp_workspace)
         executor = ExecutorAgent(
             config=config,
             coordinator=MockCoordinator(),
             storage=None,
             parallel_executor=None
         )
-        
+
         result = await executor._execute_tool(
             "read_file",
             {"file_path": test_file}
@@ -142,14 +142,14 @@ class TestToolExecution:
             def register_agent(self, agent_id): pass
             def update_agent_state(self, agent_id, state): pass
         
-        config = ExecutorConfig(agent_id="test_executor")
+        config = ExecutorConfig(agent_id="test_executor", working_dir=temp_workspace)
         executor = ExecutorAgent(
             config=config,
             coordinator=MockCoordinator(),
             storage=None,
             parallel_executor=None
         )
-        
+
         result = await executor._execute_tool(
             "edit_file",
             {
@@ -176,14 +176,14 @@ class TestToolExecution:
             def register_agent(self, agent_id): pass
             def update_agent_state(self, agent_id, state): pass
         
-        config = ExecutorConfig(agent_id="test_executor")
+        config = ExecutorConfig(agent_id="test_executor", working_dir=temp_workspace)
         executor = ExecutorAgent(
             config=config,
             coordinator=MockCoordinator(),
             storage=None,
             parallel_executor=None
         )
-        
+
         result = await executor._execute_tool(
             "run_command",
             {

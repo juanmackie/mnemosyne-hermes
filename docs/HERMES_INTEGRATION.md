@@ -45,6 +45,11 @@ mcp:
         MNEMOSYNE_DB_PATH: "~/.local/share/mnemosyne/mnemosyne.db"
 ```
 
+`MNEMOSYNE_DB_PATH` supports home-relative, relative, or absolute paths: a
+leading `~` is expanded to your home directory, and absolute paths are
+recommended for shared or scripted config. CLI, import, and the MCP server
+all resolve to the same database.
+
 If you are using Hermes' provider selector, enable the same local provider:
 
 ```bash
@@ -132,14 +137,35 @@ network access. The default release intentionally excludes the ONNX model
 runtime; it uses a deterministic hash embedding for local remember/recall. On
 stores larger than 1,000 active memories, import and recall report a warning
 because fallback vectors can materially reduce semantic recall. For higher
-retrieval quality, build with the model-backed path using
-`cargo build --release --features local-embeddings` (or `--features full`
-for model-backed embeddings, full ICS syntax grammars, and companion
-TUI/dashboard binaries), then run `mnemosyne embed --all`.
+retrieval quality, upgrade to the model-backed path:
+
+```bash
+# 1. Build the model-backed binary (ONNX runtime via fastembed).
+cargo build --release --features local-embeddings
+#    (or `--features full` for model-backed embeddings, full ICS syntax
+#    grammars, and companion TUI/dashboard binaries)
+
+# 2. Install or invoke the rebuilt executable so `mnemosyne` on your PATH is
+#    the feature-enabled build, not the older release binary.
+cp target/release/mnemosyne ~/.local/bin/mnemosyne
+
+# 3. Verify the provider mode: the loaded provider should no longer report
+#    fallback/deterministic embeddings.
+mnemosyne status
+
+# 4. Complete the backfill so existing memories get model-backed vectors.
+mnemosyne embed --all
+```
+
+If you prefer not to replace the on-PATH binary, invoke the rebuilt executable
+explicitly for each command, e.g. `./target/release/mnemosyne embed --all`.
 
 ## Configuration and namespaces
 
-- `MNEMOSYNE_DB_PATH` selects the local SQLite/LibSQL database.
+- `MNEMOSYNE_DB_PATH` selects the local SQLite/LibSQL database. The value may
+  be absolute, relative, or home-relative; a leading `~` is expanded to your
+  home directory so CLI, import, and the MCP server all resolve to the same
+  database. Absolute paths are recommended for shared or scripted config.
 - `global` stores personal facts shared across projects.
 - `agent:hermes` isolates a Hermes identity.
 - `project:<name>` isolates a workspace.

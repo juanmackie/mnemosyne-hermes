@@ -84,6 +84,10 @@ const MAX_CONTEXT_INPUT_IDS: usize = 1_000;
 const MAX_GRAPH_SEEDS: usize = 1_000;
 const MAX_GRAPH_HOPS: usize = 8;
 const RECOMMENDED_ABSTENTION_THRESHOLD: f32 = 0.30;
+/// Default content budget (tokens) for recall context assembly. Charged only
+/// against memory text; protocol/JSON wrapper overhead is disclosed separately
+/// in the token ledger.
+const DEFAULT_CONTENT_BUDGET: usize = 3500;
 
 #[derive(Debug, Clone, Copy)]
 struct PageInfo {
@@ -225,12 +229,12 @@ impl ToolHandler {
                         "budget_tokens": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "Optional shared context assembly budget"
+                            "description": "Content budget in tokens for context assembly (default 3500). Charged against memory text only; protocol/JSON overhead is disclosed separately in the token_ledger as protocol_overhead_tokens."
                         },
                         "compact": {
                             "type": "boolean",
                             "default": true,
-                            "description": "Return results as compact plain-text (score · id · summary) instead of full JSON. Strongly recommended: saves significant agent context tokens. Disable only when you need full metadata fields."
+                            "description": "Return results as compact plain-text (score · id · summary) instead of full JSON. Strongly recommended: saves significant agent context tokens. Set compact=false to receive structured JSON. Both modes render the same budget-selected result set."
                         }
                     },
                     "required": ["query"]
@@ -988,34 +992,79 @@ impl ToolHandler {
                 .collect();
         }
 
-        let token_ledger = params.budget_tokens.map(|budget| {
-            let mut candidates = results
-                .iter()
-                .map(|result| {
-                    crate::context_assembler::Candidate::new(
-                        result.memory.id.to_string(),
-                        result.memory.summary.clone(),
-                        result.memory.summary.clone(),
-                        result.memory.summary.clone(),
-                        result.memory.content.clone(),
-                        result.score,
-                    )
-                })
-                .collect::<Vec<_>>();
-            candidates.extend(policy_results.iter().map(|result| {
+        // Build the budgeted context-assembly plan once. `budget_tokens` is a
+        // *content* budget charged against memory text; protocol (JSON wrapper +
+        // structural fields) overhead is disclosed separately in the ledger so
+        // callers can budget end-to-end. The assembler's SELECTED entries drive
+        // BOTH compact and structured output so the two modes never diverge.
+        let content_budget = params.budget_tokens.unwrap_or(DEFAULT_CONTENT_BUDGET);
+        let mut candidates = results
+            .iter()
+            .map(|result| {
                 crate::context_assembler::Candidate::new(
-                    format!("policy-{}", result.memory.id),
-                    "Response guidance",
-                    result.memory.content.clone(),
-                    result.memory.content.clone(),
+                    result.memory.id.to_string(),
+                    result.memory.summary.clone(),
+                    result.memory.summary.clone(),
+                    result.memory.summary.clone(),
                     result.memory.content.clone(),
                     result.score,
                 )
-            }));
-            let plan = crate::context_assembler::assemble(&candidates, budget);
-            serde_json::to_value(plan.ledger)
-                .unwrap_or_else(|_| serde_json::json!({"budget_tokens": budget}))
-        });
+            })
+            .collect::<Vec<_>>();
+        candidates.extend(policy_results.iter().map(|result| {
+            crate::context_assembler::Candidate::new(
+                format!("policy-{}", result.memory.id),
+                "Response guidance",
+                result.memory.content.clone(),
+                result.memory.content.clone(),
+                result.memory.content.clone(),
+                result.score,
+            )
+        }));
+        let budget_plan = crate::context_assembler::assemble(&candidates, content_budget);
+
+        // The assembler's SELECTED entries (admitted under budget), ordered
+        // best-first as the assembler admitted them. Factual vs policy kept
+        // separate; the original vectors stay intact for trace/event use.
+        let selected: Vec<&crate::types::SearchResult> = budget_plan
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id.starts_with("policy-") {
+                    return None;
+                }
+                results.iter().find(|r| r.memory.id.to_string() == e.id)
+            })
+            .collect();
+        let selected_policy: Vec<&crate::types::SearchResult> = budget_plan
+            .entries
+            .iter()
+            .filter_map(|e| {
+                e.id.strip_prefix("policy-").and_then(|pid| {
+                    policy_results
+                        .iter()
+                        .find(|r| r.memory.id.to_string() == pid)
+                })
+            })
+            .collect();
+
+        // Disclose content budget and protocol overhead in the token ledger.
+        let token_ledger = {
+            // Fixed wrapper (~2 tokens) plus per-entry structural fields.
+            // ponytail: fixed heuristic; refine with a real serialization
+            //   cost if per-entry overhead ever matters end-to-end.
+            let protocol_overhead_tokens = 2 + budget_plan.entries.len() * 8;
+            let mut ledger = serde_json::to_value(&budget_plan.ledger)
+                .unwrap_or_else(|_| serde_json::json!({"budget_tokens": content_budget}));
+            if let Some(l) = ledger.as_object_mut() {
+                l.insert("content_budget_tokens".into(), content_budget.into());
+                l.insert(
+                    "protocol_overhead_tokens".into(),
+                    protocol_overhead_tokens.into(),
+                );
+            }
+            ledger
+        };
 
         let mut explain_trace =
             crate::utils::retrieval::RetrievalTrace::for_query(&params.query, retrieval_weights);
@@ -1063,8 +1112,8 @@ impl ToolHandler {
             params.namespace
         );
 
-        // Compact mode: return token-efficient plain-text lines instead of full JSON.
-        // Default ON to implement the DOX Single-Probe Contract (saves ~60-80% context tokens).
+        // Compact mode: token-efficient plain-text lines from the assembler's
+        // SELECTED entries (default ON for the DOX Single-Probe Contract).
         // Format: "[score] [id] [match_reason]\n  [summary]"
         let use_compact = params.compact.unwrap_or(true);
         if use_compact {
@@ -1076,20 +1125,16 @@ impl ToolHandler {
                     abstention_threshold.unwrap_or(RECOMMENDED_ABSTENTION_THRESHOLD)
                 ));
             } else {
-                for result in &results {
+                for result in &selected {
                     lines.push(format!(
                         "[{:.3}] {} | {}\n  {}",
-                        result.score,
-                        result.memory.id,
-                        result.match_reason,
-                        result.memory.summary
+                        result.score, result.memory.id, result.match_reason, result.memory.summary
                     ));
                 }
-                for result in &policy_results {
+                for result in &selected_policy {
                     lines.push(format!(
                         "[guidance] {}\n  {}",
-                        result.memory.id,
-                        result.memory.summary
+                        result.memory.id, result.memory.summary
                     ));
                 }
             }
@@ -1101,34 +1146,35 @@ impl ToolHandler {
             return Ok(serde_json::json!({
                 "compact": true,
                 "text": text_body,
-                "count": results.len(),
+                "count": selected.len(),
                 "abstained": abstained,
                 "best_score": best_score,
                 "degraded": degraded,
+                "token_ledger": token_ledger,
                 "method": "rrf_hybrid_search"
             }));
         }
 
         Ok(serde_json::json!({
-            "results": results,
-            "response_guidance": policy_results,
+            "results": selected,
+            "response_guidance": selected_policy,
             "channels": {
                 "factual": {
                     "quota": max_results,
-                    "count": results.len(),
+                    "count": selected.len(),
                     "abstained": abstained,
                     "abstention_reason": if abstained { Some("best factual result score was below abstention_threshold") } else { None::<&str> }
                 },
                 "response_guidance": {
                     "quota": 3,
-                    "count": policy_results.len(),
-                    "abstained": policy_results.is_empty(),
-                    "abstention_reason": if policy_results.is_empty() { Some("no eligible anchored policy matched") } else { None::<&str> }
+                    "count": selected_policy.len(),
+                    "abstained": selected_policy.is_empty(),
+                    "abstention_reason": if selected_policy.is_empty() { Some("no eligible anchored policy matched") } else { None::<&str> }
                 }
             },
             "token_ledger": token_ledger,
             "query": params.query,
-            "count": results.len(),
+            "count": selected.len(),
             "method": if params.hierarchical.unwrap_or(false) {
                 "hierarchical_hybrid_search"
             } else {
@@ -1752,11 +1798,15 @@ impl ToolHandler {
         let embedding = self.embeddings.generate_embedding(&memory.content).await?;
         memory.embedding = Some(embedding);
 
-        // Store memory (with embedding)
-        self.storage.store_memory(&memory).await?;
+        // Store memory (with embedding). The canonical stored ID is returned
+        // and may differ from memory.id when the write near-merges into a
+        // parent; always report the resolvable canonical ID back to the client.
+        let stored = self.storage.store_memory(&memory).await?;
+        let canonical_id = stored.id;
 
         // Emit event through event sink
-        let event = crate::api::Event::memory_stored(memory.id.to_string(), memory.summary.clone());
+        let event =
+            crate::api::Event::memory_stored(canonical_id.to_string(), memory.summary.clone());
         if let Err(e) = self.event_sink.emit(event).await {
             warn!("Failed to emit memory stored event: {}", e);
         }
@@ -1770,7 +1820,8 @@ impl ToolHandler {
         );
 
         Ok(serde_json::json!({
-            "memory_id": memory.id.to_string(),
+            "memory_id": canonical_id.to_string(),
+            "merged": stored.status == crate::types::MemoryStoreStatus::Merged,
             "summary": memory.summary,
             "importance": memory.importance,
             "tags": memory.tags

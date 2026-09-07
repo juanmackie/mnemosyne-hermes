@@ -85,6 +85,13 @@ impl MemoryLinker {
     /// Create a memory linker that will run the A-MEM post-insert hook when
     /// `on_insert.enabled` is `true`.
     ///
+    /// **EXPERIMENTAL — do not use in production.**
+    ///
+    /// This constructor is explicitly experimental and is intentionally NOT
+    /// wired into normal production construction (production uses
+    /// [`MemoryLinker::new`], which leaves the hook disabled). It exists only for
+    /// opt-in evaluation; do not promote or enable it by default.
+    ///
     /// `proposer` supplies the link-proposal strategy (typically an
     /// [`LlmLinkProposer`] wrapping the existing `LlmService`).
     pub fn with_insert_hook(
@@ -138,15 +145,16 @@ impl MemoryLinker {
             provenance: None,
         };
 
-        self.storage.store_memory(&memory).await?;
+        let stored = self.storage.store_memory(&memory).await?;
+        let canonical_id = stored.id;
 
         // A-MEM post-insert hook (cost-gated, best-effort). Any failure degrades
         // to a plain insert — the memory itself is already persisted.
         if self.on_insert.enabled && self.proposer.is_some() {
-            let _ = self.run_insert_hook(memory.id).await;
+            let _ = self.run_insert_hook(canonical_id).await;
         }
 
-        Ok(memory.id)
+        Ok(canonical_id)
     }
 
     /// Run the A-MEM post-insert link-proposal hook for `new_memory_id`.
@@ -181,7 +189,11 @@ impl MemoryLinker {
         // is disabled it returns no candidates and the hook degrades to a no-op.
         let candidates = self
             .storage
-            .vector_search(embedding, self.on_insert.k, Some(new_memory.namespace.clone()))
+            .vector_search(
+                embedding,
+                self.on_insert.k,
+                Some(new_memory.namespace.clone()),
+            )
             .await?
             .into_iter()
             .map(|result| result.memory)

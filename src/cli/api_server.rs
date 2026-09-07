@@ -19,6 +19,10 @@ pub async fn handle(addr: String, capacity: usize) -> Result<()> {
     let config = ApiServerConfig {
         addr: socket_addr,
         event_capacity: capacity,
+        // Explicit user command: the dashboard is opted in here.
+        start_dashboard: true,
+        auth_token: None,
+        allowed_origins: Vec::new(),
     };
 
     let start_time = std::time::Instant::now();

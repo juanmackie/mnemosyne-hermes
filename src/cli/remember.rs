@@ -1,9 +1,9 @@
 //! Memory creation command
 
 use mnemosyne_core::{
-    error::Result, icons, orchestration::events::AgentEvent, ConnectionMode, EmbeddingConfig,
-    EmbeddingService, LibsqlStorage, LlmConfig, LlmService, LocalEmbeddingService, MemoryNote,
-    RemoteEmbeddingService, StorageBackend,
+    error::Result, icons, orchestration::events::AgentEvent, remote_embedding_config,
+    ConnectionMode, EmbeddingConfig, EmbeddingService, LibsqlStorage, LlmConfig, LlmService,
+    LocalEmbeddingService, MemoryNote, RemoteEmbeddingService, StorageBackend,
 };
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -188,9 +188,13 @@ pub async fn handle(
         memory.tags.extend(custom_tags);
     }
 
-    // Generate embedding if API key available
-    if has_api_key {
-        match RemoteEmbeddingService::new(llm_config.api_key.clone(), None, None) {
+    // Generate embedding. The remote (Voyage) provider is used ONLY when an
+    // explicit Voyage credential is configured (MNEMOSYNE_VOYAGE_API_KEY); an
+    // Anthropic LLM key never routes here. Otherwise we default to local
+    // embeddings, so a configured Anthropic key no longer blocks the local
+    // fallback.
+    if let Some((voyage_key, model, base_url)) = remote_embedding_config() {
+        match RemoteEmbeddingService::new(voyage_key, model, base_url) {
             Ok(embedding_service) => match embedding_service.embed(&memory.content).await {
                 Ok(embedding) => memory.embedding = Some(embedding),
                 Err(_) => {
@@ -202,8 +206,8 @@ pub async fn handle(
             }
         }
     } else {
-        // No remote API key — try local embeddings for offline personal agents.
-        debug!("No API key — attempting local embedding");
+        // No remote provider configured — local embeddings for offline agents.
+        debug!("No Voyage key — attempting local embedding");
         let embed_config = EmbeddingConfig {
             show_download_progress: false,
             ..EmbeddingConfig::default()
@@ -223,13 +227,16 @@ pub async fn handle(
         }
     }
 
-    // Store memory
-    storage.store_memory(&memory).await?;
+    // Store memory. The store may deduplicate into an existing parent when
+    // content is a near-duplicate; the returned canonical ID is authoritative
+    // and always resolvable.
+    let stored = storage.store_memory(&memory).await?;
+    let canonical_id = stored.id;
 
     // Emit memory stored event
     let remember_event = AgentEvent::RememberExecuted {
         content_preview: memory.summary.chars().take(100).collect(),
-        memory_id: memory.id.clone(),
+        memory_id: canonical_id,
         importance: memory.importance,
     };
     let _ = event_bridge::emit_event(remember_event).await;
@@ -239,7 +246,8 @@ pub async fn handle(
         println!(
             "{}",
             serde_json::json!({
-                "id": memory.id.to_string(),
+                "id": canonical_id.to_string(),
+                "merged": stored.status == mnemosyne_core::MemoryStoreStatus::Merged,
                 "summary": memory.summary,
                 "importance": memory.importance,
                 "tags": memory.tags,
@@ -248,7 +256,11 @@ pub async fn handle(
         );
     } else {
         eprintln!("{} Memory saved", icons::status::success());
-        println!("ID: {}", memory.id);
+        if stored.status == mnemosyne_core::MemoryStoreStatus::Merged {
+            println!("ID: {} (merged into existing memory)", canonical_id);
+        } else {
+            println!("ID: {}", canonical_id);
+        }
         println!("Summary: {}", memory.summary);
         println!("Importance: {}/10", memory.importance);
         println!("Tags: {}", memory.tags.join(", "));
@@ -261,7 +273,7 @@ pub async fn handle(
         duration_ms,
         format!(
             "Stored memory {} (importance {})",
-            memory.id, memory.importance
+            canonical_id, memory.importance
         ),
     )
     .await;
