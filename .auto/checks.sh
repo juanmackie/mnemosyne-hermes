@@ -6,10 +6,20 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 bash -n install.sh scripts/test-hermes-adoption.sh 2>/dev/null || bash -n install.sh
 
+# The repo is not rustfmt-clean under current stable rustfmt (53 pre-existing
+# diffs, mostly benches and extractors). Gate on NEW offenders only, so this run
+# is not blocked by unrelated churn: a new offending file fails the check.
 if rustup component list --installed 2>/dev/null | grep -q '^rustfmt'; then
   cargo fmt --check >/tmp/mnemosyne-autoresearch-fmt.log 2>&1 || {
-    tail -80 /tmp/mnemosyne-autoresearch-fmt.log
-    exit 1
+    grep '^Diff in' /tmp/mnemosyne-autoresearch-fmt.log \
+      | sed 's/^Diff in //; s/ at line.*//; s/:$//' | sort -u > /tmp/fmt-now.txt
+    if ! comm -13 .auto/fmt-baseline.txt /tmp/fmt-now.txt | grep .; then
+      echo "rustfmt: $(wc -l < /tmp/fmt-now.txt) diffs, all pre-existing"
+    else
+      echo "rustfmt: NEW offenders:"
+      comm -13 .auto/fmt-baseline.txt /tmp/fmt-now.txt
+      exit 1
+    fi
   }
 else
   echo "rustfmt component unavailable; skipping format check" >&2

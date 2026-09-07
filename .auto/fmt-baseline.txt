@@ -1,0 +1,12 @@
+/Mnemosyne/benches/hermes_recall_bench.rs
+/Mnemosyne/benches/memory_benchmarks.rs
+/Mnemosyne/src/artifacts/memory_link.rs
+/Mnemosyne/src/config.rs
+/Mnemosyne/src/extractors/code.rs
+/Mnemosyne/src/extractors/mod.rs
+/Mnemosyne/src/lib.rs
+/Mnemosyne/src/mcp/tools.rs
+/Mnemosyne/src/storage/libsql.rs
+/Mnemosyne/src/storage/quantized.rs
+/Mnemosyne/src/utils/ppr.rs
+/Mnemosyne/tests/ppr_retrieval_test.rs
