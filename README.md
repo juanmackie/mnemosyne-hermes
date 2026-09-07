@@ -691,6 +691,21 @@ For more troubleshooting help, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Performance
 
+**Hermes recall path** (177-memory eval corpus, one warm `mnemosyne serve` process):
+
+- Warm `mnemosyne_recall` p95: **20 ms** (was 418 ms before the shared-connection and
+  WAL work). Ranking is unchanged; all of it was fixed per-call cost.
+- The local store runs in WAL mode with `busy_timeout=5000` and `synchronous=NORMAL`.
+  That is what makes a commit-heavy recall path usable: one single-row commit costs
+  ~0.3 ms instead of ~29 ms (rollback journal + `synchronous=FULL`).
+- `synchronous=NORMAL` survives application crashes; an OS or power failure can lose
+  the last few commits. Set `MNEMOSYNE_SQLITE_SYNCHRONOUS=full` for per-commit fsync —
+  still ~2.4× cheaper per commit than the pre-WAL setting. WAL keeps `-wal`/`-shm`
+  sidecars, so the database must live on a local filesystem, not NFS.
+- Retrieval diagnostics are written per query, but the fallback-rate sweep over trace
+  history (O(all traces): 5 ms at 10k rows, 27 ms at 50k) plus golden evaluation runs
+  once every 64 traces, so it never lands on the recall critical path.
+
 **Storage Operations** (PyO3 vs subprocess):
 - Store: 2.25ms avg (was 20-50ms) - **10-20x faster**
 - List: 0.88ms avg (<1ms target) - **22-56x faster**
