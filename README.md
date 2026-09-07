@@ -650,7 +650,7 @@ ConnectionMode::EmbeddedReplica { ... }  // Local replica with sync
 cargo test --lib
 
 # Integration tests
-cargo test --test integration_ics --features test-utils
+cargo test --test ics_integration_test
 
 # E2E tests
 bash tests/e2e/human_workflow_1_new_project.sh
