@@ -267,9 +267,9 @@ fn walk_python_node(
                         .unwrap_or_default();
 
                     symbols.push(ExtractedCodeSymbol {
-                        name,
                         kind: "fn".to_string(),
                         signature: Some(format!("def {}{}{}", name, params, return_type)),
+                        name,
                         docstring: extract_python_docstring(node, code),
                         scope: current_scope.map(ToString::to_string),
                         breadcrumb,
