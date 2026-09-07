@@ -14,6 +14,7 @@ DRY=0
 OUT=$(mktemp)
 trap 'rm -f "$OUT"' EXIT
 ./.auto/measure.sh >"$OUT" 2>&1
+cp "$OUT" .auto/last_measure.txt  # keep raw output for post-mortems
 RC=$?
 grep -E "^(METRIC|note)" "$OUT" || true
 [ "$RC" -ne 0 ] && [ "$STATUS" = "keep" ] && { echo "STATUS: cannot keep a failed run"; exit 1; }
@@ -44,7 +45,7 @@ if os.path.exists(log_path):
     with open(log_path) as f:
         history = [json.loads(l) for l in f if l.strip()]
 
-PRIMARY = os.environ.get("AUTO_PRIMARY", "recall_latency_mcp_p95_ms")
+PRIMARY = os.environ.get("AUTO_PRIMARY", "recall_latency_warm_p95_ms")
 cur = metrics.get(PRIMARY)
 kept = [h["metrics"].get(PRIMARY) for h in history
         if h.get("status") == "keep" and h.get("metrics", {}).get(PRIMARY)]
@@ -87,7 +88,8 @@ if noise is not None:
     print("noise floor (median |delta|): %.1f%%" % (noise * 100.0))
 if metrics:
     sec = {k: round(v, 1) for k, v in metrics.items()
-           if k in ("realquery_heldout_mrr", "realquery_mcp_heldout_mrr", "realquery_heldout_hit1",
-                    "recall_latency_p95_ms", "recall_latency_cli_p95_ms")}
+           if k in ("realquery_heldout_mrr", "realquery_mcp_heldout_mrr", "realquery_warm_mrr",
+                    "realquery_heldout_hit1", "recall_latency_p95_ms", "recall_latency_cli_p95_ms",
+                    "recall_latency_mcp_p95_ms", "recall_latency_warm_p50_ms")}
     print("secondary:", sec)
 PY

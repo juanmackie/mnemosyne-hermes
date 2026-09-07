@@ -84,7 +84,8 @@ def main() -> int:
             send({"jsonrpc": "2.0", "method": "tools/call", "id": request_id,
                   "params": {"name": "mnemosyne_recall", "arguments": {
                       "query": item["query"], "namespace": args.namespace,
-                      "max_results": args.limit}}})
+                      "max_results": args.limit,
+                      "compact": False}}})
             response = drain_until_id(proc, request_id)
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             if response is None:

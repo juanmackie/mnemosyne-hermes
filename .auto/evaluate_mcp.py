@@ -40,6 +40,9 @@ def one_query(binary: Path, db: Path, namespace: str, item: dict,
                 "query": item["query"],
                 "namespace": namespace,
                 "max_results": limit,
+            # HEAD defaults mnemosyne_recall to compact plain-text output;
+            # scoring needs the full result fields.
+            "compact": False,
             },
         },
     }
