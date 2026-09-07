@@ -26,9 +26,9 @@ warning: unused import: `Namespace`
    |                                            ^^^^^^^^^
 
 warning: variable does not need to be mutable
-    --> src/storage/libsql.rs:3689:13
+    --> src/storage/libsql.rs:3695:13
      |
-3689 |         let mut nodes: HashSet<String> = kept;
+3695 |         let mut nodes: HashSet<String> = kept;
      |             ----^^^^^
      |             |
      |             help: remove this `mut`
@@ -69,12 +69,12 @@ warning: field `db` is never read
     |     ^^
 
 warning: method `log_audit` is never used
-    --> src/storage/libsql.rs:2424:14
+    --> src/storage/libsql.rs:2430:14
      |
- 841 | impl LibsqlStorage {
+ 847 | impl LibsqlStorage {
      | ------------------ method in this implementation
 ...
-2424 |     async fn log_audit(
+2430 |     async fn log_audit(
      |              ^^^^^^^^^
 
 warning: `mnemosyne` (lib) generated 10 warnings (run `cargo fix --lib -p mnemosyne` to apply 6 suggestions)
@@ -168,7 +168,7 @@ warning: function `show_help` is never used
     |    ^^^^^^^^^
 
 warning: `mnemosyne` (bin "mnemosyne") generated 13 warnings (run `cargo fix --bin "mnemosyne" -p mnemosyne` to apply 7 suggestions)
-    Finished `release` profile [optimized] target(s) in 4m 54s
+    Finished `release` profile [optimized] target(s) in 7m 09s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
 METRIC realquery_heldout_mrr=0.981481
@@ -177,11 +177,11 @@ METRIC realquery_mcp_heldout_mrr=0.981481
 METRIC realquery_dev_mrr=0.938272
 METRIC realquery_heldout_hit5=1.000000
 METRIC realquery_heldout_hit1=0.962963
-METRIC recall_latency_p95_ms=1256.528
-METRIC recall_latency_mcp_p95_ms=1256.528
-METRIC recall_latency_cli_p95_ms=1231.785
-METRIC recall_latency_warm_p95_ms=20.375
-METRIC recall_latency_warm_p50_ms=15.012
+METRIC recall_latency_p95_ms=1281.463
+METRIC recall_latency_mcp_p95_ms=1281.463
+METRIC recall_latency_cli_p95_ms=1242.352
+METRIC recall_latency_warm_p95_ms=20.237
+METRIC recall_latency_warm_p50_ms=13.874
 METRIC realquery_warm_mrr=0.989583
 METRIC realquery_warm_hit1=0.979167
 INFO category_mrr[already_told]=1.0000

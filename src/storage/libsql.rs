@@ -787,6 +787,12 @@ pub struct LibsqlStorage {
     temporary_path: Option<std::path::PathBuf>,
 }
 
+/// How often (in recorded traces) the O(history) retrieval diagnostics inside
+/// `record_retrieval_trace` run. See the comment there.
+const TRACE_DIAGNOSTIC_EVERY: u64 = 64;
+static TRACE_DIAGNOSTIC_TICK: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 impl Drop for LibsqlStorage {
     fn drop(&mut self) {
         if let Some(path) = &self.temporary_path {
@@ -9794,6 +9800,17 @@ impl LibsqlStorage {
             }
         }
         drop(rows);
+        // The rest of this method is monitoring, not recall: a fallback-rate scan
+        // over every trace ever written (measured 5ms at 10k rows, 27ms at 50k)
+        // plus a golden-item evaluation replay of up to 100 traces. Running it on
+        // every query puts an O(history) scan on the recall path, so it runs once
+        // every TRACE_DIAGNOSTIC_EVERY writes instead.
+        if TRACE_DIAGNOSTIC_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % TRACE_DIAGNOSTIC_EVERY
+            != 0
+        {
+            return Ok(());
+        }
         // Evaluation is bounded by the persisted weekly gate and becomes
         // active automatically once a local golden item has been harvested.
         let mut golden = conn
