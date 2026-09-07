@@ -73,27 +73,7 @@ pub async fn with_event_lifecycle<F, T>(command: &str, args: Vec<String>, handle
 where
     F: Future<Output = Result<T>>,
 {
-    let start = std::time::Instant::now();
-
-    // Emit started event
-    event_bridge::emit_command_started(command, args.clone()).await;
-
-    // Execute handler
-    let result = handler.await;
-
-    let duration_ms = start.elapsed().as_millis() as u64;
-
-    // Emit completed or failed event
-    match &result {
-        Ok(_) => {
-            event_bridge::emit_command_completed(command, duration_ms, "Success".to_string()).await;
-        }
-        Err(e) => {
-            event_bridge::emit_command_failed(command, e.to_string(), duration_ms).await;
-        }
-    }
-
-    result
+    with_event_lifecycle_and_summary(command, args, handler, |_| "Success".to_string()).await
 }
 
 /// Wraps a CLI command execution with automatic event emission and custom result summary

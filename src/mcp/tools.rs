@@ -10,6 +10,7 @@ use crate::error::{MnemosyneError, Result};
 use crate::services::{EmbeddingService, LlmService};
 use crate::storage::StorageBackend;
 use crate::types::{MemoryId, MemoryNote, MemoryType, Namespace};
+use crate::utils::retrieval::RankedRecall;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -889,108 +890,34 @@ impl ToolHandler {
             .interaction_policy_search(&params.query, 3)
             .await?;
 
-        // Phase 3: Merge and re-rank factual results. Use the same persisted
-        // weights as storage so MCP and CLI retrieval do not drift.
         let retrieval_weights = self.storage.retrieval_weights().await;
-        let mut memory_scores = std::collections::HashMap::new();
 
-        // `hybrid_search` has already fused keyword, graph, importance, and
-        // recency signals using the shared adaptive weights. Treat that score
-        // as one channel here; applying keyword weight again would double
-        // weight it and erase the graph contribution from this public path.
-        for result in keyword_results {
-            memory_scores
-                .entry(result.memory.id)
-                .or_insert((result.memory.clone(), vec![]))
-                .1
-                .push(("hybrid", result.score));
-        }
-
-        // Add vector results with the effective weight
-        for result in vector_results {
-            memory_scores
-                .entry(result.memory.id)
-                .or_insert((result.memory.clone(), vec![]))
-                .1
-                .push(("vector", result.score * retrieval_weights.vector));
-        }
-
-        // Compute final scores
-        let mut results: Vec<_> = memory_scores
-            .into_iter()
-            .map(|(_id, (memory, score_components))| {
-                let total_score: f32 = score_components.iter().map(|(_, s)| s).sum();
-                let match_reason = score_components
-                    .iter()
-                    .map(|(method, score)| format!("{}: {:.2}", method, score))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                crate::types::SearchResult {
-                    memory,
-                    score: total_score,
-                    match_reason: format!("hybrid ({})", match_reason),
-                }
-            })
-            .collect();
-
-        // Sort by score descending
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Coverage rescoring before truncation: promote candidates covering
-        // most of the query's content terms over single-token OR matches.
-        crate::utils::retrieval::apply_coverage_rescore(&params.query, &mut results);
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Limit results
-        results.truncate(max_results);
-
-        // Filter by minimum importance if specified
-        if let Some(min_importance) = params.min_importance {
-            results.retain(|r| r.memory.importance >= min_importance);
-        }
-
-        let best_score = results.first().map(|result| result.score).unwrap_or(0.0);
-        let abstention_threshold = params.abstention_threshold;
-        let abstained = abstention_threshold
-            .map(|threshold| best_score < threshold)
-            .unwrap_or(false);
-        if abstained {
-            results.clear();
-        }
-
-        // Optional hierarchical reranking through the topic tree
-        let mut trajectory_json: Option<serde_json::Value> = None;
-        if params.hierarchical.unwrap_or(false) {
-            let note_refs: Vec<&crate::types::MemoryNote> =
-                results.iter().map(|r| &r.memory).collect();
-            let raw_scores: Vec<f32> = results.iter().map(|r| r.score).collect();
-            let (ranked, trajectory) = crate::hierarchy::rerank_results(
-                &note_refs,
-                &raw_scores,
-                crate::hierarchy::RetrieverConfig::default(),
-                true,
-            );
-            trajectory_json = serde_json::from_str(&trajectory.to_json()).ok();
-            results = ranked
-                .into_iter()
-                .filter_map(|(i, s)| {
-                    results.get(i).cloned().map(|mut r| {
-                        r.score = s;
-                        r.match_reason = format!("{} [hierarchical]", r.match_reason);
-                        r
-                    })
-                })
-                .collect();
-        }
+        // Phase 3: merge + re-rank via the single shared path.
+        // The old hand-rolled pipeline diverged from the CLI copy
+        // (see src/cli/recall.rs and tests/recall_parity.rs).
+        let ranked = crate::utils::retrieval::rank_recall(
+            &params.query,
+            keyword_results,
+            vector_results,
+            retrieval_weights.vector,
+            max_results,
+            params.min_importance,
+            None,
+            params.abstention_threshold,
+            params.hierarchical.unwrap_or(false),
+        );
+        let trajectory_json_v = ranked
+            .trajectory_json
+            .map(|t| serde_json::from_str(&t).unwrap_or(serde_json::Value::Null));
+        let RankedRecall {
+            results: mut results,
+            candidates,
+            capped,
+            abstained,
+            ..
+        } = ranked;
+        let trajectory_json = trajectory_json_v;
+        let est_tokens = crate::utils::retrieval::estimate_result_tokens(&results);
 
         // Build the budgeted context-assembly plan once. `budget_tokens` is a
         // *content* budget charged against memory text; protocol (JSON wrapper +
@@ -998,7 +925,7 @@ impl ToolHandler {
         // callers can budget end-to-end. The assembler's SELECTED entries drive
         // BOTH compact and structured output so the two modes never diverge.
         let content_budget = params.budget_tokens.unwrap_or(DEFAULT_CONTENT_BUDGET);
-        let mut candidates = results
+        let mut assembler_candidates = results
             .iter()
             .map(|result| {
                 crate::context_assembler::Candidate::new(
@@ -1011,7 +938,7 @@ impl ToolHandler {
                 )
             })
             .collect::<Vec<_>>();
-        candidates.extend(policy_results.iter().map(|result| {
+        assembler_candidates.extend(policy_results.iter().map(|result| {
             crate::context_assembler::Candidate::new(
                 format!("policy-{}", result.memory.id),
                 "Response guidance",
@@ -1021,7 +948,7 @@ impl ToolHandler {
                 result.score,
             )
         }));
-        let budget_plan = crate::context_assembler::assemble(&candidates, content_budget);
+        let budget_plan = crate::context_assembler::assemble(&assembler_candidates, content_budget);
 
         // The assembler's SELECTED entries (admitted under budget), ordered
         // best-first as the assembler admitted them. Factual vs policy kept
@@ -1050,20 +977,12 @@ impl ToolHandler {
 
         // Disclose content budget and protocol overhead in the token ledger.
         let token_ledger = {
-            // Fixed wrapper (~2 tokens) plus per-entry structural fields.
-            // ponytail: fixed heuristic; refine with a real serialization
-            //   cost if per-entry overhead ever matters end-to-end.
             let protocol_overhead_tokens = 2 + budget_plan.entries.len() * 8;
-            let mut ledger = serde_json::to_value(&budget_plan.ledger)
-                .unwrap_or_else(|_| serde_json::json!({"budget_tokens": content_budget}));
-            if let Some(l) = ledger.as_object_mut() {
-                l.insert("content_budget_tokens".into(), content_budget.into());
-                l.insert(
-                    "protocol_overhead_tokens".into(),
-                    protocol_overhead_tokens.into(),
-                );
-            }
-            ledger
+            serde_json::json!({
+                "budget_tokens": content_budget,
+                "protocol_overhead_tokens": protocol_overhead_tokens,
+                "spent_tokens": budget_plan.ledger.spent_tokens,
+            })
         };
 
         let mut explain_trace =
@@ -1121,8 +1040,10 @@ impl ToolHandler {
             if abstained {
                 lines.push(format!(
                     "ABSTAINED (best_score={:.3} < threshold={:.3}): no confident results found",
-                    best_score,
-                    abstention_threshold.unwrap_or(RECOMMENDED_ABSTENTION_THRESHOLD)
+                    selected.first().map(|r| r.score).unwrap_or(0.0),
+                    params
+                        .abstention_threshold
+                        .unwrap_or(RECOMMENDED_ABSTENTION_THRESHOLD)
                 ));
             } else {
                 for result in &selected {
@@ -1148,7 +1069,7 @@ impl ToolHandler {
                 "text": text_body,
                 "count": selected.len(),
                 "abstained": abstained,
-                "best_score": best_score,
+                "best_score": selected.first().map(|r| r.score).unwrap_or(0.0),
                 "degraded": degraded,
                 "token_ledger": token_ledger,
                 "method": "rrf_hybrid_search"
@@ -1156,7 +1077,19 @@ impl ToolHandler {
         }
 
         Ok(serde_json::json!({
+            "disclosure": crate::utils::retrieval::recall_disclosure(
+                candidates,
+                capped,
+                abstained,
+                selected.len(),
+                est_tokens,
+                params.abstention_threshold,
+            ),
+            "legend": crate::utils::retrieval::recall_legend(),
             "results": selected,
+            "shown": selected.len(),
+            "candidates": candidates,
+            "capped": capped,
             "response_guidance": selected_policy,
             "channels": {
                 "factual": {
@@ -1187,13 +1120,13 @@ impl ToolHandler {
             "degraded_reasons": degraded_reasons,
             "embedding_mode": self.embeddings.embedding_mode(),
             "fallback_warning": fallback_warning,
-            "best_score": best_score,
+            "best_score": results.first().map(|r| r.score).unwrap_or(0.0),
             "abstained": abstained,
-            "abstention_enabled": abstention_threshold.is_some(),
+            "abstention_enabled": params.abstention_threshold.is_some(),
             // Preserve the documented recommendation for callers that do not
             // opt into abstention, while returning the requested threshold
             // when one was supplied.
-            "abstention_threshold": abstention_threshold.unwrap_or(RECOMMENDED_ABSTENTION_THRESHOLD),
+            "abstention_threshold": params.abstention_threshold.unwrap_or(RECOMMENDED_ABSTENTION_THRESHOLD),
             "explain_trace": explain_trace,
             "abstention_reason": if abstained {
                 Some("best result score was below abstention_threshold")

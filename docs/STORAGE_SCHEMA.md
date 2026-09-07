@@ -422,7 +422,7 @@ ON agent_events(agent_id, timestamp DESC);
 | 013 | add_task_and_agent_event_types.sql | New memory/event types |
 | 024 | constraint_proposals.sql | Owner-reviewed, scoped project constraints used by bootstrap |
 
-**Applied via**: `libsql_migration` crate at startup
+**Applied via**: the embedded migration runner at startup
 
 ---
 
@@ -580,7 +580,7 @@ ALTER TABLE memories ADD COLUMN new_field TEXT DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_memories_new_field ON memories(new_field);
 ```
 
-**Migration applied automatically** on startup via `libsql_migration` crate.
+**Migration applied automatically** on startup via the embedded migration runner.
 
 ---
 

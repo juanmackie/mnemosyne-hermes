@@ -1,6 +1,7 @@
 name: CI
 
 on:
+<<<<<<< HEAD
   pull_request:
   push:
     branches:
@@ -21,12 +22,51 @@ env:
 jobs:
   fmt:
     name: cargo fmt --check
+=======
+  push:
+  pull_request:
+
+jobs:
+  style:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: bash scripts/check_notes.sh
+
+  clippy:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --lib --all-targets --all-features
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --lib --no-fail-fast
+      - run: cargo test --test recall_parity --no-fail-fast
+
+  gates:
+>>>>>>> 83eb28b (feat: recall parity, honesty vocabulary, notes ledger, CI (ripwire patterns))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+<<<<<<< HEAD
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
@@ -72,3 +112,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo check --features ${{ matrix.features }}
         run: cargo check --locked --features "${{ matrix.features }}"
+=======
+      - run: bash scripts/checks.sh
+>>>>>>> 83eb28b (feat: recall parity, honesty vocabulary, notes ledger, CI (ripwire patterns))

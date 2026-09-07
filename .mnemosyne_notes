@@ -1,0 +1,4 @@
+# Mnemosyne notes â provenance-stamped, sorted, merge-friendly.
+Makefile+L29	2026-09-07	RUSTFLAGS="-A warnings" suppresses every lint without key, magnitude, or reason â ripwire pattern: ack ledger instead (docs/METHODOLOGY.md).	ba6fe984	main
+README.md+L828	2026-09-07	"715 tests passing (up from 474, +241 new tests)" is hand-copied; no gate re-derives it from cargo test -- --list.	ba6fe984	main
+src/utils/retrieval.rs+rank_recall	2026-09-07	Shared recall pipeline extracted 2026-09-07; CLI/MCP parity gate in tests/recall_parity.rs. ABI: rank_recall(query,keyword,vector,vector_weight,limit,min_importance,tags,abstention_threshold,hierarchical).	ba6fe984	main

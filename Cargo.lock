@@ -378,17 +378,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "atty"
-version = "0.2.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9b39be18770d11421cdb1b9947a45dd3f37e93092cbf377614828a319d5fee8"
-dependencies = [
- "hermit-abi 0.1.19",
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2727,15 +2716,6 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermit-abi"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
@@ -3969,7 +3949,7 @@ version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
- "hermit-abi 0.5.2",
+ "hermit-abi",
  "libc",
  "windows-sys 0.61.2",
 ]
@@ -4269,16 +4249,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libsql_migration"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "257b5f2880d907038bfc280918342034adf0c1cb07140e9473fc53c9677afdbc"
-dependencies = [
- "libsql",
- "tokio",
-]
-
-[[package]]
 name = "libsql_replication"
 version = "0.9.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4571,7 +4541,6 @@ dependencies = [
  "anyhow",
  "ariadne",
  "async-trait",
- "atty",
  "automerge",
  "axum 0.7.9",
  "bincode",
@@ -4589,7 +4558,6 @@ dependencies = [
  "iroh",
  "keyring",
  "libsql",
- "libsql_migration",
  "lru",
  "mockall",
  "nix 0.30.1",
@@ -4628,7 +4596,6 @@ dependencies = [
  "tonic-build",
  "tonic-health",
  "tonic-reflection",
- "tower 0.4.13",
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
@@ -5122,7 +5089,7 @@ version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
 dependencies = [
- "hermit-abi 0.5.2",
+ "hermit-abi",
  "libc",
 ]
 

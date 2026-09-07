@@ -370,6 +370,277 @@ pub fn apply_supersession_penalty(results: &mut [SearchResult]) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The single recall ranking path shared by the CLI and MCP dialects.
+//
+// Both dialects used to hand-roll fuse -> coverage rescore -> hierarchical
+// rerank -> truncate -> filter. They had already drifted: MCP re-ranked the
+// list AFTER it was truncated to max_results while the CLI re-ranked the whole
+// candidate pool, MCP carried abstention and the CLI did not, and each wrote a
+// different `match_reason` for the same memory. Same question, two answers —
+// the defect class, not the instance. Ranking lives here now; one gate over
+// the family (tests/recall_parity.rs) fails if a sibling grows a stage again.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Storage's dominant-channel label, stripped of the score it carries, so the
+/// fused `match_reason` can name the route without duplicating numbers.
+fn storage_channel(match_reason: &str) -> Option<&str> {
+    let label = match_reason
+        .split_whitespace()
+        .next()
+        .unwrap_or(match_reason);
+    match label {
+        "graph_expansion" | "entity_anchor" | "vector_similarity" | "keyword_match" => Some(label),
+        _ => None,
+    }
+}
+
+fn sort_recall(results: &mut [SearchResult]) {
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Score-only sorting left equal-score candidates in HashMap
+            // iteration order, so a recall answer was not reproducible run to
+            // run. Memory id is the stable tie-break both dialects share.
+            .then_with(|| a.memory.id.to_string().cmp(&b.memory.id.to_string()))
+    });
+}
+
+/// The outcome of one shared recall ranking.
+#[derive(Debug, Clone)]
+pub struct RankedRecall {
+    /// Served results, in rank order. Empty when `abstained`.
+    pub results: Vec<SearchResult>,
+    /// Ranked candidates considered before `limit` was applied.
+    pub candidates: usize,
+    /// True when `limit` dropped at least one ranked candidate.
+    pub capped: bool,
+    /// True when the top score fell below `abstention_threshold`.
+    pub abstained: bool,
+    /// Topic-tree traversal trajectory JSON, when `hierarchical` ran.
+    pub trajectory_json: Option<String>,
+    pub keyword_candidates: usize,
+    pub vector_candidates: usize,
+    /// Served results storage reached through graph expansion. Counted from
+    /// storage's own label; 0 means none were served, and it is only reported
+    /// where the storage layer actually labelled the route.
+    pub graph_candidates: usize,
+}
+
+/// Fuse, re-rank and bound one recall query. Every stage that decides what an
+/// agent sees for a query runs here so no dialect can add or skip a stage.
+///
+/// `keyword` is the storage-fused channel (keyword + graph + importance +
+/// recency already weighted by `retrieval_weights`); its score is added as-is.
+/// `vector` carries the raw similarity and is scaled by `vector_weight`.
+///
+/// Stage order is the contract: class filter -> fuse -> coverage ->
+/// hierarchical re-rank (over the FULL pool) -> truncate -> filters ->
+/// abstain. Re-ranking before truncation is what lets the topic tree promote a
+/// candidate the fused score ranked outside the top-`limit`.
+pub fn rank_recall(
+    query: &str,
+    keyword: Vec<SearchResult>,
+    vector: Vec<SearchResult>,
+    vector_weight: f32,
+    limit: usize,
+    min_importance: Option<u8>,
+    tags: Option<&[String]>,
+    abstention_threshold: Option<f32>,
+    hierarchical: bool,
+) -> RankedRecall {
+    let knowledge =
+        |result: &SearchResult| result.memory.memory_class == crate::types::MemoryClass::Knowledge;
+    let keyword: Vec<SearchResult> = keyword.into_iter().filter(knowledge).collect();
+    let vector: Vec<SearchResult> = vector.into_iter().filter(knowledge).collect();
+    let keyword_candidates = keyword.len();
+    let vector_candidates = vector.len();
+
+    // Fuse by memory id. Insertion order is the keyword channel's own rank
+    // order, so a candidate seen nowhere else keeps a stable position.
+    let mut positions: std::collections::HashMap<crate::types::MemoryId, usize> =
+        std::collections::HashMap::new();
+    let mut contributions: Vec<(MemoryNote, Vec<(&'static str, f32)>)> = Vec::new();
+    let mut channels: std::collections::HashMap<crate::types::MemoryId, String> =
+        std::collections::HashMap::new();
+    for (channel, weight, storage_reason, note) in keyword
+        .into_iter()
+        .map(|r| ("hybrid", r.score, r.match_reason, r.memory))
+        .chain(
+            vector
+                .into_iter()
+                .map(|r| ("vector", r.score * vector_weight, r.match_reason, r.memory)),
+        )
+    {
+        match positions.get(&note.id) {
+            Some(&index) => contributions[index].1.push((channel, weight)),
+            None => {
+                positions.insert(note.id, contributions.len());
+                contributions.push((note.clone(), vec![(channel, weight)]));
+                if let Some(label) = storage_channel(&storage_reason) {
+                    channels.entry(note.id).or_insert_with(|| label.to_string());
+                }
+            }
+        }
+    }
+
+    let mut results: Vec<SearchResult> = contributions
+        .into_iter()
+        .map(|(memory, parts)| {
+            let score: f32 = parts.iter().map(|(_, value)| value).sum();
+            let mut match_reason = parts
+                .iter()
+                .map(|(channel, value)| format!("{}: {:.2}", channel, value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if let Some(label) = channels.get(&memory.id) {
+                match_reason.push_str(&format!(" [{}]", label));
+            }
+            SearchResult {
+                memory,
+                score,
+                match_reason,
+            }
+        })
+        .collect();
+    sort_recall(&mut results);
+
+    // Coverage before truncation: a deep candidate that covers the whole query
+    // must be able to outrank a shallow one that already sat inside the cap.
+    apply_coverage_rescore(query, &mut results);
+    sort_recall(&mut results);
+
+    let graph_candidates = results
+        .iter()
+        .filter(|result| result.match_reason.contains("[graph_expansion]"))
+        .count();
+
+    let mut trajectory_json = None;
+    if hierarchical && !results.is_empty() {
+        let notes: Vec<&MemoryNote> = results.iter().map(|r| &r.memory).collect();
+        let raw_scores: Vec<f32> = results.iter().map(|r| r.score).collect();
+        let (ranked, trajectory) = crate::hierarchy::rerank_results(
+            &notes,
+            &raw_scores,
+            crate::hierarchy::RetrieverConfig::default(),
+            true,
+        );
+        results = ranked
+            .into_iter()
+            .filter_map(|(index, score)| {
+                results.get(index).cloned().map(|mut result| {
+                    result.score = score;
+                    result.match_reason.push_str(" [hierarchical]");
+                    result
+                })
+            })
+            .collect();
+        trajectory_json = Some(trajectory.to_json());
+    }
+
+    let candidates = results.len();
+    results.truncate(limit);
+    let capped = candidates > results.len();
+
+    if let Some(min_imp) = min_importance {
+        results.retain(|result| result.memory.importance >= min_imp);
+    }
+    if let Some(filters) = tags {
+        let wanted: Vec<String> = filters
+            .iter()
+            .map(|tag| tag.trim().to_lowercase())
+            .filter(|tag| !tag.is_empty())
+            .collect();
+        if !wanted.is_empty() {
+            results.retain(|result| {
+                result
+                    .memory
+                    .tags
+                    .iter()
+                    .any(|tag| wanted.contains(&tag.to_lowercase()))
+            });
+        }
+    }
+
+    let best_score = results.first().map(|result| result.score).unwrap_or(0.0);
+    let abstained = abstention_threshold
+        .map(|threshold| best_score < threshold)
+        .unwrap_or(false);
+    if abstained {
+        results.clear();
+    }
+
+    RankedRecall {
+        results,
+        candidates,
+        capped,
+        abstained,
+        trajectory_json,
+        keyword_candidates,
+        vector_candidates,
+        graph_candidates,
+    }
+}
+
+/// Estimated tokens of the memory text a recall response carries. `~4 chars
+/// per token`, the same heuristic as [`crate::context_assembler::estimate_tokens`].
+pub fn estimate_result_tokens(results: &[SearchResult]) -> usize {
+    results
+        .iter()
+        .map(|result| {
+            crate::context_assembler::estimate_tokens(&result.memory.summary)
+                + crate::context_assembler::estimate_tokens(&result.memory.content)
+        })
+        .sum()
+}
+
+/// The honesty block every recall dialect returns, built in one place so the
+/// two cannot disagree about what their own fields mean. `abstained` means
+/// "not found", never "does not exist"; `capped` says the caller asked for
+/// fewer rows than matched.
+pub fn recall_disclosure(
+    candidates: usize,
+    capped: bool,
+    abstained: bool,
+    shown: usize,
+    est_tokens: usize,
+    abstention_threshold: Option<f32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "shown": shown,
+        "candidates": candidates,
+        "capped": capped,
+        "abstained": abstained,
+        "abstention_reason": if abstained {
+            Some(format!(
+                "best factual score was below abstention_threshold ({:.2}); nothing matched well enough to return — this is 'not found', not 'does not exist'",
+                abstention_threshold.unwrap_or(0.0)
+            ))
+        } else {
+            Option::<String>::None
+        },
+        "est_tokens": est_tokens,
+    })
+}
+
+/// Field meanings for the consuming agent. Kept beside the producer of the
+/// fields, and asserted against the emitted payload by tests/recall_parity.rs.
+pub fn recall_legend() -> serde_json::Value {
+    serde_json::json!({
+        "score": "Fusion sum of retrieval channels — 'hybrid' is storage's keyword+graph+importance+recency blend at the effective adaptive weights, 'vector' is cosine similarity scaled by the vector weight — then multiplied by a query-term coverage factor in [0.6, 1.4] and by 0.35 when superseded_by is set. Higher is better; it is NOT a probability and is not comparable across queries.",
+        "match_reason": "Per-channel score contributions, e.g. 'hybrid: 0.42, vector: 0.10'. Bracketed tags name the route storage took ([keyword_match] [vector_similarity] [graph_expansion] [entity_anchor]) and whether the topic tree re-ranked the pool ([hierarchical]).",
+        "shown": "Results returned for this call.",
+        "candidates": "Ranked candidates considered before the result limit was applied.",
+        "capped": "true = the limit dropped at least one ranked candidate; more memories matched.",
+        "abstained": "true = the best factual score fell below abstention_threshold, so no memories are returned. Means 'not found', never 'does not exist'.",
+        "est_tokens": "Estimated tokens of the returned memory text at ~4 characters per token; guidance and JSON envelope excluded.",
+        "abstention_reason": "When abstained=true, explains why nothing was returned; absent otherwise.",
+        "spent_tokens": "Tokens of assembled context actually emitted, tier by tier; see `entries[].tier`.",
+        "explain_trace": "Diagnostics for this retrieval: rewritten query terms, per-channel candidate counts, effective weights, fallback reasons, served ids. Raw query text is not stored.",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

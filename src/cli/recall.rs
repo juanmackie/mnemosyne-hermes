@@ -1,5 +1,6 @@
 //! Memory recall/query command
 
+use mnemosyne_core::utils::retrieval::{estimate_result_tokens, recall_disclosure, recall_legend};
 use mnemosyne_core::{build_memory_context_block, is_trivial_prompt, RecallBundle, RecallChannel};
 use mnemosyne_core::{
     embeddings::{fallback_embedding_warning, remote_embedding_config},
@@ -8,7 +9,6 @@ use mnemosyne_core::{
     ConnectionMode, EmbeddingConfig, EmbeddingService, LibsqlStorage, LocalEmbeddingService,
     RemoteEmbeddingService, StorageBackend,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -28,6 +28,7 @@ pub async fn handle(
     hierarchical: bool,
     trace: bool,
     budget_tokens: Option<usize>,
+    abstain_below: Option<f32>,
 ) -> mnemosyne_core::error::Result<()> {
     let start_time = std::time::Instant::now();
 
@@ -49,7 +50,6 @@ pub async fn handle(
     let keyword_results = storage
         .hybrid_search(&query, ns.clone(), limit * 2, true)
         .await?;
-    let keyword_candidate_count = keyword_results.len();
 
     // Vector search credential resolution. The remote (Voyage) provider is used
     // ONLY when an explicit Voyage credential (MNEMOSYNE_VOYAGE_API_KEY) is
@@ -143,70 +143,11 @@ pub async fn handle(
             }
         };
 
-    let vector_candidate_count = vector_results.len();
     let retrieval_weights = storage.retrieval_weights().await;
-    // Merge results
-    let mut memory_scores = HashMap::new();
 
-    // `hybrid_search` already applied the shared keyword/graph/importance/
-    // recency weights. Do not multiply the fused score by keyword weight a
-    // second time; only the separately generated vector channel is added here.
-    for result in keyword_results {
-        memory_scores
-            .entry(result.memory.id)
-            .or_insert((result.memory.clone(), vec![]))
-            .1
-            .push(result.score);
-    }
-
-    for result in vector_results {
-        memory_scores
-            .entry(result.memory.id)
-            .or_insert((result.memory.clone(), vec![]))
-            .1
-            .push(result.score * retrieval_weights.vector);
-    }
-
-    let mut results: Vec<_> = memory_scores
-        .into_iter()
-        .map(|(_, (memory, scores))| {
-            let total_score: f32 = scores.iter().sum();
-            (memory, total_score)
-        })
-        .collect();
-
-    // Interaction policies have a separate guidance channel and must never
-    // appear in the factual CLI recall result set.
-    results.retain(|(memory, _)| memory.memory_class == mnemosyne_core::MemoryClass::Knowledge);
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Coverage rescoring before truncation: promote candidates covering most
-    // of the query's content terms over single-token OR matches.
-    {
-        let mut rescored: Vec<mnemosyne_core::types::SearchResult> = results
-            .into_iter()
-            .map(|(memory, score)| mnemosyne_core::types::SearchResult {
-                memory,
-                score,
-                match_reason: "hybrid".to_string(),
-            })
-            .collect();
-        mnemosyne_core::utils::retrieval::apply_coverage_rescore(&query, &mut rescored);
-        rescored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        results = rescored
-            .into_iter()
-            .map(|result| (result.memory, result.score))
-            .collect();
-    }
-
-    // Hierarchical reranking through the topic tree (OpenViking-style)
-    let mut trajectory_json: Option<String> = None;
+    // Intent analysis first: chit-chat skips retrieval entirely. This is the
+    // CLI entry policy and it gates before any candidate work is spent.
     if hierarchical {
-        // Intent analysis first: chit-chat skips retrieval entirely
         let plan = mnemosyne_core::intent::plan_queries(&query);
         if plan.should_skip_retrieval() {
             if format == "json" {
@@ -227,55 +168,44 @@ pub async fn handle(
             }
             return Ok(());
         }
-
-        let note_refs: Vec<&mnemosyne_core::types::MemoryNote> =
-            results.iter().map(|(m, _)| m).collect();
-        let raw_scores: Vec<f32> = results.iter().map(|(_, s)| *s).collect();
-        let config = mnemosyne_core::hierarchy::RetrieverConfig::default();
-        let (ranked, trajectory) =
-            mnemosyne_core::hierarchy::rerank_results(&note_refs, &raw_scores, config, true);
-        results = ranked
-            .into_iter()
-            .filter_map(|(i, s)| results.get(i).map(|(m, _)| (m.clone(), s)))
-            .collect();
-        if trace {
-            trajectory_json = Some(trajectory.to_json());
-            eprintln!("Retrieval trajectory:\n{}", trajectory.to_json());
-        }
     }
 
-    results.truncate(limit);
+    // Client-side tag filter, applied by the shared ranking path after the
+    // limit so it cannot silently widen the served set.
+    let tag_filter: Option<Vec<String>> = tags.as_deref().map(|raw| {
+        raw.split(',')
+            .map(|tag| tag.trim().to_lowercase())
+            .filter(|tag| !tag.is_empty())
+            .collect()
+    });
 
-    // Filter by importance if specified
-    if let Some(min_imp) = min_importance {
-        results.retain(|(m, _)| m.importance >= min_imp);
-    }
-
-    // Filter by tags if specified (client-side, for personal agent precision)
-    if let Some(tag_filter) = &tags {
-        let filter_tags: Vec<String> = tag_filter
-            .split(',')
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if !filter_tags.is_empty() {
-            results.retain(|(m, _)| {
-                m.tags
-                    .iter()
-                    .any(|t| filter_tags.contains(&t.to_lowercase()))
-            });
-        }
-    }
-
+    // One ranking path serves both dialects: fuse -> coverage rescore ->
+    // hierarchical re-rank over the whole pool -> limit -> filters -> abstain.
+    // This used to be duplicated here and in the MCP handler, and the two
+    // copies had already drifted (see tests/recall_parity.rs).
+    let ranked = mnemosyne_core::utils::retrieval::rank_recall(
+        &query,
+        keyword_results,
+        vector_results,
+        retrieval_weights.vector,
+        limit,
+        min_importance,
+        tag_filter.as_deref(),
+        abstain_below,
+        hierarchical,
+    );
+    let trajectory_json = ranked.trajectory_json.clone();
+    let results = ranked.results;
     let result_count = results.len();
+    let recall_candidates = ranked.candidates;
+    let recall_capped = ranked.capped;
+    let recall_abstained = ranked.abstained;
     let mut explain_trace =
         mnemosyne_core::utils::retrieval::RetrievalTrace::for_query(&query, retrieval_weights);
     explain_trace.namespace = ns.as_ref().map(ToString::to_string);
-    explain_trace.keyword_candidates = keyword_candidate_count;
-    explain_trace.vector_candidates = vector_candidate_count;
-    // Storage's trace records the precise graph expansion count; this
-    // adapter does not retain the pre-truncation graph set.
-    explain_trace.graph_candidates = 0;
+    explain_trace.keyword_candidates = ranked.keyword_candidates;
+    explain_trace.vector_candidates = ranked.vector_candidates;
+    explain_trace.graph_candidates = ranked.graph_candidates;
     if embedding_warning.is_some() {
         explain_trace
             .fallback_reasons
@@ -283,7 +213,7 @@ pub async fn handle(
     }
     explain_trace.result_ids = results
         .iter()
-        .map(|(memory, _)| memory.id.to_string())
+        .map(|result| result.memory.id.to_string())
         .collect();
     if let Err(error) = storage.record_retrieval_trace(&explain_trace).await {
         debug!("Unable to persist CLI retrieval trace: {}", error);
@@ -293,14 +223,15 @@ pub async fn handle(
     if format == "context" {
         let factual = results
             .iter()
-            .filter(|(memory, s)| {
-                *s > 0.0 && !memory.tags.iter().any(|tag| tag == "reasoning_strategy")
+            .filter(|result| {
+                result.score > 0.0
+                    && !result
+                        .memory
+                        .tags
+                        .iter()
+                        .any(|tag| tag == "reasoning_strategy")
             })
-            .map(|(memory, score)| mnemosyne_core::types::SearchResult {
-                memory: memory.clone(),
-                score: *score,
-                match_reason: "cli_factual".into(),
-            })
+            .cloned()
             .collect();
         let guidance = (&storage as &dyn StorageBackend)
             .interaction_policy_search(&query, 3)
@@ -356,7 +287,10 @@ pub async fn handle(
     if format == "json" {
         let json_results: Vec<_> = results
             .iter()
-            .map(|(m, score)| {
+            .map(|result| {
+                let m = &result.memory;
+                let score = result.score;
+                let match_reason = &result.match_reason;
                 serde_json::json!({
                     "id": m.id.to_string(),
                     "summary": m.summary,
@@ -366,23 +300,24 @@ pub async fn handle(
                     "memory_type": format!("{:?}", m.memory_type),
                     "memory_class": format!("{:?}", m.memory_class),
                     "score": score,
+                    "match_reason": match_reason,
                     "namespace": serde_json::to_string(&m.namespace).unwrap_or_default()
                 })
             })
             .collect();
 
-        // Optional token-budgeted context assembly
+        let est_tokens = estimate_result_tokens(&results);
         let assembled = budget_tokens.map(|budget| {
             let candidates: Vec<mnemosyne_core::context_assembler::Candidate> = results
                 .iter()
-                .map(|(m, score)| {
+                .map(|result| {
                     mnemosyne_core::context_assembler::Candidate::new(
-                        m.id.to_string(),
-                        m.summary.clone(),
-                        mnemosyne_core::hierarchy::l0_abstract_for(m),
-                        mnemosyne_core::hierarchy::l1_overview_for(m),
-                        m.content.clone(),
-                        *score,
+                        result.memory.id.to_string(),
+                        result.memory.summary.clone(),
+                        mnemosyne_core::hierarchy::l0_abstract_for(&result.memory),
+                        mnemosyne_core::hierarchy::l1_overview_for(&result.memory),
+                        result.memory.content.clone(),
+                        result.score,
                     )
                 })
                 .collect();
@@ -396,7 +331,19 @@ pub async fn handle(
         println!(
             "{}",
             serde_json::json!({
+                "disclosure": recall_disclosure(
+                    recall_candidates,
+                    recall_capped,
+                    recall_abstained,
+                    results.len(),
+                    est_tokens,
+                    abstain_below,
+                ),
+                "legend": recall_legend(),
                 "results": json_results,
+                "shown": results.len(),
+                "candidates": recall_candidates,
+                "capped": recall_capped,
                 "count": json_results.len(),
                 "trajectory": trajectory_json,
                 "explain_trace": explain_trace,
@@ -406,22 +353,34 @@ pub async fn handle(
             })
         );
     } else if results.is_empty() {
-        eprintln!("No memories found matching '{}'", query);
+        if recall_abstained {
+            eprintln!(
+                "No memories found — best score was below the abstention threshold (not found, not 'does not exist')."
+            );
+        } else {
+            eprintln!("No memories found matching '{}'", query);
+        }
+    } else if recall_capped {
+        eprintln!(
+            "Showing {} of {} ranked candidates (limit reached).\n",
+            results.len(),
+            recall_candidates
+        );
     } else {
         eprintln!("Found {} memories:\n", results.len());
-        for (i, (memory, score)) in results.iter().enumerate() {
+        for (i, result) in results.iter().enumerate() {
             println!(
                 "{}. {} (score: {:.2}, importance: {}/10)",
                 i + 1,
-                memory.summary,
-                score,
-                memory.importance
+                result.memory.summary,
+                result.score,
+                result.memory.importance
             );
-            println!("   ID: {}", memory.id);
-            println!("   Tags: {}", memory.tags.join(", "));
+            println!("   ID: {}", result.memory.id);
+            println!("   Tags: {}", result.memory.tags.join(", "));
             println!(
                 "   Content: {}\n",
-                truncate_at_char_boundary(&memory.content, 100)
+                truncate_at_char_boundary(&result.memory.content, 100)
             );
         }
     }

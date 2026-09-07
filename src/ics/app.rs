@@ -27,8 +27,8 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Block, Borders, Paragraph},
 };
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::{io::IsTerminal, path::PathBuf};
 
 /// Application state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -747,12 +747,12 @@ impl IcsApp {
     /// Run the ICS application
     pub async fn run(&mut self) -> Result<()> {
         // Pre-flight: Check if running in a terminal
-        if !atty::is(atty::Stream::Stdin) || !atty::is(atty::Stream::Stdout) {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             eprintln!("\n❌ ICS requires a terminal (TTY)");
             eprintln!();
             eprintln!(
                 "Current mode: {}",
-                if !atty::is(atty::Stream::Stdin) {
+                if !std::io::stdin().is_terminal() {
                     "stdin is piped/redirected"
                 } else {
                     "stdout is piped/redirected"

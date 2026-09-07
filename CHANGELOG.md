@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Agent-scoped `MemoryManager` API with recall, listing, updates, archival, context prefetch, and turn sync helpers.
-- `agent:` namespaces plus `list`, `prefetch`, and `sync` CLI commands.
+- `mnemosyne recall` routed through the single shared `rank_recall` path; MCP and CLI outputs compared by `tests/recall_parity.rs` (caught divergent rerank-before-truncate order, abstention, and match_reason format).
+- Recall responses now carry `shown`/`candidates`/`capped`/`abstained`/`est_tokens` and an in-band `legend` so the consuming agent never misreads a field meaning.
+- `.mnemosyne_notes` provenance-stamped ledger + `scripts/check_notes.sh` gate + `scripts/checks.sh` registry (fmt, notes, lib tests, parity test).
+- CI workflow (`.github/workflows/ci.yml`): fmt gate, advisory clippy, lib + parity tests on ubuntu+macos.
+- `Makefile` no longer blanket-suppresses lints; `RUSTFLAGS="-A warnings"` replaced by ack-ledger pattern.- `agent:` namespaces plus `list`, `prefetch`, and `sync` CLI commands.
 - Context fencing/scrubbing helpers and offline local-embedding fallback paths.
 
 ### Added - OpenViking-inspired hierarchical memory (feature/openviking-borrows)

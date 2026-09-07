@@ -269,6 +269,10 @@ enum Commands {
         /// Token budget for context assembly (with --hierarchical)
         #[arg(long)]
         budget_tokens: Option<usize>,
+
+        /// Abstain when the best score is below this threshold (0..=1)
+        #[arg(long)]
+        abstain_below: Option<f32>,
     },
 
     /// Build a bounded, structured project-context package for agent startup.
@@ -612,6 +616,7 @@ async fn main() -> Result<()> {
             hierarchical,
             trace,
             budget_tokens,
+            abstain_below,
         }) => {
             cli::recall::handle(
                 query,
@@ -624,6 +629,7 @@ async fn main() -> Result<()> {
                 hierarchical,
                 trace,
                 budget_tokens,
+                abstain_below,
             )
             .await
         }
