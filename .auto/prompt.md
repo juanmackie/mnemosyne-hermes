@@ -1,155 +1,139 @@
-# Autoresearch: Real-query retrieval pipeline quality (candidate pool + coverage reranking)
+# Autoresearch: Hermes recall latency (Mnemosyne retrieval path)
+
+Session 2. Session 1 (`.auto/prompt-quality-session.md`, log `.auto/log.jsonl`, 17 runs)
+saturated retrieval **quality** on the frozen benchmark: held-out CLI+MCP MRR and
+Hit@1/Hit@5 = 1.0. Its own final logs show the cost of that quality work:
+`recall_latency_p95_ms` grew from 1 738 ms (run 1) to 3 237 ms (run 17), because
+candidate pools got bigger and reranking got heavier. This session pays that bill
+back: **same ranking, much faster.**
 
 ## Objective
 
-Improve episodic-recall retrieval quality for the live Hermes agent stack by
-optimizing the **retrieval pipeline**, not the encoder. Evidence from the live
-corpus: four alternative encoders scored identically and Gemma was materially
-worse, while the biggest historical wins came from BM25 handling, candidate
-management, and ranking logic. The encoder stays fixed at
-**BAAI/bge-small-en-v1.5 (384-dim)** — pinned via `MNEMOSYNE_EMBEDDING_MODEL`
-in measure.sh.
-
-Primary lever hypotheses (user-directed plan):
-1. Candidate pools are too small: FTS keyword search hard-caps at `LIMIT 20`,
-   vector search fetches `limit * 2` (= 10 for top_k=5). Relevant memories die
-   before reranking. Test pool sizes 20 -> 50 -> 100.
-2. Fusion/reranking rewards single-token OR matches instead of coverage.
-   Reward candidates covering multiple query terms/entities, exact model
-   numbers, versions, URLs; penalize one-token OR matches.
-3. Supersession-awareness: `superseded_by` is stored but ignored by search;
-   corrected facts compete with their replacements. Penalize superseded rows.
-4. Structured queries (identity/config/ownership/current-state) should prefer
-   canonical/current records.
+Cut the per-call latency of `mnemosyne_recall` on the local-only Hermes stack
+(bge-small-en-v1.5 embeddings, libsql, MCP stdio server) **without moving any
+memory up or down the ranking**. Quality is the hard constraint, latency is the
+target. The frozen benchmark corpus is 177 personal-agent records; the query
+sets are 27 × 3 splits evaluated through both the CLI and the MCP surface.
 
 ## Metrics
 
-- **Primary**: `realquery_heldout_mrr` (higher is better) — mean MRR@5 over
-  held-out splits A+B measured through BOTH the public CLI and the MCP stdio
-  surface (`mnemosyne_recall`), flat mode, top_k=5, local bge embeddings.
-- Secondary: `realquery_dev_mrr` (iteration guidance only), 
-  `realquery_heldout_hit5`, `realquery_heldout_hit1`,
-  `recall_latency_p95_ms` (regression monitor).
-- Per-category CLI+MCP held-out MRR is printed as `INFO category_mrr[...]`
-  lines: correction / already_told / structured_current / entity_exact /
-  multi_constraint. Use these to localize wins/regressions.
-
-## Benchmark data (fixed — do not edit during the loop)
-
-`.auto/corpus.jsonl` — 177 realistic personal-agent memory records in
-namespace `project:personal-agent-eval`: identity/config/hardware/accounts,
-10 correction pairs wired with explicit `supersedes` edges, duplicate
-"I already told you" facts, ~40 noisy episodic blobs that mention many
-entities tangentially, and per-record `age_days` backdating so recency is
-realistic.
-
-Eval sets (27 queries each): `.auto/eval_dev.jsonl`,
-`.auto/eval_heldout_a.jsonl`, `.auto/eval_heldout_b.jsonl`. Categories:
-correction, already_told, structured_current, entity_exact,
-multi_constraint. Relevance labels are substrings of intended record content.
-
-Anti-overfit rules:
-- NEVER change corpus.jsonl, eval sets, or labels during the loop.
-- Treat a change as real only if held-out A and B both improve (or are flat)
-  alongside the primary mean; dev-only wins are suspect.
-- Do not special-case query strings from the eval sets in code. Ranking logic
-  must be generic.
-
-The benchmark is synthetic-but-realistic: it mirrors the user's described live
-failure modes because the actual live query log is not available here. When
-the user later exports real queries, they can replace the JSONL files without
-code changes (format documented in evaluate.py).
+- **Primary**: `recall_latency_mcp_p95_ms` (**lower is better**) — p95 of
+  per-call `mnemosyne_recall` latency across held-out A+B through the MCP stdio
+  server (6 concurrent workers). This is what a Hermes agent actually waits on.
+- **Hard guard**: `realquery_heldout_mrr` must stay 1.000000 and
+  `realquery_heldout_hit1` / `hit5` must stay 1.000000. A run that moves them is
+  a ranking change → discard (or re-scope explicitly).
+- **Secondary**: `recall_latency_cli_p95_ms` (includes process spawn; hooks pay
+  it, Hermes does not), `recall_latency_p95_ms` (session-1 name = max over all
+  surfaces, kept for cross-session comparability), `realquery_*` quality metrics.
+- **Fast localizer** (`measure_fast.sh`, keyless path, no embeddings):
+  `hybrid_ppr_p95_ms`, `keyword_only_p95_ms`, `graph_delta_ms`, `ppr_delta_ms`,
+  `results_hash` (32-bit FNV of top-3 ids per query — must not move),
+  `ingest_ms` (write-path proxy).
 
 ## How to Run
 
-`./.auto/measure.sh` — builds release binary with `--features local-embeddings`,
-rebuilds the corpus DB only when its fingerprint changes, evaluates CLI
-(dev+a+b) and MCP (a+b), prints `METRIC` lines plus per-category INFO lines.
-Typical iteration cost: incremental build + ~90 CLI + 54 MCP invocations.
+```bash
+./.auto/run.sh keep|discard|crash|checks_failed "description" ['{"asi":"json"}']
+                              # measure (authoritative) + append .auto/log-latency.jsonl
+./.auto/run.sh               # dry run: measure without logging
+./.auto/measure.sh           # raw METRIC lines only
+./.auto/checks.sh            # rustfmt + storage tests + MCP tests + full,distributed check
+./.auto/measure_fast.sh      # ~4 min, no model: in-process Rust bench, 2k synthetic memories
+BENCH_PROFILE=1 ./.auto/measure_fast.sh   # per-channel timings (keyword/graph/ppr/trace)
+```
 
-If recall crashes with schema/corruption errors after storage-layer changes,
-delete the cached DB to force a clean rebuild: `rm -rf .auto/data`.
+`./.auto/run.sh` prints the delta vs the best kept run and the session noise
+floor. If storage schema/corruption errors appear after a storage change:
+`rm -rf .auto/data` to force a corpus rebuild.
+
+Iteration cost: incremental release build + 81 CLI + 54 MCP calls, then checks.
+Budget ~8 min/run; measure with `measure_fast.sh` first when you only need a
+direction, and use `BENCH_PROFILE=1` to find the channel before touching code.
 
 ## Files in Scope
 
-- `src/storage/libsql.rs` — FTS `LIMIT 20` caps in `keyword_search`;
-  `hybrid_search` fusion weights/pool sizes; supersession handling in SQL.
-- `src/storage/mod.rs` — StorageBackend trait signatures if pool sizing needs
-  parameterization.
-- `src/cli/recall.rs` — CLI recall pipeline: hybrid+vector merge (0.4/0.3),
-  candidate counts (`limit * 2`), reranking hooks.
-- `src/mcp/tools.rs` — MCP recall pipeline (same shape as CLI; this is what
-  the live Hermes agent calls).
-- `src/config.rs` — SearchConfig fields (add e.g. `fts_candidate_limit`,
-  coverage-rerank toggles). Keep defaults backward-compatible unless the
-  benchmark says otherwise.
-- New helper module for coverage scoring if needed (e.g. `src/utils/retrieval.rs`).
+- `src/storage/libsql.rs` — the retrieval path. Hot spots already located:
+  `get_conn` (1922), `hybrid_search` (8175), `keyword_search`,
+  `graph_traverse_bounded` (3696), `fetch_ppr_adjacency` (3545),
+  `active_ppr_nodes` (3657), `get_memories_batch` (10040),
+  `record_retrieval_trace` (9681), `retrieval_setting`,
+  `connection_has_column` (305).
+- `src/utils/retrieval.rs`, `src/utils/ppr.rs` — reranking + graph math.
+- `src/cli/recall.rs`, `src/mcp/tools.rs` — per-call pipelines above storage.
+- `src/config.rs` — `SearchConfig` (add knobs if needed, keep defaults).
+- `migrations/` — indexes live here.
+- `benches/hermes_recall_bench.rs`, `.auto/measure*.sh` — harness, edit for signal.
 
 ## Off Limits
 
-- Embedding model/dimension changes; no new embedding deps. bge-small-en-v1.5
-  @ 384 dims is the frozen live stack.
-- Benchmark data files and relevance labels (see above).
-- Public MCP tool names/schemas; Hermes compatibility aliases must keep working.
-- No remote API calls during evaluation (offline local-only path).
-- Do not game latency by weakening correctness checks.
+- **Ranking.** No score, weight, candidate-pool, fusion, coverage, supersession
+  or stopword changes that move `realquery_heldout_mrr/hit1/hit5` or
+  `results_hash`. Perf work must be behavior-preserving by construction.
+- Benchmark data: `corpus.jsonl`, `eval_*.jsonl`, labels, the pinned
+  `bge-small-en-v1.5` encoder, fixture seeds in the Rust bench.
+- Do not disable features (PPR, graph expansion, vector search, diagnostics,
+  fail-closed) to buy speed; do not shrink `max_results` or add `LIMIT`s.
+- Public MCP tool names/schemas and the Hermes underscore aliases.
+- Session-1 artifacts: `log.jsonl` stays append-only history; do not rewrite it.
 
 ## Constraints
 
-- `.auto/checks.sh` must pass: rustfmt, storage lib tests, MCP server tests,
-  combined full+distributed feature compile.
-- Existing unit tests around keyword/BM25 ranking behavior may need updating
-  ONLY if their intent is preserved; do not delete assertions to make changes pass.
-- Keep fail-closed retrieval semantics intact.
+- `./.auto/checks.sh` must pass (rustfmt, `storage::` tests, MCP server tests,
+  `--features full,distributed` compile). Cannot keep a failing run.
+- No new dependencies (`Cargo.lock` stays as-is apart from nothing; the only
+  allowed `Cargo.toml` edit is `[[bench]]` registration for this session's bench).
+- Fail-closed retrieval semantics intact.
 
-## What's Been Tried (live-corpus history, pre-session)
+## What's Been Tried
 
-- Encoder sweep on live corpus: EmbeddingGemma/nomic/bge variants identical;
-  Gemma materially worse + rotary-cache errors on long episodic memories +
-  OOM pressure. REJECTED — do not revisit.
-- Already ported from Rust fork upstream work: BM25 relevance ordering in FTS5
-  (bm25() rank kept + normalized per query), stopword/modality filtering of FTS
-  queries, deterministic-fallback vectors excluded from ranking when model-backed
-  embeddings unavailable, importance demoted below keyword/vector signals.
-- Curated dev eval reached MRR ≈ 0.93 — too small to optimize against safely;
-  this session's larger real-query-style sets exist to expose the residual
-  failures (see per-category baselines once recorded).
+### Session 1 (quality, `.auto/log.jsonl`) — do not undo
 
-### Session findings
+FTS candidate limit 20→50 and vector fetch `limit*2`→`limit*4`; coverage-aware
+fusion with light stemming + compound tokenization + conversational stopwords +
+`host`/`serve` normalization; 0.35 supersession penalty. Held-out MRR
+0.9506 → 1.0. Known dead ends there: FTS 100, vector 50, keyword/vector
+rebalance 0.35/0.35, structured type priors, current-state recency boost. Their
+own logs flag p95 latency rising to ~3.2 s as the accepted cost — that is this
+session's starting point.
 
-- Baseline (run 1): held-out MRR 0.950617; Hit@5 0.9815; Hit@1 0.9259.
-  CLI and MCP were identical, confirming the shared storage pipeline dominates.
-  Weak categories were correction 0.875 and already_told 0.9167.
-- Keep (run 2): FTS candidate limit 20 -> 50 and vector fetch 10 -> 20 at
-  top_k=5. Held-out MRR 0.950617 -> 0.966667; Hit@5 became 1.0 and
-  correction rose to 0.9583. This is the useful candidate-pool win.
-- Discard (run 3): FTS 50 -> 100; no quality change. Discard (run 9):
-  vector 20 -> 50; MRR fell to 0.981481 and entity_exact to 0.95, with
-  p95 latency 3.47s. Discard (run 10): intermediate hybrid handoff 10 ->
-  50; no quality change. Do not widen pools further on this corpus without
-  better score normalization.
-- Keep (run 4): coverage-aware fusion, conversational FTS stopwords,
-  hyphen/slash compound tokenization, and `superseded_by` demotion. Held-out
-  MRR 0.966667 -> 0.990741; already_told and correction reached 1.0.
-  Coverage must be paired with supersession demotion: otherwise a stale
-  record containing more query words can be boosted above its replacement.
-- Discard (runs 5-8): coverage-only aliases, FTS aliases, structured type
-  priors, and a 0.35/0.35 keyword/vector rebalance did not improve the
-  protected suite. FTS aliases did improve a fresh 32-query paraphrase probe
-  (MRR 0.750 -> 0.829), showing candidate recall remains a real live-corpus
-  concern even when this small protected set is saturated.
-- Keep (run 11): generic `host`/`serve` coverage normalization fixed the last
-  protected structured-query miss; held-out CLI+MCP MRR and Hit@1/Hit@5 are
-  now 1.0. The fresh probe remains only MRR 0.713 / Hit@1 0.594, so this is
-  not evidence that the synthetic suite generalizes to live paraphrases.
+### Session 2 recon (measured, 2026-09-07)
 
-### Final implementation
+`measure_fast.sh` profile, 300-memory keyless store, best of 5:
 
-- `SearchConfig::fts_candidate_limit` defaults to 50.
-- Vector candidates use `limit * 4` (20 for top_k=5) in storage/CLI/MCP.
-- Shared retrieval rescoring applies light stemming, compound tokenization,
-  coverage factor 0.6-1.4, conversational query stopwords, host/serve
-  normalization, and a 0.35 factor for superseded records.
-- `benchmark/retrieval` remains untouched; the new `.auto` corpus/evals are
-  fixed artifacts and must be replaced or augmented with exported live Hermes
-  queries before further tuning.
+| call | cost |
+|---|---|
+| `keyword_search` (FTS, 50 candidates) | 52 ms |
+| `graph_traverse_bounded` (2 hops → 290 rows) | **292 ms** |
+| `fetch_ppr_adjacency` (2 hops) | 7.6 ms |
+| `count_memories` | 1.2 ms |
+| `retrieval_weights` | 1.0 ms |
+| `record_retrieval_trace` | 25 ms |
+| `store_memory` | ~50 ms |
+
+Structural causes, verified:
+
+1. **`get_conn()` = `self.db.connect()` — a brand-new libsql connection for every
+   storage call** (`libsql.rs:1922`). One `hybrid_search` opens ~8-10 connections
+   (keyword, entities, graph, batch fetch, PPR adjacency, active-node check, trace
+   write, settings). Proof it is connection/lock cost, not SQL work: single-threaded
+   ingest of an **in-memory** database takes ~50 ms/row, and running 8 ingest tasks
+   concurrently fails with `database is locked`. libsql `Connection` is `Clone` →
+   hold one and hand out clones (or a tiny pool) instead of connecting per call.
+2. `connection_has_column` runs `PRAGMA table_info` per call; 26 call sites, at
+   least five on the per-query graph path (3805, 7025, 7331, 7387, 10086). Schema
+   is fixed for the process lifetime → memoize.
+3. `graph_traverse_bounded`'s recursive CTE joins
+   `ml.source_id = gw.memory_id OR ml.target_id = gw.memory_id`; an `OR` join
+   cannot use an index, so each hop scans `memory_links`. Same shape in
+   `fetch_ppr_adjacency` (`source_id IN (…) OR target_id IN (…)`). Check
+   `migrations/` for `(source_id)`/`(target_id)` indexes; split into two indexed
+   halves + `UNION ALL` if absent.
+4. `record_retrieval_trace` re-reads a settings row (and may read two) before every
+   trace insert; `retrieval_weights()` is a settings read per query.
+5. Hot SQL is built with `format!` and re-parsed; where the text is constant,
+   prepare once.
+
+### Dead ends
+
+- (fill in as runs land)

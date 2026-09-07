@@ -37,7 +37,17 @@ for dataset in eval_heldout_a eval_heldout_b; do
     --workers 6 | tee -a "$mcp_log" >/dev/null
 done
 
-python3 - "$cli_log" "$mcp_log" <<'PY'
+# Steady-state: ONE warm MCP server (what the Hermes agent actually runs against).
+warm_log="$(mktemp)"
+trap 'rm -f "$cli_log" "$mcp_log" "$warm_log"' EXIT
+for dataset in eval_heldout_a eval_heldout_b; do
+  python3 .auto/evaluate_mcp_warm.py \
+    --binary target/release/mnemosyne \
+    --db .auto/data/template.db \
+    --dataset ".auto/${dataset}.jsonl" | tee -a "$warm_log" >/dev/null
+done
+
+python3 - "$cli_log" "$mcp_log" "$warm_log" <<'PY'
 import json
 import pathlib
 import statistics
@@ -63,6 +73,15 @@ print(f"METRIC realquery_dev_mrr={cli['eval_dev.jsonl']['mrr']:.6f}")
 print(f"METRIC realquery_heldout_hit5={statistics.mean([mean('hit5', cli_heldout), mean('hit5', mcp_heldout)]):.6f}")
 print(f"METRIC realquery_heldout_hit1={statistics.mean([mean('hit1', cli_heldout), mean('hit1', mcp_heldout)]):.6f}")
 print(f"METRIC recall_latency_p95_ms={max([row['latency_p95_ms'] for row in cli.values()] + [row['latency_p95_ms'] for row in mcp.values()]):.3f}")
+# Primary for the latency session: MCP stdio surface only. The CLI number
+# includes process spawn, which a long-lived MCP server (Hermes) does not pay.
+print(f"METRIC recall_latency_mcp_p95_ms={max([row['latency_p95_ms'] for row in mcp.values()]):.3f}")
+print(f"METRIC recall_latency_cli_p95_ms={max([row['latency_p95_ms'] for row in cli.values()]):.3f}")
+warm = [json.loads(line) for line in pathlib.Path(sys.argv[3]).read_text().splitlines() if line.strip()]
+print(f"METRIC recall_latency_warm_p95_ms={max([row['latency_p95_ms'] for row in warm]):.3f}")
+print(f"METRIC recall_latency_warm_p50_ms={statistics.mean([row['latency_p50_ms'] for row in warm]):.3f}")
+print(f"METRIC realquery_warm_mrr={statistics.mean([row['mrr'] for row in warm]):.6f}")
+print(f"METRIC realquery_warm_hit1={statistics.mean([row['hit1'] for row in warm]):.6f}")
 
 # Per-category diagnostics across CLI+MCP held-out splits: where the next
 # yield is hiding. Emitted as INFO lines (not METRIC) for ASI annotation.

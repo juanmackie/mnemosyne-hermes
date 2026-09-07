@@ -45,3 +45,6 @@ tests/e2e/results/*/
 *.log
 .beads/daemon.log
 .claude/memory-state.json
+
+# autoresearch fixture databases
+.auto/data/
