@@ -87,6 +87,15 @@ def rebuild(rows: list[dict]) -> None:
             )
             supersede_pairs.append((old_id, new_id))
     conn.close()
+    # The app now runs in WAL mode: fold the WAL back into the main file so the
+    # per-query copies the evaluators make (main file only) see every write.
+    checkpoint = sqlite3.connect(DB)
+    checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    checkpoint.close()
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(DB) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
     print(f"ingested={len(id_rows)} superseded_pairs={len(supersede_pairs)}",
           file=sys.stderr)
 
@@ -98,8 +107,11 @@ def main() -> int:
     fp = fingerprint()
     marker = DATA_DIR / "fingerprint.txt"
     if DB.exists() and marker.exists() and marker.read_text().strip() == fp:
-        print(DB)
-        return 0
+        # A leftover -wal means writes that never reached the main file; the
+        # evaluators copy only the main file, so rebuild instead of reusing it.
+        if not Path(str(DB) + "-wal").exists():
+            print(DB)
+            return 0
     rows = [json.loads(line) for line in CORPUS.read_text().splitlines()
             if line.strip()]
     rebuild(rows)

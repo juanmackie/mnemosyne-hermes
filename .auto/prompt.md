@@ -147,3 +147,26 @@ Structural causes, verified:
   the warm MCP surface scores 1.0 — treat CLI numbers as secondary until that
   gap is explained; it did not block this session because the primary metric and
   its guard both come from the warm MCP surface.
+
+## Findings so far (latency session)
+
+1. **Per-query cost was dominated by fsync'd autocommit writes, not search.**
+   The database ran with the rollback journal (`journal_mode=delete`) and
+   `synchronous=FULL`, i.e. ~28.6ms per committed single-row insert. A recall
+   commits several times (retrieval trace, access/link bookkeeping), so a warm
+   query paid ~300ms of fsync. Measured on the eval DB:
+   `delete+FULL 28.6ms → WAL+FULL 11.7ms → WAL+NORMAL 0.34ms` per commit.
+   Fix: one shared libsql `Connection` per storage (avoids reopening the file on
+   every call) plus `journal_mode=WAL`, `busy_timeout=5000`, and
+   `synchronous=NORMAL` applied once to that handle.
+   Result: warm `mnemosyne_recall` p95 417.9ms → 20.4ms, p50 262.1ms → 15.0ms;
+   cold MCP p95 2807.9ms → 1256.5ms; the 854-test lib suite went 301s → 7s.
+   Ranking metrics unchanged (warm MRR 0.9896 / Hit@1 0.9792; MCP held-out MRR 1.0).
+   Durability: WAL+NORMAL survives process crashes; an OS/power failure can lose
+   the last few commits. `MNEMOSYNE_SQLITE_SYNCHRONOUS=full` opts back in to
+   per-commit fsync (WAL+FULL, still ~2.4x faster than the old setting).
+   **This is a deliberate change to the durability guarantee; flag it in review.**
+2. Harness validity trap: evaluators copy the corpus DB with `copy2` (main file
+   only). Under WAL a leftover `-wal` would hide committed writes from those
+   copies, so `setup_data.py` now checkpoints (TRUNCATE) and refuses a cached
+   corpus that has an uncheckpointed WAL.
