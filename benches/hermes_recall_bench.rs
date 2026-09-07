@@ -24,20 +24,91 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 const VOCAB: &[&str] = &[
-    "rust", "cargo", "libsql", "embedding", "fts", "index", "cache", "latency", "benchmark",
-    "hermes", "agent", "memory", "namespace", "session", "project", "preference", "workflow",
-    "kernel", "inference", "token", "budget", "privacy", "encryption", "keyring", "backup",
-    "sync", "device", "calendar", "email", "meeting", "recipe", "workout", "sleep", "travel",
-    "flight", "hotel", "spanish", "guitar", "python", "docker", "deploy", "webhook", "secret",
-    "dashboard", "grafana", "prometheus", "alert", "incident", "postmortem", "budget", "lease",
+    "rust",
+    "cargo",
+    "libsql",
+    "embedding",
+    "fts",
+    "index",
+    "cache",
+    "latency",
+    "benchmark",
+    "hermes",
+    "agent",
+    "memory",
+    "namespace",
+    "session",
+    "project",
+    "preference",
+    "workflow",
+    "kernel",
+    "inference",
+    "token",
+    "budget",
+    "privacy",
+    "encryption",
+    "keyring",
+    "backup",
+    "sync",
+    "device",
+    "calendar",
+    "email",
+    "meeting",
+    "recipe",
+    "workout",
+    "sleep",
+    "travel",
+    "flight",
+    "hotel",
+    "spanish",
+    "guitar",
+    "python",
+    "docker",
+    "deploy",
+    "webhook",
+    "secret",
+    "dashboard",
+    "grafana",
+    "prometheus",
+    "alert",
+    "incident",
+    "postmortem",
+    "budget",
+    "lease",
 ];
 const NOUNS: &[&str] = &[
-    "decision", "constraint", "pattern", "note", "insight", "task", "reference", "policy",
-    "tradeoff", "failure", "fix", "config", "log", "plan", "review",
+    "decision",
+    "constraint",
+    "pattern",
+    "note",
+    "insight",
+    "task",
+    "reference",
+    "policy",
+    "tradeoff",
+    "failure",
+    "fix",
+    "config",
+    "log",
+    "plan",
+    "review",
 ];
 const VERBS: &[&str] = &[
-    "prefers", "requires", "avoids", "replaces", "extends", "blocks", "unblocks", "measures",
-    "defers", "validates", "caches", "invalidates", "documents", "escalates", "resolves",
+    "prefers",
+    "requires",
+    "avoids",
+    "replaces",
+    "extends",
+    "blocks",
+    "unblocks",
+    "measures",
+    "defers",
+    "validates",
+    "caches",
+    "invalidates",
+    "documents",
+    "escalates",
+    "resolves",
 ];
 
 /// Queries a personal agent would plausibly issue. Two-to-four topical words so
@@ -234,8 +305,11 @@ async fn main() {
                     .map(|_| link_to(ids[rng.below(i)], 0.3 + (rng.below(70) as f32) / 100.0))
                     .collect()
             };
-            let summary =
-                format!("{} {}", VOCAB[rng.below(VOCAB.len())], NOUNS[rng.below(NOUNS.len())]);
+            let summary = format!(
+                "{} {}",
+                VOCAB[rng.below(VOCAB.len())],
+                NOUNS[rng.below(NOUNS.len())]
+            );
             note(ids[i], sentence(&mut rng), summary, links)
         })
         .collect();
@@ -271,7 +345,10 @@ async fn main() {
     ingest_ms = built.elapsed().as_secs_f64() * 1000.0;
     eprintln!(
         "note: ingested {} memories in {:.1}s ({} links, conc {})",
-        n_memories, ingest_ms / 1000.0, degree, conc
+        n_memories,
+        ingest_ms / 1000.0,
+        degree,
+        conc
     );
 
     // Warm-up: FTS page cache, statement caches, allocator warm-up.
@@ -323,7 +400,11 @@ async fn main() {
                 &q,
                 store.retrieval_weights().await,
             );
-            store.record_retrieval_trace(&trace).await.map(|_| 1).unwrap_or(0)
+            store
+                .record_retrieval_trace(&trace)
+                .await
+                .map(|_| 1)
+                .unwrap_or(0)
         });
     }
 
@@ -348,10 +429,7 @@ async fn main() {
     metrics.extend(report("keyword_only", &lat, avg, 0));
 
     let primary = *metrics.get("hybrid_ppr_p95_ms").unwrap();
-    metrics.insert(
-        "ppr_delta_ms".into(),
-        primary - metrics["hybrid_p95_ms"],
-    );
+    metrics.insert("ppr_delta_ms".into(), primary - metrics["hybrid_p95_ms"]);
     metrics.insert(
         "graph_delta_ms".into(),
         metrics["hybrid_p95_ms"] - metrics["keyword_only_p95_ms"],

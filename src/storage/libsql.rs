@@ -840,8 +840,7 @@ pub struct LibsqlStorage {
 /// How often (in recorded traces) the O(history) retrieval diagnostics inside
 /// `record_retrieval_trace` run. See the comment there.
 const TRACE_DIAGNOSTIC_EVERY: u64 = 64;
-static TRACE_DIAGNOSTIC_TICK: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static TRACE_DIAGNOSTIC_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Drop for LibsqlStorage {
     fn drop(&mut self) {
@@ -2021,10 +2020,13 @@ impl LibsqlStorage {
                 .query(&sql, params![])
                 .await
                 .map_err(|e| MnemosyneError::Database(format!("Failed to apply `{sql}`: {e}")))?;
-            while rows.next().await.map_err(|e| {
-                MnemosyneError::Database(format!("Failed to read `{sql}` result: {e}"))
-            })?
-            .is_some()
+            while rows
+                .next()
+                .await
+                .map_err(|e| {
+                    MnemosyneError::Database(format!("Failed to read `{sql}` result: {e}"))
+                })?
+                .is_some()
             {}
         }
         Ok(())
