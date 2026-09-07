@@ -12,7 +12,7 @@ bash -n install.sh scripts/test-hermes-adoption.sh 2>/dev/null || bash -n instal
 if rustup component list --installed 2>/dev/null | grep -q '^rustfmt'; then
   cargo fmt --check >/tmp/mnemosyne-autoresearch-fmt.log 2>&1 || {
     grep '^Diff in' /tmp/mnemosyne-autoresearch-fmt.log \
-      | sed 's/^Diff in //; s/ at line.*//; s/:$//' | sort -u > /tmp/fmt-now.txt
+      | sed 's/^Diff in //; s/ at line.*//; s/:[0-9]*:$//; s/:$//' | sort -u > /tmp/fmt-now.txt
     if ! comm -13 .auto/fmt-baseline.txt /tmp/fmt-now.txt | grep .; then
       echo "rustfmt: $(wc -l < /tmp/fmt-now.txt) diffs, all pre-existing"
     else

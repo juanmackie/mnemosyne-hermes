@@ -776,6 +776,10 @@ pub struct PurgeReport {
 /// LibSQL storage backend
 pub struct LibsqlStorage {
     db: Database,
+    /// One long-lived connection handle, cloned (an `Arc` clone) by `get_conn`.
+    /// `libsql::Database::connect()` re-opens the database file on every call
+    /// for the local backend, and every storage call used to pay for it.
+    conn: Connection,
     embedding_service: Option<Arc<dyn EmbeddingService>>,
     search_config: crate::config::SearchConfig,
     schema_type: SchemaType,
@@ -1292,8 +1296,10 @@ impl LibsqlStorage {
             ConnectionMode::Remote { url, .. } => url.clone(),
         };
 
+        let conn = Self::shared_conn(&db)?;
         let storage = Self {
             db,
+            conn,
             embedding_service: None,
             search_config: crate::config::SearchConfig::default(),
             schema_type,
@@ -1469,8 +1475,10 @@ impl LibsqlStorage {
     /// useful when you need to set up a custom schema for testing.
     #[allow(dead_code)]
     pub(crate) fn from_database(db: Database) -> Self {
+        let conn = Self::shared_conn(&db).expect("shared connection for test database");
         Self {
             db,
+            conn,
             embedding_service: None,
             search_config: crate::config::SearchConfig::default(),
             schema_type: SchemaType::LibSQL, // Use LibSQL schema (F32_BLOB support)
@@ -1919,10 +1927,15 @@ impl LibsqlStorage {
     }
 
     /// Get a connection from the database
-    pub(crate) fn get_conn(&self) -> Result<Connection> {
-        self.db
-            .connect()
+    /// Open the single long-lived handle kept on the struct. Falls back to a
+    /// fresh connection only if the shared one was never established.
+    fn shared_conn(db: &Database) -> Result<Connection> {
+        db.connect()
             .map_err(|e| MnemosyneError::Database(format!("Failed to get connection: {}", e)))
+    }
+
+    pub(crate) fn get_conn(&self) -> Result<Connection> {
+        Ok(self.conn.clone())
     }
 
     /// Check if database is healthy and operational
