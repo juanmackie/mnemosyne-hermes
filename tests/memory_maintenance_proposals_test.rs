@@ -313,7 +313,10 @@ async fn normal_content_update_invalidates_old_embedding() {
     let storage = storage().await;
     let id = MemoryId::new();
     storage.store_memory(&note(id, "old text")).await.unwrap();
-    storage.store_embedding(&id, &vec![0.3; 384]).await.unwrap();
+    storage
+        .store_embedding(&id, &vec![0.3; 384], "test-model")
+        .await
+        .unwrap();
     let mut updated = storage.get_memory(id).await.unwrap();
     updated.content = "new text".into();
     updated.summary = "new text".into();
@@ -433,7 +436,7 @@ async fn proposal_requires_owner_review_and_applies_only_current_base() {
         .await
         .unwrap();
     storage
-        .store_embedding(&target_id, &vec![0.1; 384])
+        .store_embedding(&target_id, &vec![0.1; 384], "test-model")
         .await
         .unwrap();
     assert!(storage.get_embedding(&target_id).await.unwrap().is_some());
@@ -769,7 +772,7 @@ async fn standard_sqlite_upgrade_supports_maintenance_and_proposals() {
         .await
         .unwrap();
     storage
-        .store_embedding(&purged_id, &target_embedding)
+        .store_embedding(&purged_id, &target_embedding, "test-model")
         .await
         .unwrap();
     let purge_report = storage.purge_memory(&purged_id).await.unwrap();

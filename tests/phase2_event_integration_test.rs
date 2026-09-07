@@ -235,6 +235,9 @@ async fn test_api_server_event_streaming() {
     let config = ApiServerConfig {
         addr: "127.0.0.1:0".parse().unwrap(), // Random port
         event_capacity: 100,
+        start_dashboard: true,
+        auth_token: None,
+        allowed_origins: Vec::new(),
     };
 
     let api_server = ApiServer::new(config);

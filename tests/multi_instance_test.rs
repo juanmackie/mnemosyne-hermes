@@ -13,6 +13,10 @@ async fn test_multiple_instances_dynamic_ports() {
     let config = ApiServerConfig {
         addr: ([127, 0, 0, 1], 3000).into(),
         event_capacity: 100,
+        // serve() binds only when opted in; these tests assert on HTTP behaviour.
+        start_dashboard: true,
+        auth_token: None,
+        allowed_origins: Vec::new(),
     };
 
     let server1 = ApiServer::new(config.clone());
@@ -48,6 +52,9 @@ async fn test_instance_id_in_health_response() {
     let config = ApiServerConfig {
         addr: ([127, 0, 0, 1], 3050).into(), // Use different port to avoid conflicts
         event_capacity: 100,
+        start_dashboard: true,
+        auth_token: None,
+        allowed_origins: Vec::new(),
     };
 
     let server = ApiServer::new(config);
@@ -94,6 +101,9 @@ async fn test_port_exhaustion_error_message() {
     let config = ApiServerConfig {
         addr: ([127, 0, 0, 1], 3060).into(),
         event_capacity: 100,
+        start_dashboard: true,
+        auth_token: None,
+        allowed_origins: Vec::new(),
     };
 
     let server = ApiServer::new(config);
