@@ -135,7 +135,7 @@ for label, (cli_path, mcp_path, rss_path) in zip(lines, pairs):
     mcp_mrr = mean(row["mrr"] for row in mcp_heldout)
     latency = max([row["latency_p95_ms"] for row in cli.values()]
                   + [row["latency_p95_ms"] for row in mcp.values()])
-    empty = sum(row["empty"] for row in cli.values() + mcp.values())
+    empty = sum(row["empty"] for row in list(cli.values()) + list(mcp.values()))
     print(f"METRIC {label}_cli_heldout_mrr={cli_mrr:.6f}")
     print(f"METRIC {label}_mcp_heldout_mrr={mcp_mrr:.6f}")
     print(f"METRIC {label}_dev_mrr={cli_dev.get('mrr', 0.0):.6f}")

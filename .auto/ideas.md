@@ -1,32 +1,35 @@
-# Ideas backlog — expanded session (retrieval + organizational + dedup + linking + writing + CLI)
+# Ideas backlog — latency session (retrieval latency)
 
-Previous session completed: connection reuse (done), WAL+NORMAL (done), column memoization (done), retrieval diagnostics off path (done).
+Done and on main (do not redo): shared libsql connection handle; WAL +
+synchronous=NORMAL (warm p95 417.9→20.4ms); column-info memoization;
+retrieval diagnostics sampled off the recall path; PPR adjacency OR →
+UNION ALL of indexed halves + weights/settings Lazy caches (61625e0,
+quality steady at 0.9815 heldout MRR, #27).
 
-This expanded session (user: "all retrieval, organisational, deduplication, writing, linking, all surface areas"):
+## Still open
 
-## Completed / verified in this session
+- **Clean keep for the OR split**: re-run measure with
+  `checks_timeout_seconds: 600` — checks include a `full,distributed`
+  compile that exceeds the 300s default (that timeout, not a failure,
+  blocked #27).
+- **Warm-p95 delta for the OR split**: the session's primary latency
+  metric (warm MCP p95 vs the 20.4ms baseline) has not been re-measured
+  since the connection/WAL work; `measure.sh` profiles are cold-server.
+  Add a warm-server block to `measure.sh` if the delta is wanted.
+- **Prepare hot SQL once** (`Connection::prepare`): keyword_search, batch
+  fetch, trace insert — only if a profile shows parse overhead matters.
+- **PPR dense-array iteration** (`utils/ppr.rs`): only at 10k+ memories;
+  re-baseline with `BENCH_MEMORIES=10000` first.
+- **Ingest benchmark** for store/link path (write-side, 5k memories).
+- Wire `.auto/unify_audit.py` output into `.auto/audit.json` automatically.
 
-- [x] **OR split for PPR adjacency (`fetch_ppr_adjacency`)** — split `(source_id IN (...) OR target_id IN (...))` into `UNION ALL` of two indexed halves (`migrations/libsql/002_add_indexes.sql` confirms `idx_links_source` and `idx_links_target`). Build passes. No ranking change by construction (same rows, same order, duplicates filtered by `seen_edges` HashSet).
-- [x] **Build verification** — `cargo build --release --locked --bin mnemosyne` passes (6m 52s, fixed duplicate `Arc` import that blocked compile).
-- [x] **Connection sharing verified** — `get_conn()` still returns a clone of the shared `Arc<Connection>` (previous session fix intact).
-- [x] **`connection_has_column` memoization verified** — `COLUMN_CACHE` (Lazy Arc<Mutex<HashSet>>) still active; 26 call sites covered.
-- [x] **Index verification** — `migrations/libsql/002_add_indexes.sql` has `idx_links_source`, `idx_links_target`, `idx_links_outbound`, `idx_links_inbound`.
-- [x] **Reference organizational/dedup scripts verified** — `.auto/memory_dedup_merge.py` (Jaccard overlap + bulk delete + audit), `.auto/memory_maintain_fixed.py` (mutation tracking + integrity runs + evidence links), `.auto/unify_audit.py` (unified audit aggregation) all present and structured correctly.
-- [x] **CLI/MCP surfaces verified** — `src/cli/recall.rs`, `src/mcp/tools.rs` compile with the changed storage layer.
+## Notes (measured, don't re-derive)
 
-## Still open / deferred (add when needed)
-
-1. **Full `fetch_ppr_adjacency` benchmark measurement** — the union-all query is behavior-preserving but needs a `BENCH_PROFILE=1 ./.auto/measure_fast.sh` run to confirm latency improvement. Deferred because the full 4min benchmark timed out during this session; the structural fix is sound by inspection (two indexed scans + UNION vs one full-scan OR).
-2. **Prepare hot SQL statements once** (`Connection::prepare`) — `keyword_search`, `batch fetch`, `trace insert`. Low effort, medium win; add when a measurement cycle confirms SQL parse overhead matters.
-3. **Cache `retrieval_weights` / `retrieval_setting`** — done (`Lazy` `Arc<Mutex>` caches added: `WEIGHTS_CACHE`, `SETTINGS_CACHE` in `libsql.rs`). Per-query settings reads eliminated by cache hit. Confirm with measurement when `BENCH_MEMORIES=10000`.
-4. **Graph traverse CTE split verification** — the recursive CTE in `graph_traverse_with_limit` is already split by design (`UNION` of `source_id` branch and `target_id` branch); confirm it uses indexed scans in practice.
-5. **PPR dense-array iteration** (`src/utils/ppr.rs`) — only worth it if `ppr_delta_ms` dominates at 10k+ memories. Scale ladder: re-baseline at `BENCH_MEMORIES=10000`.
-6. **Organizational audit integration** — done (`.auto/verification.db` created, `.auto/unify_audit.py` runs successfully, `.auto/unified_audit.json` produced with audit_trail and memory_evidence aggregation). Wire into `.auto/audit.json` automatically remains as a follow-up.
-7. **Writing/linking surfaces** — verified (`store_memory`, `update_memory`, `link_memory` use `self.get_conn()` = shared `Arc<Connection>`; build passes). Quick ingest benchmark (`BENCH_MEMORIES=5000`) deferred.
-
-## What was skipped and why
-
-- Full measurement cycle (`./.auto/measure.sh` ~8 min/run) skipped due to session time budget. Build passes; previous session's warm p95 = 20.375ms (WAL+NORMAL + shared connection). The OR split is a structural optimization that does not change ranking; it should lower graph-channel cost without affecting `results_hash` or MRR.
-- No new dependencies (constraint kept).
-- No ranking/supersession/stopword changes (constraint kept).
-- Deduplication logic (`memory_dedup_merge.py`) is a reference Python script; integrating it fully into the Rust storage path is out of scope for a latency-focused session but documented.
+- `run_experiment` hard-caps at 600s unless `timeout_seconds` (correct
+  param name) is raised; full 3-profile `measure.sh` needs ~960s.
+- python-provider profile needs system `libpython3.11-dev` (installed).
+- The 1.00 heldout-MRR "best" predates the corpus-DB rebuild (3072-byte
+  embeddings) and is not comparable in this container; treat 0.9815 as
+  the reference for ranking-unchanged checks.
+- `graph_traverse_with_limit` CTE is already split per-direction by
+  design; no OR-join left on the graph path.
