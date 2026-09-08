@@ -1,0 +1,18 @@
+{
+  "decay_stats": {
+    "rules_ran": 1,
+    "decayed_items": 0,
+    "decay_rules_exist": true
+  },
+  "conflicts_count": 1,
+  "pending_skills_count": 1,
+  "file_usage": {
+    "MEMORY.md_pct": 83.5,
+    "USER.md_pct": 92.1,
+    "near_cap": true
+  },
+  "action_taken": "report",
+  "approval_reference": null,
+  "timestamp": "2026-09-08T10:43:08.677906",
+  "tier": 3
+}

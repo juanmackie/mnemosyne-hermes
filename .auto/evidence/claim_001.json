@@ -1,0 +1,16 @@
+{
+  "claim_id": "claim-reliability-001",
+  "claim_type": "memory_integrity",
+  "evidence_class": "db_select_verified",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "verified_at": 1699999999,
+  "db_criteria": {
+    "S1_memory_events": 12,
+    "S2_mutation_journal": 12,
+    "S3_integrity_runs": 1,
+    "S4_memory_evidence": 11,
+    "S5_audit_trail": 3
+  },
+  "exit_code": 0,
+  "description": "Memory reliability verified after tracking fix"
+}

@@ -1,0 +1,19 @@
+{
+  "unified_audit_version": "1.0",
+  "timestamp_utc": "2026-09-08T19:19:03.680719",
+  "db_audit_trail_rows": 2,
+  "memory_evidence_rows": 0,
+  "audit_log_growing": true,
+  "hygiene_integrated": true,
+  "verification_claims": [
+    {
+      "claim_file": ".auto/evidence/claim_001.json",
+      "sha256_prefix": "e3b0c44298fc1c14",
+      "evidence_class": "db_select_verified"
+    }
+  ],
+  "claims_linked_to_memory_evidence": false,
+  "required_fields_present": true,
+  "action_taken": "report",
+  "approval_reference": null
+}
