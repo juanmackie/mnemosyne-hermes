@@ -3835,9 +3835,14 @@ impl LibsqlStorage {
             let mut next_frontier: HashSet<String> = HashSet::new();
             for chunk in frontier.chunks(query_batch) {
                 let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let placeholders_source = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let placeholders_target = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
                     "SELECT source_id, target_id, strength FROM memory_links \
-                     WHERE strength > 0 AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
+                     WHERE strength > 0 AND source_id IN ({placeholders_source}) \
+                     UNION ALL \
+                     SELECT source_id, target_id, strength FROM memory_links \
+                     WHERE strength > 0 AND target_id IN ({placeholders_target})"
                 );
                 let mut params: Vec<libsql::Value> = Vec::with_capacity(chunk.len() * 2);
                 for id in chunk.iter() {
