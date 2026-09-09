@@ -186,6 +186,12 @@ pub trait StorageBackend: Send + Sync {
     /// communication style). Returned alongside — never inside — the ranked
     /// results, so a profile can neither consume a semantic slot nor shift a
     /// ranking. Backends without profile storage return an empty list.
+    ///
+    /// `slots` budgets the inferred standing-guidance fill. Rows explicitly tagged
+    /// `always_on` are bounded by a prompt-cost budget and a hard item cap rather
+    /// than by `slots`, because a row the caller marked is a promise; with a fixed
+    /// quota the lowest-ranked marked row would never be delivered at all.
+
     async fn profile_facts(
         &self,
         _namespace: Option<Namespace>,

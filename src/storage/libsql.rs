@@ -9762,6 +9762,15 @@ impl StorageBackend for LibsqlStorage {
     /// the tag still gets a profile. Superseded, expired and archived rows never
     /// qualify, and ordering is total (tag, importance, updated_at, id) so the
     /// same store always yields the same profile.
+    ///
+    /// `slots` budgets the *guessed* tier-2 fill. A row the user marked
+    /// `always_on` is not dropped to meet it: with four marked rows and three
+    /// slots the lowest-ranked one was never delivered on any call, which is a
+    /// silent breach of the tag's promise. The real limit on a channel that rides
+    /// every call is prompt cost, so marked rows are bounded by a token budget
+    /// and a hard item cap instead. Order stays query-independent: a standing fact
+    /// is standing because no query is close to it, so there is nothing to rank
+    /// them by, and a stable prefix is worth more than a pseudo-relevance order.
     async fn profile_facts(
         &self,
         namespace: Option<Namespace>,
@@ -9770,7 +9779,9 @@ impl StorageBackend for LibsqlStorage {
         if slots == 0 {
             return Ok(Vec::new());
         }
-        let slots = slots.min(8);
+        const MAX_ITEMS: usize = 8;
+        const TOKEN_BUDGET: usize = 160;
+        let slots = slots.min(MAX_ITEMS);
         // Same shape as the existing tag filters in this file (tags is a JSON
         // text column), so no json_each dependency on malformed payloads.
         let marked = "m.tags LIKE '%\"always_on\"%'";
@@ -9790,7 +9801,7 @@ impl StorageBackend for LibsqlStorage {
                     OR (m.memory_type IN ('preference', 'constraint') AND m.importance >= 7) )
               {ns_filter}
             ORDER BY {marked} DESC, m.importance DESC, m.updated_at DESC, m.id ASC
-            LIMIT {slots}
+            LIMIT {MAX_ITEMS}
             "#,
             columns = self.memory_columns("m"),
             knowledge = self.knowledge_predicate("m"),
@@ -9801,13 +9812,29 @@ impl StorageBackend for LibsqlStorage {
         };
         let conn = self.get_conn()?;
         let mut rows = conn.query(&sql, params_vec).await?;
-        let mut facts = Vec::with_capacity(slots);
+        let mut facts: Vec<SearchResult> = Vec::with_capacity(slots);
+        let mut budget = 0usize;
+        let mut guidance_left = slots;
         while let Some(row) = rows.next().await? {
-            facts.push(SearchResult {
+            let fact = SearchResult {
                 memory: self.row_to_memory(&row).await?,
                 score: 1.0,
                 match_reason: "profile".to_string(),
-            });
+            };
+            if fact.memory.tags.iter().any(|t| t == "always_on") {
+                let cost = crate::utils::retrieval::estimate_result_tokens(&[fact.clone()]);
+                // The first marked fact is taken even if it is on its own over
+                // budget: an empty profile would be a worse surprise than a
+                // single long one, and the caller chose to mark it.
+                if !facts.is_empty() && budget + cost > TOKEN_BUDGET {
+                    continue;
+                }
+                budget += cost;
+                facts.push(fact);
+            } else if guidance_left > 0 {
+                guidance_left -= 1;
+                facts.push(fact);
+            }
         }
         Ok(facts)
     }

@@ -97,7 +97,7 @@ async fn marked_facts_come_first_and_episodic_rows_never_qualify() {
 }
 
 #[tokio::test]
-async fn slot_cap_is_respected_and_zero_disables_the_channel() {
+async fn marked_facts_outlive_the_slot_quota_but_not_the_token_budget() {
     let notes: Vec<MemoryNote> = (0..6)
         .map(|i| {
             note(
@@ -110,14 +110,14 @@ async fn slot_cap_is_respected_and_zero_disables_the_channel() {
         .collect();
     let storage = storage_with(&notes).await;
 
+    let facts = storage
+        .profile_facts(Some(ns()), 2)
+        .await
+        .expect("marked profile");
     assert_eq!(
-        storage
-            .profile_facts(Some(ns()), 2)
-            .await
-            .expect("capped profile")
-            .len(),
-        2,
-        "the profile rides on every call, so the cap is a hard bound"
+        facts.len(),
+        6,
+        "a row the caller marked always_on must not be dropped to meet a quota; \n        the quota budgets the inferred fill, not the contract"
     );
     assert!(
         storage
@@ -126,6 +126,32 @@ async fn slot_cap_is_respected_and_zero_disables_the_channel() {
             .expect("zero-slot profile")
             .is_empty(),
         "zero slots must disable the channel"
+    );
+
+    // The bound that does hold is prompt cost: the profile rides on every call.
+    let long: Vec<MemoryNote> = (0..6)
+        .map(|i| {
+            note(
+                &format!("Instruction {} {}", i, "detail".repeat(90)),
+                MemoryType::Preference,
+                9,
+                vec!["always_on"],
+            )
+        })
+        .collect();
+    let bulky = storage_with(&long).await;
+    let taken = bulky
+        .profile_facts(Some(ns()), 2)
+        .await
+        .expect("bulky profile");
+    assert!(
+        taken.len() < 6,
+        "marked rows must still stop somewhere: took {} of 6 long rows",
+        taken.len()
+    );
+    assert!(
+        !taken.is_empty(),
+        "the first marked row is always delivered"
     );
 }
 

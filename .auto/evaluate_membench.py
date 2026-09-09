@@ -104,9 +104,20 @@ def one_query(binary: Path, db: Path, namespace: str, item: dict,
         row["coverage"] = sum(1 for rank in ranks if rank is not None) / len(ranks) if ranks else 0.0
         row["score"] = row["coverage"]
         row["hop_hit5"] = row["coverage"]
-    else:
-        haystack = profile + results if category == "always_on" else results
+    elif category == "always_on":
+        # The profile channel carries no ranking: every entry arrives with score
+        # 1.0 and match_reason "profile", and its order is query-independent on
+        # purpose, because a standing fact is standing exactly when no query is
+        # close to it. Scoring it by reciprocal rank measures where a set happened
+        # to be listed. What the channel promises is delivery on every call, so
+        # that is what is scored; rank is still recorded for inspection.
+        haystack = profile + results
         rank = first_rank(haystack, targets, limit + len(profile))
+        row["rank"] = rank
+        row["delivered"] = rank is not None
+        row["score"] = 1.0 if rank else 0.0
+    else:
+        rank = first_rank(results, targets, limit)
         row["rank"] = rank
         row["score"] = (1.0 / rank) if rank else 0.0
     distractors = item.get("distractor", [])
