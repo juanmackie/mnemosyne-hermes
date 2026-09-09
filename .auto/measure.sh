@@ -90,6 +90,14 @@ for entry in $PROFILES; do
       --dataset ".auto/${dataset}.jsonl" \
       --workers 6 | tee -a "$mcp_log" >/dev/null
   done
+  # Warm-server latency (the Hermes contract): ONE MCP process, serial
+  # held-out calls, first 3 dropped. Only the live-stack profile.
+  if [ "$label" = "model-backed" ]; then
+    python3 .auto/warm_mcp.py \
+      --binary "$bin" --db "$db" \
+      --dataset .auto/eval_heldout_a.jsonl --dataset .auto/eval_heldout_b.jsonl \
+      --metric realquery_warm_mcp_p95_ms
+  fi
   unset MNEMOSYNE_EVAL_BIN MNEMOSYNE_EVAL_DB MNEMOSYNE_EVAL_LABEL
 done
 
