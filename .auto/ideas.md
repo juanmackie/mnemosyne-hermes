@@ -25,6 +25,36 @@ quality steady at 0.9815 heldout MRR, #27).
 
 ## Still open (latency)
 
+- **PPR nondeterminism (pre-existing, opt-in channel):** at scale the
+  `fetch_ppr_adjacency` frontier is a `HashSet` (`next_frontier.into_iter()`)
+  and the node/edge budgets (200/400) truncate in traversal order, so PPR
+  scores — and bench `results_hash` — vary run-to-run on high-degree stores
+  (observed at 10k/degree-6, same code both runs). Deterministic fix = sort
+  frontier before iteration (order-stable BFS). Not done here: PPR is
+  `enable_ppr=false` in production defaults, so recall is unaffected.
+- `PPR_QUERY_BATCH` 50→450 A/B: ppr_delta at 10k looked like 136→21ms but the
+  bench tail is unstable (same-code reruns moved results_hash and hybrid_p95
+  by >20%); adjacency probe best-of-5 was equal (56 vs 61ms). No evidence of
+  gain; constant left at 50. PPR channel costs are traversal+row-parse bound,
+  not statement-count bound.
+- Bench harness note: `benches/hermes_recall_bench.rs` must be kept in sync
+  with `fetch_ppr_adjacency` signature (checks.sh doesn't build benches);
+  restored 2026-09-09 after 61625e0 broke `measure_fast.sh` silently.
+- ingest at bench scale is slow (10k: ~340s in-bench, 2k: ~57s) — write-path
+  optimization would need a dedicated write metric.
+
+- Warm recall is encoder-bound: quiet-state attribution (2026-09-09,
+  template-model-backed.db, warm serial MCP): model call 6.5-9.8ms vs keyless
+  1.3-3.2ms on the same store -> query encode ~6ms, whole rest of pipeline
+  ~1-2ms. The 19-29ms harness band = contention from its own parallel
+  evaluate phase, not per-call cost. Floor is the pinned bge-small encoder;
+  encoder swap is off-limits. Do not micro-optimize SQL for warm p95 again.
+- Dead ends verified 2026-09-09: (a) query-embedding memo — storage's
+  embedding_service is None on the real recall path (libsql.rs:1393), so
+  there is exactly ONE embed per recall call and harness queries are unique;
+  (b) tokio::join!(hybrid lane, embed) in MCP recall — measured <0.5ms in
+  quiet state (phase-1 DB ~0.3ms), sub-noise; revisit only if Hermes-side
+  concurrency makes DB segments long.
 
 - **Clean keep for the OR split**: re-run measure with
   `checks_timeout_seconds: 600` — checks include a `full,distributed`

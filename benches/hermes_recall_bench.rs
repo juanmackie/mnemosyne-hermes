@@ -384,7 +384,14 @@ async fn main() {
         });
         probe!("fetch_ppr_adjacency", {
             store
-                .fetch_ppr_adjacency(&seeds, 2, None)
+                .fetch_ppr_adjacency(
+                    &seeds,
+                    2,
+                    None,
+                    LibsqlStorage::PPR_NODE_BUDGET,
+                    LibsqlStorage::PPR_EDGE_BUDGET,
+                    LibsqlStorage::PPR_QUERY_BATCH,
+                )
                 .await
                 .unwrap()
                 .len()
