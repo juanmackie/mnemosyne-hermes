@@ -9509,6 +9509,64 @@ impl StorageBackend for LibsqlStorage {
         self.search_interaction_policies(query, max_results).await
     }
 
+    /// Always-on profile facts — see `StorageBackend::profile_facts`.
+    ///
+    /// Tier 1 is the explicit `always_on` tag, the contract a caller opts into;
+    /// tier 2 fills whatever slot tier 1 leaves with standing guidance
+    /// (`preference`/`constraint` at importance >= 7) so a store that never used
+    /// the tag still gets a profile. Superseded, expired and archived rows never
+    /// qualify, and ordering is total (tag, importance, updated_at, id) so the
+    /// same store always yields the same profile.
+    async fn profile_facts(
+        &self,
+        namespace: Option<Namespace>,
+        slots: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if slots == 0 {
+            return Ok(Vec::new());
+        }
+        let slots = slots.min(8);
+        // Same shape as the existing tag filters in this file (tags is a JSON
+        // text column), so no json_each dependency on malformed payloads.
+        let marked = "m.tags LIKE '%\"always_on\"%'";
+        let ns_filter = if namespace.is_some() {
+            " AND m.namespace = ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            r#"
+            SELECT {columns} FROM memories m
+            WHERE {knowledge}
+              AND m.is_archived = 0
+              AND m.superseded_by IS NULL
+              AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))
+              AND ( {marked}
+                    OR (m.memory_type IN ('preference', 'constraint') AND m.importance >= 7) )
+              {ns_filter}
+            ORDER BY {marked} DESC, m.importance DESC, m.updated_at DESC, m.id ASC
+            LIMIT {slots}
+            "#,
+            columns = self.memory_columns("m"),
+            knowledge = self.knowledge_predicate("m"),
+        );
+        let params_vec: Vec<libsql::Value> = match &namespace {
+            Some(ns) => vec![serde_json::to_string(ns)?.into()],
+            None => Vec::new(),
+        };
+        let conn = self.get_conn()?;
+        let mut rows = conn.query(&sql, params_vec).await?;
+        let mut facts = Vec::with_capacity(slots);
+        while let Some(row) = rows.next().await? {
+            facts.push(SearchResult {
+                memory: self.row_to_memory(&row).await?,
+                score: 1.0,
+                match_reason: "profile".to_string(),
+            });
+        }
+        Ok(facts)
+    }
+
     async fn list_approved_constraints(
         &self,
         namespace: &Namespace,

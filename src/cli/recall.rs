@@ -145,6 +145,13 @@ pub async fn handle(
 
     let retrieval_weights = storage.retrieval_weights().await;
 
+    // Always-on profile facts (see the MCP handler): standing content that no
+    // query is close enough to retrieve, returned beside the ranked results.
+    let profile_facts = storage
+        .profile_facts(ns.clone(), 3)
+        .await
+        .unwrap_or_default();
+
     // Intent analysis first: chit-chat skips retrieval entirely. This is the
     // CLI entry policy and it gates before any candidate work is spent.
     if hierarchical {
@@ -284,6 +291,15 @@ pub async fn handle(
     }
 
     // Output results
+    if format != "json" && !profile_facts.is_empty() {
+        // Same content the JSON `profile` field carries, shown first because it
+        // frames everything below it.
+        eprintln!("Always-on context:");
+        for fact in &profile_facts {
+            eprintln!("  - {}", fact.memory.summary);
+        }
+        eprintln!();
+    }
     if format == "json" {
         let json_results: Vec<_> = results
             .iter()
@@ -341,6 +357,7 @@ pub async fn handle(
                 ),
                 "legend": recall_legend(),
                 "results": json_results,
+                "profile": mnemosyne_core::utils::retrieval::profile_payload(&profile_facts),
                 "shown": results.len(),
                 "candidates": recall_candidates,
                 "capped": recall_capped,

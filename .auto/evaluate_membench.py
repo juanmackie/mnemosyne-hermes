@@ -46,6 +46,24 @@ def matches(result: dict, needles: list[str]) -> bool:
     return False
 
 
+def profile_entries(payload: dict) -> list[dict]:
+    """Always-on content the tool returns alongside, not inside, `results`.
+
+    The recall contract puts standing profile content *before* the retrieved
+    memories (see the `[always-on]` block in the MCP compact text), so the
+    scoreboard scores the always-on class over `profile + results` in that order
+    and over nothing else - a profile cannot inflate any other category, and
+    because it never occupies a semantic slot it cannot shift a frozen-corpus rank.
+    """
+    entries = []
+    for item in payload.get("profile") or []:
+        if isinstance(item, str):
+            entries.append({"content": item})
+        elif isinstance(item, dict):
+            entries.append(item.get("memory", item))
+    return entries
+
+
 def first_rank(results: list[dict], needles: list[str], limit: int) -> int | None:
     for index, result in enumerate(results[:limit], 1):
         if matches(result, needles):
@@ -66,20 +84,24 @@ def one_query(binary: Path, db: Path, namespace: str, item: dict,
     if proc.returncode:
         raise RuntimeError(f"recall failed for {item['query']!r}: {proc.stderr[-800:]}")
     try:
-        results = json.loads(proc.stdout).get("results", [])
+        payload = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"bad JSON for {item['query']!r}: {proc.stdout[-400:]}") from exc
+    results = payload.get("results", [])
+    profile = profile_entries(payload)
 
     targets = item.get("relevant", [])
     category = item.get("category", "uncategorized")
-    row = {"category": category, "latency_ms": elapsed_ms, "count": len(results)}
+    row = {"category": category, "latency_ms": elapsed_ms, "count": len(results),
+           "profile_items": len(profile)}
     if category == "multihop_derived":
         ranks = [first_rank(results, [needle], limit) for needle in targets]
         row["coverage"] = sum(1 for rank in ranks if rank is not None) / len(ranks) if ranks else 0.0
         row["score"] = row["coverage"]
         row["hop_hit5"] = row["coverage"]
     else:
-        rank = first_rank(results, targets, limit)
+        haystack = profile + results if category == "always_on" else results
+        rank = first_rank(haystack, targets, limit + len(profile))
         row["rank"] = rank
         row["score"] = (1.0 / rank) if rank else 0.0
     distractors = item.get("distractor", [])
@@ -130,6 +152,10 @@ def main() -> int:
     print(f"METRIC {base}_latency_p95_ms="
           f"{sorted(r['latency_ms'] for r in rows)[int(0.95 * (len(rows) - 1))]:.3f}")
     print(f"METRIC {base}_empty={sum(1 for r in rows if r['count'] == 0)}")
+    # The profile is capped on purpose: an unbounded "put everything in the
+    # profile" would trivially win the always-on class, so its size stays watched.
+    print(f"METRIC {base}_profile_items="
+          f"{statistics.mean(r.get('profile_items', 0) for r in rows):.3f}")
     # Full per-query detail for post-mortems.
     detail = args.dataset.with_suffix(".detail.jsonl")
     detail.write_text("".join(json.dumps(r) + "\n" for r in rows))

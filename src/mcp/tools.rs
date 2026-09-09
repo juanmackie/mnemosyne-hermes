@@ -90,6 +90,11 @@ const RECOMMENDED_ABSTENTION_THRESHOLD: f32 = 0.30;
 /// in the token ledger.
 const DEFAULT_CONTENT_BUDGET: usize = 3500;
 
+/// Slots reserved for always-on profile facts in a recall response. Bounded on
+/// purpose: the profile rides on top of every call, so an unbounded profile would
+/// be a token tax on every recall (and a trivial way to win the always-on class).
+const DEFAULT_PROFILE_SLOTS: usize = 3;
+
 #[derive(Debug, Clone, Copy)]
 struct PageInfo {
     offset: usize,
@@ -892,7 +897,15 @@ impl ToolHandler {
 
         let retrieval_weights = self.storage.retrieval_weights().await;
 
-        // Phase 3: merge + re-rank via the single shared path.
+        // Always-on profile: standing content no query can be semantically close
+        // to (identity, routines, style). Fetched independently of the ranked
+        // lane and never merged into it, so it cannot displace a result.
+        let profile_facts = self
+            .storage
+            .profile_facts(namespace.clone(), DEFAULT_PROFILE_SLOTS)
+            .await
+            .unwrap_or_default();
+        let profile_count = profile_facts.len();
         // The old hand-rolled pipeline diverged from the CLI copy
         // (see src/cli/recall.rs and tests/recall_parity.rs).
         let ranked = crate::utils::retrieval::rank_recall(
@@ -910,7 +923,7 @@ impl ToolHandler {
             .trajectory_json
             .map(|t| serde_json::from_str(&t).unwrap_or(serde_json::Value::Null));
         let RankedRecall {
-            results: mut results,
+            results,
             candidates,
             capped,
             abstained,
@@ -1037,6 +1050,14 @@ impl ToolHandler {
         let use_compact = params.compact.unwrap_or(true);
         if use_compact {
             let mut lines = Vec::new();
+            // Profile first: standing guidance frames the retrieved facts rather
+            // than trailing them (this is also where a prompt would place it).
+            for fact in &profile_facts {
+                lines.push(format!(
+                    "[always-on] {}\n  {}",
+                    fact.memory.id, fact.memory.summary
+                ));
+            }
             if abstained {
                 lines.push(format!(
                     "ABSTAINED (best_score={:.3} < threshold={:.3}): no confident results found",
@@ -1068,6 +1089,7 @@ impl ToolHandler {
                 "compact": true,
                 "text": text_body,
                 "count": selected.len(),
+                "profile": crate::utils::retrieval::profile_payload(&profile_facts),
                 "abstained": abstained,
                 "best_score": selected.first().map(|r| r.score).unwrap_or(0.0),
                 "degraded": degraded,
@@ -1091,6 +1113,7 @@ impl ToolHandler {
             "candidates": candidates,
             "capped": capped,
             "response_guidance": selected_policy,
+            "profile": crate::utils::retrieval::profile_payload(&profile_facts),
             "channels": {
                 "factual": {
                     "quota": max_results,
@@ -1103,6 +1126,12 @@ impl ToolHandler {
                     "count": selected_policy.len(),
                     "abstained": selected_policy.is_empty(),
                     "abstention_reason": if selected_policy.is_empty() { Some("no eligible anchored policy matched") } else { None::<&str> }
+                },
+                "profile": {
+                    "quota": DEFAULT_PROFILE_SLOTS,
+                    "count": profile_count,
+                    "abstained": false,
+                    "abstention_reason": None::<&str>
                 }
             },
             "token_ledger": token_ledger,

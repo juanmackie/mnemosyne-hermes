@@ -180,6 +180,19 @@ pub trait StorageBackend: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Always-on profile facts: standing content that should accompany every
+    /// recall because no query is semantically close to it (identity, routines,
+    /// communication style). Returned alongside — never inside — the ranked
+    /// results, so a profile can neither consume a semantic slot nor shift a
+    /// ranking. Backends without profile storage return an empty list.
+    async fn profile_facts(
+        &self,
+        _namespace: Option<Namespace>,
+        _slots: usize,
+    ) -> Result<Vec<SearchResult>> {
+        Ok(Vec::new())
+    }
+
     /// List approved project constraints for the bounded bootstrap path.
     /// Alternate backends can return an empty list until they support the
     /// durable constraint-proposal table.

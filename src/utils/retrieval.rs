@@ -585,6 +585,26 @@ pub fn rank_recall(
 
 /// Estimated tokens of the memory text a recall response carries. `~4 chars
 /// per token`, the same heuristic as [`crate::context_assembler::estimate_tokens`].
+/// Wire shape for always-on profile facts.
+///
+/// Deliberately narrower than `MemoryNote`: the profile rides on top of *every*
+/// recall, so embedding model names, access counters and provenance would be
+/// paid for on every single call.
+pub fn profile_payload(facts: &[SearchResult]) -> Vec<serde_json::Value> {
+    facts
+        .iter()
+        .map(|fact| {
+            serde_json::json!({
+                "id": fact.memory.id.to_string(),
+                "content": fact.memory.content,
+                "summary": fact.memory.summary,
+                "tags": fact.memory.tags,
+                "importance": fact.memory.importance,
+            })
+        })
+        .collect()
+}
+
 pub fn estimate_result_tokens(results: &[SearchResult]) -> usize {
     results
         .iter()
