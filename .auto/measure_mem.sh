@@ -37,7 +37,7 @@ MNEMOSYNE_EVAL_BIN="$BIN" MNEMOSYNE_EVAL_DB="$FROZEN_DB" MNEMOSYNE_EVAL_LABEL="m
 
 for split in a b; do
   python3 .auto/evaluate.py --binary "$BIN" --db "$FROZEN_DB" \
-    --dataset ".auto/eval_heldout_${split}.jsonl" --workers 6 \
+    --dataset ".auto/eval_heldout_${split}.jsonl" \
     >".auto/data/frozen-cli-${split}.json"
   python3 .auto/evaluate_mcp_warm.py --binary "$BIN" --db "$FROZEN_DB" \
     --dataset ".auto/eval_heldout_${split}.jsonl" >".auto/data/frozen-warm-${split}.json"

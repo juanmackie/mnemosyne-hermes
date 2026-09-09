@@ -87,9 +87,9 @@ LLM or API key.
 
 | id | task | verdict |
 |---|---|---|
-| task-0 | Branch + scoreboard: `.auto/membench` corpus, dev/held-out queries, `measure_mem.sh`, baseline, `log-memstack.jsonl` | pending |
+| task-0 | Branch + scoreboard: `.auto/membench` corpus, dev/held-out queries, `measure_mem.sh`, baseline, `log-memstack.jsonl` | **done** (a30e30f; held-out baseline 0.5842, guards reproduce session-2: 0.981481/0.962963/1.0, warm p95 19.1ms) |
 | task-1 | Typed `UPDATES`/`EXTENDS`/`DERIVES` edges + indexed `is_latest` preferred by retrieval (replaces the 0.35 supersession nudge) | pending |
-| task-2 | Always-on profile: deterministic auto-maintained static+dynamic fact sheet per namespace, returned with recall | pending |
+| task-2 | Always-on profile: deterministic auto-maintained static+dynamic fact sheet per namespace, returned with recall | **done** (a69d97d; always-on 0.133->0.458 = the 3-slot ceiling, held-out 0.5842->0.6383, guards bit-identical, warm p95 20.0ms; static/dynamic *split* deferred — recency slots added no value yet) |
 | task-3 | Ingest split: reference ("superrag") content searchable but never a memory, profile fact or graph edge | pending |
 | task-4 | Enforced temporal validity / auto-forgetting at recall + consolidation (`expires_at` set at ingest, not honoured) | pending |
 | task-5 | Deterministic AND/OR metadata filter DSL + explicit `searchMode`, pushed into SQL | pending |

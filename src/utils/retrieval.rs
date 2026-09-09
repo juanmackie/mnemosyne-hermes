@@ -605,6 +605,66 @@ pub fn profile_payload(facts: &[SearchResult]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Tag marking content as bulk documentation rather than a fact about the
+/// user or project. It is opt-in on purpose: `memory_type = reference` also
+/// covers personal reference facts ("the dotfiles repo lives at ...") which the
+/// agent *should* recall, and excluding those cost 0.09 held-out MRR when tried.
+pub const REFERENCE_ONLY_TAG: &str = "reference_only";
+
+/// Which content lane a recall serves.
+///
+/// Bulk documentation (API references, vendor manuals) is searchable material but
+/// not something the agent *recalls about the project*: it shares vocabulary with
+/// real facts and outranks them. Splitting the lanes keeps docs searchable without
+/// letting them crowd out memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecallScope {
+    /// Project facts only: `reference`-typed rows are excluded.
+    #[default]
+    Memory,
+    /// Reference content only (docs, manuals, API specs).
+    Reference,
+    /// Everything, the pre-split behaviour.
+    All,
+}
+
+impl RecallScope {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "memory" | "memories" => Some(Self::Memory),
+            "reference" | "references" | "kb" | "docs" => Some(Self::Reference),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Reference => "reference",
+            Self::All => "all",
+        }
+    }
+
+    fn keeps(self, result: &SearchResult) -> bool {
+        let documented = result.memory.tags.iter().any(|t| t == REFERENCE_ONLY_TAG);
+        match self {
+            Self::All => true,
+            Self::Memory => !documented,
+            Self::Reference => documented,
+        }
+    }
+
+    /// Apply the lane filter to every candidate channel before fusion, so a
+    /// disqualified row cannot contribute a score it would later lose.
+    pub fn apply(self, results: Vec<SearchResult>) -> Vec<SearchResult> {
+        if self == Self::All {
+            return results;
+        }
+        results.into_iter().filter(|r| self.keeps(r)).collect()
+    }
+}
+
 pub fn estimate_result_tokens(results: &[SearchResult]) -> usize {
     results
         .iter()
@@ -769,5 +829,75 @@ mod tests {
         }];
         apply_coverage_rescore("??? !!! ... ,,,", &mut results);
         assert!((results[0].score - 0.7).abs() < 1e-6);
+    }
+
+    fn scoped(content: &str, kind: crate::types::MemoryType) -> SearchResult {
+        let mut memory = note(content);
+        memory.memory_type = kind;
+        if content.starts_with("HL7") {
+            memory.tags = vec![REFERENCE_ONLY_TAG.to_string(), "hl7".to_string()];
+        }
+        SearchResult {
+            memory,
+            score: 0.5,
+            match_reason: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn reference_docs_leave_the_memory_lane_but_stay_searchable() {
+        let candidates = vec![
+            scoped(
+                "Our load balancer body limit is 1 MB.",
+                crate::types::MemoryType::Configuration,
+            ),
+            scoped(
+                "HL7 reference: an ADT A01 event marks admission.",
+                crate::types::MemoryType::Reference,
+            ),
+        ];
+
+        // Default lane: the doc cannot crowd out the project fact.
+        let memory = RecallScope::default().apply(candidates.clone());
+        assert_eq!(memory.len(), 1);
+        assert!(memory[0].memory.content.starts_with("Our load balancer"));
+
+        // Documentation lane: only the doc.
+        let docs = RecallScope::Reference.apply(candidates.clone());
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].memory.content.starts_with("HL7"));
+
+        // Escape hatch: pre-split behaviour.
+        assert_eq!(RecallScope::All.apply(candidates).len(), 2);
+    }
+
+    #[test]
+    fn personal_reference_facts_stay_in_the_memory_lane() {
+        // A `reference`-typed row that is a fact about the user, not documentation,
+        // must remain recallable. Excluding the whole type cost 0.09 MRR.
+        let fact = scoped(
+            "Dotfiles repo lives at gitlab.com/arivera/dotfiles.",
+            crate::types::MemoryType::Reference,
+        );
+        let kept = RecallScope::Memory.apply(vec![fact]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            RecallScope::Reference
+                .apply(vec![scoped(
+                    "Dotfiles repo lives at gitlab.com/arivera/dotfiles.",
+                    crate::types::MemoryType::Reference,
+                )])
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn scope_names_parse_and_reject_unknowns() {
+        assert_eq!(RecallScope::parse("docs"), Some(RecallScope::Reference));
+        assert_eq!(RecallScope::parse(" MEMORY "), Some(RecallScope::Memory));
+        assert_eq!(RecallScope::parse("all"), Some(RecallScope::All));
+        assert_eq!(RecallScope::parse("everything"), None);
+        assert_eq!(RecallScope::default(), RecallScope::Memory);
     }
 }

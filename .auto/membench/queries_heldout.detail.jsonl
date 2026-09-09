@@ -1,16 +1,16 @@
-{"category": "temporal_latest_wins", "latency_ms": 839.1695809841622, "count": 5, "profile_items": 3, "rank": 2, "score": 0.5, "distractor_rank": null}
-{"category": "temporal_latest_wins", "latency_ms": 784.5315760059748, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
-{"category": "temporal_latest_wins", "latency_ms": 783.8207500171848, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
-{"category": "always_on", "latency_ms": 871.9972139806487, "count": 5, "profile_items": 3, "rank": 2, "score": 0.5, "distractor_rank": null}
-{"category": "always_on", "latency_ms": 869.7711960121524, "count": 5, "profile_items": 3, "rank": null, "score": 0.0, "distractor_rank": null}
-{"category": "always_on", "latency_ms": 838.251680979738, "count": 5, "profile_items": 3, "rank": 3, "score": 0.3333333333333333, "distractor_rank": null}
-{"category": "always_on", "latency_ms": 824.0065200079698, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
-{"category": "reference_noise", "latency_ms": 823.6953800078481, "count": 5, "profile_items": 3, "rank": null, "score": 0.0, "distractor_rank": null}
-{"category": "reference_noise", "latency_ms": 796.4455689943861, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
-{"category": "reference_noise", "latency_ms": 776.0107159847394, "count": 5, "profile_items": 3, "rank": 5, "score": 0.2, "distractor_rank": 4}
-{"category": "expired_facts", "latency_ms": 752.4265460087918, "count": 5, "profile_items": 3, "rank": null, "score": 0.0, "distractor_rank": null}
-{"category": "expired_facts", "latency_ms": 818.4568930009846, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
-{"category": "expired_facts", "latency_ms": 698.1823670212179, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
-{"category": "multihop_derived", "latency_ms": 661.2530139973387, "count": 5, "profile_items": 3, "coverage": 1.0, "score": 1.0, "hop_hit5": 1.0, "distractor_rank": null}
-{"category": "multihop_derived", "latency_ms": 657.0822329958901, "count": 5, "profile_items": 3, "coverage": 0.5, "score": 0.5, "hop_hit5": 0.5, "distractor_rank": null}
-{"category": "multihop_derived", "latency_ms": 694.3789570068475, "count": 5, "profile_items": 3, "coverage": 1.0, "score": 1.0, "hop_hit5": 1.0, "distractor_rank": null}
+{"category": "temporal_latest_wins", "latency_ms": 502.7992749819532, "count": 5, "profile_items": 3, "rank": 2, "score": 0.5, "distractor_rank": null}
+{"category": "temporal_latest_wins", "latency_ms": 485.1744440093171, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
+{"category": "temporal_latest_wins", "latency_ms": 514.4821279973257, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
+{"category": "always_on", "latency_ms": 496.6800030088052, "count": 5, "profile_items": 3, "rank": 2, "score": 0.5, "distractor_rank": null}
+{"category": "always_on", "latency_ms": 509.38468298409134, "count": 5, "profile_items": 3, "rank": null, "score": 0.0, "distractor_rank": null}
+{"category": "always_on", "latency_ms": 489.3762900028378, "count": 5, "profile_items": 3, "rank": 3, "score": 0.3333333333333333, "distractor_rank": null}
+{"category": "always_on", "latency_ms": 491.72516001272015, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
+{"category": "reference_noise", "latency_ms": 493.02627801080234, "count": 5, "profile_items": 3, "rank": null, "score": 0.0, "distractor_rank": null}
+{"category": "reference_noise", "latency_ms": 498.1622379855253, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
+{"category": "reference_noise", "latency_ms": 499.9020859831944, "count": 5, "profile_items": 3, "rank": 4, "score": 0.25, "distractor_rank": null}
+{"category": "expired_facts", "latency_ms": 499.48875201516785, "count": 5, "profile_items": 3, "rank": null, "score": 0.0, "distractor_rank": null}
+{"category": "expired_facts", "latency_ms": 501.303764001932, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
+{"category": "expired_facts", "latency_ms": 505.63760098884813, "count": 5, "profile_items": 3, "rank": 1, "score": 1.0, "distractor_rank": null}
+{"category": "multihop_derived", "latency_ms": 489.24888399778865, "count": 5, "profile_items": 3, "coverage": 1.0, "score": 1.0, "hop_hit5": 1.0, "distractor_rank": null}
+{"category": "multihop_derived", "latency_ms": 511.14187197526917, "count": 5, "profile_items": 3, "coverage": 0.5, "score": 0.5, "hop_hit5": 0.5, "distractor_rank": null}
+{"category": "multihop_derived", "latency_ms": 497.973359975731, "count": 5, "profile_items": 3, "coverage": 1.0, "score": 1.0, "hop_hit5": 1.0, "distractor_rank": null}

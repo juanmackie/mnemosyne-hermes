@@ -273,6 +273,11 @@ enum Commands {
         /// Abstain when the best score is below this threshold (0..=1)
         #[arg(long)]
         abstain_below: Option<f32>,
+
+        /// Content lane: 'memory' (default, excludes reference docs), 'reference'
+        /// (docs only) or 'all'.
+        #[arg(long, value_name = "SCOPE")]
+        scope: Option<String>,
     },
 
     /// Build a bounded, structured project-context package for agent startup.
@@ -634,6 +639,7 @@ async fn main() -> Result<()> {
             trace,
             budget_tokens,
             abstain_below,
+            scope,
         }) => {
             cli::recall::handle(
                 query,
@@ -647,6 +653,7 @@ async fn main() -> Result<()> {
                 trace,
                 budget_tokens,
                 abstain_below,
+                scope,
             )
             .await
         }

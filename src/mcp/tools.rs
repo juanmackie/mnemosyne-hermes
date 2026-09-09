@@ -821,6 +821,10 @@ impl ToolHandler {
             }
             Err(error) => return Err(error),
         };
+        // Content lane first, so the disclosed candidate counts describe the lane
+        // that was actually served (parity with the CLI default).
+        let scope = crate::utils::retrieval::RecallScope::Memory;
+        let keyword_results = scope.apply(keyword_results);
         let keyword_candidate_count = keyword_results.len();
 
         // Keyless release builds use deterministic hash embeddings. They still
@@ -886,6 +890,9 @@ impl ToolHandler {
                 Vec::new()
             }
         };
+        // The vector lane joins the same content scope; counts below describe
+        // what the lane actually served.
+        let vector_results = scope.apply(vector_results);
         let vector_candidate_count = vector_results.len();
 
         // Guidance is recalled independently and is never mixed into the

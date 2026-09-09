@@ -1,6 +1,8 @@
 //! Memory recall/query command
 
-use mnemosyne_core::utils::retrieval::{estimate_result_tokens, recall_disclosure, recall_legend};
+use mnemosyne_core::utils::retrieval::{
+    estimate_result_tokens, recall_disclosure, recall_legend, RecallScope,
+};
 use mnemosyne_core::{build_memory_context_block, is_trivial_prompt, RecallBundle, RecallChannel};
 use mnemosyne_core::{
     embeddings::{fallback_embedding_warning, remote_embedding_config},
@@ -29,6 +31,7 @@ pub async fn handle(
     trace: bool,
     budget_tokens: Option<usize>,
     abstain_below: Option<f32>,
+    scope: Option<String>,
 ) -> mnemosyne_core::error::Result<()> {
     let start_time = std::time::Instant::now();
 
@@ -46,10 +49,19 @@ pub async fn handle(
     // Parse namespace strictly so a typo cannot expose global memories.
     let ns = namespace.as_deref().map(parse_namespace).transpose()?;
 
+    // Content lane. Default `memory`: bulk documentation stays searchable but
+    // cannot crowd project facts out of the top slots.
+    let scope = scope
+        .as_deref()
+        .and_then(RecallScope::parse)
+        .unwrap_or_default();
+
     // Perform hybrid search (keyword + vector + graph)
-    let keyword_results = storage
-        .hybrid_search(&query, ns.clone(), limit * 2, true)
-        .await?;
+    let keyword_results = scope.apply(
+        storage
+            .hybrid_search(&query, ns.clone(), limit * 2, true)
+            .await?,
+    );
 
     // Vector search credential resolution. The remote (Voyage) provider is used
     // ONLY when an explicit Voyage credential (MNEMOSYNE_VOYAGE_API_KEY) is
@@ -144,6 +156,8 @@ pub async fn handle(
         };
 
     let retrieval_weights = storage.retrieval_weights().await;
+    // The vector lane joins the keyword lane in the same content scope.
+    let vector_results = scope.apply(vector_results);
 
     // Always-on profile facts (see the MCP handler): standing content that no
     // query is close enough to retrieve, returned beside the ranked results.
@@ -358,6 +372,7 @@ pub async fn handle(
                 "legend": recall_legend(),
                 "results": json_results,
                 "profile": mnemosyne_core::utils::retrieval::profile_payload(&profile_facts),
+                "scope": scope.as_str(),
                 "shown": results.len(),
                 "candidates": recall_candidates,
                 "capped": recall_capped,

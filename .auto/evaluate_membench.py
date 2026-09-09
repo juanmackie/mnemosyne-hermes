@@ -116,7 +116,10 @@ def main() -> int:
     ap.add_argument("--dataset", type=Path, required=True)
     ap.add_argument("--namespace", required=True)
     ap.add_argument("--limit", type=int, default=5)
-    ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--workers", type=int, default=1,
+                    help="keep 1: concurrent query processes make the local encoder\n" \
+                         "non-reproducible (same code, +-0.02 score). Serial is exact,\n" \
+                         "16 queries take ~40s, and it matches how Hermes calls recall")
     ap.add_argument("--prefix", required=True, help="metric prefix, e.g. membench_heldout")
     args = ap.parse_args()
 
