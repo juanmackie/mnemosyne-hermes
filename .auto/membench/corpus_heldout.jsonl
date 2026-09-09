@@ -73,3 +73,27 @@
 {"content": "The stair gate latch has a note stuck to it.", "importance": 8, "memory_type": "insight", "tags": "graph,noise", "age_days": 89, "links": [{"to": "The clinical reconciliation runbook lives under the name Ledger-Runbook.", "type": "references", "strength": 0.12}]}
 {"content": "The plant watering roster is bought in the autumn order.", "importance": 6, "memory_type": "insight", "tags": "graph,noise", "age_days": 90, "links": [{"to": "The clinical reconciliation runbook lives under the name Ledger-Runbook.", "type": "references", "strength": 0.12}]}
 {"content": "The key safe code card was flagged by the site visit form.", "importance": 4, "memory_type": "insight", "tags": "graph,noise", "age_days": 91, "links": [{"to": "The clinical reconciliation runbook lives under the name Ledger-Runbook.", "type": "references", "strength": 0.12}]}
+{"content": "The transfusion log is countersigned by Dr. Anselm on the first Monday of each month.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "The transfusion log was countersigned by Dr. Rufe every Tuesday.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -2}
+{"content": "The pathology courier collects specimens at 07:15 from the side entrance.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "The pathology courier collected specimens at 09:00 from the main doors.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -3}
+{"content": "This season the flu vaccination clinic runs in the community room.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "Last season the flu vaccination clinic ran in the old annex hall.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -4}
+{"content": "The autoclave service contract sits with Vaporeon Technical.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "The autoclave service contract sat with Kestrel Autoclave Services.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -5}
+{"content": "Consultation interpreters are booked through the LinguaVia desk.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "Consultation interpreters were booked through the hospital switchboard.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -6}
+{"content": "The clinical waste manifest is filed every Tuesday.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "The clinical waste manifest was filed at the end of each month.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -7}
+{"content": "Overnight veterinary cover comes from the coastal night rota.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "Overnight veterinary cover came from the northern cooperative rota.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -8}
+{"content": "HL7 reference: a DFT financial transaction message posts a charge code against the patient visit with the billing status.", "importance": 4, "memory_type": "reference", "tags": "hl7,docs,reference_only", "age_days": 30}
+{"content": "HL7 reference: an MDM medical document report carries a dictated report as an encoded attachment with a document type code.", "importance": 4, "memory_type": "reference", "tags": "fhir,docs,reference_only", "age_days": 31}
+{"content": "HL7 reference: an ORM order message sends the requested procedure code and the ordering clinician to the laboratory.", "importance": 4, "memory_type": "reference", "tags": "hl7,docs,reference_only", "age_days": 32}
+{"content": "HL7 reference: a BAR add billing account record opens the account for an encounter with account class and priority.", "importance": 4, "memory_type": "reference", "tags": "fhir,docs,reference_only", "age_days": 33}
+{"content": "FHIR reference: a ServiceRequest resource records the procedure a clinician wants with intent, category and requester.", "importance": 4, "memory_type": "reference", "tags": "hl7,docs,reference_only", "age_days": 34}
+{"content": "FHIR reference: a Specimen resource records the collection time, specimen type and the container it arrived in.", "importance": 4, "memory_type": "reference", "tags": "fhir,docs,reference_only", "age_days": 35}
+{"content": "FHIR reference: an Encounter resource records the period, the location and the participants for one patient visit.", "importance": 4, "memory_type": "reference", "tags": "hl7,docs,reference_only", "age_days": 36}
+{"content": "The clinic's HL7 field mappings are kept in mapping-clinical.csv inside the integrations folder.", "importance": 6, "memory_type": "reference", "tags": "personal,endpoint", "age_days": 12}
+{"content": "Laboratory results arrive through the Dalbert interface and its credentials live at secret/clinic/dalbert.", "importance": 6, "memory_type": "reference", "tags": "personal,endpoint", "age_days": 13}
+{"content": "The clinic's FHIR endpoint is https://clinic.example/fhir and it is reachable only over the VPN.", "importance": 6, "memory_type": "reference", "tags": "personal,endpoint", "age_days": 14}

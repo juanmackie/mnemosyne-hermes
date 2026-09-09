@@ -70,3 +70,27 @@
 {"content": "The cushion cover set was moved to the storage mezzanine.", "importance": 3, "memory_type": "insight", "tags": "graph,noise", "age_days": 88, "links": [{"to": "The pharmacy stock runbook lives under the name Dispensary-Checklist.", "type": "references", "strength": 0.12}]}
 {"content": "The stair gate latch has a note stuck to it.", "importance": 8, "memory_type": "insight", "tags": "graph,noise", "age_days": 89, "links": [{"to": "The pharmacy stock runbook lives under the name Dispensary-Checklist.", "type": "references", "strength": 0.12}]}
 {"content": "The plant watering roster is bought in the autumn order.", "importance": 6, "memory_type": "insight", "tags": "graph,noise", "age_days": 90, "links": [{"to": "The pharmacy stock runbook lives under the name Dispensary-Checklist.", "type": "references", "strength": 0.12}]}
+{"content": "The controlled-drug count is witnessed by Pharmacist Okonjo every Friday.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "The controlled-drug count was witnessed by Pharmacist Aldridge every Wednesday.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -2}
+{"content": "The ward refrigerator is read twice daily at 08:00 and 16:00.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "The ward refrigerator was read once daily at noon.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -3}
+{"content": "Discharge prescriptions are dispensed from the ground floor bay.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "Discharge prescriptions were dispensed from the basement dispensary.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -4}
+{"content": "The methotrexate counselling slot is run by the rheumatology pharmacy team.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "The methotrexate counselling slot was run by the ward nurses.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -5}
+{"content": "Ampoule sharps go in the purple-lid bin on the scullery shelf.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "Ampoule sharps went in the yellow bin in the treatment room.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -6}
+{"content": "The supplier invoice cutoff is the 24th of each month.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "The supplier invoice cutoff was the last working day of the month.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -7}
+{"content": "Drug queries outside opening hours go to the pharmacy duty line.", "importance": 6, "memory_type": "fact", "tags": "current,cover", "age_days": 4}
+{"content": "Drug queries outside opening hours went to the site switchboard.", "importance": 6, "memory_type": "task", "tags": "expired,cover", "age_days": 6, "expires_in_days": -8}
+{"content": "Kubernetes reference: a HorizontalPodAutoscaler scales a Deployment by watching a CPU utilisation target and a replica range.", "importance": 4, "memory_type": "reference", "tags": "k8s,docs,reference_only", "age_days": 30}
+{"content": "Kubernetes reference: a PodDisruptionBudget protects a minimum available count so voluntary drains cannot go below it.", "importance": 4, "memory_type": "reference", "tags": "k8s,docs,reference_only", "age_days": 31}
+{"content": "Kubernetes reference: a NetworkPolicy selects ingress and egress peers by pod selector and namespace label.", "importance": 4, "memory_type": "reference", "tags": "k8s,docs,reference_only", "age_days": 32}
+{"content": "Kubernetes reference: a PersistentVolumeClaim requests a storage class, an access mode and a capacity.", "importance": 4, "memory_type": "reference", "tags": "k8s,docs,reference_only", "age_days": 33}
+{"content": "Kubernetes reference: a ConfigMap injects non-secret configuration into pods as environment variables or mounted files.", "importance": 4, "memory_type": "reference", "tags": "k8s,docs,reference_only", "age_days": 34}
+{"content": "Kubernetes reference: a Job runs a pod to completion with backoffLimit retries and an active deadline.", "importance": 4, "memory_type": "reference", "tags": "k8s,docs,reference_only", "age_days": 35}
+{"content": "Kubernetes reference: a Service routes traffic to pods by matching a label selector and allocating a cluster IP.", "importance": 4, "memory_type": "reference", "tags": "k8s,docs,reference_only", "age_days": 36}
+{"content": "The settlement worker image is built by the release workflow in .github/workflows/release.yaml.", "importance": 6, "memory_type": "reference", "tags": "personal,endpoint", "age_days": 12}
+{"content": "The payments cluster kubeconfig is stored in Bitwarden under Kubernetes/payments-cluster.", "importance": 6, "memory_type": "reference", "tags": "personal,endpoint", "age_days": 13}
+{"content": "Our staging namespace is named payments-stage and shares the second node pool.", "importance": 6, "memory_type": "reference", "tags": "personal,endpoint", "age_days": 14}

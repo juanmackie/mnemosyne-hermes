@@ -5,9 +5,9 @@
 {"query": "write a polite email chasing the unpaid invoice from the imaging vendor", "category": "always_on", "relevant": ["more than three items should come back to me as a table"]}
 {"query": "can I ping the analytics engineer about the failed join at 07:30?", "category": "always_on", "relevant": ["unreachable by message before 08:00"]}
 {"query": "summarise this ward's readmission list for the weekly review", "category": "always_on", "relevant": ["Never copy patient identifiers"]}
-{"query": "why did some observations never make it into the warehouse?", "category": "reference_noise", "relevant": ["Observation bundles over 1 MB"], "distractor": ["large payloads should be paginated with bundles"]}
-{"query": "what is the limit on the payload size for our ingest path?", "category": "reference_noise", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["Transaction interaction posts a bundle"]}
-{"query": "can the ingest accept a big admission message in one go?", "category": "reference_noise", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["ADT A01 event signals a patient admission"]}
+{"query": "why did some observations never make it into the warehouse?", "category": "reference_docs", "relevant": ["Observation bundles over 1 MB"], "distractor": ["large payloads should be paginated with bundles"], "scope": "reference"}
+{"query": "what is the limit on the payload size for our ingest path?", "category": "reference_docs", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["Transaction interaction posts a bundle"], "scope": "reference"}
+{"query": "can the ingest accept a big admission message in one go?", "category": "reference_docs", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["ADT A01 event signals a patient admission"], "scope": "reference"}
 {"query": "who covers the out-of-hours data phone today?", "category": "expired_facts", "relevant": ["clinical data steward for Fernwood Health"], "distractor": ["out-of-hours data duty phone"]}
 {"query": "where do I find my vaccination certificate?", "category": "expired_facts", "relevant": ["MediTrust portal"], "distractor": ["locum cover at the Estarreja clinic"]}
 {"query": "what clinical data role do I hold at Fernwood?", "category": "expired_facts", "relevant": ["clinical data steward"], "distractor": ["locum cover at the Estarreja clinic"]}
@@ -18,3 +18,20 @@
 {"query": "when do I have to ask for someone to cover Saturday?", "category": "graph_linked", "relevant": ["twelve hours ahead"], "distractor": ["Weekend clinic cover is booked through the co-op roster."]}
 {"query": "who follows up when a generator fuel reading is missing?", "category": "graph_linked", "relevant": ["goes to Dana"], "distractor": ["The generator fuel log is a paper book kept by the plant-room door."]}
 {"query": "what does the Ledger-Runbook say to do when the ledger count mismatches?", "category": "graph_linked", "relevant": ["replay the last settlement batch"], "distractor": ["the landlord"]}
+{"query": "who countersigns the transfusion log these days?", "category": "expired_facts", "relevant": ["Dr. Anselm"], "distractor": ["The transfusion log was countersigned by Dr. Rufe every Tuesday"]}
+{"query": "when does the pathology courier collect specimens now?", "category": "expired_facts", "relevant": ["07:15 from the side entrance"], "distractor": ["The pathology courier collected specimens at 09:00 from the main doors"]}
+{"query": "where is the flu vaccination clinic held this season?", "category": "expired_facts", "relevant": ["community room"], "distractor": ["Last season the flu vaccination clinic ran in the old annex hall"]}
+{"query": "which company services the autoclave now?", "category": "expired_facts", "relevant": ["Vaporeon Technical"], "distractor": ["The autoclave service contract sat with Kestrel Autoclave Services"]}
+{"query": "how do I book an interpreter for a consultation now?", "category": "expired_facts", "relevant": ["LinguaVia desk"], "distractor": ["Consultation interpreters were booked through the hospital switchboard"]}
+{"query": "how often is the clinical waste manifest filed now?", "category": "expired_facts", "relevant": ["filed every Tuesday"], "distractor": ["The clinical waste manifest was filed at the end of each month"]}
+{"query": "who covers the clinic overnight now?", "category": "expired_facts", "relevant": ["coastal night rota"], "distractor": ["Overnight veterinary cover came from the northern cooperative rota"]}
+{"query": "which HL7 message posts a charge against a patient visit?", "category": "reference_docs", "relevant": ["posts a charge code"], "distractor": ["dictated report as an encoded attachment"], "scope": "reference"}
+{"query": "which HL7 message carries a dictated report attachment?", "category": "reference_docs", "relevant": ["dictated report as an encoded attachment"], "distractor": ["requested procedure code"], "scope": "reference"}
+{"query": "which HL7 message places an order with the laboratory?", "category": "reference_docs", "relevant": ["requested procedure code"], "distractor": ["opens the account for an encounter"], "scope": "reference"}
+{"query": "which HL7 message opens a billing account for an encounter?", "category": "reference_docs", "relevant": ["opens the account for an encounter"], "distractor": ["intent, category and requester"], "scope": "reference"}
+{"query": "which FHIR resource records a procedure the clinician has asked for?", "category": "reference_docs", "relevant": ["intent, category and requester"], "distractor": ["the container it arrived in"], "scope": "reference"}
+{"query": "which FHIR resource says how a sample was collected and contained?", "category": "reference_docs", "relevant": ["the container it arrived in"], "distractor": ["the participants for one patient visit"], "scope": "reference"}
+{"query": "which FHIR resource lists who took part in a patient visit?", "category": "reference_docs", "relevant": ["the participants for one patient visit"], "distractor": ["posts a charge code"], "scope": "reference"}
+{"query": "which file holds the clinic's HL7 field mappings?", "category": "reference_noise", "relevant": ["mapping-clinical.csv"], "distractor": ["ADT A01"]}
+{"query": "where do the laboratory interface credentials live?", "category": "reference_noise", "relevant": ["secret/clinic/dalbert"], "distractor": ["observation result message"]}
+{"query": "what is our FHIR endpoint address?", "category": "reference_noise", "relevant": ["https://clinic.example/fhir"], "distractor": ["Observation resource links"]}

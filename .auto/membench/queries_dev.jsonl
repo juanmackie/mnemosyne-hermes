@@ -5,9 +5,9 @@
 {"query": "review this pull request and explain the deadlock in the retry loop", "category": "always_on", "relevant": ["short bullet lists"]}
 {"query": "is it reasonable to send the vendor a follow-up at 21:00 my time?", "category": "always_on", "relevant": ["offline after 18:00 IST"]}
 {"query": "someone reported a possible key leak in the acquirer webhook handler, what do I do first", "category": "always_on", "relevant": ["incident-leads@nimbus.example"]}
-{"query": "which kubernetes version are we pinned to and what blocks the upgrade", "category": "reference_noise", "relevant": ["pinned to Kubernetes 1.27"], "distractor": ["Kubernetes reference"]}
-{"query": "why is our cluster still on an old kubernetes release?", "category": "reference_noise", "relevant": ["vendor node agent is removed"], "distractor": ["Kubernetes reference"]}
-{"query": "can we run the settlement worker on a StatefulSet?", "category": "reference_noise", "relevant": ["settlement worker is pinned"], "distractor": ["StatefulSet keeps stable network"]}
+{"query": "which kubernetes version are we pinned to and what blocks the upgrade", "category": "reference_docs", "relevant": ["pinned to Kubernetes 1.27"], "distractor": ["Kubernetes reference"], "scope": "reference"}
+{"query": "why is our cluster still on an old kubernetes release?", "category": "reference_docs", "relevant": ["vendor node agent is removed"], "distractor": ["Kubernetes reference"], "scope": "reference"}
+{"query": "can we run the settlement worker on a StatefulSet?", "category": "reference_docs", "relevant": ["settlement worker is pinned"], "distractor": ["StatefulSet keeps stable network"], "scope": "reference"}
 {"query": "who is on call for payments right now?", "category": "expired_facts", "relevant": ["primary on-call engineer for Nimbus Payments"], "distractor": ["covering the night pager rotation"]}
 {"query": "where do I file a health claim?", "category": "expired_facts", "relevant": ["BenefitOS portal"], "distractor": ["dentist appointment"]}
 {"query": "what is my on-call responsibility this week?", "category": "expired_facts", "relevant": ["primary on-call engineer"], "distractor": ["night pager rotation"]}
@@ -18,3 +18,20 @@
 {"query": "why is last week's export gone from the drop folder?", "category": "graph_linked", "relevant": ["purged by the infra cleaner after 72 hours"], "distractor": ["The nightly export lands in the sftp drop folder."]}
 {"query": "who looks at the log of radio checks?", "category": "graph_linked", "relevant": ["reviewed by Priya"], "distractor": ["Radio checks are logged in the shift journal."]}
 {"query": "what should I do if the pharmacy stock counts disagree?", "category": "graph_linked", "relevant": ["recount the fridge shelf"], "distractor": ["list for"]}
+{"query": "who witnesses the controlled-drug count now?", "category": "expired_facts", "relevant": ["Pharmacist Okonjo"], "distractor": ["The controlled-drug count was witnessed by Pharmacist Aldridge every Wednesday"]}
+{"query": "how often is the ward refrigerator temperature read now?", "category": "expired_facts", "relevant": ["twice daily at 08:00 and 16:00"], "distractor": ["The ward refrigerator was read once daily at noon"]}
+{"query": "where are discharge prescriptions dispensed now?", "category": "expired_facts", "relevant": ["ground floor bay"], "distractor": ["Discharge prescriptions were dispensed from the basement dispensary"]}
+{"query": "who runs the methotrexate counselling slot now?", "category": "expired_facts", "relevant": ["rheumatology pharmacy team"], "distractor": ["The methotrexate counselling slot was run by the ward nurses"]}
+{"query": "which bin do ampoule sharps go in now?", "category": "expired_facts", "relevant": ["purple-lid bin"], "distractor": ["Ampoule sharps went in the yellow bin in the treatment room"]}
+{"query": "when is the supplier invoice cutoff now?", "category": "expired_facts", "relevant": ["24th of each month"], "distractor": ["The supplier invoice cutoff was the last working day of the month"]}
+{"query": "where do I send drug queries outside opening hours now?", "category": "expired_facts", "relevant": ["pharmacy duty line"], "distractor": ["Drug queries outside opening hours went to the site switchboard"]}
+{"query": "which Kubernetes object scales a deployment on a CPU target?", "category": "reference_docs", "relevant": ["CPU utilisation target"], "distractor": ["minimum available count"], "scope": "reference"}
+{"query": "which Kubernetes object stops a drain taking pods below a minimum?", "category": "reference_docs", "relevant": ["minimum available count"], "distractor": ["ingress and egress peers"], "scope": "reference"}
+{"query": "which Kubernetes object restricts which pods may talk to each other?", "category": "reference_docs", "relevant": ["ingress and egress peers"], "distractor": ["storage class, an access mode and a capacity"], "scope": "reference"}
+{"query": "which Kubernetes object asks for storage of a given class?", "category": "reference_docs", "relevant": ["storage class, an access mode and a capacity"], "distractor": ["environment variables or mounted files"], "scope": "reference"}
+{"query": "where does a pod get non-secret configuration from?", "category": "reference_docs", "relevant": ["environment variables or mounted files"], "distractor": ["backoffLimit retries"], "scope": "reference"}
+{"query": "which Kubernetes object runs a pod until it finishes, with retries?", "category": "reference_docs", "relevant": ["backoffLimit retries"], "distractor": ["allocating a cluster IP"], "scope": "reference"}
+{"query": "which Kubernetes object gives a set of pods a stable cluster IP?", "category": "reference_docs", "relevant": ["allocating a cluster IP"], "distractor": ["CPU utilisation target"], "scope": "reference"}
+{"query": "which workflow builds the settlement worker image?", "category": "reference_noise", "relevant": ["workflows/release.yaml"], "distractor": ["RollingUpdate strategy"]}
+{"query": "where is the payments cluster kubeconfig stored?", "category": "reference_noise", "relevant": ["Kubernetes/payments-cluster"], "distractor": ["kubelet evicts"]}
+{"query": "what is our staging namespace called?", "category": "reference_noise", "relevant": ["payments-stage"], "distractor": ["node selector"]}

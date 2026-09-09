@@ -60,6 +60,8 @@ def main() -> int:
                 errors.append(
                     f"{label}: gold {gold!r} matches {len(matches)} rows, so rank is ambiguous"
                 )
+        if item.get("scope") not in (None, "memory", "reference", "all"):
+            errors.append(f"{label}: unknown scope {item['scope']!r}")
         for distractor in item.get("distractor") or []:
             if not any(distractor.lower() in c.lower() for c in contents):
                 errors.append(f"{label}: distractor {distractor!r} matches no row")

@@ -196,55 +196,63 @@ warning: function `show_help` is never used
     |    ^^^^^^^^^
 
 warning: `mnemosyne` (bin "mnemosyne") generated 13 warnings (run `cargo fix --bin "mnemosyne" -p mnemosyne` to apply 8 suggestions)
-    Finished `release` profile [optimized] target(s) in 4m 50s
+    Finished `release` profile [optimized] target(s) in 4m 49s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
-NOTE validated queries=20 errors=0 weak=0 always_on=4 expired_facts=3 graph_linked=4 multihop_derived=3 reference_noise=3 temporal_latest_wins=3
+NOTE validated queries=37 errors=0 weak=0 always_on=4 expired_facts=10 graph_linked=4 multihop_derived=3 reference_docs=10 reference_noise=3 temporal_latest_wins=3
+ingested=96 superseded_pairs=3 expired_rows=9 links=28 link_types=['builds_upon', 'clarifies', 'referenced_by', 'references']
 METRIC membench_dev_always_on=0.500000
 note always_on: n=4 score=0.5000 distractor_outranks_target=0/4
-METRIC membench_dev_expired_facts=0.833333
-note expired_facts: n=3 score=0.8333 distractor_outranks_target=0/3
+METRIC membench_dev_expired_facts=0.950000
+note expired_facts: n=10 score=0.9500 distractor_outranks_target=0/10
 METRIC membench_dev_graph_linked=0.375000
 note graph_linked: n=4 score=0.3750 distractor_outranks_target=3/4
 METRIC membench_dev_multihop_derived=0.666667
 note multihop_derived: n=3 score=0.6667 distractor_outranks_target=0/3
-METRIC membench_dev_reference_noise=0.833333
-note reference_noise: n=3 score=0.8333 distractor_outranks_target=0/3
+METRIC membench_dev_reference_docs=0.625000
+note reference_docs: n=10 score=0.6250 distractor_outranks_target=3/10
+METRIC membench_dev_reference_noise=1.000000
+note reference_noise: n=3 score=1.0000 distractor_outranks_target=0/3
 METRIC membench_dev_temporal_latest_wins=0.666667
 note temporal_latest_wins: n=3 score=0.6667 distractor_outranks_target=0/3
 NOTE encoder=bge-small-en-v1.5 db=membench-dev.db
-METRIC membench_dev_score=0.700000
+METRIC membench_dev_score=0.756667
 METRIC membench_dev_always_on=0.500000
-METRIC membench_dev_expired_facts=0.833333
+METRIC membench_dev_expired_facts=0.950000
 METRIC membench_dev_graph_linked=0.375000
 METRIC membench_dev_multihop_derived=0.666667
-METRIC membench_dev_reference_noise=0.833333
+METRIC membench_dev_reference_docs=0.625000
+METRIC membench_dev_reference_noise=1.000000
 METRIC membench_dev_temporal_latest_wins=0.666667
-METRIC membench_dev_latency_p95_ms=594.042
+METRIC membench_dev_latency_p95_ms=577.359
 METRIC membench_dev_empty=0
 METRIC membench_dev_profile_items=3.000
-NOTE validated queries=20 errors=0 weak=0 always_on=4 expired_facts=3 graph_linked=4 multihop_derived=3 reference_noise=3 temporal_latest_wins=3
+NOTE validated queries=37 errors=0 weak=0 always_on=4 expired_facts=10 graph_linked=4 multihop_derived=3 reference_docs=10 reference_noise=3 temporal_latest_wins=3
+ingested=99 superseded_pairs=3 expired_rows=9 links=32 link_types=['builds_upon', 'clarifies', 'referenced_by', 'references']
 METRIC membench_heldout_always_on=0.458333
 note always_on: n=4 score=0.4583 distractor_outranks_target=0/4
-METRIC membench_heldout_expired_facts=0.666667
-note expired_facts: n=3 score=0.6667 distractor_outranks_target=0/3
+METRIC membench_heldout_expired_facts=0.900000
+note expired_facts: n=10 score=0.9000 distractor_outranks_target=0/10
 METRIC membench_heldout_graph_linked=0.625000
 note graph_linked: n=4 score=0.6250 distractor_outranks_target=2/4
 METRIC membench_heldout_multihop_derived=0.833333
 note multihop_derived: n=3 score=0.8333 distractor_outranks_target=0/3
-METRIC membench_heldout_reference_noise=0.566667
-note reference_noise: n=3 score=0.5667 distractor_outranks_target=0/3
+METRIC membench_heldout_reference_docs=0.700000
+note reference_docs: n=10 score=0.7000 distractor_outranks_target=3/10
+METRIC membench_heldout_reference_noise=1.000000
+note reference_noise: n=3 score=1.0000 distractor_outranks_target=0/3
 METRIC membench_heldout_temporal_latest_wins=0.833333
 note temporal_latest_wins: n=3 score=0.8333 distractor_outranks_target=0/3
 NOTE encoder=bge-small-en-v1.5 db=membench-heldout.db
-METRIC membench_heldout_score=0.671667
+METRIC membench_heldout_score=0.805000
 METRIC membench_heldout_always_on=0.458333
-METRIC membench_heldout_expired_facts=0.666667
+METRIC membench_heldout_expired_facts=0.900000
 METRIC membench_heldout_graph_linked=0.625000
 METRIC membench_heldout_multihop_derived=0.833333
-METRIC membench_heldout_reference_noise=0.566667
+METRIC membench_heldout_reference_docs=0.700000
+METRIC membench_heldout_reference_noise=1.000000
 METRIC membench_heldout_temporal_latest_wins=0.833333
-METRIC membench_heldout_latency_p95_ms=566.173
+METRIC membench_heldout_latency_p95_ms=541.213
 METRIC membench_heldout_empty=0
 METRIC membench_heldout_profile_items=3.000
 METRIC realquery_warm_mrr=0.989583
@@ -252,5 +260,5 @@ METRIC realquery_warm_hit1=0.979167
 METRIC realquery_heldout_mrr=0.981481
 METRIC realquery_heldout_hit1=0.962963
 METRIC realquery_heldout_hit5=1.000000
-METRIC recall_latency_warm_p95_ms=24.905
-METRIC realquery_warm_mcp_p95_ms=24.905
+METRIC recall_latency_warm_p95_ms=19.582
+METRIC realquery_warm_mcp_p95_ms=19.582

@@ -79,6 +79,10 @@ def one_query(binary: Path, db: Path, namespace: str, item: dict,
     cmd = [str(binary), "--db-path", str(query_db), "recall",
            "--query", item["query"], "--namespace", namespace,
            "--limit", str(limit), "--format", "json"]
+    # Documentation lives in its own recall lane; a query about a vendor manual
+    # has to be asked in that lane or it measures suppression, not ranking.
+    if item.get("scope"):
+        cmd += ["--scope", item["scope"]]
     started = time.perf_counter()
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
