@@ -30,8 +30,39 @@ MODEL = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "bge-small-en-v1.5")
 
 
 def fingerprint(corpus: Path, label: str) -> str:
-    payload = corpus.read_bytes() + f"|model={MODEL}|label={label}|membench-v1".encode()
+    payload = corpus.read_bytes() + f"|model={MODEL}|label={label}|membench-v2".encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def resolve(target: str, content_to_id: dict[str, str], owner: str) -> str:
+    """Map a corpus reference to one memory id, or fail rather than guess."""
+    if target in content_to_id:
+        return content_to_id[target]
+    partial = [content for content in content_to_id if target in content]
+    if len(partial) == 1:
+        return content_to_id[partial[0]]
+    raise SystemExit(
+        f"link from {owner!r} names {target!r} which matches {len(partial)} corpus rows")
+
+
+def add_links(conn, rows, content_to_id: dict[str, str]) -> dict[str, int]:
+    """Store the corpus-declared graph edges. Returns requested counts by type."""
+    wanted: dict[str, int] = {}
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for row in rows:
+        source = content_to_id[row["content"]]
+        for link in row.get("links", []):
+            link_type = link["type"]
+            # created_at is written explicitly: the column DEFAULT is
+            # CURRENT_TIMESTAMP, whose "YYYY-MM-DD HH:MM:SS" form the Rust reader
+            # rejects, and a rejected link timestamp fails the whole recall.
+            conn.execute(
+                "INSERT INTO memory_links (source_id, target_id, link_type, strength,"
+                " reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (source, resolve(link["to"], content_to_id, row["content"]), link_type,
+                 float(link.get("strength", 1.0)), "membench fixture", stamp))
+            wanted[link_type] = wanted.get(link_type, 0) + 1
+    return wanted
 
 
 def rebuild(corpus: Path, db: Path, namespace: str) -> None:
@@ -86,6 +117,15 @@ def rebuild(corpus: Path, db: Path, namespace: str) -> None:
             conn.execute("UPDATE memories SET superseded_by = ? WHERE id = ?",
                          (content_to_id[row["content"]], content_to_id[old]))
             pairs += 1
+        wanted = add_links(conn, rows, content_to_id)
+
+    # Read the edges back through the same schema the server will use. INSERT OR
+    # IGNORE is how production lost three link types silently, so the fixture
+    # inserts strictly and then counts: a rejected type fails the rebuild.
+    stored = dict(conn.execute("SELECT link_type, COUNT(*) FROM memory_links GROUP BY link_type"))
+    missing = {t: n for t, n in wanted.items() if stored.get(t, 0) != n}
+    if missing:
+        raise SystemExit(f"links were not stored (schema rejects these types): {missing}")
     conn.close()
 
     # Evaluators copy the main DB file only, so fold the WAL back in.
@@ -97,8 +137,9 @@ def rebuild(corpus: Path, db: Path, namespace: str) -> None:
         if sidecar.exists():
             sidecar.unlink()
     expired = sum(1 for _, _, e in dated if e is not None and int(e) < 0)
-    print(f"ingested={len(dated)} superseded_pairs={pairs} expired_rows={expired}",
-          file=sys.stderr)
+    edges = sum(wanted.values())
+    print(f"ingested={len(dated)} superseded_pairs={pairs} expired_rows={expired}"
+          f" links={edges} link_types={sorted(wanted)}", file=sys.stderr)
 
 
 def main() -> int:

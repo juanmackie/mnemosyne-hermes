@@ -37,3 +37,9 @@
 {"content": "Postmortems for data incidents go in the clinical-data-runbooks repository.", "importance": 5, "memory_type": "decision", "tags": "incidents,docs", "age_days": 150}
 {"content": "Spine proxy credentials rotate monthly through the vault rotation job.", "importance": 6, "memory_type": "configuration", "tags": "secrets,rotation", "age_days": 50}
 {"content": "I use pgbouncer in transaction mode for all analytics connections.", "importance": 5, "memory_type": "preference", "tags": "database,tooling", "age_days": 165}
+{"content": "Cold-chain temperature alerts surface inside the VetTrack dashboard.", "importance": 6, "memory_type": "configuration", "tags": "graph,cold-chain", "age_days": 210}
+{"content": "The VetTrack dashboard is kept alive by the Facilities volunteer team; the vendor shut down in March.", "importance": 7, "memory_type": "entity", "tags": "graph,vettrack", "age_days": 150, "links": [{"to": "Cold-chain temperature alerts surface inside the VetTrack dashboard.", "type": "builds_upon"}]}
+{"content": "Weekend clinic cover is booked through the co-op roster.", "importance": 6, "memory_type": "preference", "tags": "graph,cover", "age_days": 95}
+{"content": "The co-op roster will not place a cover slot unless it is requested twelve hours ahead.", "importance": 7, "memory_type": "constraint", "tags": "graph,roster", "age_days": 60, "links": [{"to": "Weekend clinic cover is booked through the co-op roster.", "type": "clarifies"}]}
+{"content": "The generator fuel log is a paper book kept by the plant-room door.", "importance": 5, "memory_type": "configuration", "tags": "graph,generator", "age_days": 240}
+{"content": "Fuel book readings are transcribed into the Facilities sheet each Friday and any gap goes to Dana.", "importance": 6, "memory_type": "task", "tags": "graph,fuel", "age_days": 40, "links": [{"to": "The generator fuel log is a paper book kept by the plant-room door.", "type": "referenced_by"}]}

@@ -38,3 +38,9 @@
 {"content": "Postmortems are stored in the incident-log repository under the year folder.", "importance": 5, "memory_type": "decision", "tags": "incidents,docs", "age_days": 140}
 {"content": "The psp sandbox credentials rotate every quarter through the vault rotation job.", "importance": 6, "memory_type": "configuration", "tags": "secrets,rotation", "age_days": 70}
 {"content": "I use rg and delta as my daily diff and search tools.", "importance": 4, "memory_type": "preference", "tags": "tooling", "age_days": 160}
+{"content": "Access badges for the lab are collected at the second door desk.", "importance": 5, "memory_type": "configuration", "tags": "graph,badges", "age_days": 180}
+{"content": "The second door desk is staffed only on Tuesdays and Thursdays before noon.", "importance": 6, "memory_type": "constraint", "tags": "graph,desk", "age_days": 120, "links": [{"to": "Access badges for the lab are collected at the second door desk.", "type": "clarifies"}]}
+{"content": "The nightly export lands in the sftp drop folder.", "importance": 5, "memory_type": "configuration", "tags": "graph,export", "age_days": 90}
+{"content": "The sftp drop folder is purged by the infra cleaner after 72 hours.", "importance": 6, "memory_type": "insight", "tags": "graph,cleaner", "age_days": 70, "links": [{"to": "The nightly export lands in the sftp drop folder.", "type": "builds_upon"}]}
+{"content": "Radio checks are logged in the shift journal.", "importance": 4, "memory_type": "task", "tags": "graph,radio", "age_days": 200}
+{"content": "Shift journal entries are reviewed by Priya at the Monday stand-up.", "importance": 5, "memory_type": "task", "tags": "graph,journal", "age_days": 30, "links": [{"to": "Radio checks are logged in the shift journal.", "type": "referenced_by"}]}

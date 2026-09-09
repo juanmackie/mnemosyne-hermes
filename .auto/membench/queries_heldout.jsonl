@@ -14,3 +14,6 @@
 {"query": "which data residency region ends up holding the decoded FHIR batches?", "category": "multihop_derived", "relevant": ["writes decoded batches into the clinical_lake schema", "fernwood-eu data residency region"]}
 {"query": "whose team controls the analytics licence budget above me?", "category": "multihop_derived", "relevant": ["Head of Data, Ines Cardoso", "analytics licence budget"]}
 {"query": "trace the path from the ingest writer to the region its tables sit in", "category": "multihop_derived", "relevant": ["writes decoded batches into the clinical_lake schema", "fernwood-eu data residency region"]}
+{"query": "who keeps the cold-chain alert screen running?", "category": "graph_linked", "relevant": ["Facilities volunteer team"], "distractor": ["Cold-chain temperature alerts surface inside the VetTrack dashboard."]}
+{"query": "when do I have to ask for someone to cover Saturday?", "category": "graph_linked", "relevant": ["twelve hours ahead"], "distractor": ["Weekend clinic cover is booked through the co-op roster."]}
+{"query": "who follows up when a generator fuel reading is missing?", "category": "graph_linked", "relevant": ["goes to Dana"], "distractor": ["The generator fuel log is a paper book kept by the plant-room door."]}

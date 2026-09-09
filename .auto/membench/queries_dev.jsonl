@@ -14,3 +14,6 @@
 {"query": "which cloud account holds the database that the settlement worker writes to?", "category": "multihop_derived", "relevant": ["writes to the ledger-db Postgres cluster", "nimbus-prod cloud account"]}
 {"query": "whose organisation controls the compliance budget that my manager sits in?", "category": "multihop_derived", "relevant": ["VP of Engineering, Dana Whitfield", "compliance budget line"]}
 {"query": "where do the settlement events end up physically, from writer to account?", "category": "multihop_derived", "relevant": ["writes to the ledger-db Postgres cluster", "nimbus-prod cloud account"]}
+{"query": "when can I pick up a lab access badge?", "category": "graph_linked", "relevant": ["Tuesdays and Thursdays before noon"], "distractor": ["Access badges for the lab are collected at the second door desk."]}
+{"query": "why is last week's export gone from the drop folder?", "category": "graph_linked", "relevant": ["purged by the infra cleaner after 72 hours"], "distractor": ["The nightly export lands in the sftp drop folder."]}
+{"query": "who looks at the log of radio checks?", "category": "graph_linked", "relevant": ["reviewed by Priya"], "distractor": ["Radio checks are logged in the shift journal."]}
