@@ -76,11 +76,15 @@ CREATE TABLE IF NOT EXISTS memory_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id TEXT NOT NULL,
     target_id TEXT NOT NULL,
+    -- Must list every LinkType variant (see the migrations/*/001 schema).
     link_type TEXT NOT NULL CHECK(link_type IN (
         'extends',
+        'builds_upon',
         'contradicts',
         'implements',
         'references',
+        'referenced_by',
+        'clarifies',
         'supersedes'
     )),
     strength REAL NOT NULL DEFAULT 0.5 CHECK(strength BETWEEN 0.0 AND 1.0),

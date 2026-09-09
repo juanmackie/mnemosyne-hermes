@@ -493,6 +493,57 @@ pub enum LinkType {
     Supersedes,
 }
 
+impl LinkType {
+    /// The exact text stored in `memory_links.link_type`.
+    ///
+    /// Exhaustive `match`es, not a list: the schema CHECK and two read paths each
+    /// kept a hand-copied list of these names, and the three variants missing from
+    /// those copies (`builds_upon`, `referenced_by`, `clarifies`) were written with
+    /// INSERT OR IGNORE and skipped on read, so those edges never existed. Adding a
+    /// variant now fails to compile here instead of quietly losing edges.
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            LinkType::Extends => "extends",
+            LinkType::BuildsUpon => "builds_upon",
+            LinkType::Contradicts => "contradicts",
+            LinkType::Implements => "implements",
+            LinkType::References => "references",
+            LinkType::ReferencedBy => "referenced_by",
+            LinkType::Clarifies => "clarifies",
+            LinkType::Supersedes => "supersedes",
+        }
+    }
+
+    /// Inverse of [`LinkType::as_db_str`]; `None` for text no variant produces.
+    pub fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "extends" => Some(LinkType::Extends),
+            "builds_upon" => Some(LinkType::BuildsUpon),
+            "contradicts" => Some(LinkType::Contradicts),
+            "implements" => Some(LinkType::Implements),
+            "references" => Some(LinkType::References),
+            "referenced_by" => Some(LinkType::ReferencedBy),
+            "clarifies" => Some(LinkType::Clarifies),
+            "supersedes" => Some(LinkType::Supersedes),
+            _ => None,
+        }
+    }
+
+    /// Every variant, in declaration order.
+    pub fn all() -> [LinkType; 8] {
+        [
+            LinkType::Extends,
+            LinkType::BuildsUpon,
+            LinkType::Contradicts,
+            LinkType::Implements,
+            LinkType::References,
+            LinkType::ReferencedBy,
+            LinkType::Clarifies,
+            LinkType::Supersedes,
+        ]
+    }
+}
+
 /// Memory link with typed relationship and metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryLink {

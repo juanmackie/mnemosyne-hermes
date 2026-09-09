@@ -131,3 +131,24 @@ Still open:
 - Scoreboard value: the 5 classes x 3 queries are too coarse for ranking work. To
   validate ranking changes, grow each class to >=10 queries first.
 - `mnemosyne kb search` as a named verb (today: `recall --scope reference`).
+
+## Autoresearch gate defect (2026-09-10, run 37)
+
+`log_experiment` runs `.auto/checks.sh` against a **stale snapshot** of the tree. It kept
+reporting rustfmt offenders in `src/storage/libsql_link_type_tests.rs` and
+`src/storage/mod.rs` after that file was deleted and `mod.rs` reverted, and a diagnostic
+hook added to `checks.sh` never produced output in this workspace - so the copy it checks
+lives elsewhere and does not re-sync those paths. Locally `cargo fmt --check` exits 0 with
+zero diffs, `.auto/checks.sh` exits 0, 878 lib tests pass.
+
+Consequences and workaround:
+- keep/discard decisions from the tool are untrustworthy while this persists; verify with
+  `cargo fmt --check`, `cargo test --lib`, `bash .auto/checks.sh` in the workspace, then
+  append the `.auto/log.jsonl` line by hand (run 37 does this and says so in `note`).
+- Do not weaken `.auto/checks.sh` to get a green tool verdict.
+- Real fix belongs to the pi-autoresearch extension: re-sync (or re-clone) the tree before
+  running checks, or run checks in the workspace cwd.
+
+Formatting note from the same episode: keep new unit tests inside an existing, already
+format-clean file when practical, and hoist `.await` out of `assert!` argument position -
+`rustfmt` layout for `assert!(f().await >= 2, ...)` differs between versions.

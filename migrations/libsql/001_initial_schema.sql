@@ -78,11 +78,18 @@ CREATE TABLE IF NOT EXISTS memory_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id TEXT NOT NULL,
     target_id TEXT NOT NULL,
+    -- Every variant of `LinkType` (src/types.rs) must be listed: writers use
+    -- INSERT OR IGNORE, so a type missing here is discarded without an error.
+    -- LibsqlStorage::widen_link_type_check repairs databases created before this
+    -- list matched the enum.
     link_type TEXT NOT NULL CHECK(link_type IN (
         'extends',
+        'builds_upon',
         'contradicts',
         'implements',
         'references',
+        'referenced_by',
+        'clarifies',
         'supersedes'
     )),
     strength REAL NOT NULL DEFAULT 0.5 CHECK(strength BETWEEN 0.0 AND 1.0),

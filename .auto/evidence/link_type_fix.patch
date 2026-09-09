@@ -1,0 +1,633 @@
+diff --git a/migrations/libsql/001_initial_schema.sql b/migrations/libsql/001_initial_schema.sql
+index 047851d..f16fb82 100644
+--- a/migrations/libsql/001_initial_schema.sql
++++ b/migrations/libsql/001_initial_schema.sql
+@@ -78,11 +78,18 @@ CREATE TABLE IF NOT EXISTS memory_links (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     source_id TEXT NOT NULL,
+     target_id TEXT NOT NULL,
++    -- Every variant of `LinkType` (src/types.rs) must be listed: writers use
++    -- INSERT OR IGNORE, so a type missing here is discarded without an error.
++    -- LibsqlStorage::widen_link_type_check repairs databases created before this
++    -- list matched the enum.
+     link_type TEXT NOT NULL CHECK(link_type IN (
+         'extends',
++        'builds_upon',
+         'contradicts',
+         'implements',
+         'references',
++        'referenced_by',
++        'clarifies',
+         'supersedes'
+     )),
+     strength REAL NOT NULL DEFAULT 0.5 CHECK(strength BETWEEN 0.0 AND 1.0),
+diff --git a/migrations/sqlite/001_initial_schema.sql b/migrations/sqlite/001_initial_schema.sql
+index 317b99e..55b60d9 100644
+--- a/migrations/sqlite/001_initial_schema.sql
++++ b/migrations/sqlite/001_initial_schema.sql
+@@ -109,11 +109,18 @@ CREATE TABLE IF NOT EXISTS memory_links (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     source_id TEXT NOT NULL,
+     target_id TEXT NOT NULL,
++    -- Every variant of `LinkType` (src/types.rs) must be listed: writers use
++    -- INSERT OR IGNORE, so a type missing here is discarded without an error.
++    -- LibsqlStorage::widen_link_type_check repairs databases created before this
++    -- list matched the enum.
+     link_type TEXT NOT NULL CHECK(link_type IN (
+         'extends',
++        'builds_upon',
+         'contradicts',
+         'implements',
+         'references',
++        'referenced_by',
++        'clarifies',
+         'supersedes'
+     )),
+     strength REAL NOT NULL DEFAULT 0.5 CHECK(strength BETWEEN 0.0 AND 1.0),
+diff --git a/src/storage/libsql.rs b/src/storage/libsql.rs
+index a33abe7..da843e5 100644
+--- a/src/storage/libsql.rs
++++ b/src/storage/libsql.rs
+@@ -1868,9 +1868,135 @@ impl LibsqlStorage {
+         if self.db_path != ":memory:" {
+             self.check_text_learning_integrity().await?;
+         }
++        // Repair databases whose link_type CHECK predates three LinkType variants.
++        self.widen_link_type_check(&conn).await?;
+         Ok(())
+     }
+ 
++    /// Widen `memory_links.link_type` so it accepts every `LinkType` variant.
++    ///
++    /// The shipped CHECK listed five of the eight variants, and every writer uses
++    /// INSERT OR IGNORE, so `builds_upon`, `referenced_by` and `clarifies` edges
++    /// were discarded at store time -- no error, no row, nothing to recover later.
++    ///
++    /// A CHECK cannot be altered in place, so the table is rebuilt from *its own*
++    /// stored DDL with three literals added: columns, defaults, NOT NULL flags,
++    /// foreign keys and the UNIQUE clause survive because they are copied verbatim
++    /// instead of being respecified (a hand-written replacement also silently loses
++    /// `DEFAULT CURRENT_TIMESTAMP`, which turns `created_at` into NULL for every new
++    /// edge). Indexes are recreated from their own stored DDL. A database whose DDL
++    /// does not look like the one this understands is left alone and reported rather
++    /// than rebuilt on a guess.
++    ///
++    /// Caller holds `MIGRATION_LOCK`; runs once per open on an unchanged database.
++    async fn widen_link_type_check(&self, conn: &Connection) -> Result<()> {
++        let mut ddl_rows = conn
++            .query(
++                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_links'",
++                (),
++            )
++            .await?;
++        let ddl = match ddl_rows.next().await? {
++            Some(row) => row.get::<String>(0).unwrap_or_default(),
++            // No table yet: whichever path creates it uses the widened DDL.
++            None => return Ok(()),
++        };
++        drop(ddl_rows);
++        if ddl.contains("'builds_upon'") {
++            return Ok(());
++        }
++        if !ddl.contains("link_type IN (") || !ddl.contains("'extends'") {
++            warn!(
++                "memory_links does not carry the shipped link_type CHECK;                  leaving its link types unconstrained"
++            );
++            return Ok(());
++        }
++
++        let column_names = Self::table_columns(conn, "memory_links").await?;
++        if column_names.is_empty() {
++            return Ok(());
++        }
++
++        let mut index_rows = conn
++            .query(
++                "SELECT sql FROM sqlite_master \
++                     WHERE type = 'index' AND tbl_name = 'memory_links' AND sql IS NOT NULL",
++                (),
++            )
++            .await?;
++        let mut index_ddls = Vec::new();
++        while let Some(row) = index_rows.next().await? {
++            index_ddls.push(row.get::<String>(0)?);
++        }
++        drop(index_rows);
++
++        // Rename the table in its own DDL, then add the missing variants. Only the
++        // first occurrence is the table name; every later one is inside the body.
++        let at = match ddl.find("memory_links") {
++            Some(at) => at,
++            None => return Ok(()),
++        };
++        let mut renamed = String::with_capacity(ddl.len() + 24);
++        renamed.push_str(&ddl[..at]);
++        renamed.push_str("memory_links_widened");
++        renamed.push_str(&ddl[at + "memory_links".len()..]);
++        let widened = renamed.replace(
++            "'extends',",
++            "'extends', 'builds_upon', 'referenced_by', 'clarifies',",
++        );
++        if widened == renamed {
++            // The CHECK did not contain the literal we key on; nothing safe to do.
++            return Ok(());
++        }
++
++        let column_list = column_names.join(", ");
++        let mut tx = conn.transaction().await?;
++        tx.execute(widened.as_str(), ()).await?;
++        tx.execute(
++            format!(
++                "INSERT INTO memory_links_widened ({}) SELECT {} FROM memory_links",
++                column_list, column_list
++            )
++            .as_str(),
++            (),
++        )
++        .await?;
++        tx.execute("DROP TABLE memory_links", ()).await?;
++        tx.execute(
++            "ALTER TABLE memory_links_widened RENAME TO memory_links",
++            (),
++        )
++        .await?;
++        for index_ddl in &index_ddls {
++            tx.execute(index_ddl.as_str(), ()).await?;
++        }
++        tx.commit().await?;
++
++        let mut preserved = conn.query("SELECT COUNT(*) FROM memory_links", ()).await?;
++        let edges = match preserved.next().await? {
++            Some(row) => row.get::<i64>(0).unwrap_or(0),
++            None => 0,
++        };
++        drop(preserved);
++        info!(
++            "Widened memory_links.link_type to every LinkType variant ({} edges preserved)",
++            edges
++        );
++        Ok(())
++    }
++
++    /// Column names of a table, in declaration order.
++    async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
++        let mut rows = conn
++            .query(format!("PRAGMA table_info({})", table).as_str(), ())
++            .await?;
++        let mut columns = Vec::new();
++        while let Some(row) = rows.next().await? {
++            columns.push(row.get::<String>(1)?);
++        }
++        Ok(columns)
++    }
++
+     /// Ensure compatibility columns used by the existing evolution scans are
+     /// present without making migration 019 fail on databases that already
+     /// received the legacy evolution schema.
+@@ -4295,13 +4421,9 @@ impl LibsqlStorage {
+             let target_id = MemoryId::from_string(&target_id_str)?;
+ 
+             let link_type_str: String = row.get(2)?;
+-            let link_type = match link_type_str.as_str() {
+-                "extends" => crate::types::LinkType::Extends,
+-                "contradicts" => crate::types::LinkType::Contradicts,
+-                "implements" => crate::types::LinkType::Implements,
+-                "references" => crate::types::LinkType::References,
+-                "supersedes" => crate::types::LinkType::Supersedes,
+-                _ => continue,
++            let link_type = match crate::types::LinkType::from_db_str(&link_type_str) {
++                Some(link_type) => link_type,
++                None => continue,
+             };
+ 
+             let strength: f64 = row.get(3)?;
+@@ -5354,10 +5476,7 @@ impl LibsqlStorage {
+             if target_rows.next().await?.is_none() {
+                 return Err(MnemosyneError::MemoryNotFound(link.target_id.to_string()));
+             }
+-            let link_type = serde_json::to_value(link.link_type)?
+-                .as_str()
+-                .unwrap_or("references")
+-                .to_string();
++            let link_type = link.link_type.as_db_str().to_string();
+             let values = params![
+                 source_id.to_string(),
+                 link.target_id.to_string(),
+@@ -11390,14 +11509,7 @@ impl LibsqlStorage {
+ 
+     /// Map a stored link-type string to its typed representation.
+     fn parse_link_type(value: &str) -> Option<crate::types::LinkType> {
+-        match value {
+-            "extends" => Some(crate::types::LinkType::Extends),
+-            "contradicts" => Some(crate::types::LinkType::Contradicts),
+-            "implements" => Some(crate::types::LinkType::Implements),
+-            "references" => Some(crate::types::LinkType::References),
+-            "supersedes" => Some(crate::types::LinkType::Supersedes),
+-            _ => None,
+-        }
++        crate::types::LinkType::from_db_str(value)
+     }
+ 
+     /// Store version check cache entry
+diff --git a/src/storage/libsql_link_type_tests.rs b/src/storage/libsql_link_type_tests.rs
+new file mode 100644
+index 0000000..a3d9be2
+--- /dev/null
++++ b/src/storage/libsql_link_type_tests.rs
+@@ -0,0 +1,301 @@
++//! Link types must agree in exactly one place.
++//!
++//! `LinkType` has eight variants. Until recently the schema CHECK listed five, the
++//! writer used `INSERT OR IGNORE`, and both readers mapped stored type text through
++//! a five-arm match ending in `_ => continue` / `_ => None`. The three variants
++//! missing from those copies (`builds_upon`, `referenced_by`, `clarifies`) produced
++//! no error and no row: graph edges the caller believed it had were never stored.
++//! These tests pin the enum as the only list.
++
++#[cfg(test)]
++mod link_type_tests {
++    use crate::storage::StorageBackend;
++    use crate::types::{LinkType, MemoryClass, MemoryLink, MemoryNote, MemoryType, Namespace};
++    use crate::{ConnectionMode, LibsqlStorage};
++    use chrono::Utc;
++    use libsql::params;
++    use tempfile::TempDir;
++
++    async fn storage() -> (LibsqlStorage, TempDir) {
++        let temp_dir = TempDir::new().unwrap();
++        let db_path = temp_dir.path().join("test_link_types.db");
++        let store = LibsqlStorage::new_with_validation(
++            ConnectionMode::Local(db_path.to_str().unwrap().to_string()),
++            true,
++        )
++        .await
++        .expect("test storage");
++        (store, temp_dir)
++    }
++
++    /// A memory linked to `targets`, once per listed type.
++    fn note_with_links(content: &str, targets: &[MemoryLink]) -> MemoryNote {
++        MemoryNote {
++            id: crate::types::MemoryId::new(),
++            namespace: Namespace::Global,
++            created_at: Utc::now(),
++            updated_at: Utc::now(),
++            content: content.to_string(),
++            summary: content.to_string(),
++            keywords: vec!["links".to_string()],
++            tags: vec!["links".to_string()],
++            context: String::new(),
++            memory_type: MemoryType::Insight,
++            memory_class: MemoryClass::Knowledge,
++            provenance: None,
++            importance: 7,
++            confidence: 0.9,
++            links: targets.to_vec(),
++            related_files: vec![],
++            related_entities: vec![],
++            access_count: 0,
++            last_accessed_at: Utc::now(),
++            expires_at: None,
++            is_archived: false,
++            superseded_by: None,
++            embedding: None,
++            embedding_model: String::new(),
++        }
++    }
++
++    fn link(target: crate::types::MemoryId, link_type: LinkType) -> MemoryLink {
++        MemoryLink {
++            target_id: target,
++            link_type,
++            strength: 0.9,
++            reason: "test".to_string(),
++            created_at: Utc::now(),
++            last_traversed_at: None,
++            user_created: false,
++        }
++    }
++
++    async fn stored_types(store: &LibsqlStorage) -> Vec<String> {
++        let conn = store.get_conn().unwrap();
++        let mut rows = conn
++            .query(
++                "SELECT link_type FROM memory_links ORDER BY link_type",
++                params![],
++            )
++            .await
++            .unwrap();
++        let mut found = Vec::new();
++        while let Some(row) = rows.next().await.unwrap() {
++            found.push(row.get::<String>(0).unwrap());
++        }
++        found
++    }
++
++    async fn scalar_i64(store: &LibsqlStorage, sql: &str) -> i64 {
++        let conn = store.get_conn().unwrap();
++        let mut rows = conn.query(sql, params![]).await.unwrap();
++        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap()
++    }
++
++    async fn table_ddl(store: &LibsqlStorage) -> String {
++        let conn = store.get_conn().unwrap();
++        let mut rows = conn
++            .query(
++                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_links'",
++                params![],
++            )
++            .await
++            .unwrap();
++        rows.next()
++            .await
++            .unwrap()
++            .unwrap()
++            .get::<String>(0)
++            .unwrap()
++    }
++
++    /// `as_db_str` / `from_db_str` are inverses, so a value that can be written but
++    /// not read (or the reverse) requires both lists to be wrong identically.
++    #[test]
++    fn link_type_text_round_trips() {
++        let mut texts: Vec<String> = Vec::new();
++        for link_type in LinkType::all() {
++            let text = link_type.as_db_str();
++            assert_eq!(
++                LinkType::from_db_str(text),
++                Some(link_type),
++                "{link_type:?} does not round-trip through '{text}'"
++            );
++            texts.push(text.to_string());
++        }
++        texts.sort();
++        texts.dedup();
++        assert_eq!(
++            texts.len(),
++            LinkType::all().len(),
++            "two variants share one stored text"
++        );
++        assert_eq!(LinkType::from_db_str("nonsense"), None);
++    }
++
++    /// The real writer path: storing a memory carrying one link of every variant.
++    /// `INSERT OR IGNORE` is why this needed a test -- a rejected edge was silent.
++    #[tokio::test]
++    async fn every_link_type_variant_reaches_the_table() {
++        let (store, _tmp) = storage().await;
++        let target_note = note_with_links("link target", &[]);
++        let target = target_note.id.clone();
++        store.store_memory(&target_note).await.unwrap();
++
++        let links: Vec<MemoryLink> = LinkType::all()
++            .iter()
++            .map(|link_type| link(target.clone(), *link_type))
++            .collect();
++        store
++            .store_memory(&note_with_links("link source", &links))
++            .await
++            .unwrap();
++
++        let found = stored_types(&store).await;
++        for link_type in LinkType::all() {
++            let text = link_type.as_db_str();
++            assert!(
++                found.iter().any(|t| t == text),
++                "'{text}' never reached memory_links (found {found:?})"
++            );
++        }
++        for text in &found {
++            assert!(
++                LinkType::from_db_str(text).is_some(),
++                "stored link type '{text}' has no typed reader"
++            );
++        }
++    }
++
++    /// A database whose CHECK predates the fix is repaired on open: rows survive,
++    /// column defaults survive, the illegal type becomes writable, and the repair is
++    /// idempotent.
++    #[tokio::test]
++    async fn repair_widens_an_old_database_and_keeps_rows_and_defaults() {
++        let (store, _tmp) = storage().await;
++        let conn = store.get_conn().unwrap();
++
++        // Recreate the table exactly as it shipped before the fix.
++        conn.execute_batch(
++            "DROP TABLE memory_links;
++             CREATE TABLE memory_links (
++                 id INTEGER PRIMARY KEY AUTOINCREMENT,
++                 source_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
++                 target_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
++                 link_type TEXT NOT NULL CHECK(link_type IN (
++                     'extends',
++                     'contradicts',
++                     'implements',
++                     'references',
++                     'supersedes'
++                 )),
++                 strength REAL NOT NULL DEFAULT 0.5 CHECK(strength >= 0.0 AND strength <= 1.0),
++                 reason TEXT,
++                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++                 UNIQUE(source_id, target_id, link_type)
++             );
++             CREATE INDEX idx_links_source ON memory_links(source_id);
++             CREATE INDEX idx_links_target ON memory_links(target_id);",
++        )
++        .await
++        .unwrap();
++
++        let (source, target) = {
++            let mut ids = Vec::new();
++            for content in ["edge source", "edge target"] {
++                let note = note_with_links(content, &[]);
++                ids.push(note.id.clone());
++                store.store_memory(&note).await.unwrap();
++            }
++            (ids[0].clone(), ids[1].clone())
++        };
++
++        // The way the writer writes: an illegal type disappears without an error.
++        conn.execute(
++            "INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason) \
++             VALUES (?, ?, 'builds_upon', 0.9, 'silently dropped')",
++            params![source.to_string(), target.to_string()],
++        )
++        .await
++        .unwrap();
++        assert_eq!(
++            scalar_i64(&store, "SELECT COUNT(*) FROM memory_links").await,
++            0,
++            "the old CHECK should have dropped this edge"
++        );
++
++        store.run_migrations(false).await.unwrap();
++
++        let ddl = table_ddl(&store).await;
++        assert!(
++            ddl.contains("'builds_upon'"),
++            "CHECK was not widened: {ddl}"
++        );
++        assert!(
++            ddl.contains("UNIQUE(source_id, target_id, link_type)"),
++            "UNIQUE clause lost: {ddl}"
++        );
++        assert!(
++            ddl.contains("DEFAULT CURRENT_TIMESTAMP"),
++            "rebuild lost column defaults: {ddl}"
++        );
++
++        // The previously illegal type is now writable; the duplicate is still refused.
++        conn.execute(
++            "INSERT INTO memory_links (source_id, target_id, link_type, strength) \
++             VALUES (?, ?, 'clarifies', 0.7)",
++            params![source.to_string(), target.to_string()],
++        )
++        .await
++        .expect("clarifies should be writable after the repair");
++        assert!(
++            conn.execute(
++                "INSERT INTO memory_links (source_id, target_id, link_type, strength) \
++                 VALUES (?, ?, 'clarifies', 0.7)",
++                params![source.to_string(), target.to_string()],
++            )
++            .await
++            .is_err(),
++            "UNIQUE(source_id, target_id, link_type) was lost"
++        );
++
++        // Defaults survived the rebuild: omitting them must not yield NULL, which is
++        // what a CREATE TABLE ... AS SELECT rebuild would have done.
++        conn.execute(
++            "INSERT INTO memory_links (source_id, target_id, link_type) \
++             VALUES (?, ?, 'referenced_by')",
++            params![target.to_string(), source.to_string()],
++        )
++        .await
++        .unwrap();
++        let mut rows = conn
++            .query(
++                "SELECT strength, created_at FROM memory_links WHERE link_type = 'referenced_by'",
++                params![],
++            )
++            .await
++            .unwrap();
++        let row = rows.next().await.unwrap().unwrap();
++        let strength: f64 = row.get(0).unwrap();
++        let created_at: String = row.get(1).unwrap();
++        assert!(
++            (strength - 0.5).abs() < f64::EPSILON,
++            "strength default lost"
++        );
++        assert!(!created_at.is_empty(), "created_at default lost");
++
++        // Idempotent, and the indexes were recreated.
++        store.run_migrations(false).await.unwrap();
++        assert!(table_ddl(&store).await.contains("'builds_upon'"));
++        assert!(
++            scalar_i64(
++                &store,
++                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
++                     AND tbl_name = 'memory_links' AND sql IS NOT NULL"
++            )
++            .await
++                >= 2,
++            "indexes were not recreated"
++        );
++    }
++}
+diff --git a/src/storage/mod.rs b/src/storage/mod.rs
+index fc0aeb0..fcc9b70 100644
+--- a/src/storage/mod.rs
++++ b/src/storage/mod.rs
+@@ -20,6 +20,8 @@ pub mod test_utils;
+ 
+ #[cfg(test)]
+ pub mod libsql_asof_tests;
++#[cfg(test)]
++pub mod libsql_link_type_tests;
+ pub mod libsql_workitem_tests;
+ 
+ use crate::agents::access_control::{ModificationLog, ModificationType};
+diff --git a/src/storage/test_utils.rs b/src/storage/test_utils.rs
+index 56eac99..4f36836 100644
+--- a/src/storage/test_utils.rs
++++ b/src/storage/test_utils.rs
+@@ -76,11 +76,15 @@ CREATE TABLE IF NOT EXISTS memory_links (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     source_id TEXT NOT NULL,
+     target_id TEXT NOT NULL,
++    -- Must list every LinkType variant (see the migrations/*/001 schema).
+     link_type TEXT NOT NULL CHECK(link_type IN (
+         'extends',
++        'builds_upon',
+         'contradicts',
+         'implements',
+         'references',
++        'referenced_by',
++        'clarifies',
+         'supersedes'
+     )),
+     strength REAL NOT NULL DEFAULT 0.5 CHECK(strength BETWEEN 0.0 AND 1.0),
+diff --git a/src/types.rs b/src/types.rs
+index 1b99dd0..05ed5e4 100644
+--- a/src/types.rs
++++ b/src/types.rs
+@@ -493,6 +493,57 @@ pub enum LinkType {
+     Supersedes,
+ }
+ 
++impl LinkType {
++    /// The exact text stored in `memory_links.link_type`.
++    ///
++    /// Exhaustive `match`es, not a list: the schema CHECK and two read paths each
++    /// kept a hand-copied list of these names, and the three variants missing from
++    /// those copies (`builds_upon`, `referenced_by`, `clarifies`) were written with
++    /// INSERT OR IGNORE and skipped on read, so those edges never existed. Adding a
++    /// variant now fails to compile here instead of quietly losing edges.
++    pub fn as_db_str(self) -> &'static str {
++        match self {
++            LinkType::Extends => "extends",
++            LinkType::BuildsUpon => "builds_upon",
++            LinkType::Contradicts => "contradicts",
++            LinkType::Implements => "implements",
++            LinkType::References => "references",
++            LinkType::ReferencedBy => "referenced_by",
++            LinkType::Clarifies => "clarifies",
++            LinkType::Supersedes => "supersedes",
++        }
++    }
++
++    /// Inverse of [`LinkType::as_db_str`]; `None` for text no variant produces.
++    pub fn from_db_str(value: &str) -> Option<Self> {
++        match value {
++            "extends" => Some(LinkType::Extends),
++            "builds_upon" => Some(LinkType::BuildsUpon),
++            "contradicts" => Some(LinkType::Contradicts),
++            "implements" => Some(LinkType::Implements),
++            "references" => Some(LinkType::References),
++            "referenced_by" => Some(LinkType::ReferencedBy),
++            "clarifies" => Some(LinkType::Clarifies),
++            "supersedes" => Some(LinkType::Supersedes),
++            _ => None,
++        }
++    }
++
++    /// Every variant, in declaration order.
++    pub fn all() -> [LinkType; 8] {
++        [
++            LinkType::Extends,
++            LinkType::BuildsUpon,
++            LinkType::Contradicts,
++            LinkType::Implements,
++            LinkType::References,
++            LinkType::ReferencedBy,
++            LinkType::Clarifies,
++            LinkType::Supersedes,
++        ]
++    }
++}
++
+ /// Memory link with typed relationship and metadata
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct MemoryLink {

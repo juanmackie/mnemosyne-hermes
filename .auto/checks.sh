@@ -18,6 +18,16 @@ if rustup component list --installed 2>/dev/null | grep -q '^rustfmt'; then
     else
       echo "rustfmt: NEW offenders:"
       comm -13 .auto/fmt-baseline.txt /tmp/fmt-now.txt
+      # Diagnostics: which rustfmt produced these, and what it wants.
+      mkdir -p .auto/evidence
+      {
+        echo "== $(date -u +%FT%TZ)"
+        echo "rustfmt: $(rustfmt --version 2>&1) | cargo: $(cargo --version 2>&1)"
+        echo "rustup: $(rustup show active-toolchain 2>&1)"
+        echo "PATH: $PATH"
+        echo "--- cargo fmt --check log ---"
+        cat /tmp/mnemosyne-autoresearch-fmt.log
+      } > .auto/evidence/fmt-offenders.log 2>&1
       exit 1
     fi
   }
