@@ -1804,13 +1804,45 @@ impl LibsqlStorage {
             conn.execute("BEGIN", params![]).await?;
             if !batch_sql.is_empty() {
                 if let Err(error) = conn.execute_batch(&batch_sql).await {
+                    // Schema drift (a newer CREATE TABLE already providing a
+                    // column, or a crash between an ALTER and its bookkeeping)
+                    // makes whole-batch replay fail with duplicate-name errors
+                    // even though the schema is present. Retry statement by
+                    // statement, tolerating only duplicate-name failures, so
+                    // drifted databases can still open.
                     let _ = conn.execute("ROLLBACK", params![]).await;
-                    return Err(MnemosyneError::Migration(format!(
-                        "Failed to execute migration {}: {}\nSQL: {}",
-                        migration_file,
-                        error,
-                        &batch_sql[..batch_sql.len().min(500)]
-                    )));
+                    let text = error.to_string();
+                    let drift_only = text.contains("duplicate column name")
+                        || text.contains("already exists");
+                    if !drift_only {
+                        return Err(MnemosyneError::Migration(format!(
+                            "Failed to execute migration {}: {}\nSQL: {}",
+                            migration_file,
+                            error,
+                            &batch_sql[..batch_sql.len().min(500)]
+                        )));
+                    }
+                    conn.execute("BEGIN", params![]).await?;
+                    for statement in statements.iter() {
+                        let statement = statement.trim();
+                        if statement.is_empty() {
+                            continue;
+                        }
+                        if let Err(error) = conn.execute(statement, params![]).await {
+                            let text = error.to_string();
+                            if !text.contains("duplicate column name")
+                                && !text.contains("already exists")
+                            {
+                                let _ = conn.execute("ROLLBACK", params![]).await;
+                                return Err(MnemosyneError::Migration(format!(
+                                    "Failed to execute migration {}: {}\nSQL: {}",
+                                    migration_file,
+                                    error,
+                                    statement
+                                )));
+                            }
+                        }
+                    }
                 }
             }
 
