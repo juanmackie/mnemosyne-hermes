@@ -1,0 +1,39 @@
+{"content": "Call me Marco, not Dr. Feld.", "importance": 9, "memory_type": "entity", "tags": "identity,always_on", "age_days": 320}
+{"content": "I am at the clinic 08:30 to 16:00 Europe/Lisbon and unreachable by message before 08:00.", "importance": 8, "memory_type": "preference", "tags": "schedule,always_on", "age_days": 280}
+{"content": "Never copy patient identifiers into summaries or memory; reference them by pseudonym only.", "importance": 10, "memory_type": "constraint", "tags": "privacy,always_on", "age_days": 300}
+{"content": "Anything with more than three items should come back to me as a table, not sentences.", "importance": 7, "memory_type": "preference", "tags": "style,always_on", "age_days": 230}
+{"content": "The Fernwood clinical warehouse runs on a Snowflake XL warehouse with a three minute rebuild.", "importance": 7, "memory_type": "configuration", "tags": "warehouse", "age_days": 250}
+{"content": "The Fernwood clinical warehouse runs on a Snowflake MEDIUM warehouse with autosuspend after 60 seconds.", "importance": 7, "memory_type": "configuration", "tags": "warehouse", "age_days": 15, "supersedes": "The Fernwood clinical warehouse runs on a Snowflake XL warehouse with a three minute rebuild."}
+{"content": "The FHIR ingest service is owned by the Interop team.", "importance": 7, "memory_type": "entity", "tags": "org,ownership", "age_days": 290}
+{"content": "The FHIR ingest service is owned by the Ingest team after the Interop team disbanded.", "importance": 7, "memory_type": "entity", "tags": "org,ownership", "age_days": 18, "supersedes": "The FHIR ingest service is owned by the Interop team."}
+{"content": "We back up the clinical Postgres with nightly pg_dump into cold storage.", "importance": 7, "memory_type": "architecture", "tags": "backup", "age_days": 200}
+{"content": "We back up the clinical Postgres with Barman point-in-time recovery instead of nightly dumps.", "importance": 8, "memory_type": "architecture", "tags": "backup", "age_days": 10, "supersedes": "We back up the clinical Postgres with nightly pg_dump into cold storage."}
+{"content": "HL7 reference: an ADT A01 event signals a patient admission and carries the visit number, admitting provider and bed assignment.", "importance": 4, "memory_type": "reference", "tags": "hl7,docs,reference_only", "age_days": 380, "kind": "reference"}
+{"content": "HL7 reference: an ORU R01 observation result message carries segments for the ordering provider, the specimen and the result values.", "importance": 4, "memory_type": "reference", "tags": "hl7,docs,reference_only", "age_days": 380, "kind": "reference"}
+{"content": "FHIR reference: an Observation resource links a subject, a code and a value, and large payloads should be paginated with bundles.", "importance": 4, "memory_type": "reference", "tags": "fhir,docs,reference_only", "age_days": 380, "kind": "reference"}
+{"content": "FHIR reference: the Transaction interaction posts a bundle of create and update entries that must commit atomically or not at all.", "importance": 4, "memory_type": "reference", "tags": "fhir,docs,reference_only", "age_days": 380, "kind": "reference"}
+{"content": "Our FHIR ingest silently drops Observation bundles over 1 MB because the load balancer body limit is 1 MB.", "importance": 9, "memory_type": "bug_fix", "tags": "fhir,ingest,limit", "age_days": 28}
+{"content": "I am locum cover at the Estarreja clinic this Friday only, 2026-05-15.", "importance": 5, "memory_type": "task", "tags": "clinic,cover", "age_days": 5, "expires_in_days": -3}
+{"content": "Tonight I am holding the out-of-hours data duty phone until 07:00.", "importance": 6, "memory_type": "task", "tags": "oncall,rotation", "age_days": 3, "expires_in_days": -1}
+{"content": "I am the clinical data steward for Fernwood Health.", "importance": 8, "memory_type": "entity", "tags": "role,stewardship", "age_days": 140}
+{"content": "Occupational health records and my vaccination certificate live in the MediTrust portal.", "importance": 7, "memory_type": "entity", "tags": "health,records", "age_days": 130}
+{"content": "The FHIR ingest writes decoded batches into the clinical_lake schema.", "importance": 7, "memory_type": "architecture", "tags": "ingest,warehouse", "age_days": 70}
+{"content": "The clinical_lake schema lives in the fernwood-eu data residency region.", "importance": 7, "memory_type": "architecture", "tags": "residency,regions", "age_days": 70}
+{"content": "I report to the Head of Data, Ines Cardoso.", "importance": 7, "memory_type": "entity", "tags": "org,reporting", "age_days": 110}
+{"content": "Ines Cardoso's team owns the analytics licence budget for the year.", "importance": 6, "memory_type": "entity", "tags": "org,budget", "age_days": 110}
+{"content": "Lab result reconciliation runs at 05:00 Europe/Lisbon and normally finishes in 25 minutes.", "importance": 5, "memory_type": "task", "tags": "batch,reconciliation", "age_days": 160}
+{"content": "Patient matching uses the national identifier first and falls back to a fuzzy name and dob score above 0.92.", "importance": 8, "memory_type": "decision", "tags": "patient-matching", "age_days": 175}
+{"content": "We keep pseudonymised extracts only in the analytics project; identified data never leaves clinical_lake.", "importance": 9, "memory_type": "constraint", "tags": "privacy,residency", "age_days": 190}
+{"content": "General practice feeds arrive over the NHS spines proxy once per hour.", "importance": 6, "memory_type": "architecture", "tags": "feeds,spines", "age_days": 205}
+{"content": "Consent state is checked before every release to a third-party researcher, no exceptions.", "importance": 9, "memory_type": "constraint", "tags": "consent,release", "age_days": 215}
+{"content": "Warehouse costs are reported monthly to the finance partner using the snowflake_usage view.", "importance": 5, "memory_type": "task", "tags": "costs,reporting", "age_days": 88}
+{"content": "The staging tenant is named fernwood-qa and it replays last week's traffic.", "importance": 5, "memory_type": "configuration", "tags": "environments", "age_days": 145}
+{"content": "Dashboards for ingest backlog live in the Data Reliability Grafana folder.", "importance": 4, "memory_type": "configuration", "tags": "observability", "age_days": 66}
+{"content": "Python data jobs pin pandas 2.2 and use polars only for the reconciliation join.", "importance": 6, "memory_type": "code_pattern", "tags": "python,pandas", "age_days": 76}
+{"content": "The dedupe job caps at 8 worker processes because the container is limited to 8 GB.", "importance": 6, "memory_type": "configuration", "tags": "resources,dedupe", "age_days": 58}
+{"content": "Referral letters are parsed by the Textractor service and failures land in the dlq_referrals queue.", "importance": 6, "memory_type": "architecture", "tags": "parsing,dlq", "age_days": 122}
+{"content": "I keep a shared calendar called Fernwood Handover for shift notes.", "importance": 4, "memory_type": "entity", "tags": "calendar,handover", "age_days": 60}
+{"content": "Clinical data quality review meeting is every second Thursday at 14:00.", "importance": 5, "memory_type": "task", "tags": "meetings", "age_days": 33}
+{"content": "Postmortems for data incidents go in the clinical-data-runbooks repository.", "importance": 5, "memory_type": "decision", "tags": "incidents,docs", "age_days": 150}
+{"content": "Spine proxy credentials rotate monthly through the vault rotation job.", "importance": 6, "memory_type": "configuration", "tags": "secrets,rotation", "age_days": 50}
+{"content": "I use pgbouncer in transaction mode for all analytics connections.", "importance": 5, "memory_type": "preference", "tags": "database,tooling", "age_days": 165}

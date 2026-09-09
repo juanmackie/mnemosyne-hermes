@@ -13,7 +13,7 @@ DRY=0
 
 OUT=$(mktemp)
 trap 'rm -f "$OUT"' EXIT
-./.auto/measure.sh >"$OUT" 2>&1
+"${AUTO_MEASURE:-./.auto/measure.sh}" >"$OUT" 2>&1
 cp "$OUT" .auto/last_measure.txt  # keep raw output for post-mortems
 RC=$?
 grep -E "^(METRIC|note)" "$OUT" || true
@@ -26,7 +26,8 @@ COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "?")
 DIRTY=$(git status --porcelain -- src migrations benches 2>/dev/null | wc -l)
 
 STATUS="$STATUS_ARG" DESC="$DESC" ASI="$ASI" COMMIT="$COMMIT" DIRTY="$DIRTY" RC="$RC" \
-  LOG="${AUTO_LOG:-.auto/log-latency.jsonl}" PROMPT=".auto/prompt.md" python3 - "$OUT" <<'PY'
+  AUTO_DIRECTION="${AUTO_DIRECTION:-lower}" \
+  LOG="${AUTO_LOG:-.auto/log-latency.jsonl}" PROMPT="${AUTO_PROMPT:-.auto/prompt.md}" python3 - "$OUT" <<'PY'
 import json, os, sys, time
 
 raw = open(sys.argv[1]).read()
@@ -46,11 +47,12 @@ if os.path.exists(log_path):
         history = [json.loads(l) for l in f if l.strip()]
 
 PRIMARY = os.environ.get("AUTO_PRIMARY", "recall_latency_warm_p95_ms")
+DIRECTION = os.environ.get("AUTO_DIRECTION", "lower")  # "lower" or "higher"
 cur = metrics.get(PRIMARY)
 kept = [h["metrics"].get(PRIMARY) for h in history
         if h.get("status") == "keep" and h.get("metrics", {}).get(PRIMARY)]
 baseline = [h["metrics"][PRIMARY] for h in history if h.get("metrics", {}).get(PRIMARY)]
-best = min(kept) if kept else None
+best = (min(kept) if DIRECTION == "lower" else max(kept)) if kept else None
 
 # Noise floor: spread of consecutive re-measurements of the same state.
 deltas = [abs(baseline[i] - baseline[i - 1]) / baseline[i - 1]
@@ -77,7 +79,8 @@ print("---")
 if cur is None:
     print("PRIMARY: n/a (measurement failed)")
 else:
-    line = "PRIMARY %s = %.1f ms" % (PRIMARY, cur)
+    unit = " ms" if PRIMARY.endswith("_ms") else ""
+    line = "PRIMARY %s = %.4f%s" % (PRIMARY, cur, unit)
     if best is not None:
         line += "  | best kept %.1f (%+.1f%%)" % (best, (cur - best) / best * 100.0)
     elif len(baseline) > 1:

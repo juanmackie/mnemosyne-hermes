@@ -1,0 +1,40 @@
+{"content": "Please call me Priya, never Ms. Raman.", "importance": 9, "memory_type": "entity", "tags": "identity,always_on", "age_days": 300}
+{"content": "My working hours are 09:00 to 17:00 Asia/Kolkata and I am offline after 18:00 IST.", "importance": 8, "memory_type": "preference", "tags": "schedule,always_on", "age_days": 260}
+{"content": "I want answers as short bullet lists, never prose paragraphs.", "importance": 8, "memory_type": "preference", "tags": "style,always_on", "age_days": 240}
+{"content": "Security incidents go to incident-leads@nimbus.example before anything is posted anywhere else.", "importance": 9, "memory_type": "constraint", "tags": "escalation,always_on", "age_days": 180}
+{"content": "Nimbus Payments runs its primary Postgres on an r6g.2xlarge instance in ap-south-1.", "importance": 7, "memory_type": "configuration", "tags": "infra,database", "age_days": 240}
+{"content": "Nimbus Payments runs its primary Postgres on an r7g.4xlarge instance in ap-south-1.", "importance": 7, "memory_type": "configuration", "tags": "infra,database", "age_days": 12, "supersedes": "Nimbus Payments runs its primary Postgres on an r6g.2xlarge instance in ap-south-1."}
+{"content": "The payments API is owned by the Ledger team.", "importance": 7, "memory_type": "entity", "tags": "org,ownership", "age_days": 300}
+{"content": "The payments API is owned by the Rail team since the org reshuffle.", "importance": 7, "memory_type": "entity", "tags": "org,ownership", "age_days": 20, "supersedes": "The payments API is owned by the Ledger team."}
+{"content": "We deploy Nimbus Payments through Jenkins pipelines on a dedicated Jenkins master.", "importance": 6, "memory_type": "architecture", "tags": "ci,deploy", "age_days": 210}
+{"content": "We deploy Nimbus Payments with the GitHub Actions flow in .github/workflows/release.yml.", "importance": 6, "memory_type": "architecture", "tags": "ci,deploy", "age_days": 8, "supersedes": "We deploy Nimbus Payments through Jenkins pipelines on a dedicated Jenkins master."}
+{"content": "Kubernetes reference: a Deployment rolls out replacement pods with a RollingUpdate strategy whose maxSurge and maxUnavailable fields control the pace of replacement.", "importance": 4, "memory_type": "reference", "tags": "kubernetes,docs,reference_only", "age_days": 400, "kind": "reference"}
+{"content": "Kubernetes reference: a StatefulSet keeps stable network identities and stable persistent volume claims for each pod ordinal, which is why databases use one.", "importance": 4, "memory_type": "reference", "tags": "kubernetes,docs,reference_only", "age_days": 400, "kind": "reference"}
+{"content": "Kubernetes reference: a DaemonSet runs one copy of a pod on every node matching the node selector, typically log shippers and node agents.", "importance": 4, "memory_type": "reference", "tags": "kubernetes,docs,reference_only", "age_days": 400, "kind": "reference"}
+{"content": "Kubernetes reference: pod eviction happens when a node hits memory or pid pressure, and the kubelet evicts by priority class.", "importance": 4, "memory_type": "reference", "tags": "kubernetes,docs,reference_only", "age_days": 400, "kind": "reference"}
+{"content": "The settlement worker is pinned to Kubernetes 1.27 and cannot be upgraded until the vendor node agent is removed from the cluster.", "importance": 8, "memory_type": "constraint", "tags": "kubernetes,settlement,blocker", "age_days": 30}
+{"content": "I have a dentist appointment at 15:30 tomorrow, 2026-05-12, at the Alwarpet clinic.", "importance": 5, "memory_type": "task", "tags": "personal,appointment", "age_days": 6, "expires_in_days": -4}
+{"content": "Tonight I am covering the night pager rotation for the payments team until midnight.", "importance": 6, "memory_type": "task", "tags": "oncall,rotation", "age_days": 4, "expires_in_days": -2}
+{"content": "I am the primary on-call engineer for Nimbus Payments on weekdays.", "importance": 8, "memory_type": "entity", "tags": "oncall,ownership", "age_days": 90}
+{"content": "Health claims are filed through the BenefitOS portal under the family policy 77-4410.", "importance": 7, "memory_type": "entity", "tags": "benefits,claims", "age_days": 120}
+{"content": "The settlement worker writes to the ledger-db Postgres cluster.", "importance": 7, "memory_type": "architecture", "tags": "settlement,database", "age_days": 60}
+{"content": "The ledger-db Postgres cluster lives in the nimbus-prod cloud account.", "importance": 7, "memory_type": "architecture", "tags": "infra,accounts", "age_days": 60}
+{"content": "I report to the VP of Engineering, Dana Whitfield.", "importance": 7, "memory_type": "entity", "tags": "org,reporting", "age_days": 100}
+{"content": "Dana Whitfield's organisation owns the compliance budget line for the year.", "importance": 6, "memory_type": "entity", "tags": "org,budget", "age_days": 100}
+{"content": "Settlement latency alerts fire above 900 ms p99 on the settle_e2e metric.", "importance": 6, "memory_type": "configuration", "tags": "alerting,settlement", "age_days": 45}
+{"content": "We keep 35 days of raw settlement events in S3 for reconciliation replay.", "importance": 6, "memory_type": "configuration", "tags": "storage,reconciliation", "age_days": 150}
+{"content": "The reconciliation replay job runs nightly at 02:15 IST and takes about 40 minutes.", "importance": 5, "memory_type": "task", "tags": "batch,reconciliation", "age_days": 130}
+{"content": "Vendor settlement files arrive over SFTP into the inbound bucket every 15 minutes.", "importance": 6, "memory_type": "architecture", "tags": "inbound,sftp", "age_days": 200}
+{"content": "Duplicate settlement detection uses the (psp_reference, capture_sequence) pair as the idempotency key.", "importance": 8, "memory_type": "decision", "tags": "idempotency,settlement", "age_days": 170}
+{"content": "We rejected using a global lock on the ledger rows and moved to per-account advisory locks instead.", "importance": 7, "memory_type": "decision", "tags": "concurrency,ledger", "age_days": 95}
+{"content": "The staging environment is named preprod and it shares the ap-south-1 region with production.", "importance": 5, "memory_type": "configuration", "tags": "environments", "age_days": 220}
+{"content": "Grafana dashboards for payments live in the Nimbus Operations folder, not the Platform folder.", "importance": 4, "memory_type": "configuration", "tags": "observability", "age_days": 75}
+{"content": "Rust error handling in the ledger crate uses thiserror for domain errors and anyhow only at the binary edge.", "importance": 6, "memory_type": "code_pattern", "tags": "rust,errors", "age_days": 85}
+{"content": "Our Postgres connection pool caps at 40 connections per pod because the instance maxes at 200.", "importance": 6, "memory_type": "configuration", "tags": "database,pooling", "age_days": 55}
+{"content": "Chargeback notifications from the acquirer arrive on the acquirer.events webhook topic.", "importance": 6, "memory_type": "architecture", "tags": "webhooks,chargebacks", "age_days": 115}
+{"content": "I keep a shared calendar called Nimbus OnCall for handover notes.", "importance": 4, "memory_type": "entity", "tags": "calendar,oncall", "age_days": 65}
+{"content": "The ledger crate's test fixtures are seeded by cargo run --bin seed_ledger.", "importance": 5, "memory_type": "code_pattern", "tags": "rust,testing", "age_days": 40}
+{"content": "Weekly payments engineering sync moved to Tuesday 11:00 IST.", "importance": 5, "memory_type": "task", "tags": "meetings", "age_days": 25}
+{"content": "Postmortems are stored in the incident-log repository under the year folder.", "importance": 5, "memory_type": "decision", "tags": "incidents,docs", "age_days": 140}
+{"content": "The psp sandbox credentials rotate every quarter through the vault rotation job.", "importance": 6, "memory_type": "configuration", "tags": "secrets,rotation", "age_days": 70}
+{"content": "I use rg and delta as my daily diff and search tools.", "importance": 4, "memory_type": "preference", "tags": "tooling", "age_days": 160}

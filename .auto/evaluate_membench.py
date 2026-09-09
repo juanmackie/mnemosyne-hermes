@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Score the memory-behaviour scoreboard (membench).
+
+Each query names `relevant` substrings and optionally `distractor` substrings.
+Per-category score (0..1, higher is better):
+
+  temporal_latest_wins  MRR of the current fact
+  always_on             MRR of a fact no query can be semantically close to
+  reference_noise       MRR of the personal fact when reference docs share its vocabulary
+  expired_facts         MRR of the durable fact when an expired rival shares the topic
+  multihop_derived      coverage@k of ALL hops an answer needs (joint retrieval)
+
+membench_score = mean of the five category scores, so one weak family cannot be
+hidden by a strong one. Distractor ranks are reported as diagnostics: they are
+how a fix can look like a win on the target while quietly promoting stale,
+expired or reference-only content.
+
+Every query gets its own copy of the DB, because recall writes access counts and
+hotness from earlier queries would otherwise leak into later rankings.
+"""
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import json
+import shutil
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+CATEGORIES = ("temporal_latest_wins", "always_on", "reference_noise",
+              "expired_facts", "multihop_derived")
+
+
+def matches(result: dict, needles: list[str]) -> bool:
+    rid = str(result.get("id", "")).lower()
+    haystack = (str(result.get("summary", "")) + "\n"
+                + str(result.get("content", ""))).lower()
+    for needle in needles:
+        cleaned = needle.strip().lower()
+        if cleaned and (cleaned == rid or cleaned in haystack):
+            return True
+    return False
+
+
+def first_rank(results: list[dict], needles: list[str], limit: int) -> int | None:
+    for index, result in enumerate(results[:limit], 1):
+        if matches(result, needles):
+            return index
+    return None
+
+
+def one_query(binary: Path, db: Path, namespace: str, item: dict,
+              limit: int, index: int, tmp: Path) -> dict:
+    query_db = tmp / f"membench-{index}.db"
+    shutil.copy2(db, query_db)
+    cmd = [str(binary), "--db-path", str(query_db), "recall",
+           "--query", item["query"], "--namespace", namespace,
+           "--limit", str(limit), "--format", "json"]
+    started = time.perf_counter()
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    if proc.returncode:
+        raise RuntimeError(f"recall failed for {item['query']!r}: {proc.stderr[-800:]}")
+    try:
+        results = json.loads(proc.stdout).get("results", [])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"bad JSON for {item['query']!r}: {proc.stdout[-400:]}") from exc
+
+    targets = item.get("relevant", [])
+    category = item.get("category", "uncategorized")
+    row = {"category": category, "latency_ms": elapsed_ms, "count": len(results)}
+    if category == "multihop_derived":
+        ranks = [first_rank(results, [needle], limit) for needle in targets]
+        row["coverage"] = sum(1 for rank in ranks if rank is not None) / len(ranks) if ranks else 0.0
+        row["score"] = row["coverage"]
+        row["hop_hit5"] = row["coverage"]
+    else:
+        rank = first_rank(results, targets, limit)
+        row["rank"] = rank
+        row["score"] = (1.0 / rank) if rank else 0.0
+    distractors = item.get("distractor", [])
+    row["distractor_rank"] = first_rank(results, distractors, limit) if distractors else None
+    return row
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--binary", type=Path, required=True)
+    ap.add_argument("--db", type=Path, required=True)
+    ap.add_argument("--dataset", type=Path, required=True)
+    ap.add_argument("--namespace", required=True)
+    ap.add_argument("--limit", type=int, default=5)
+    ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--prefix", required=True, help="metric prefix, e.g. membench_heldout")
+    args = ap.parse_args()
+
+    items = [json.loads(line) for line in args.dataset.read_text().splitlines() if line.strip()]
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        tmp = Path(raw_tmp)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            rows = list(pool.map(lambda pair: one_query(
+                args.binary, args.db, args.namespace, pair[1], args.limit,
+                pair[0], tmp), enumerate(items)))
+
+    by_category: dict[str, list[dict]] = {}
+    for row in rows:
+        by_category.setdefault(row["category"], []).append(row)
+
+    category_scores: dict[str, float] = {}
+    for name, group in sorted(by_category.items()):
+        score = statistics.mean(r["score"] for r in group)
+        category_scores[name] = score
+        leaks = [r for r in group if r.get("distractor_rank") is not None
+                 and (r.get("rank") is None or r["distractor_rank"] <= r["rank"])]
+        print(f"METRIC {args.prefix}_{name}={score:.6f}", file=sys.stderr)
+        print(f"note {name}: n={len(group)} score={score:.4f} "
+              f"distractor_outranks_target={len(leaks)}/{len(group)}", file=sys.stderr)
+    for name in CATEGORIES:
+        category_scores.setdefault(name, 0.0)
+
+    overall = statistics.mean(category_scores[name] for name in CATEGORIES)
+    base = args.prefix
+    print(f"METRIC {base}_score={overall:.6f}")
+    for name, value in sorted(category_scores.items()):
+        print(f"METRIC {base}_{name}={value:.6f}")
+    print(f"METRIC {base}_latency_p95_ms="
+          f"{sorted(r['latency_ms'] for r in rows)[int(0.95 * (len(rows) - 1))]:.3f}")
+    print(f"METRIC {base}_empty={sum(1 for r in rows if r['count'] == 0)}")
+    # Full per-query detail for post-mortems.
+    detail = args.dataset.with_suffix(".detail.jsonl")
+    detail.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

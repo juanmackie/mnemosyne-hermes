@@ -1,0 +1,16 @@
+{"query": "what instance size is our primary Postgres on right now?", "category": "temporal_latest_wins", "relevant": ["r7g.4xlarge"], "distractor": ["r6g.2xlarge"]}
+{"query": "who owns the payments API these days?", "category": "temporal_latest_wins", "relevant": ["owned by the Rail team"], "distractor": ["owned by the Ledger team"]}
+{"query": "how do we ship Nimbus Payments to production at the moment?", "category": "temporal_latest_wins", "relevant": ["GitHub Actions flow"], "distractor": ["Jenkins pipelines"]}
+{"query": "help me draft a two week itinerary for a trip to Kyoto in November", "category": "always_on", "relevant": ["call me Priya"]}
+{"query": "review this pull request and explain the deadlock in the retry loop", "category": "always_on", "relevant": ["short bullet lists"]}
+{"query": "is it reasonable to send the vendor a follow-up at 21:00 my time?", "category": "always_on", "relevant": ["offline after 18:00 IST"]}
+{"query": "someone reported a possible key leak in the acquirer webhook handler, what do I do first", "category": "always_on", "relevant": ["incident-leads@nimbus.example"]}
+{"query": "which kubernetes version are we pinned to and what blocks the upgrade", "category": "reference_noise", "relevant": ["pinned to Kubernetes 1.27"], "distractor": ["Kubernetes reference"]}
+{"query": "why is our cluster still on an old kubernetes release?", "category": "reference_noise", "relevant": ["vendor node agent is removed"], "distractor": ["Kubernetes reference"]}
+{"query": "can we run the settlement worker on a StatefulSet?", "category": "reference_noise", "relevant": ["settlement worker is pinned"], "distractor": ["StatefulSet keeps stable network"]}
+{"query": "who is on call for payments right now?", "category": "expired_facts", "relevant": ["primary on-call engineer for Nimbus Payments"], "distractor": ["covering the night pager rotation"]}
+{"query": "where do I file a health claim?", "category": "expired_facts", "relevant": ["BenefitOS portal"], "distractor": ["dentist appointment"]}
+{"query": "what is my on-call responsibility this week?", "category": "expired_facts", "relevant": ["primary on-call engineer"], "distractor": ["night pager rotation"]}
+{"query": "which cloud account holds the database that the settlement worker writes to?", "category": "multihop_derived", "relevant": ["writes to the ledger-db Postgres cluster", "nimbus-prod cloud account"]}
+{"query": "whose organisation controls the compliance budget that my manager sits in?", "category": "multihop_derived", "relevant": ["VP of Engineering, Dana Whitfield", "compliance budget line"]}
+{"query": "where do the settlement events end up physically, from writer to account?", "category": "multihop_derived", "relevant": ["writes to the ledger-db Postgres cluster", "nimbus-prod cloud account"]}

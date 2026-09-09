@@ -1,0 +1,16 @@
+{"query": "what size warehouse are we on for the clinical data right now?", "category": "temporal_latest_wins", "relevant": ["MEDIUM warehouse with autosuspend"], "distractor": ["XL warehouse"]}
+{"query": "which team should I ping about the FHIR ingest service now?", "category": "temporal_latest_wins", "relevant": ["owned by the Ingest team"], "distractor": ["owned by the Interop team"]}
+{"query": "how are clinical database backups taken at the moment?", "category": "temporal_latest_wins", "relevant": ["Barman point-in-time recovery"], "distractor": ["nightly pg_dump"]}
+{"query": "help me plan a birthday party for a five year old with a dinosaur theme", "category": "always_on", "relevant": ["Call me Marco"]}
+{"query": "write a polite email chasing the unpaid invoice from the imaging vendor", "category": "always_on", "relevant": ["more than three items should come back to me as a table"]}
+{"query": "can I ping the analytics engineer about the failed join at 07:30?", "category": "always_on", "relevant": ["unreachable by message before 08:00"]}
+{"query": "summarise this ward's readmission list for the weekly review", "category": "always_on", "relevant": ["Never copy patient identifiers"]}
+{"query": "why did some observations never make it into the warehouse?", "category": "reference_noise", "relevant": ["Observation bundles over 1 MB"], "distractor": ["large payloads should be paginated with bundles"]}
+{"query": "what is the limit on the payload size for our ingest path?", "category": "reference_noise", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["Transaction interaction posts a bundle"]}
+{"query": "can the ingest accept a big admission message in one go?", "category": "reference_noise", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["ADT A01 event signals a patient admission"]}
+{"query": "who covers the out-of-hours data phone today?", "category": "expired_facts", "relevant": ["clinical data steward for Fernwood Health"], "distractor": ["out-of-hours data duty phone"]}
+{"query": "where do I find my vaccination certificate?", "category": "expired_facts", "relevant": ["MediTrust portal"], "distractor": ["locum cover at the Estarreja clinic"]}
+{"query": "what clinical data role do I hold at Fernwood?", "category": "expired_facts", "relevant": ["clinical data steward"], "distractor": ["locum cover at the Estarreja clinic"]}
+{"query": "which data residency region ends up holding the decoded FHIR batches?", "category": "multihop_derived", "relevant": ["writes decoded batches into the clinical_lake schema", "fernwood-eu data residency region"]}
+{"query": "whose team controls the analytics licence budget above me?", "category": "multihop_derived", "relevant": ["Head of Data, Ines Cardoso", "analytics licence budget"]}
+{"query": "trace the path from the ingest writer to the region its tables sit in", "category": "multihop_derived", "relevant": ["writes decoded batches into the clinical_lake schema", "fernwood-eu data residency region"]}
