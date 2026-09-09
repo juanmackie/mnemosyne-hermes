@@ -13,7 +13,7 @@ use crate::types::{
     MemoryClass, MemoryEntity, MemoryId, MemoryLink, MemoryNote, Namespace, SearchResult,
 };
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use libsql::{params, Builder, Connection, Database};
 use once_cell::sync::Lazy;
 use sha2::{Digest, Sha256};
@@ -332,17 +332,34 @@ async fn scalar_count(conn: &Connection, sql: &str) -> Result<u64> {
         .unwrap_or(0))
 }
 
+/// Read a timestamp column in whatever form the writer used.
+///
+/// The Rust writer emits RFC 3339, but the same columns also hold SQLite's canonical
+/// `CURRENT_TIMESTAMP` / `datetime('now')` text (`YYYY-MM-DD HH:MM:SS`, UTC, no
+/// offset): that is the table DEFAULT, so any row inserted outside this crate - a
+/// repair script, an import, a hand-run `sqlite3` session - lands in that form. A
+/// rejected `memory_links.created_at` is fatal to `get_memory`, which puts the whole
+/// recall call behind one stray row, so the accepted list matches what
+/// `src/cli/import.rs` already accepts on the way in.
+fn parse_stored_timestamp_text(text: &str) -> Option<chrono::DateTime<Utc>> {
+    if let Ok(value) = DateTime::parse_from_rfc3339(text) {
+        return Some(value.with_timezone(&Utc));
+    }
+    for format in ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(text, format) {
+            return Some(DateTime::from_naive_utc_and_offset(naive, Utc));
+        }
+    }
+    None
+}
+
 fn parse_datetime_from_row(row: &libsql::Row, index: i32) -> Option<chrono::DateTime<Utc>> {
     match row.column_type(index).ok()? {
         libsql::ValueType::Integer => chrono::DateTime::from_timestamp(row.get(index).ok()?, 0),
         libsql::ValueType::Real => {
             chrono::DateTime::from_timestamp(row.get::<f64>(index).ok()? as i64, 0)
         }
-        libsql::ValueType::Text => {
-            chrono::DateTime::parse_from_rfc3339(&row.get::<String>(index).ok()?)
-                .ok()
-                .map(|value| value.with_timezone(&Utc))
-        }
+        libsql::ValueType::Text => parse_stored_timestamp_text(&row.get::<String>(index).ok()?),
         _ => None,
     }
 }
@@ -12079,6 +12096,7 @@ mod consolidation_tests {
 /// These tests pin the enum as the only list.
 #[cfg(test)]
 mod link_type_tests {
+    use super::parse_stored_timestamp_text;
     use crate::storage::StorageBackend;
     use crate::types::{
         LinkType, MemoryClass, MemoryId, MemoryLink, MemoryNote, MemoryType, Namespace,
@@ -12367,5 +12385,81 @@ mod link_type_tests {
             recreated >= 2,
             "indexes were not recreated (found {recreated})"
         );
+    }
+
+    /// Timestamps are read back in the form SQLite itself writes them.
+    ///
+    /// `memory_links.created_at` defaults to `CURRENT_TIMESTAMP`, so every row
+    /// inserted outside this crate - a repair script, an import, a hand-run `sqlite3`
+    /// session - arrives as `YYYY-MM-DD HH:MM:SS`. The reader accepted only RFC 3339
+    /// and treated a link timestamp it could not parse as fatal, so one stray row sat
+    /// in front of the whole recall call.
+    #[test]
+    fn stored_timestamp_forms_are_parsed() {
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-03-04T05:06:07+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        for text in [
+            "2026-03-04T05:06:07Z",
+            "2026-03-04T06:06:07+01:00",
+            "2026-03-04 05:06:07",
+            "2026-03-04T05:06:07",
+        ] {
+            assert_eq!(
+                parse_stored_timestamp_text(text),
+                Some(expected),
+                "{text} should name this instant"
+            );
+        }
+        let with_fraction = expected + chrono::Duration::milliseconds(250);
+        for text in ["2026-03-04T05:06:07.250Z", "2026-03-04 05:06:07.250"] {
+            assert_eq!(
+                parse_stored_timestamp_text(text),
+                Some(with_fraction),
+                "{text} should keep its sub-second part"
+            );
+        }
+        assert!(parse_stored_timestamp_text("05/03/2026 05:06").is_none());
+        assert!(parse_stored_timestamp_text("").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_sqlite_form_link_timestamp_does_not_abort_the_read() {
+        let (store, _temp_dir) = storage().await;
+        let target = note_with_links("link target", &[]);
+        store.store_memory(&target).await.unwrap();
+        let source = note_with_links("link source", &[link(target.id, LinkType::References)]);
+        store.store_memory(&source).await.unwrap();
+
+        // Omit created_at so the column DEFAULT writes SQLite's own text form.
+        let conn = store.get_conn().unwrap();
+        conn.execute(
+            &format!(
+                "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason) \
+                 VALUES ('{}', '{}', 'clarifies', 0.6, 'legacy row')",
+                source.id, target.id
+            ),
+            params![],
+        )
+        .await
+        .unwrap();
+        let mut forms = conn
+            .query(
+                "SELECT created_at FROM memory_links WHERE link_type = 'clarifies'",
+                params![],
+            )
+            .await
+            .unwrap();
+        let stored_form: String = forms.next().await.unwrap().unwrap().get(0).unwrap();
+        assert!(
+            !stored_form.contains('+') && !stored_form.ends_with('Z'),
+            "the column default should have written SQLite's own form, got {stored_form}"
+        );
+
+        let note = store
+            .get_memory(source.id)
+            .await
+            .expect("one legacy-formatted timestamp must not fail the read");
+        assert_eq!(note.links.len(), 2, "both edges should be readable");
     }
 }
