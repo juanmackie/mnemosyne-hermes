@@ -1,3 +1,4 @@
+== profile: keyless-default (features='<default>', model=bge-small-en-v1.5) ==
    Compiling mnemosyne v2.3.3 (/Mnemosyne)
 warning: unused import: `info`
   --> src/config.rs:18:22
@@ -7,17 +8,11 @@ warning: unused import: `info`
    |
    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
-warning: unused import: `std::collections::hash_map::DefaultHasher`
-  --> src/embeddings/local.rs:15:5
+warning: unused import: `debug`
+  --> src/embeddings/local.rs:21:15
    |
-15 | use std::collections::hash_map::DefaultHasher;
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: unused imports: `Hash` and `Hasher`
-  --> src/embeddings/local.rs:16:17
-   |
-16 | use std::hash::{Hash, Hasher};
-   |                 ^^^^  ^^^^^^
+21 | use tracing::{debug, info};
+   |               ^^^^^
 
 warning: unused import: `Namespace`
   --> src/hierarchy.rs:20:44
@@ -26,9 +21,9 @@ warning: unused import: `Namespace`
    |                                            ^^^^^^^^^
 
 warning: variable does not need to be mutable
-    --> src/storage/libsql.rs:4169:13
+    --> src/storage/libsql.rs:1970:13
      |
-4169 |         let mut tx = conn.transaction().await?;
+1970 |         let mut tx = conn.transaction().await?;
      |             ----^^
      |             |
      |             help: remove this `mut`
@@ -36,9 +31,17 @@ warning: variable does not need to be mutable
      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
 
 warning: variable does not need to be mutable
-    --> src/storage/libsql.rs:4555:13
+    --> src/storage/libsql.rs:4312:13
      |
-4555 |         let mut nodes: HashSet<String> = kept;
+4312 |         let mut tx = conn.transaction().await?;
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src/storage/libsql.rs:4694:13
+     |
+4694 |         let mut nodes: HashSet<String> = kept;
      |             ----^^^^^
      |             |
      |             help: remove this `mut`
@@ -61,9 +64,9 @@ warning: value assigned to `existing_source_id` is never read
      = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
 
 warning: unused variable: `placeholders`
-    --> src/storage/libsql.rs:4491:21
+    --> src/storage/libsql.rs:4630:21
      |
-4491 |                 let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+4630 |                 let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
      |                     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_placeholders`
 
 warning: constant `KEYRING_USER` is never used
@@ -75,20 +78,20 @@ warning: constant `KEYRING_USER` is never used
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: field `db` is never read
-   --> src/storage/libsql.rs:856:5
+   --> src/storage/libsql.rs:873:5
     |
-855 | pub struct LibsqlStorage {
+872 | pub struct LibsqlStorage {
     |            ------------- field in this struct
-856 |     db: Database,
+873 |     db: Database,
     |     ^^
 
 warning: method `log_audit` is never used
-    --> src/storage/libsql.rs:2569:14
+    --> src/storage/libsql.rs:2712:14
      |
- 924 | impl LibsqlStorage {
+ 941 | impl LibsqlStorage {
      | ------------------ method in this implementation
 ...
-2569 |     async fn log_audit(
+2712 |     async fn log_audit(
      |              ^^^^^^^^^
 
 warning: `mnemosyne` (lib) generated 12 warnings (run `cargo fix --lib -p mnemosyne` to apply 8 suggestions)
@@ -182,51 +185,429 @@ warning: function `show_help` is never used
     |    ^^^^^^^^^
 
 warning: `mnemosyne` (bin "mnemosyne") generated 13 warnings (run `cargo fix --bin "mnemosyne" -p mnemosyne` to apply 8 suggestions)
-    Finished `release` profile [optimized] target(s) in 6m 55s
+    Finished `release` profile [optimized] target(s) in 6m 26s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
-METRIC membench_dev_always_on=0.500000
-note always_on: n=4 score=0.5000 distractor_outranks_target=0/4
-METRIC membench_dev_expired_facts=0.750000
-note expired_facts: n=3 score=0.7500 distractor_outranks_target=0/3
-METRIC membench_dev_multihop_derived=0.833333
-note multihop_derived: n=3 score=0.8333 distractor_outranks_target=0/3
-METRIC membench_dev_reference_noise=0.833333
-note reference_noise: n=3 score=0.8333 distractor_outranks_target=0/3
-METRIC membench_dev_temporal_latest_wins=0.733333
-note temporal_latest_wins: n=3 score=0.7333 distractor_outranks_target=1/3
-METRIC membench_dev_score=0.730000
-METRIC membench_dev_always_on=0.500000
-METRIC membench_dev_expired_facts=0.750000
-METRIC membench_dev_multihop_derived=0.833333
-METRIC membench_dev_reference_noise=0.833333
-METRIC membench_dev_temporal_latest_wins=0.733333
-METRIC membench_dev_latency_p95_ms=642.030
-METRIC membench_dev_empty=0
-METRIC membench_dev_profile_items=3.000
-METRIC membench_heldout_always_on=0.458333
-note always_on: n=4 score=0.4583 distractor_outranks_target=0/4
-METRIC membench_heldout_expired_facts=0.666667
-note expired_facts: n=3 score=0.6667 distractor_outranks_target=0/3
-METRIC membench_heldout_multihop_derived=0.833333
-note multihop_derived: n=3 score=0.8333 distractor_outranks_target=0/3
-METRIC membench_heldout_reference_noise=0.416667
-note reference_noise: n=3 score=0.4167 distractor_outranks_target=0/3
-METRIC membench_heldout_temporal_latest_wins=0.833333
-note temporal_latest_wins: n=3 score=0.8333 distractor_outranks_target=0/3
-METRIC membench_heldout_score=0.641667
-METRIC membench_heldout_always_on=0.458333
-METRIC membench_heldout_expired_facts=0.666667
-METRIC membench_heldout_multihop_derived=0.833333
-METRIC membench_heldout_reference_noise=0.416667
-METRIC membench_heldout_temporal_latest_wins=0.833333
-METRIC membench_heldout_latency_p95_ms=523.438
-METRIC membench_heldout_empty=0
-METRIC membench_heldout_profile_items=3.000
-METRIC realquery_warm_mrr=0.989583
-METRIC realquery_warm_hit1=0.979167
-METRIC realquery_heldout_mrr=0.981481
-METRIC realquery_heldout_hit1=0.962963
-METRIC realquery_heldout_hit5=1.000000
-METRIC recall_latency_warm_p95_ms=16.266
-METRIC realquery_warm_mcp_p95_ms=16.266
+ingested=177 superseded_pairs=9
+== profile: model-backed (features='local-embeddings', model=bge-small-en-v1.5) ==
+   Compiling mnemosyne v2.3.3 (/Mnemosyne)
+warning: unused import: `info`
+  --> src/config.rs:18:22
+   |
+18 | use tracing::{debug, info, warn};
+   |                      ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::collections::hash_map::DefaultHasher`
+  --> src/embeddings/local.rs:15:5
+   |
+15 | use std::collections::hash_map::DefaultHasher;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Hash` and `Hasher`
+  --> src/embeddings/local.rs:16:17
+   |
+16 | use std::hash::{Hash, Hasher};
+   |                 ^^^^  ^^^^^^
+
+warning: unused import: `Namespace`
+  --> src/hierarchy.rs:20:44
+   |
+20 | use crate::types::{MemoryNote, MemoryType, Namespace};
+   |                                            ^^^^^^^^^
+
+warning: variable does not need to be mutable
+    --> src/storage/libsql.rs:1970:13
+     |
+1970 |         let mut tx = conn.transaction().await?;
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src/storage/libsql.rs:4312:13
+     |
+4312 |         let mut tx = conn.transaction().await?;
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src/storage/libsql.rs:4694:13
+     |
+4694 |         let mut nodes: HashSet<String> = kept;
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `service_name`
+   --> src/config.rs:330:25
+    |
+330 |     fn new_with_service(service_name: &str) -> Result<Self> {
+    |                         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_service_name`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `existing_source_id` is never read
+    --> src/memory_manager.rs:1136:17
+     |
+1136 |                 existing_source_id = Some(winner_id);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `placeholders`
+    --> src/storage/libsql.rs:4630:21
+     |
+4630 |                 let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+     |                     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_placeholders`
+
+warning: constant `KEYRING_USER` is never used
+   --> src/config.rs:283:7
+    |
+283 | const KEYRING_USER: &str = "anthropic-api-key";
+    |       ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `db` is never read
+   --> src/storage/libsql.rs:873:5
+    |
+872 | pub struct LibsqlStorage {
+    |            ------------- field in this struct
+873 |     db: Database,
+    |     ^^
+
+warning: method `log_audit` is never used
+    --> src/storage/libsql.rs:2712:14
+     |
+ 941 | impl LibsqlStorage {
+     | ------------------ method in this implementation
+...
+2712 |     async fn log_audit(
+     |              ^^^^^^^^^
+
+warning: `mnemosyne` (lib) generated 13 warnings (run `cargo fix --lib -p mnemosyne` to apply 9 suggestions)
+warning: unused imports: `AgentState` and `WorkItemId`
+  --> src/cli/interactive.rs:14:17
+   |
+14 |         state::{AgentState, Phase, WorkItem, WorkItemId},
+   |                 ^^^^^^^^^^                   ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `debug`
+  --> src/cli/interactive.rs:23:15
+   |
+23 | use tracing::{debug, error, info};
+   |               ^^^^^
+
+warning: unused import: `tracing::debug`
+  --> src/cli/list.rs:11:5
+   |
+11 | use tracing::debug;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `error`
+  --> src/main.rs:11:22
+   |
+11 | use tracing::{debug, error, info, warn, Level};
+   |                      ^^^^^
+
+warning: unused variable: `timestamp`
+   --> src/cli/event_bridge.rs:289:13
+    |
+289 |             timestamp,
+    |             ^^^^^^^^^ help: try ignoring the field: `timestamp: _`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `new_value`
+   --> src/cli/event_bridge.rs:427:22
+    |
+427 |             setting, new_value, ..
+    |                      ^^^^^^^^^ help: try ignoring the field: `new_value: _`
+
+warning: unused variable: `model_name`
+   --> src/cli/event_bridge.rs:470:13
+    |
+470 |             model_name,
+    |             ^^^^^^^^^^ help: try ignoring the field: `model_name: _`
+
+warning: value assigned to `output_size_bytes` is never read
+   --> src/cli/export.rs:93:33
+    |
+ 93 |     let mut output_size_bytes = 0usize;
+    |                                 ^^^^^^ this value is reassigned later and never used
+...
+192 |         output_size_bytes = size;
+    |         ------------------------ `output_size_bytes` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `trace`
+  --> src/cli/recall.rs:31:5
+   |
+31 |     trace: bool,
+   |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_trace`
+
+warning: function `run` is never used
+  --> src/cli/interactive.rs:26:14
+   |
+26 | pub async fn run(
+   |              ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `submit_work` is never used
+   --> src/cli/interactive.rs:124:10
+    |
+124 | async fn submit_work(
+    |          ^^^^^^^^^^^
+
+warning: function `show_status` is never used
+   --> src/cli/interactive.rs:156:10
+    |
+156 | async fn show_status(state_manager: &Option<Arc<StateManager>>) -> Result<()> {
+    |          ^^^^^^^^^^^
+
+warning: function `show_help` is never used
+   --> src/cli/interactive.rs:191:4
+    |
+191 | fn show_help() {
+    |    ^^^^^^^^^
+
+warning: `mnemosyne` (bin "mnemosyne") generated 13 warnings (run `cargo fix --bin "mnemosyne" -p mnemosyne` to apply 8 suggestions)
+    Finished `release` profile [optimized] target(s) in 4m 50s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+ingested=177 superseded_pairs=9
+warm-mcp n=51 p50=12.042 p95=16.797
+METRIC realquery_warm_mcp_p95_ms=16.797
+== profile: python-provider (features='python', model=bge-small-en-v1.5) ==
+   Compiling pyo3-build-config v0.22.6
+   Compiling mnemosyne v2.3.3 (/Mnemosyne)
+   Compiling pyo3-macros-backend v0.22.6
+   Compiling pyo3-ffi v0.22.6
+   Compiling pyo3 v0.22.6
+   Compiling pyo3-macros v0.22.6
+warning: unused import: `info`
+  --> src/config.rs:18:22
+   |
+18 | use tracing::{debug, info, warn};
+   |                      ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `debug`
+  --> src/embeddings/local.rs:21:15
+   |
+21 | use tracing::{debug, info};
+   |               ^^^^^
+
+warning: unused import: `Namespace`
+  --> src/hierarchy.rs:20:44
+   |
+20 | use crate::types::{MemoryNote, MemoryType, Namespace};
+   |                                            ^^^^^^^^^
+
+warning: variable does not need to be mutable
+    --> src/storage/libsql.rs:1970:13
+     |
+1970 |         let mut tx = conn.transaction().await?;
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src/storage/libsql.rs:4312:13
+     |
+4312 |         let mut tx = conn.transaction().await?;
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src/storage/libsql.rs:4694:13
+     |
+4694 |         let mut nodes: HashSet<String> = kept;
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `service_name`
+   --> src/config.rs:330:25
+    |
+330 |     fn new_with_service(service_name: &str) -> Result<Self> {
+    |                         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_service_name`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `existing_source_id` is never read
+    --> src/memory_manager.rs:1136:17
+     |
+1136 |                 existing_source_id = Some(winner_id);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `placeholders`
+    --> src/storage/libsql.rs:4630:21
+     |
+4630 |                 let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+     |                     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_placeholders`
+
+warning: constant `KEYRING_USER` is never used
+   --> src/config.rs:283:7
+    |
+283 | const KEYRING_USER: &str = "anthropic-api-key";
+    |       ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `db` is never read
+   --> src/storage/libsql.rs:873:5
+    |
+872 | pub struct LibsqlStorage {
+    |            ------------- field in this struct
+873 |     db: Database,
+    |     ^^
+
+warning: method `log_audit` is never used
+    --> src/storage/libsql.rs:2712:14
+     |
+ 941 | impl LibsqlStorage {
+     | ------------------ method in this implementation
+...
+2712 |     async fn log_audit(
+     |              ^^^^^^^^^
+
+warning: `mnemosyne` (lib) generated 12 warnings (run `cargo fix --lib -p mnemosyne` to apply 8 suggestions)
+warning: unused imports: `AgentState` and `WorkItemId`
+  --> src/cli/interactive.rs:14:17
+   |
+14 |         state::{AgentState, Phase, WorkItem, WorkItemId},
+   |                 ^^^^^^^^^^                   ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `debug`
+  --> src/cli/interactive.rs:23:15
+   |
+23 | use tracing::{debug, error, info};
+   |               ^^^^^
+
+warning: unused import: `tracing::debug`
+  --> src/cli/list.rs:11:5
+   |
+11 | use tracing::debug;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `error`
+  --> src/main.rs:11:22
+   |
+11 | use tracing::{debug, error, info, warn, Level};
+   |                      ^^^^^
+
+warning: unused variable: `timestamp`
+   --> src/cli/event_bridge.rs:289:13
+    |
+289 |             timestamp,
+    |             ^^^^^^^^^ help: try ignoring the field: `timestamp: _`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `new_value`
+   --> src/cli/event_bridge.rs:427:22
+    |
+427 |             setting, new_value, ..
+    |                      ^^^^^^^^^ help: try ignoring the field: `new_value: _`
+
+warning: unused variable: `model_name`
+   --> src/cli/event_bridge.rs:470:13
+    |
+470 |             model_name,
+    |             ^^^^^^^^^^ help: try ignoring the field: `model_name: _`
+
+warning: value assigned to `output_size_bytes` is never read
+   --> src/cli/export.rs:93:33
+    |
+ 93 |     let mut output_size_bytes = 0usize;
+    |                                 ^^^^^^ this value is reassigned later and never used
+...
+192 |         output_size_bytes = size;
+    |         ------------------------ `output_size_bytes` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `trace`
+  --> src/cli/recall.rs:31:5
+   |
+31 |     trace: bool,
+   |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_trace`
+
+warning: function `run` is never used
+  --> src/cli/interactive.rs:26:14
+   |
+26 | pub async fn run(
+   |              ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `submit_work` is never used
+   --> src/cli/interactive.rs:124:10
+    |
+124 | async fn submit_work(
+    |          ^^^^^^^^^^^
+
+warning: function `show_status` is never used
+   --> src/cli/interactive.rs:156:10
+    |
+156 | async fn show_status(state_manager: &Option<Arc<StateManager>>) -> Result<()> {
+    |          ^^^^^^^^^^^
+
+warning: function `show_help` is never used
+   --> src/cli/interactive.rs:191:4
+    |
+191 | fn show_help() {
+    |    ^^^^^^^^^
+
+warning: `mnemosyne` (bin "mnemosyne") generated 13 warnings (run `cargo fix --bin "mnemosyne" -p mnemosyne` to apply 8 suggestions)
+    Finished `release` profile [optimized] target(s) in 7m 33s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+ingested=177 superseded_pairs=9
+METRIC keyless-default||bge-small-en-v1.5_cli_heldout_mrr=0.972222
+METRIC keyless-default||bge-small-en-v1.5_mcp_heldout_mrr=0.952160
+METRIC keyless-default||bge-small-en-v1.5_dev_mrr=0.873457
+METRIC keyless-default||bge-small-en-v1.5_heldout_hit5=1.000000
+METRIC keyless-default||bge-small-en-v1.5_heldout_hit1=0.935185
+METRIC keyless-default||bge-small-en-v1.5_recall_latency_p95_ms=361.144
+METRIC keyless-default||bge-small-en-v1.5_empty_results=0
+METRIC keyless-default||bge-small-en-v1.5_binary_bytes=0
+METRIC keyless-default||bge-small-en-v1.5_peak_rss_kb=0
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_cli_heldout_mrr=0.981481
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_mcp_heldout_mrr=0.981481
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_dev_mrr=0.938272
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_heldout_hit5=1.000000
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_heldout_hit1=0.962963
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_recall_latency_p95_ms=1168.661
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_empty_results=0
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_binary_bytes=0
+METRIC model-backed|local-embeddings|bge-small-en-v1.5_peak_rss_kb=0
+METRIC python-provider|python|bge-small-en-v1.5_cli_heldout_mrr=0.972222
+METRIC python-provider|python|bge-small-en-v1.5_mcp_heldout_mrr=0.952160
+METRIC python-provider|python|bge-small-en-v1.5_dev_mrr=0.873457
+METRIC python-provider|python|bge-small-en-v1.5_heldout_hit5=1.000000
+METRIC python-provider|python|bge-small-en-v1.5_heldout_hit1=0.935185
+METRIC python-provider|python|bge-small-en-v1.5_recall_latency_p95_ms=366.951
+METRIC python-provider|python|bge-small-en-v1.5_empty_results=0
+METRIC python-provider|python|bge-small-en-v1.5_binary_bytes=0
+METRIC python-provider|python|bge-small-en-v1.5_peak_rss_kb=0
