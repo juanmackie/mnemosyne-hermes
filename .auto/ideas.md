@@ -90,3 +90,12 @@ quality steady at 0.9815 heldout MRR, #27).
   the reference for ranking-unchanged checks.
 - `graph_traverse_with_limit` CTE is already split per-direction by
   design; no OR-join left on the graph path.
+
+## Finalized 2026-09-09 (session 2)
+- Stopped after run #36. Main contains all kept latency, determinism, migration,
+  consolidation, and benchmark-harness changes; discarded experiments were reverted.
+- Quality reference: held-out MRR 0.9815, Hit@1 0.963, Hit@5 1.0.
+- Warm MCP recall is in the measured 19-29ms noise band and is encoder-bound;
+  further SQL micro-optimization is not justified by quiet-state attribution.
+- Deliberately left for explicit re-scope: widen/backfill `memory_links.link_type`
+  (ranking/data-loss issue) and high-scale PPR dense-array work (PPR is opt-in).
