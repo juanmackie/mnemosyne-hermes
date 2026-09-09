@@ -4751,13 +4751,18 @@ impl LibsqlStorage {
         Ok(kept)
     }
 
-    async fn graph_traverse_with_limit(
+    /// Graph neighbours plus the traversal signal that reached each of them.
+    ///
+    /// Each entry is `(neighbour, hops away, path strength)`, where path strength
+    /// is the product of the edge strengths along the best path found. Callers
+    /// that only need the notes use [`Self::graph_traverse_with_limit`].
+    async fn graph_walk_scored(
         &self,
         seed_ids: &[MemoryId],
         max_hops: usize,
         namespace: Option<Namespace>,
         max_results: Option<usize>,
-    ) -> Result<Vec<MemoryNote>> {
+    ) -> Result<Vec<(MemoryNote, usize, f32)>> {
         debug!(
             "Graph traverse from {} seeds, max {} hops, namespace: {:?}, result limit: {:?}",
             seed_ids.len(),
@@ -4791,32 +4796,44 @@ impl LibsqlStorage {
             ""
         };
 
+        // The walk carries the strength of the edge it arrived over, decaying
+        // along the path, so a strong direct link is distinguishable from a weak
+        // two-hop one. Per memory we keep the best path found: shallowest hop,
+        // then strongest. Ordering by strength before the budget is applied is
+        // what makes a hub with many neighbours keep its best links instead of
+        // whatever the storage order happened to yield.
         let sql = format!(
             r#"
-            WITH RECURSIVE graph_walk(memory_id, depth) AS (
-                SELECT id, 0 FROM memories WHERE id IN ({placeholders})
+            WITH RECURSIVE graph_walk(memory_id, depth, strength) AS (
+                SELECT id, 0, 1.0 FROM memories WHERE id IN ({placeholders})
                 UNION
                 SELECT
                     CASE
                         WHEN ml.source_id = gw.memory_id THEN ml.target_id
                         ELSE ml.source_id
                     END as memory_id,
-                    gw.depth + 1
+                    gw.depth + 1,
+                    ml.strength * gw.strength
                 FROM graph_walk gw
                 JOIN memory_links ml ON (
                     ml.source_id = gw.memory_id OR ml.target_id = gw.memory_id
                 )
                 WHERE gw.depth < ?
                 {traversal_limit_clause}
+            ),
+            best_path AS (
+                SELECT memory_id, MIN(depth) as depth, MAX(strength) as strength
+                FROM graph_walk
+                GROUP BY memory_id
             )
-            SELECT DISTINCT {columns}
+            SELECT {columns}, bp.depth as walk_depth, bp.strength as walk_strength
             FROM memories m
-            JOIN graph_walk gw ON m.id = gw.memory_id
-            WHERE gw.depth > 0
+            JOIN best_path bp ON m.id = bp.memory_id
+            WHERE bp.depth > 0
               AND m.is_archived = 0
               AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))
               AND {knowledge_filter} {namespace_filter}
-            ORDER BY gw.depth, m.importance DESC
+            ORDER BY bp.depth, bp.strength DESC, m.importance DESC
             {limit_clause}
             "#,
             placeholders = placeholders,
@@ -4850,9 +4867,25 @@ impl LibsqlStorage {
             .query(&sql, libsql::params_from_iter(param_values))
             .await?;
 
+        // The walk appends two columns after the memory columns.
+        let signal_offset = self.memory_column_count();
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            results.push(self.row_to_memory(&row).await?);
+            let note = self.row_to_memory(&row).await?;
+            let depth = match row.get_value(signal_offset).ok() {
+                Some(libsql::Value::Integer(i)) => i,
+                _ => 1,
+            };
+            let strength = match row.get_value(signal_offset + 1).ok() {
+                Some(libsql::Value::Real(f)) => f,
+                Some(libsql::Value::Integer(i)) => i as f64,
+                _ => 1.0,
+            };
+            results.push((
+                note,
+                depth.max(1) as usize,
+                (strength as f32).clamp(0.0, 1.0),
+            ));
         }
 
         drop(rows);
@@ -4886,6 +4919,21 @@ impl LibsqlStorage {
 
         debug!("Graph traversal found {} memories", results.len());
         Ok(results)
+    }
+
+    async fn graph_traverse_with_limit(
+        &self,
+        seed_ids: &[MemoryId],
+        max_hops: usize,
+        namespace: Option<Namespace>,
+        max_results: Option<usize>,
+    ) -> Result<Vec<MemoryNote>> {
+        Ok(self
+            .graph_walk_scored(seed_ids, max_hops, namespace, max_results)
+            .await?
+            .into_iter()
+            .map(|(note, _depth, _strength)| note)
+            .collect())
     }
 }
 
@@ -9431,21 +9479,24 @@ impl StorageBackend for LibsqlStorage {
             debug!("Expanding graph from {} seed memories", memory_scores.len());
             let seed_ids = Self::select_graph_seed_ids(&memory_scores, 5);
             let graph_memories = self
-                .graph_traverse_bounded(
+                .graph_walk_scored(
                     &seed_ids,
                     self.search_config.max_graph_depth,
                     namespace.clone(),
-                    max_results.min(1000),
+                    Some(max_results.min(1000)),
                 )
                 .await?;
 
             graph_candidate_count = graph_memories.len();
-            for memory in graph_memories {
+            for (memory, depth, strength) in graph_memories {
+                // Distance-decayed path strength: a strong one-hop link scores
+                // near its own strength, a weak or distant path scores near zero.
+                let signal = strength * (1.0 / (1.0 + depth as f32));
                 let entry = memory_scores
                     .entry(memory.id)
-                    .or_insert((0.0, 0.0, 0.0, 1.0));
-                entry.2 = 1.0; // Mark as graph-expanded
-                entry.3 = entry.3.min(1.0); // Update depth
+                    .or_insert((0.0, 0.0, 0.0, depth as f32));
+                entry.2 = entry.2.max(signal); // best path that reached this memory
+                entry.3 = entry.3.min(depth as f32); // closest hop that reached it
             }
         }
 
@@ -9564,11 +9615,11 @@ impl StorageBackend for LibsqlStorage {
             let importance_score = memory.importance as f32 / 10.0;
             let recency_score =
                 bounded_recency_score(now, memory.created_at, memory.last_accessed_at);
-            let graph_depth_score = if graph_score > 0.0 {
-                1.0 / (1.0 + depth)
-            } else {
-                0.0
-            };
+            // Already distance-decayed path strength, or 0.0 for a candidate the
+            // walk never reached. (This used to be a constant 1/(1+depth) with
+            // depth pinned to 1, so every neighbour scored the same regardless of
+            // how strongly or how far it was linked.)
+            let graph_depth_score = graph_score;
             let entity_boost = if entity_ids.contains(&memory_id) {
                 1.5_f32 // entity-anchor: hard 50% multiplicative boost
             } else {
@@ -12461,5 +12512,67 @@ mod link_type_tests {
             .await
             .expect("one legacy-formatted timestamp must not fail the read");
         assert_eq!(note.links.len(), 2, "both edges should be readable");
+    }
+
+    fn edge(to: MemoryId, strength: f32) -> MemoryLink {
+        MemoryLink {
+            target_id: to,
+            link_type: LinkType::References,
+            strength,
+            reason: "walk test".to_string(),
+            created_at: Utc::now(),
+            last_traversed_at: None,
+            user_created: true,
+        }
+    }
+
+    /// The walk has to report *how* it reached each neighbour, not just that it did.
+    ///
+    /// Fusion used to give every graph candidate the same score, so a hub's weak
+    /// neighbours crowded out the one strongly-linked record that answered the
+    /// question. Path strength and hop distance are what separate them.
+    #[tokio::test]
+    async fn the_walk_reports_strength_and_hop_distance() {
+        let (store, _temp_dir) = storage().await;
+        let hub = note_with_links("the hub note", &[]);
+        store.store_memory(&hub).await.unwrap();
+
+        let strong = note_with_links("strongly linked", &[edge(hub.id, 0.9)]);
+        store.store_memory(&strong).await.unwrap();
+        let weak = note_with_links("weakly linked", &[edge(hub.id, 0.1)]);
+        store.store_memory(&weak).await.unwrap();
+        let far = note_with_links("two hops away", &[edge(strong.id, 0.9)]);
+        store.store_memory(&far).await.unwrap();
+
+        let walk = store
+            .graph_walk_scored(&[hub.id], 2, None, None)
+            .await
+            .expect("graph walk");
+        let found: std::collections::HashMap<MemoryId, (usize, f32)> = walk
+            .iter()
+            .map(|(note, depth, strength)| (note.id, (*depth, *strength)))
+            .collect();
+
+        assert_eq!(found[&strong.id].0, 1, "one hop from the hub");
+        assert!(
+            (found[&strong.id].1 - 0.9).abs() < 0.01,
+            "the strong edge should report its own strength, got {:?}",
+            found[&strong.id]
+        );
+        assert!(
+            (found[&weak.id].1 - 0.1).abs() < 0.01,
+            "the weak edge should not look like the strong one, got {:?}",
+            found[&weak.id]
+        );
+        assert_eq!(found[&far.id].0, 2, "reached through the strong neighbour");
+        assert!(
+            (found[&far.id].1 - 0.81).abs() < 0.02,
+            "a two-hop path should report the product of its edges, got {:?}",
+            found[&far.id]
+        );
+        assert!(
+            found[&strong.id].1 > found[&weak.id].1,
+            "strength must discriminate between neighbours of the same hub"
+        );
     }
 }
