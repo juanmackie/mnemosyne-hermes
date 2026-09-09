@@ -463,6 +463,11 @@ enum Commands {
         /// Process at most N duplicate groups
         #[arg(long)]
         limit: Option<usize>,
+
+        /// Also archive rows whose expires_at has passed (journalled, reversible;
+        /// recall already hides them, this keeps the store and graph from growing)
+        #[arg(long)]
+        forget_expired: bool,
     },
 
     /// Run health checks on the mnemosyne system
@@ -757,8 +762,13 @@ async fn main() -> Result<()> {
         Some(Commands::Artifact { command }) => {
             cli::artifact::handle(command, cli.db_path.clone()).await
         }
-        Some(Commands::Consolidate { apply, json, limit }) => {
-            cli::consolidate::handle(apply, json, limit, cli.db_path.clone()).await
+        Some(Commands::Consolidate {
+            apply,
+            json,
+            limit,
+            forget_expired,
+        }) => {
+            cli::consolidate::handle(apply, json, limit, forget_expired, cli.db_path.clone()).await
         }
         Some(Commands::Doctor { verbose, fix, json }) => {
             cli::doctor::handle(verbose, fix, json, cli.db_path.clone()).await

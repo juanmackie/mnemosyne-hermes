@@ -4128,6 +4128,61 @@ impl LibsqlStorage {
         Ok(report)
     }
 
+    /// Archive rows whose validity window has closed.
+    ///
+    /// Recall already hides expired rows, so this is not an access-control step; it
+    /// is what stops a store and its graph from accumulating rows that can never be
+    /// answered again. Rows are archived, never deleted, and every archive is
+    /// recorded in `consolidation_tombstones` under `reason = 'expired_row'`, so the
+    /// sweep stays auditable and can be undone by hand with
+    /// `UPDATE memories SET is_archived = 0 WHERE id = <payload memory_id>`.
+    ///
+    /// Returns the number of rows archived (or, when `dry_run`, that would be).
+    /// `run_id` attributes the tombstones to a consolidation run.
+    pub async fn archive_expired(
+        &self,
+        run_id: &str,
+        dry_run: bool,
+        limit: Option<usize>,
+    ) -> Result<usize> {
+        let conn = self.get_conn()?;
+        let selector = format!(
+            "SELECT id FROM memories \
+                 WHERE is_archived = 0 AND superseded_by IS NULL \
+                 AND expires_at IS NOT NULL \
+                 AND datetime(expires_at) < datetime('now') \
+                 ORDER BY datetime(expires_at){}",
+            limit
+                .map(|n| format!(" LIMIT {}", n.max(1)))
+                .unwrap_or_default()
+        );
+        let mut rows = conn.query(selector.as_str(), ()).await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(row.get::<String>(0)?);
+        }
+        drop(rows);
+        if dry_run || ids.is_empty() {
+            return Ok(ids.len());
+        }
+
+        let mut tx = conn.transaction().await?;
+        for id in &ids {
+            tx.execute(
+                "INSERT INTO consolidation_tombstones (run_id, reason, payload) VALUES (?, 'expired_row', ?)",
+                params![run_id.to_string(), serde_json::json!({"memory_id": id}).to_string()],
+            )
+            .await?;
+            tx.execute(
+                "UPDATE memories SET is_archived = 1 WHERE id = ?",
+                params![id.clone()],
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(ids.len())
+    }
+
     /// Record link traversal for decay tracking
     pub async fn record_link_traversal(
         &self,

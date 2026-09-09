@@ -26,14 +26,22 @@ warning: unused import: `Namespace`
    |                                            ^^^^^^^^^
 
 warning: variable does not need to be mutable
-    --> src/storage/libsql.rs:4500:13
+    --> src/storage/libsql.rs:4169:13
      |
-4500 |         let mut nodes: HashSet<String> = kept;
-     |             ----^^^^^
+4169 |         let mut tx = conn.transaction().await?;
+     |             ----^^
      |             |
      |             help: remove this `mut`
      |
      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src/storage/libsql.rs:4555:13
+     |
+4555 |         let mut nodes: HashSet<String> = kept;
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
 
 warning: unused variable: `service_name`
    --> src/config.rs:330:25
@@ -53,9 +61,9 @@ warning: value assigned to `existing_source_id` is never read
      = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
 
 warning: unused variable: `placeholders`
-    --> src/storage/libsql.rs:4436:21
+    --> src/storage/libsql.rs:4491:21
      |
-4436 |                 let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+4491 |                 let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
      |                     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_placeholders`
 
 warning: constant `KEYRING_USER` is never used
@@ -83,7 +91,7 @@ warning: method `log_audit` is never used
 2569 |     async fn log_audit(
      |              ^^^^^^^^^
 
-warning: `mnemosyne` (lib) generated 11 warnings (run `cargo fix --lib -p mnemosyne` to apply 7 suggestions)
+warning: `mnemosyne` (lib) generated 12 warnings (run `cargo fix --lib -p mnemosyne` to apply 8 suggestions)
 warning: unused imports: `AgentState` and `WorkItemId`
   --> src/cli/interactive.rs:14:17
    |
@@ -174,7 +182,7 @@ warning: function `show_help` is never used
     |    ^^^^^^^^^
 
 warning: `mnemosyne` (bin "mnemosyne") generated 13 warnings (run `cargo fix --bin "mnemosyne" -p mnemosyne` to apply 8 suggestions)
-    Finished `release` profile [optimized] target(s) in 6m 53s
+    Finished `release` profile [optimized] target(s) in 6m 55s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
 METRIC membench_dev_always_on=0.500000
@@ -193,7 +201,7 @@ METRIC membench_dev_expired_facts=0.750000
 METRIC membench_dev_multihop_derived=0.833333
 METRIC membench_dev_reference_noise=0.833333
 METRIC membench_dev_temporal_latest_wins=0.733333
-METRIC membench_dev_latency_p95_ms=658.943
+METRIC membench_dev_latency_p95_ms=642.030
 METRIC membench_dev_empty=0
 METRIC membench_dev_profile_items=3.000
 METRIC membench_heldout_always_on=0.458333
@@ -212,7 +220,7 @@ METRIC membench_heldout_expired_facts=0.666667
 METRIC membench_heldout_multihop_derived=0.833333
 METRIC membench_heldout_reference_noise=0.416667
 METRIC membench_heldout_temporal_latest_wins=0.833333
-METRIC membench_heldout_latency_p95_ms=524.642
+METRIC membench_heldout_latency_p95_ms=523.438
 METRIC membench_heldout_empty=0
 METRIC membench_heldout_profile_items=3.000
 METRIC realquery_warm_mrr=0.989583
@@ -220,5 +228,5 @@ METRIC realquery_warm_hit1=0.979167
 METRIC realquery_heldout_mrr=0.981481
 METRIC realquery_heldout_hit1=0.962963
 METRIC realquery_heldout_hit5=1.000000
-METRIC recall_latency_warm_p95_ms=20.899
-METRIC realquery_warm_mcp_p95_ms=20.899
+METRIC recall_latency_warm_p95_ms=16.266
+METRIC realquery_warm_mcp_p95_ms=16.266
