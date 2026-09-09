@@ -17,4 +17,4 @@
 {"query": "who keeps the cold-chain alert screen running?", "category": "graph_linked", "relevant": ["Facilities volunteer team"], "distractor": ["Cold-chain temperature alerts surface inside the VetTrack dashboard."]}
 {"query": "when do I have to ask for someone to cover Saturday?", "category": "graph_linked", "relevant": ["twelve hours ahead"], "distractor": ["Weekend clinic cover is booked through the co-op roster."]}
 {"query": "who follows up when a generator fuel reading is missing?", "category": "graph_linked", "relevant": ["goes to Dana"], "distractor": ["The generator fuel log is a paper book kept by the plant-room door."]}
-{"query": "what does the Ledger-Runbook say to do when the ledger count mismatches?", "category": "graph_linked", "relevant": ["replay the last settlement batch"], "distractor": ["Ops note 3"]}
+{"query": "what does the Ledger-Runbook say to do when the ledger count mismatches?", "category": "graph_linked", "relevant": ["replay the last settlement batch"], "distractor": ["the landlord"]}

@@ -21,6 +21,11 @@ cp -f target/release/mnemosyne "$BIN"
 
 # ---- membench scoreboard -----------------------------------------------------
 for split in dev heldout; do
+  # Labels first: a gold phrase that matches two rows, or one that matches none,
+  # makes a "miss" say nothing about retrieval. Fail before scoring, not after.
+  python3 .auto/membench_validate.py \
+    --corpus ".auto/membench/corpus_${split}.jsonl" \
+    --queries ".auto/membench/queries_${split}.jsonl"
   MNEMOSYNE_EVAL_BIN="$BIN" python3 .auto/membench_setup.py \
     --corpus ".auto/membench/corpus_${split}.jsonl" \
     --db ".auto/data/membench-${split}.db" \
