@@ -6,7 +6,25 @@ retrieval diagnostics sampled off the recall path; PPR adjacency OR →
 UNION ALL of indexed halves + weights/settings Lazy caches (61625e0,
 quality steady at 0.9815 heldout MRR, #27).
 
-## Still open
+## Found 2026-09-09 (consolidation work, run #29)
+
+- **BUG (pre-existing, data loss): `memory_links.link_type` CHECK whitelists
+  only extends/contradicts/implements/references/supersedes, but `LinkType`
+  has 9 variants. `add_bidirectional_links` uses `INSERT OR IGNORE`, so
+  builds_upon/referenced_by/clarifies links are silently discarded at store
+  time (reproduced in consolidation_tests). Fix = table-rebuild migration
+  widening the CHECK (or dropping it) + a backfill story for lost edges.
+- **BUG (pre-existing, flaky-ish test): `mn_mgr_forget_best_effort_never_errors`
+  fails on clean HEAD: migration 012 executed twice -> "duplicate column name:
+  requirements". Multi-statement migration + re-run path needs a guard
+  (duplicate-tables/022_work_items.sql exists for the same reason).
+- Consolidation delivered (7122ff7): `mnemosyne consolidate [--apply] [--json]`,
+  migrations 030 (consolidation_runs/tombstones), single-transaction supersede,
+  pre-apply backup + WAL checkpoint gate. CLI `remember` dedupes at write time,
+  so real duplicates only arrive via crash/import/concurrent paths.
+
+## Still open (latency)
+
 
 - **Clean keep for the OR split**: re-run measure with
   `checks_timeout_seconds: 600` — checks include a `full,distributed`
