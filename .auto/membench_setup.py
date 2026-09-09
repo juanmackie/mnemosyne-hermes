@@ -152,12 +152,18 @@ def main() -> int:
 
     fp = fingerprint(args.corpus, args.label)
     marker = args.db.with_suffix(args.db.suffix + ".fingerprint")
+    # Which encoder produced the vectors in this DB. A fingerprint hit already
+    # proves the model matches, so the sidecar is written on both paths; the
+    # evaluator refuses to score a DB whose encoder it cannot confirm.
+    sidecar = Path(str(args.db) + ".model")
     if args.db.exists() and marker.exists() and marker.read_text().strip() == fp \
             and not Path(str(args.db) + "-wal").exists():
+        sidecar.write_text(MODEL + "\n")
         print(args.db)
         return 0
     rebuild(args.corpus, args.db, args.namespace)
     marker.write_text(fp)
+    sidecar.write_text(MODEL + "\n")
     print(args.db)
     return 0
 

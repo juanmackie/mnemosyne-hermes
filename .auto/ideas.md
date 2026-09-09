@@ -152,3 +152,17 @@ Consequences and workaround:
 Formatting note from the same episode: keep new unit tests inside an existing, already
 format-clean file when practical, and hoist `.await` out of `assert!` argument position -
 `rustfmt` layout for `assert!(f().await >= 2, ...)` differs between versions.
+
+## Harness-validity traps found 2026-09-10 (run #39)
+- **Manual membench evals need `MNEMOSYNE_EMBEDDING_MODEL=bge-small-en-v1.5`.**
+  Without it the recall-time encoder mismatches the embeddings baked into the DB:
+  results are perfectly reproducible across runs and completely wrong (0.6383/0.5833
+  vs the real 0.6583/0.4583). Open fix: `membench_setup.py` records the model in the
+  DB fingerprint and `evaluate_membench.py` refuses a mismatch.
+- Fixture filler rows must be **vocabulary-disjoint from every query** in the split,
+  otherwise they crowd out gold on unrelated queries (this made graph_linked read
+  0.17 too low). Generated fillers now check that invariant.
+- `.auto/run.sh` is the generic runner (`AUTO_MEASURE`/`AUTO_PRIMARY`); the membench
+  scoreboard needs `AUTO_MEASURE=./.auto/measure_mem.sh
+  AUTO_PRIMARY=membench_heldout_score`. Running bare run.sh measures the realquery
+  guards and logs PRIMARY n/a.

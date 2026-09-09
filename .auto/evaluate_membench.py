@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import shutil
 import statistics
 import subprocess
@@ -122,6 +123,25 @@ def main() -> int:
                          "16 queries take ~40s, and it matches how Hermes calls recall")
     ap.add_argument("--prefix", required=True, help="metric prefix, e.g. membench_heldout")
     args = ap.parse_args()
+
+    # The embeddings baked into the DB were produced by one encoder. Recalling
+    # with a different one still returns confident, stable, meaningless numbers -
+    # observed as a reproducible 0.6383 where the pinned stack scores 0.6583.
+    # Refuse instead of scoring a different system.
+    model = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "bge-small-en-v1.5")
+    provenance = Path(str(args.db) + ".model")
+    if not provenance.exists():
+        print(f"ERROR: {args.db} has no encoder provenance ({provenance}); "
+              "rebuild it with membench_setup.py", file=sys.stderr)
+        return 2
+    built_with = provenance.read_text().strip()
+    if built_with != model:
+        print(f"ERROR: encoder mismatch. {args.db} embeddings were built with "
+              f"{built_with!r} but this run recalls with {model!r}. Export "
+              f"MNEMOSYNE_EMBEDDING_MODEL={built_with} or rebuild the DB; a "
+              "mismatch is reproducible and scores the wrong system.", file=sys.stderr)
+        return 2
+    print(f"NOTE encoder={model} db={args.db.name}")
 
     items = [json.loads(line) for line in args.dataset.read_text().splitlines() if line.strip()]
     with tempfile.TemporaryDirectory() as raw_tmp:
