@@ -436,6 +436,23 @@ enum Commands {
         namespace: Option<String>,
     },
 
+    /// Consolidate exact-duplicate memories via journaled supersede
+    /// (dry run by default; duplicates leave all retrieval lanes, rows are
+    /// never deleted)
+    Consolidate {
+        /// Actually mutate the database (default is a dry run)
+        #[arg(long)]
+        apply: bool,
+
+        /// Output the report as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Process at most N duplicate groups
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
     /// Run health checks on the mnemosyne system
     Doctor {
         /// Show detailed diagnostics
@@ -723,6 +740,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Artifact { command }) => {
             cli::artifact::handle(command, cli.db_path.clone()).await
+        }
+        Some(Commands::Consolidate { apply, json, limit }) => {
+            cli::consolidate::handle(apply, json, limit, cli.db_path.clone()).await
         }
         Some(Commands::Doctor { verbose, fix, json }) => {
             cli::doctor::handle(verbose, fix, json, cli.db_path.clone()).await

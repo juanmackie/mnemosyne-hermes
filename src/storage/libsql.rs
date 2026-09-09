@@ -472,6 +472,7 @@ static LIBSQL_MIGRATION_NAMES: &[&str] = &[
     "027_memory_integrity.sql",
     "028_retrieval_trace_namespace.sql",
     "029_memory_evidence.sql",
+    "030_consolidation.sql",
 ];
 
 /// Migration file names for StandardSQLite schema
@@ -497,7 +498,26 @@ static SQLITE_MIGRATION_NAMES: &[&str] = &[
     "027_memory_integrity.sql",
     "028_retrieval_trace_namespace.sql",
     "029_memory_evidence.sql",
+    "030_consolidation.sql",
 ];
+
+/// Outcome (or dry-run projection) of one `consolidate_exact_duplicates`
+/// pass over exact duplicate groups.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct ConsolidationReport {
+    pub run_id: String,
+    pub dry_run: bool,
+    pub groups_found: usize,
+    pub duplicates_superseded: usize,
+    pub edges_repointed: usize,
+    pub edges_tombstoned: usize,
+    pub vectors_tombstoned: usize,
+    pub lineage_repointed: usize,
+    pub orphan_links_staged: usize,
+    pub active_before: usize,
+    pub active_after: usize,
+    pub keepers: Vec<String>,
+}
 
 /// (filename, SQL content) pairs for LibSQL migrations — SQL embedded at
 /// compile time so no file I/O is needed at runtime.
@@ -569,6 +589,10 @@ static LIBSQL_MIGRATIONS: &[(&str, &str)] = &[
     (
         "029_memory_evidence.sql",
         include_str!("../../migrations/libsql/029_memory_evidence.sql"),
+    ),
+    (
+        "030_consolidation.sql",
+        include_str!("../../migrations/libsql/030_consolidation.sql"),
     ),
 ];
 
@@ -657,6 +681,10 @@ static SQLITE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "029_memory_evidence.sql",
         include_str!("../../migrations/sqlite/029_memory_evidence.sql"),
+    ),
+    (
+        "030_consolidation.sql",
+        include_str!("../../migrations/sqlite/030_consolidation.sql"),
     ),
 ];
 
@@ -3527,6 +3555,542 @@ impl LibsqlStorage {
         .await?;
 
         Ok(())
+    }
+
+    /// Consolidate exact-duplicate memories (same namespace + `content_hash`)
+    /// by journaled supersede; memory rows are never deleted.
+    ///
+    /// The whole run executes in one `BEGIN IMMEDIATE` transaction on the
+    /// shared WAL handle; a dry run is the identical code path terminated by
+    /// `ROLLBACK`, so its counts equal what `--apply` will do. Duplicates
+    /// leave every retrieval lane: they are archived with `superseded_by`
+    /// (keyword and vector lanes filter `is_archived = 0`), their embeddings
+    /// are tombstone-staged out, and graph edges are repointed onto the keeper
+    /// (parallel edges collapse with `MAX(strength)`, no self-loops, no
+    /// duplicate pairs — `memory_links` has a UNIQUE constraint).
+    ///
+    /// Raw-turn rows (`turn_sync` tag) are excluded: their writes are
+    /// append-only source events where identical text is legitimate, matching
+    /// the store-path dedup exemption.
+    ///
+    /// Keeper choice is deterministic per group: lineage-referenced row first
+    /// (provenance/evidence `source_memory_id`), then a row with graph edges,
+    /// then oldest `created_at`, ties by smallest id. References pointing at a
+    /// superseded duplicate are repointed onto the keeper inside the txn.
+    pub async fn consolidate_exact_duplicates(
+        &self,
+        dry_run: bool,
+        limit: Option<usize>,
+    ) -> Result<ConsolidationReport> {
+        self.consolidate_inner(dry_run, limit, None).await
+    }
+
+    /// Request a TRUNCATE WAL checkpoint on the shared handle.
+    /// `Ok(false)` means the checkpoint was blocked by another connection;
+    /// callers that need a fully checkpointed file (e.g. `consolidate --apply`
+    /// copying the database aside) must refuse to proceed on `false`.
+    pub async fn checkpoint_wal(&self) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query("PRAGMA wal_checkpoint(TRUNCATE)", ())
+            .await
+            .map_err(|e| MnemosyneError::Database(format!("WAL checkpoint failed: {}", e)))?;
+        let busy = match rows.next().await? {
+            Some(row) => row.get::<i64>(0)?,
+            None => 0,
+        };
+        Ok(busy == 0)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn consolidate_failing_after_dupes(
+        &self,
+        completed_dupes: usize,
+    ) -> Result<ConsolidationReport> {
+        self.consolidate_inner(false, None, Some(completed_dupes))
+            .await
+    }
+
+    async fn consolidate_inner(
+        &self,
+        dry_run: bool,
+        limit: Option<usize>,
+        fail_after_dupes: Option<usize>,
+    ) -> Result<ConsolidationReport> {
+        let conn = self.get_conn()?;
+        let mut table_rows = conn
+            .query("SELECT name FROM sqlite_master WHERE type = 'table'", ())
+            .await?;
+        let mut tables = Vec::new();
+        while let Some(row) = table_rows.next().await? {
+            tables.push(row.get::<String>(0)?);
+        }
+        drop(table_rows);
+        let has = |name: &str| tables.iter().any(|table| table == name);
+        for required in ["consolidation_runs", "consolidation_tombstones"] {
+            if !has(required) {
+                return Err(MnemosyneError::Database(format!(
+                    "database lacks {}; apply migrations before consolidating",
+                    required
+                )));
+            }
+        }
+        let has_facts = has("memory_facts");
+        let has_embeddings = has("memory_embeddings");
+        let has_provenance = has("memory_provenance");
+        let has_evidence = has("memory_evidence");
+        let has_policy_evidence = has("interaction_policy_evidence");
+
+        let mut active_rows = conn
+            .query("SELECT COUNT(*) FROM memories WHERE is_archived = 0", ())
+            .await?;
+        let active_before = match active_rows.next().await? {
+            Some(row) => row.get::<i64>(0)?,
+            None => 0,
+        };
+        drop(active_rows);
+
+        let group_sql = format!(
+            "SELECT namespace, content_hash FROM memories \
+             WHERE is_archived = 0 AND superseded_by IS NULL \
+             AND tags NOT LIKE '%\"turn_sync\"%' \
+             GROUP BY namespace, content_hash HAVING COUNT(*) > 1 \
+             ORDER BY namespace, content_hash{}",
+            limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default()
+        );
+        let mut group_rows = conn.query(group_sql.as_str(), ()).await?;
+        let mut groups = Vec::new();
+        while let Some(row) = group_rows.next().await? {
+            groups.push((row.get::<String>(0)?, row.get::<String>(1)?));
+        }
+        drop(group_rows);
+
+        let mut lineage_terms = Vec::new();
+        if has_provenance {
+            lineage_terms
+                .push("(SELECT COUNT(*) FROM memory_provenance p WHERE p.source_memory_id = m.id)");
+        }
+        if has_evidence {
+            lineage_terms
+                .push("(SELECT COUNT(*) FROM memory_evidence e WHERE e.source_memory_id = m.id)");
+        }
+        if has_policy_evidence {
+            lineage_terms.push("(SELECT COUNT(*) FROM interaction_policy_evidence i WHERE i.source_memory_id = m.id)");
+        }
+        let lineage_expr = if lineage_terms.is_empty() {
+            "0".to_string()
+        } else {
+            lineage_terms.join(" + ")
+        };
+        let member_sql = format!(
+            "SELECT m.id FROM memories m \
+             WHERE m.namespace = ? AND m.content_hash = ? \
+             AND m.is_archived = 0 AND m.superseded_by IS NULL \
+             ORDER BY ({lineage_expr}) DESC, \
+             (SELECT COUNT(*) FROM memory_links l WHERE l.source_id = m.id OR l.target_id = m.id) DESC, \
+             m.created_at ASC, m.id ASC",
+        );
+
+        let run_id = Uuid::new_v4().to_string();
+        let started_at = Utc::now().to_rfc3339();
+        let mut report = ConsolidationReport {
+            run_id: run_id.clone(),
+            dry_run,
+            groups_found: groups.len(),
+            active_before: active_before as usize,
+            active_after: active_before as usize,
+            ..Default::default()
+        };
+
+        let tx = conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await?;
+        let mut done_dupes = 0usize;
+
+        for (namespace, hash) in groups {
+            let mut member_rows = tx
+                .query(
+                    member_sql.as_str(),
+                    params![namespace.clone(), hash.clone()],
+                )
+                .await?;
+            let mut members = Vec::new();
+            while let Some(row) = member_rows.next().await? {
+                members.push(row.get::<String>(0)?);
+            }
+            drop(member_rows);
+            if members.len() < 2 {
+                continue;
+            }
+            let keeper = members.remove(0);
+            report.keepers.push(keeper.clone());
+
+            for dupe in members {
+                if fail_after_dupes == Some(done_dupes) {
+                    return Err(MnemosyneError::Database(format!(
+                        "injected consolidation failure after {} dupes",
+                        done_dupes
+                    )));
+                }
+                done_dupes += 1;
+
+                // Graph repointing happens before the archive so no edge ever
+                // observes a superseded endpoint. Order: self-loops, direct
+                // dupe<->keeper edges (tombstoned: they were duplicates of
+                // nothing but each other), parallel-edge merges with
+                // MAX(strength), then repoint the remainder.
+                let mut edge_rows = tx
+                    .query(
+                        "SELECT id, source_id, target_id, link_type, strength \
+                         FROM memory_links \
+                         WHERE (source_id = ?1 AND target_id = ?2) OR (source_id = ?2 AND target_id = ?1) \
+                            OR (source_id = ?1 AND target_id = ?1)",
+                        params![dupe.clone(), keeper.clone()],
+                    )
+                    .await?;
+                let mut direct: Vec<(i64, String, String, String, f64)> = Vec::new();
+                while let Some(row) = edge_rows.next().await? {
+                    direct.push((
+                        row.get::<i64>(0)?,
+                        row.get::<String>(1)?,
+                        row.get::<String>(2)?,
+                        row.get::<String>(3)?,
+                        row.get::<f64>(4)?,
+                    ));
+                }
+                drop(edge_rows);
+                for (id, source, target, link_type, strength) in direct {
+                    tx.execute(
+                        "INSERT INTO consolidation_tombstones (run_id, reason, payload) VALUES (?, 'merged_duplicate_edge', ?)",
+                        params![run_id.clone(), serde_json::json!({"source_id": source.clone(), "target_id": target.clone(), "link_type": link_type.clone(), "strength": strength}).to_string()],
+                    )
+                    .await?;
+                    tx.execute("DELETE FROM memory_links WHERE id = ?", params![id])
+                        .await?;
+                    report.edges_tombstoned += 1;
+                }
+
+                // Source-side parallel edges.
+                let mut edge_rows = tx
+                    .query(
+                        "SELECT id, target_id, link_type, strength FROM memory_links d \
+                         WHERE d.source_id = ? AND EXISTS (SELECT 1 FROM memory_links k \
+                         WHERE k.source_id = ? AND k.target_id = d.target_id AND k.link_type = d.link_type)",
+                        params![dupe.clone(), keeper.clone()],
+                    )
+                    .await?;
+                let mut colliding: Vec<(i64, String, String, f64)> = Vec::new();
+                while let Some(row) = edge_rows.next().await? {
+                    colliding.push((
+                        row.get::<i64>(0)?,
+                        row.get::<String>(1)?,
+                        row.get::<String>(2)?,
+                        row.get::<f64>(3)?,
+                    ));
+                }
+                drop(edge_rows);
+                for (id, target, link_type, strength) in colliding {
+                    tx.execute(
+                        "UPDATE memory_links SET strength = MAX(strength, ?1) \
+                         WHERE source_id = ?2 AND target_id = ?3 AND link_type = ?4",
+                        params![strength, keeper.clone(), target.clone(), link_type.clone()],
+                    )
+                    .await?;
+                    tx.execute(
+                        "INSERT INTO consolidation_tombstones (run_id, reason, payload) VALUES (?, 'parallel_edge_merged', ?)",
+                        params![run_id.clone(), serde_json::json!({"source_id": dupe.clone(), "target_id": target.clone(), "link_type": link_type.clone(), "strength": strength, "merged_into": keeper.clone()}).to_string()],
+                    )
+                    .await?;
+                    tx.execute("DELETE FROM memory_links WHERE id = ?", params![id])
+                        .await?;
+                    report.edges_tombstoned += 1;
+                }
+
+                // Target-side parallel edges.
+                let mut edge_rows = tx
+                    .query(
+                        "SELECT id, source_id, link_type, strength FROM memory_links d \
+                         WHERE d.target_id = ? AND EXISTS (SELECT 1 FROM memory_links k \
+                         WHERE k.target_id = ? AND k.source_id = d.source_id AND k.link_type = d.link_type)",
+                        params![dupe.clone(), keeper.clone()],
+                    )
+                    .await?;
+                let mut colliding: Vec<(i64, String, String, f64)> = Vec::new();
+                while let Some(row) = edge_rows.next().await? {
+                    colliding.push((
+                        row.get::<i64>(0)?,
+                        row.get::<String>(1)?,
+                        row.get::<String>(2)?,
+                        row.get::<f64>(3)?,
+                    ));
+                }
+                drop(edge_rows);
+                for (id, source, link_type, strength) in colliding {
+                    tx.execute(
+                        "UPDATE memory_links SET strength = MAX(strength, ?1) \
+                         WHERE target_id = ?2 AND source_id = ?3 AND link_type = ?4",
+                        params![strength, keeper.clone(), source.clone(), link_type.clone()],
+                    )
+                    .await?;
+                    tx.execute(
+                        "INSERT INTO consolidation_tombstones (run_id, reason, payload) VALUES (?, 'parallel_edge_merged', ?)",
+                        params![run_id.clone(), serde_json::json!({"source_id": source.clone(), "target_id": dupe.clone(), "link_type": link_type.clone(), "strength": strength, "merged_into": keeper.clone()}).to_string()],
+                    )
+                    .await?;
+                    tx.execute("DELETE FROM memory_links WHERE id = ?", params![id])
+                        .await?;
+                    report.edges_tombstoned += 1;
+                }
+
+                report.edges_repointed += tx
+                    .execute(
+                        "UPDATE memory_links SET source_id = ? WHERE source_id = ?",
+                        params![keeper.clone(), dupe.clone()],
+                    )
+                    .await? as usize;
+                report.edges_repointed += tx
+                    .execute(
+                        "UPDATE memory_links SET target_id = ? WHERE target_id = ?",
+                        params![keeper.clone(), dupe.clone()],
+                    )
+                    .await? as usize;
+
+                // Lineage references must not point at superseded rows.
+                if has_provenance {
+                    report.lineage_repointed += tx
+                        .execute(
+                            "UPDATE memory_provenance SET source_memory_id = ? WHERE source_memory_id = ?",
+                            params![keeper.clone(), dupe.clone()],
+                        )
+                        .await?
+                        as usize;
+                }
+                for (table, owner_col) in [
+                    if has_evidence {
+                        Some(("memory_evidence", "memory_id"))
+                    } else {
+                        None
+                    },
+                    if has_policy_evidence {
+                        Some(("interaction_policy_evidence", "policy_memory_id"))
+                    } else {
+                        None
+                    },
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let mut ev_rows = tx
+                        .query(
+                            &format!("SELECT {}, evidence_quote, observed_at FROM {} WHERE source_memory_id = ?", owner_col, table),
+                            params![dupe.clone()],
+                        )
+                        .await?;
+                    let mut refs = Vec::new();
+                    while let Some(row) = ev_rows.next().await? {
+                        refs.push((
+                            row.get::<String>(0)?,
+                            row.get::<String>(1)?,
+                            row.get::<String>(2)?,
+                        ));
+                    }
+                    drop(ev_rows);
+                    for (memory_id, quote, observed_at) in refs {
+                        tx.execute(
+                            &format!("INSERT OR IGNORE INTO {} ({}, source_memory_id, evidence_quote, observed_at) VALUES (?, ?, ?, ?)", table, owner_col),
+                            params![memory_id.clone(), keeper.clone(), quote.clone(), observed_at.clone()],
+                        )
+                        .await?;
+                    }
+                    report.lineage_repointed += tx
+                        .execute(
+                            &format!("DELETE FROM {} WHERE source_memory_id = ?", table),
+                            params![dupe.clone()],
+                        )
+                        .await? as usize;
+                }
+
+                // Supersede exactly as mark_superseded would, inline so the
+                // whole run stays one transaction.
+                tx.execute(
+                    "UPDATE memories SET is_archived = 1, superseded_by = ?, updated_at = ? WHERE id = ?",
+                    params![keeper.clone(), started_at.clone(), dupe.clone()],
+                )
+                .await?;
+                if has_facts {
+                    tx.execute(
+                        "UPDATE memory_facts SET is_active = 0 WHERE memory_id = ?",
+                        params![dupe.clone()],
+                    )
+                    .await?;
+                }
+                if self.schema_type == SchemaType::LibSQL {
+                    // This schema keeps the vector on the memory row itself.
+                    let mut emb_rows = tx
+                        .query(
+                            "SELECT 1 FROM memories WHERE id = ? AND embedding IS NOT NULL",
+                            params![dupe.clone()],
+                        )
+                        .await?;
+                    let has_vector = emb_rows.next().await?.is_some();
+                    drop(emb_rows);
+                    if has_vector {
+                        tx.execute(
+                            "INSERT INTO consolidation_tombstones (run_id, reason, payload) VALUES (?, 'superseded_embedding', ?)",
+                            params![run_id.clone(), serde_json::json!({"memory_id": dupe.clone(), "stored_in": "memories.embedding"}).to_string()],
+                        )
+                        .await?;
+                        tx.execute(
+                            "UPDATE memories SET embedding = NULL, embedding_model = '' WHERE id = ?",
+                            params![dupe.clone()],
+                        )
+                        .await?;
+                        report.vectors_tombstoned += 1;
+                    }
+                } else if has_embeddings {
+                    let mut emb_rows = tx
+                        .query(
+                            "SELECT dimension FROM memory_embeddings WHERE memory_id = ?",
+                            params![dupe.clone()],
+                        )
+                        .await?;
+                    let mut dims = Vec::new();
+                    while let Some(row) = emb_rows.next().await? {
+                        dims.push(row.get::<i64>(0)?);
+                    }
+                    drop(emb_rows);
+                    report.vectors_tombstoned += dims.len();
+                    for dimension in dims {
+                        // Metadata tombstone only: the vector is reproducible
+                        // from content + encoder, so the 3KB blob is not copied.
+                        tx.execute(
+                            "INSERT INTO consolidation_tombstones (run_id, reason, payload) VALUES (?, 'superseded_embedding', ?)",
+                            params![run_id.clone(), serde_json::json!({"memory_id": dupe.clone(), "dimension": dimension}).to_string()],
+                        )
+                        .await?;
+                    }
+                    tx.execute(
+                        "DELETE FROM memory_embeddings WHERE memory_id = ?",
+                        params![dupe.clone()],
+                    )
+                    .await?;
+                }
+                tx.execute(
+                    "INSERT INTO audit_log (operation, memory_id, metadata) VALUES ('supersede', ?, ?)",
+                    params![
+                        dupe.clone(),
+                        serde_json::json!({
+                            "superseded_by": keeper.clone(),
+                            "timestamp": started_at.clone(),
+                            "run_id": run_id.clone(),
+                            "reason": "consolidate_exact_duplicates"
+                        })
+                        .to_string()
+                    ],
+                )
+                .await?;
+                tx.execute(
+                    "INSERT INTO memory_modification_log (id, memory_id, agent_role, modification_type, timestamp, changes) VALUES (?, ?, 'consolidate', 'consolidate_dedup', ?, ?)",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        dupe,
+                        Utc::now().timestamp(),
+                        serde_json::json!({"superseded_by": keeper.clone(), "run_id": run_id.clone(), "namespace": namespace.clone(), "content_hash": hash.clone()}).to_string()
+                    ],
+                )
+                .await?;
+                report.duplicates_superseded += 1;
+            }
+        }
+
+        // Sweep dangling link edges and embedding rows for missing memories:
+        // staged (payload preserved), never hard-deleted without a trace.
+        let mut edge_rows = tx
+            .query(
+                "SELECT id, source_id, target_id, link_type FROM memory_links \
+                 WHERE source_id NOT IN (SELECT id FROM memories) OR target_id NOT IN (SELECT id FROM memories)",
+                (),
+            )
+            .await?;
+        let mut dangling: Vec<(i64, String, String, String)> = Vec::new();
+        while let Some(row) = edge_rows.next().await? {
+            dangling.push((
+                row.get::<i64>(0)?,
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+                row.get::<String>(3)?,
+            ));
+        }
+        drop(edge_rows);
+        for (id, source, target, link_type) in dangling {
+            tx.execute(
+                "INSERT INTO consolidation_tombstones (run_id, reason, payload) VALUES (?, 'dangling_link', ?)",
+                params![run_id.clone(), serde_json::json!({"id": id, "source_id": source.clone(), "target_id": target.clone(), "link_type": link_type.clone()}).to_string()],
+            )
+            .await?;
+            tx.execute("DELETE FROM memory_links WHERE id = ?", params![id])
+                .await?;
+            report.orphan_links_staged += 1;
+        }
+        if has_embeddings && self.schema_type != SchemaType::LibSQL {
+            let mut emb_rows = tx
+                .query(
+                    "SELECT memory_id, dimension FROM memory_embeddings \
+                     WHERE memory_id NOT IN (SELECT id FROM memories)",
+                    (),
+                )
+                .await?;
+            let mut orphans: Vec<(String, i64)> = Vec::new();
+            while let Some(row) = emb_rows.next().await? {
+                orphans.push((row.get::<String>(0)?, row.get::<i64>(1)?));
+            }
+            drop(emb_rows);
+            let orphan_count = orphans.len();
+            for (memory_id, dimension) in orphans {
+                tx.execute(
+                    "INSERT INTO consolidation_tombstones (run_id, reason, payload) VALUES (?, 'orphan_embedding', ?)",
+                    params![run_id.clone(), serde_json::json!({"memory_id": memory_id.clone(), "dimension": dimension}).to_string()],
+                )
+                .await?;
+            }
+            if orphan_count > 0 {
+                tx.execute(
+                    "DELETE FROM memory_embeddings WHERE memory_id NOT IN (SELECT id FROM memories)",
+                    (),
+                )
+                .await?;
+                report.vectors_tombstoned += orphan_count;
+            }
+        }
+
+        report.active_after = report.active_before - report.duplicates_superseded;
+        if !dry_run {
+            tx.execute(
+                "INSERT INTO consolidation_runs (id, started_at, finished_at, dry_run, groups_found, duplicates_superseded, edges_repointed, edges_tombstoned, vectors_tombstoned, lineage_repointed, orphan_links_staged, active_before, active_after) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    run_id,
+                    started_at,
+                    Utc::now().to_rfc3339(),
+                    report.groups_found as i64,
+                    report.duplicates_superseded as i64,
+                    report.edges_repointed as i64,
+                    report.edges_tombstoned as i64,
+                    report.vectors_tombstoned as i64,
+                    report.lineage_repointed as i64,
+                    report.orphan_links_staged as i64,
+                    report.active_before as i64,
+                    report.active_after as i64,
+                ],
+            )
+            .await?;
+        }
+        if dry_run {
+            // The dry run IS the apply path rolled back: counts are exact.
+            tx.rollback().await?;
+        } else {
+            tx.commit().await?;
+        }
+        Ok(report)
     }
 
     /// Record link traversal for decay tracking
@@ -10764,5 +11328,477 @@ impl LibsqlStorage {
         })?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod consolidation_tests {
+    use super::*;
+    use crate::types::{LinkType, MemoryClass, MemoryNote, MemoryType};
+
+    fn cons_note(id: MemoryId, namespace: Namespace, content: &str) -> MemoryNote {
+        let now = Utc::now();
+        MemoryNote {
+            id,
+            namespace,
+            created_at: now,
+            updated_at: now,
+            content: content.into(),
+            summary: content.into(),
+            keywords: vec!["test".into()],
+            tags: vec![],
+            context: String::new(),
+            memory_type: MemoryType::Insight,
+            memory_class: MemoryClass::Knowledge,
+            provenance: None,
+            importance: 5,
+            confidence: 0.9,
+            links: vec![],
+            related_files: vec![],
+            related_entities: vec![],
+            access_count: 0,
+            last_accessed_at: now,
+            expires_at: None,
+            is_archived: false,
+            superseded_by: None,
+            embedding: None,
+            embedding_model: String::new(),
+        }
+    }
+
+    fn cons_link(target_id: MemoryId, link_type: LinkType, strength: f32) -> MemoryLink {
+        MemoryLink {
+            target_id,
+            link_type,
+            strength,
+            reason: "test".into(),
+            created_at: Utc::now(),
+            last_traversed_at: None,
+            user_created: false,
+        }
+    }
+
+    async fn cons_storage() -> (LibsqlStorage, std::path::PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(format!("{}.db", MemoryId::new()));
+        std::mem::forget(directory);
+        let storage = LibsqlStorage::new_with_validation(
+            ConnectionMode::Local(path.to_string_lossy().into_owned()),
+            true,
+        )
+        .await
+        .unwrap();
+        (storage, path)
+    }
+
+    async fn cons_scalar_i64(path: &std::path::Path, sql: &str) -> i64 {
+        let database = libsql::Builder::new_local(path).build().await.unwrap();
+        let connection = database.connect().unwrap();
+        let mut rows = connection.query(sql, ()).await.unwrap();
+        match rows.next().await.unwrap() {
+            Some(row) => row.get::<i64>(0).unwrap(),
+            None => -1,
+        }
+    }
+
+    async fn cons_execute(path: &std::path::Path, sql: &str) {
+        let database = libsql::Builder::new_local(path).build().await.unwrap();
+        let connection = database.connect().unwrap();
+        connection.execute(sql, ()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dry_run_does_not_mutate_and_counts_match_apply() {
+        let (storage, path) = cons_storage().await;
+        let ns = Namespace::Global;
+        let (a1, a2) = (MemoryId::new(), MemoryId::new());
+        let (b1, b2) = (MemoryId::new(), MemoryId::new());
+        let extra = MemoryId::new();
+        let mut extra_note = cons_note(extra, ns.clone(), "graph neighbour");
+        extra_note.created_at = Utc::now() - chrono::Duration::days(9);
+        storage.store_memory(&extra_note).await.unwrap();
+        // The older rows own a References edge and win ties (age); each newer
+        // duplicate owns a Clarifies edge plus an embedding that must migrate.
+        let mut a1_note = cons_note(a1, ns.clone(), "duplicate alpha note");
+        a1_note.created_at = Utc::now() - chrono::Duration::days(2);
+        a1_note.links = vec![cons_link(extra, LinkType::References, 0.5)];
+        storage.store_memory(&a1_note).await.unwrap();
+        let mut b1_note = cons_note(b1, ns.clone(), "duplicate beta note");
+        b1_note.created_at = Utc::now() - chrono::Duration::days(2);
+        b1_note.links = vec![cons_link(extra, LinkType::References, 0.5)];
+        storage.store_memory(&b1_note).await.unwrap();
+        for dupe in [a2, b2] {
+            let mut note = cons_note(
+                dupe,
+                ns.clone(),
+                if dupe == a2 {
+                    "duplicate alpha note"
+                } else {
+                    "duplicate beta note"
+                },
+            );
+            note.links = vec![cons_link(extra, LinkType::Extends, 0.5)];
+            storage.store_memory(&note).await.unwrap();
+            storage
+                .store_embedding(&dupe, &vec![0.5f32; 8], "test-model")
+                .await
+                .unwrap();
+        }
+
+        let dry = storage
+            .consolidate_exact_duplicates(true, None)
+            .await
+            .unwrap();
+        assert_eq!(dry.groups_found, 2);
+        assert_eq!(dry.duplicates_superseded, 2);
+        assert_eq!(dry.vectors_tombstoned, 2);
+        assert_eq!(dry.edges_repointed, 4);
+        assert_eq!(dry.active_before - dry.active_after, 2);
+        assert!(dry.keepers.contains(&a1.to_string()));
+        assert!(dry.keepers.contains(&b1.to_string()));
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM consolidation_runs").await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM consolidation_tombstones").await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM memories WHERE is_archived = 1").await,
+            0
+        );
+
+        let applied = storage
+            .consolidate_exact_duplicates(false, None)
+            .await
+            .unwrap();
+        assert_eq!(applied.groups_found, dry.groups_found);
+        assert_eq!(applied.duplicates_superseded, dry.duplicates_superseded);
+        assert_eq!(applied.vectors_tombstoned, dry.vectors_tombstoned);
+        assert_eq!(applied.edges_repointed, dry.edges_repointed);
+
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM memories WHERE is_archived = 1").await,
+            2
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM memories WHERE is_archived = 1 AND superseded_by IS NULL"
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM memories WHERE is_archived = 1 AND embedding IS NOT NULL"
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM memory_links WHERE source_id IN (SELECT id FROM memories WHERE is_archived = 1) OR target_id IN (SELECT id FROM memories WHERE is_archived = 1)"
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM audit_log WHERE operation = 'supersede'"
+            )
+            .await,
+            2
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM memory_modification_log WHERE modification_type = 'consolidate_dedup'"
+            )
+            .await,
+            2
+        );
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM consolidation_runs").await,
+            1
+        );
+        // Every archived row was journaled to supersession before archiving.
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM memories WHERE is_archived = 1 AND id NOT IN (SELECT memory_id FROM audit_log WHERE operation = 'supersede')"
+            )
+            .await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_twice_is_a_noop() {
+        let (storage, path) = cons_storage().await;
+        let ns = Namespace::Global;
+        let (a1, a2) = (MemoryId::new(), MemoryId::new());
+        storage
+            .store_memory(&cons_note(a1, ns.clone(), "twice note"))
+            .await
+            .unwrap();
+        storage
+            .store_memory(&cons_note(a2, ns.clone(), "twice note"))
+            .await
+            .unwrap();
+        let first = storage
+            .consolidate_exact_duplicates(false, None)
+            .await
+            .unwrap();
+        assert_eq!(first.duplicates_superseded, 1);
+        let second = storage
+            .consolidate_exact_duplicates(false, None)
+            .await
+            .unwrap();
+        assert_eq!(second.groups_found, 0);
+        assert_eq!(second.duplicates_superseded, 0);
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM consolidation_runs").await,
+            2
+        );
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM memories WHERE is_archived = 1").await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn keeper_keeps_lineage_and_repoints_evidence() {
+        let (storage, path) = cons_storage().await;
+        let ns = Namespace::Global;
+        let (c1, c2, observer) = (MemoryId::new(), MemoryId::new(), MemoryId::new());
+        let mut older = cons_note(c1, ns.clone(), "lineage note");
+        let mut newer = cons_note(c2, ns.clone(), "lineage note");
+        older.created_at = Utc::now() - chrono::Duration::days(2);
+        newer.created_at = Utc::now() - chrono::Duration::days(1);
+        storage.store_memory(&older).await.unwrap();
+        storage.store_memory(&newer).await.unwrap();
+        storage
+            .store_memory(&cons_note(observer, ns.clone(), "observer note"))
+            .await
+            .unwrap();
+
+        // The NEWER row owns the lineage; lineage precedence must beat age.
+        cons_execute(
+            &path,
+            &format!(
+                "INSERT INTO memory_provenance (memory_id, source_kind, source_memory_id, source_role, observed_at, evidence_quote) VALUES ('{}', 'turn', '{}', 'assistant', datetime('now'), 'q')",
+                observer, c2
+            ),
+        )
+        .await;
+        cons_execute(
+            &path,
+            &format!(
+                "INSERT INTO memory_evidence (memory_id, source_memory_id, evidence_quote, observed_at) VALUES ('{}', '{}', 'quote', datetime('now'))",
+                observer, c2
+            ),
+        )
+        .await;
+
+        let report = storage
+            .consolidate_exact_duplicates(false, None)
+            .await
+            .unwrap();
+        assert_eq!(report.duplicates_superseded, 1);
+        assert_eq!(report.keepers, vec![c2.to_string()]);
+        let superseded_by = {
+            let database = libsql::Builder::new_local(&path).build().await.unwrap();
+            let connection = database.connect().unwrap();
+            let mut rows = connection
+                .query(
+                    "SELECT superseded_by FROM memories WHERE is_archived = 1",
+                    (),
+                )
+                .await
+                .unwrap();
+            rows.next()
+                .await
+                .unwrap()
+                .unwrap()
+                .get::<String>(0)
+                .unwrap()
+        };
+        assert_eq!(superseded_by, c2.to_string());
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                &format!(
+                    "SELECT COUNT(*) FROM memory_provenance WHERE source_memory_id = '{}'",
+                    c1
+                )
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                &format!(
+                    "SELECT COUNT(*) FROM memory_evidence WHERE source_memory_id = '{}'",
+                    c1
+                )
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                &format!(
+                    "SELECT COUNT(*) FROM memory_evidence WHERE source_memory_id = '{}'",
+                    c2
+                )
+            )
+            .await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_edges_collapse_and_edges_never_touch_superseded() {
+        let (storage, path) = cons_storage().await;
+        let ns = Namespace::Global;
+        let (a, b, c) = (MemoryId::new(), MemoryId::new(), MemoryId::new());
+        storage
+            .store_memory(&cons_note(c, ns.clone(), "edge target"))
+            .await
+            .unwrap();
+        let mut older = cons_note(a, ns.clone(), "edge note");
+        let mut dupe = cons_note(b, ns.clone(), "edge note");
+        older.created_at = Utc::now() - chrono::Duration::days(1);
+        dupe.created_at = Utc::now();
+        older.links = vec![
+            cons_link(c, LinkType::References, 0.25),
+            cons_link(c, LinkType::Extends, 0.9),
+        ];
+        dupe.links = vec![cons_link(c, LinkType::References, 0.75)];
+        storage.store_memory(&older).await.unwrap();
+        storage.store_memory(&dupe).await.unwrap();
+        // Self-loop on the duplicate (raw insert: the store API skips these).
+        cons_execute(
+            &path,
+            &format!(
+                "INSERT INTO memory_links (source_id, target_id, link_type, strength, reason, created_at) VALUES ('{}', '{}', 'references', 0.5, 'test', datetime('now'))",
+                b, b
+            ),
+        )
+        .await;
+
+        let report = storage
+            .consolidate_exact_duplicates(false, None)
+            .await
+            .unwrap();
+        assert_eq!(report.keepers, vec![a.to_string()]);
+        assert_eq!(report.edges_repointed, 0);
+        assert_eq!(report.edges_tombstoned, 3);
+
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                &format!(
+                    "SELECT COUNT(*) FROM memory_links WHERE source_id = '{}' AND target_id = '{}' AND link_type = 'references' AND strength = 0.75",
+                    a, c
+                )
+            )
+            .await,
+            1
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM memory_links WHERE source_id = target_id"
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM memory_links WHERE source_id IN (SELECT id FROM memories WHERE is_archived = 1) OR target_id IN (SELECT id FROM memories WHERE is_archived = 1)"
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                &format!(
+                    "SELECT COUNT(*) FROM memory_links WHERE source_id = '{}' AND target_id = '{}' AND link_type = 'extends' AND strength BETWEEN 0.89 AND 0.91",
+                    a, c
+                )
+            )
+            .await,
+            1
+        );
+        // One active edge per (source, target, type): no UNIQUE collisions.
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM (SELECT source_id, target_id, link_type FROM memory_links GROUP BY source_id, target_id, link_type HAVING COUNT(*) > 1)"
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(
+                &path,
+                "SELECT COUNT(*) FROM consolidation_tombstones WHERE reason IN ('parallel_edge_merged', 'merged_duplicate_edge')"
+            )
+            .await,
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_run_leaves_no_writes() {
+        let (storage, path) = cons_storage().await;
+        let ns = Namespace::Global;
+        for content in ["pair one", "pair two"] {
+            storage
+                .store_memory(&cons_note(MemoryId::new(), ns.clone(), content))
+                .await
+                .unwrap();
+            storage
+                .store_memory(&cons_note(MemoryId::new(), ns.clone(), content))
+                .await
+                .unwrap();
+        }
+        let error = storage
+            .consolidate_failing_after_dupes(1)
+            .await
+            .expect_err("injected failure must abort the run");
+        assert!(error.to_string().contains("injected consolidation failure"));
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM memories WHERE is_archived = 1").await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM consolidation_runs").await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM consolidation_tombstones").await,
+            0
+        );
+        assert_eq!(
+            cons_scalar_i64(&path, "SELECT COUNT(*) FROM memories WHERE is_archived = 0").await,
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn checkpoint_wal_succeeds_on_local_database() {
+        let (storage, _path) = cons_storage().await;
+        assert!(storage.checkpoint_wal().await.unwrap());
     }
 }
