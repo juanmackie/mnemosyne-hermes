@@ -25,6 +25,15 @@ quality steady at 0.9815 heldout MRR, #27).
 
 ## Still open (latency)
 
+- **Bench `results_hash` is not comparable across runs**: the bench builds a
+  fresh store with `MemoryId::new()` (random UUIDv4) each run, so the
+  id-based hash changes every rebuild regardless of ranking. Guard is only
+  meaningful within one store. Fixing (content-derived v5 ids) would touch
+  the pinned fixture seed = off-limits; documented instead. The 10k
+  "nondeterminism" observed 2026-09-09 was mostly this, masking (and being
+  masked by) the real per-store PPR frontier ordering, which is now sorted
+  deterministic (#33).
+
 - **PPR nondeterminism (pre-existing, opt-in channel):** at scale the
   `fetch_ppr_adjacency` frontier is a `HashSet` (`next_frontier.into_iter()`)
   and the node/edge budgets (200/400) truncate in traversal order, so PPR

@@ -4438,7 +4438,13 @@ impl LibsqlStorage {
                     }
                 }
             }
-            frontier = next_frontier.into_iter().collect();
+            // Sort the frontier: HashSet iteration order is randomized per
+            // process, and with the node/edge budgets active, traversal order
+            // decides which edges survive truncation. Sorting keeps the PPR
+            // subgraph (and thus ranking) deterministic across runs.
+            let mut next_sorted: Vec<String> = next_frontier.into_iter().collect();
+            next_sorted.sort();
+            frontier = next_sorted;
         }
 
         // Optional namespace guard over visited nodes.
