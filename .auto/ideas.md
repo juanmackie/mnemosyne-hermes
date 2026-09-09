@@ -166,3 +166,27 @@ format-clean file when practical, and hoist `.await` out of `assert!` argument p
   scoreboard needs `AUTO_MEASURE=./.auto/measure_mem.sh
   AUTO_PRIMARY=membench_heldout_score`. Running bare run.sh measures the realquery
   guards and logs PRIMARY n/a.
+
+## Scoreboard / harness findings (membench, 2026-09-11)
+
+- graph_linked gold rows lexical-match their anchor via FTS5 stemming
+  (e.g. query "who keeps ... running?" vs gold "kept alive ...") so the
+  class measures lexical recall, never graph traversal. Edges are
+  irrelevant to its score. Fix: gold labels must be vocabulary-disjoint
+  from the query (same discipline as the hub-filler rule added run #39)
+  so the gold can only arrive via the graph lane. Deferred — requires
+  rewriting 8 gold phrases and re-generating the DBs.
+- The primary metric averaged a hardcoded 5-class tuple so graph_linked,
+  reference_docs and constraint_lookup were scored and printed but never
+  entered the aggregate; the primary was blind to the two weakest classes.
+  Fixed (evaluate_membench.py): overall = mean of all observed classes,
+  CATEGORIES kept as a floor. Definition change: 0.9133 -> 0.8448, not
+  comparable to the old number.
+- Six queries per split asked --scope reference about rows not tagged
+  reference_only, so their lane excluded the gold; moved to
+  constraint_lookup (unscoped). Validator now asserts the lane invariant
+  both directions.
+- Fixture edges were written single-direction by add_links; every
+  production writer uses add_bidirectional_links (4 call sites).
+  Fixed: add_links now mirrors production (both directions), with the
+  same strict INSERT so a rejected type still fails the rebuild.

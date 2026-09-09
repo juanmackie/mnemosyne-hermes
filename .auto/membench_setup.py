@@ -46,22 +46,36 @@ def resolve(target: str, content_to_id: dict[str, str], owner: str) -> str:
 
 
 def add_links(conn, rows, content_to_id: dict[str, str]) -> dict[str, int]:
-    """Store the corpus-declared graph edges. Returns requested counts by type."""
+    """Store the corpus-declared graph edges the way the server stores edges.
+
+    Every write path in storage goes through `add_bidirectional_links`
+    (libsql.rs:5735, 7516, 8390, 8826), which inserts each edge in both directions
+    under the same type, so recall can expand from either endpoint. The fixture
+    used to insert one direction — a shape no production writer can produce — and
+    the graph_linked class then measured an edge the reader was never going to
+    follow: the anchor ranked first and its neighbour was absent from the results
+    at every setting. Returns inserted counts by type.
+    """
     wanted: dict[str, int] = {}
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for row in rows:
         source = content_to_id[row["content"]]
         for link in row.get("links", []):
             link_type = link["type"]
-            # created_at is written explicitly: the column DEFAULT is
-            # CURRENT_TIMESTAMP, whose "YYYY-MM-DD HH:MM:SS" form the Rust reader
-            # rejects, and a rejected link timestamp fails the whole recall.
-            conn.execute(
-                "INSERT INTO memory_links (source_id, target_id, link_type, strength,"
-                " reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (source, resolve(link["to"], content_to_id, row["content"]), link_type,
-                 float(link.get("strength", 1.0)), "membench fixture", stamp))
-            wanted[link_type] = wanted.get(link_type, 0) + 1
+            target = resolve(link["to"], content_to_id, row["content"])
+            strength = float(link.get("strength", 1.0))
+            # The writer skips self-links; a strict insert would collide on them.
+            for a, b in ((source, target), (target, source)):
+                if a == b:
+                    continue
+                # created_at is written explicitly: the column DEFAULT is
+                # CURRENT_TIMESTAMP, whose "YYYY-MM-DD HH:MM:SS" form the Rust
+                # reader rejects, and a rejected link timestamp fails the recall.
+                conn.execute(
+                    "INSERT INTO memory_links (source_id, target_id, link_type, strength,"
+                    " reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, link_type, strength, "membench fixture", stamp))
+                wanted[link_type] = wanted.get(link_type, 0) + 1
     return wanted
 
 
