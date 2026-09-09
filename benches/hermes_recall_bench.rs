@@ -282,9 +282,18 @@ async fn main() {
     let repeats = env_usize("BENCH_REPEATS", 2);
 
     let built = Instant::now();
-    let mut store = LibsqlStorage::new_with_validation(ConnectionMode::InMemory, true)
-        .await
-        .expect("failed to open in-memory store");
+    // File-backed (like production Hermes), so WAL + synchronous=NORMAL apply
+    // and commit cost is representative; the in-memory mode's journal showed
+    // 100-330ms commit spikes that dominated ingest_ms without mirroring any
+    // production write path.
+    let db_path = std::env::temp_dir().join(format!("mnemosyne_bench_{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db_path);
+    let mut store = LibsqlStorage::new_with_validation(
+        ConnectionMode::Local(db_path.display().to_string()),
+        true,
+    )
+    .await
+    .expect("failed to open bench store");
     let mut cfg = SearchConfig::default();
     // Keyless personal-agent path: no embedding service is registered, so the
     // vector channel is inert and keyword + graph + PPR carry the ranking.
@@ -451,4 +460,7 @@ async fn main() {
     for key in keys {
         println!("METRIC {}={:.4}", key, metrics[key]);
     }
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
 }
