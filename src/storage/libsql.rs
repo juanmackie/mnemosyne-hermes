@@ -1812,8 +1812,8 @@ impl LibsqlStorage {
                     // drifted databases can still open.
                     let _ = conn.execute("ROLLBACK", params![]).await;
                     let text = error.to_string();
-                    let drift_only = text.contains("duplicate column name")
-                        || text.contains("already exists");
+                    let drift_only =
+                        text.contains("duplicate column name") || text.contains("already exists");
                     if !drift_only {
                         return Err(MnemosyneError::Migration(format!(
                             "Failed to execute migration {}: {}\nSQL: {}",
@@ -1836,9 +1836,7 @@ impl LibsqlStorage {
                                 let _ = conn.execute("ROLLBACK", params![]).await;
                                 return Err(MnemosyneError::Migration(format!(
                                     "Failed to execute migration {}: {}\nSQL: {}",
-                                    migration_file,
-                                    error,
-                                    statement
+                                    migration_file, error, statement
                                 )));
                             }
                         }
@@ -3144,6 +3142,7 @@ impl LibsqlStorage {
                     )
                   )
               {archive_filter}
+              AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime(?))
             ORDER BY m.importance DESC, m.created_at DESC
             LIMIT {limit}
             "#,
@@ -3158,10 +3157,14 @@ impl LibsqlStorage {
                 as_of.to_rfc3339().into(),
                 as_of.to_rfc3339().into(),
                 as_of.timestamp().into(),
+                // Expiry is compared against the same instant as the point-in-time
+                // read, so a fact that expired after `as_of` is still visible then.
+                as_of.to_rfc3339().into(),
             ]
         } else {
             vec![
                 ns_json.clone().into(),
+                as_of.to_rfc3339().into(),
                 as_of.to_rfc3339().into(),
                 as_of.to_rfc3339().into(),
             ]

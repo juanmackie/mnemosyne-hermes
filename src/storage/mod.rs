@@ -19,6 +19,7 @@ pub mod vectors;
 pub mod test_utils;
 
 #[cfg(test)]
+pub mod libsql_asof_tests;
 pub mod libsql_workitem_tests;
 
 use crate::agents::access_control::{ModificationLog, ModificationType};
