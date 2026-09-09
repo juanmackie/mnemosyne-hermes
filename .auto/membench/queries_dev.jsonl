@@ -5,9 +5,9 @@
 {"query": "review this pull request and explain the deadlock in the retry loop", "category": "always_on", "relevant": ["short bullet lists"]}
 {"query": "is it reasonable to send the vendor a follow-up at 21:00 my time?", "category": "always_on", "relevant": ["offline after 18:00 IST"]}
 {"query": "someone reported a possible key leak in the acquirer webhook handler, what do I do first", "category": "always_on", "relevant": ["incident-leads@nimbus.example"]}
-{"query": "which kubernetes version are we pinned to and what blocks the upgrade", "category": "reference_docs", "relevant": ["pinned to Kubernetes 1.27"], "distractor": ["Kubernetes reference"], "scope": "reference"}
-{"query": "why is our cluster still on an old kubernetes release?", "category": "reference_docs", "relevant": ["vendor node agent is removed"], "distractor": ["Kubernetes reference"], "scope": "reference"}
-{"query": "can we run the settlement worker on a StatefulSet?", "category": "reference_docs", "relevant": ["settlement worker is pinned"], "distractor": ["StatefulSet keeps stable network"], "scope": "reference"}
+{"query": "which kubernetes version are we pinned to and what blocks the upgrade", "category": "constraint_lookup", "relevant": ["pinned to Kubernetes 1.27"], "distractor": ["Kubernetes reference"]}
+{"query": "why is our cluster still on an old kubernetes release?", "category": "constraint_lookup", "relevant": ["vendor node agent is removed"], "distractor": ["Kubernetes reference"]}
+{"query": "can we run the settlement worker on a StatefulSet?", "category": "constraint_lookup", "relevant": ["settlement worker is pinned"], "distractor": ["StatefulSet keeps stable network"]}
 {"query": "who is on call for payments right now?", "category": "expired_facts", "relevant": ["primary on-call engineer for Nimbus Payments"], "distractor": ["covering the night pager rotation"]}
 {"query": "where do I file a health claim?", "category": "expired_facts", "relevant": ["BenefitOS portal"], "distractor": ["dentist appointment"]}
 {"query": "what is my on-call responsibility this week?", "category": "expired_facts", "relevant": ["primary on-call engineer"], "distractor": ["night pager rotation"]}

@@ -5,9 +5,9 @@
 {"query": "write a polite email chasing the unpaid invoice from the imaging vendor", "category": "always_on", "relevant": ["more than three items should come back to me as a table"]}
 {"query": "can I ping the analytics engineer about the failed join at 07:30?", "category": "always_on", "relevant": ["unreachable by message before 08:00"]}
 {"query": "summarise this ward's readmission list for the weekly review", "category": "always_on", "relevant": ["Never copy patient identifiers"]}
-{"query": "why did some observations never make it into the warehouse?", "category": "reference_docs", "relevant": ["Observation bundles over 1 MB"], "distractor": ["large payloads should be paginated with bundles"], "scope": "reference"}
-{"query": "what is the limit on the payload size for our ingest path?", "category": "reference_docs", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["Transaction interaction posts a bundle"], "scope": "reference"}
-{"query": "can the ingest accept a big admission message in one go?", "category": "reference_docs", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["ADT A01 event signals a patient admission"], "scope": "reference"}
+{"query": "why did some observations never make it into the warehouse?", "category": "constraint_lookup", "relevant": ["Observation bundles over 1 MB"], "distractor": ["large payloads should be paginated with bundles"]}
+{"query": "what is the limit on the payload size for our ingest path?", "category": "constraint_lookup", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["Transaction interaction posts a bundle"]}
+{"query": "can the ingest accept a big admission message in one go?", "category": "constraint_lookup", "relevant": ["load balancer body limit is 1 MB"], "distractor": ["ADT A01 event signals a patient admission"]}
 {"query": "who covers the out-of-hours data phone today?", "category": "expired_facts", "relevant": ["clinical data steward for Fernwood Health"], "distractor": ["out-of-hours data duty phone"]}
 {"query": "where do I find my vaccination certificate?", "category": "expired_facts", "relevant": ["MediTrust portal"], "distractor": ["locum cover at the Estarreja clinic"]}
 {"query": "what clinical data role do I hold at Fernwood?", "category": "expired_facts", "relevant": ["clinical data steward"], "distractor": ["locum cover at the Estarreja clinic"]}

@@ -10,7 +10,7 @@ Per-category score (0..1, higher is better):
   expired_facts         MRR of the durable fact when an expired rival shares the topic
   multihop_derived      coverage@k of ALL hops an answer needs (joint retrieval)
 
-membench_score = mean of the five category scores, so one weak family cannot be
+membench_score = mean of the per-class scores, so one weak family cannot be
 hidden by a strong one. Distractor ranks are reported as diagnostics: they are
 how a fix can look like a win on the target while quietly promoting stale,
 expired or reference-only content.
@@ -182,7 +182,15 @@ def main() -> int:
     for name in CATEGORIES:
         category_scores.setdefault(name, 0.0)
 
-    overall = statistics.mean(category_scores[name] for name in CATEGORIES)
+    # Equal weight per class, so one weak family cannot be drowned out by a large
+    # strong one. The class list comes from the data, not from a frozen tuple: when
+    # graph_linked and reference_docs were added they were scored, printed, and then
+    # left out of the aggregate, so the primary ignored the two weakest classes and
+    # could not register any progress on them. CATEGORIES stays as a floor - a class
+    # that disappears still scores 0.0 rather than quietly raising the mean.
+    overall = statistics.mean(
+        category_scores[name] for name in sorted(set(category_scores) | set(CATEGORIES))
+    )
     base = args.prefix
     print(f"METRIC {base}_score={overall:.6f}")
     for name, value in sorted(category_scores.items()):

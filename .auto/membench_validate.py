@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Validate membench labels before they are scored.
 
-A scoreboard can only rank as well as its labels. Two failure modes were seen
-in this session: a filler row that happened to contain a gold phrase, and a
-gold phrase that matched several rows, so a "miss" said nothing about retrieval.
-This script asserts the labels identify exactly what they claim to, and reports
-the queries whose labels are too weak to measure anything.
+A scoreboard can only rank as well as its labels. Three failure modes were seen
+in this session: a filler row that happened to contain a gold phrase, a gold
+phrase that matched several rows, and a query scoped to one lane whose gold row
+lives in the other — so a "miss" said nothing about retrieval. This script
+asserts the labels identify exactly what they claim to, and reports the queries
+whose labels are too weak to measure anything.
 
 Usage:
   python3 .auto/membench_validate.py --corpus .auto/membench/corpus_heldout.jsonl \
@@ -62,6 +63,25 @@ def main() -> int:
                 )
         if item.get("scope") not in (None, "memory", "reference", "all"):
             errors.append(f"{label}: unknown scope {item['scope']!r}")
+        # A scoped query can only be answered from its own lane: `--scope reference`
+        # keeps rows carrying the reference_only marker and drops the rest (and the
+        # default `memory` scope does the mirror image). A gold row outside the lane
+        # it is queried in is unreachable at any setting, so the query measures
+        # nothing and reports a retrieval miss for a fixture mistake.
+        scope = item.get("scope") or "memory"
+        if scope in ("memory", "reference"):
+            for gold in golds:
+                for row in corpus:
+                    if gold.lower() not in row["content"].lower():
+                        continue
+                    tags = [t.strip() for t in str(row.get("tags") or "").split(",")]
+                    documented = "reference_only" in tags
+                    if documented != (scope == "reference"):
+                        errors.append(
+                            f"{label}: gold {gold!r} is "
+                            f"{'not ' if not documented else ''}tagged reference_only but is "
+                            f"queried with scope {scope!r}, so its lane excludes it"
+                        )
         for distractor in item.get("distractor") or []:
             if not any(distractor.lower() in c.lower() for c in contents):
                 errors.append(f"{label}: distractor {distractor!r} matches no row")
