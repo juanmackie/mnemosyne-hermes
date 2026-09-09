@@ -99,3 +99,35 @@ quality steady at 0.9815 heldout MRR, #27).
   further SQL micro-optimization is not justified by quiet-state attribution.
 - Deliberately left for explicit re-scope: widen/backfill `memory_links.link_type`
   (ranking/data-loss issue) and high-scale PPR dense-array work (PPR is opt-in).
+
+
+## Memstack port session (2026-09-09, branch feat/memstack-ports)
+
+Scoreboard: `.auto/memstack/` -> `membench_heldout_score`, baseline 0.5867 (serial),
+now 0.6417-0.6517. Frozen guards held at 0.981481 / 0.962963 / 1.0 throughout.
+
+Measured / learned (do not re-derive):
+- Harness: `--workers > 1` makes the local-encoder eval non-reproducible (+-0.02 on
+  identical code). Serial eval is exact. Rebuilding a membench DB re-randomises
+  MemoryIds and moves the score ~0.01 (graph tie-breaking) - compare only within a
+  DB generation; run.sh reports a 0.5% noise floor.
+- always_on class moved 0.133 -> 0.458 = the exact 3-slot ceiling: standing facts
+  cannot be retrieved semantically, they need a side channel (a69d97d).
+- Excluding `memory_type = reference` from recall costs 0.09 held-out MRR: that type
+  covers personal reference facts. The documentation marker is the `reference_only`
+  tag (811fd7f lesson).
+- expires_at was already enforced on all four recall lanes; the only leak was the
+  point-in-time path, which compared nothing (c41b699).
+- reference_noise / expired_facts held-out failures are NOT enforcement or crowding
+  bugs: the target row is in the FTS pool and loses on ranking, or the gold label is
+  weak. Do not chase these 3-query classes with score tweaks (session-1 pattern).
+
+Still open:
+- task-5 AND/OR metadata filter DSL + explicit searchMode, pushed into SQL.
+- task-4 remainder: consolidation-side auto-forget (archive rows past expiry instead
+  of only hiding them).
+- task-1 typed UPDATES/EXTENDS/DERIVES edges + indexed is_latest (replaces the 0.35
+  supersession nudge). Needed before any DERIVES inference (task-6).
+- Scoreboard value: the 5 classes x 3 queries are too coarse for ranking work. To
+  validate ranking changes, grow each class to >=10 queries first.
+- `mnemosyne kb search` as a named verb (today: `recall --scope reference`).

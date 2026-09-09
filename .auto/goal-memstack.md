@@ -90,8 +90,8 @@ LLM or API key.
 | task-0 | Branch + scoreboard: `.auto/membench` corpus, dev/held-out queries, `measure_mem.sh`, baseline, `log-memstack.jsonl` | **done** (a30e30f; held-out baseline 0.5842, guards reproduce session-2: 0.981481/0.962963/1.0, warm p95 19.1ms) |
 | task-1 | Typed `UPDATES`/`EXTENDS`/`DERIVES` edges + indexed `is_latest` preferred by retrieval (replaces the 0.35 supersession nudge) | pending |
 | task-2 | Always-on profile: deterministic auto-maintained static+dynamic fact sheet per namespace, returned with recall | **done** (a69d97d; always-on 0.133->0.458 = the 3-slot ceiling, held-out 0.5842->0.6383, guards bit-identical, warm p95 20.0ms; static/dynamic *split* deferred — recency slots added no value yet) |
-| task-3 | Ingest split: reference ("superrag") content searchable but never a memory, profile fact or graph edge | pending |
-| task-4 | Enforced temporal validity / auto-forgetting at recall + consolidation (`expires_at` set at ingest, not honoured) | pending |
+| task-3 | Ingest split: reference ("superrag") content searchable but never a memory, profile fact or graph edge | **done** (811fd7f + 830bd2e; `RecallScope` lane on both surfaces + `remember --reference`; keyed on a `reference_only` tag, NOT on memory_type=reference — that cost 0.09 MRR. Scoreboard-neutral: the 3-query class fails on causal ranking, not crowding) |
+| task-4 | Enforced temporal validity / auto-forgetting at recall + consolidation (`expires_at` set at ingest, not honoured) | **partly done** (c41b699: expiry was already enforced on every recall lane; the real gap was the point-in-time path, now bound to `as_of`. Remaining: consolidation-side auto-forget/archival) |
 | task-5 | Deterministic AND/OR metadata filter DSL + explicit `searchMode`, pushed into SQL | pending |
 | task-6 | DERIVES inference pass in consolidation, with provenance + confidence, dedup-guarded | pending |
 | task-7 | Dreaming as coherent-unit batching, default-off flag | pending |
