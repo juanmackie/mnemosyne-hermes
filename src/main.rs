@@ -229,6 +229,13 @@ enum Commands {
         /// Useful for personal agents doing bulk imports.
         #[arg(long, default_value_t = false)]
         no_enrich: bool,
+
+        /// Store as reference material (docs, manuals, API specs): searchable with
+        /// `recall --scope reference`, excluded from ordinary memory recall.
+        /// Distinct from `--type reference`, which is for personal reference facts
+        /// the agent should keep recalling.
+        #[arg(long, default_value_t = false)]
+        reference: bool,
     },
 
     /// Recall memories (search and retrieve)
@@ -614,6 +621,7 @@ async fn main() -> Result<()> {
             memory_type,
             format,
             no_enrich,
+            reference,
         }) => {
             cli::remember::handle(
                 content,
@@ -625,6 +633,7 @@ async fn main() -> Result<()> {
                 format,
                 no_enrich,
                 cli.db_path.clone(),
+                reference,
             )
             .await
         }

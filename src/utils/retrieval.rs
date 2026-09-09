@@ -665,6 +665,17 @@ impl RecallScope {
     }
 }
 
+/// Put a note in the reference lane: it stays searchable through
+/// `recall --scope reference` and stops being recallable as a fact. The tag is the
+/// marker, not `memory_type = reference`, because personal reference facts
+/// ("the dotfiles repo lives at ...") carry that type and must stay recallable.
+pub fn mark_reference(memory: &mut MemoryNote) {
+    memory.memory_type = crate::types::MemoryType::Reference;
+    if !memory.tags.iter().any(|t| t == REFERENCE_ONLY_TAG) {
+        memory.tags.push(REFERENCE_ONLY_TAG.to_string());
+    }
+}
+
 pub fn estimate_result_tokens(results: &[SearchResult]) -> usize {
     results
         .iter()
@@ -887,6 +898,29 @@ mod tests {
                     "Dotfiles repo lives at gitlab.com/arivera/dotfiles.",
                     crate::types::MemoryType::Reference,
                 )])
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn mark_reference_moves_the_note_without_losing_its_other_tags() {
+        let mut memory = note("HL7 reference: an ADT A01 event marks admission.");
+        memory.tags = vec!["hl7".to_string()];
+        mark_reference(&mut memory);
+        mark_reference(&mut memory); // idempotent
+        assert_eq!(
+            memory.tags,
+            vec!["hl7".to_string(), REFERENCE_ONLY_TAG.to_string()]
+        );
+        assert_eq!(memory.memory_type, crate::types::MemoryType::Reference);
+        assert_eq!(
+            RecallScope::Memory
+                .apply(vec![SearchResult {
+                    memory: memory.clone(),
+                    score: 0.9,
+                    match_reason: "test".to_string(),
+                }])
                 .len(),
             0
         );

@@ -23,6 +23,7 @@ pub async fn handle(
     format: String,
     no_enrich: bool,
     global_db_path: Option<String>,
+    reference: bool,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
 
@@ -186,6 +187,14 @@ pub async fn handle(
             .filter(|s| !s.is_empty())
             .collect();
         memory.tags.extend(custom_tags);
+    }
+
+    // Reference lane: documentation stays searchable through
+    // `recall --scope reference` but is never recalled as a fact about the user
+    // or project. Explicit flag, because `--type reference` alone means a personal
+    // reference fact, which the agent should keep recalling.
+    if reference {
+        mnemosyne_core::utils::retrieval::mark_reference(&mut memory);
     }
 
     // Generate embedding. The remote (Voyage) provider is used ONLY when an
