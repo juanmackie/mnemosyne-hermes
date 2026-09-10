@@ -163,6 +163,24 @@ mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db --namespace agent:
 ./scripts/install/uninstall.sh --purge
 ```
 
+### Set up with your agent (copy-paste)
+
+Paste this to Claude Code, Cursor, Codex, Windsurf, or any agent:
+
+```text
+Set up Mnemosyne local memory on this machine. Fetch the official agent
+runbook and follow it exactly, step by step:
+
+  curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/docs/AGENT_SETUP.md
+
+Verify each step's check before the next. Never overwrite existing config
+or data. No API keys required — if one seems needed, stop. Finish with a
+pass/fail checklist (step, pass/fail, one-line evidence).
+```
+
+The agent reads `docs/AGENT_SETUP.md`, runs install → DB → health check →
+smoke test → MCP wiring, and reports back.
+
 ### Basic Usage
 
 **Store memories**:
