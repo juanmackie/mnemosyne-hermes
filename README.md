@@ -49,6 +49,7 @@ with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configur
 - **Hierarchical Topic Tree** *(OpenViking-inspired)*: memories organized into directories with L0 abstracts / L1 overviews / L2 full content; directory-recursive retrieval with score propagation, retrieval trajectories, and token-budgeted context assembly — see [docs/HIERARCHICAL_MEMORY.md](docs/HIERARCHICAL_MEMORY.md)
 - **Outcome-Aware Reasoning Memory** *(ReasoningBank-inspired)*: distills observable successful-task strategies and failure guardrails with verifier-supplied outcomes, provenance-bound evidence, sparse retrieval, and no hidden chain-of-thought storage — see [docs/REASONING_MEMORY.md](docs/REASONING_MEMORY.md)
 - **Project-context Bootstrap**: a shared, read-only CLI/MCP assembly path for bounded project constraints, facts, reasoning guardrails, policies, skills, provenance, and explicit abstentions — see [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)
+- **Static + Dynamic Profile** *(supermemory-inspired)*: recall carries a standing always-on profile (identity, preferences — no query is close to them) plus a recency-ordered dynamic slice of what the agent is actively working on; both ride beside — never inside — the ranked results
 
 ### Multi-Agent Orchestration
 - **Ractor Actors**: 4 specialized agents (Orchestrator, Optimizer, Reviewer, Executor)

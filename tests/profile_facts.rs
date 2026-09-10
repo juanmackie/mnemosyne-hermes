@@ -241,3 +241,148 @@ async fn profile_is_stable_across_calls() {
         .collect();
     assert_eq!(first, second, "ordering is total; ties must not jitter");
 }
+
+// -------------------------------------------------------------------------
+// Dynamic profile (``StorageBackend::dynamic_profile`): the recent-focus
+// counterpart to the standing profile — “what the agent is working on right
+// now” (supermemory's static vs dynamic split), not identity. Recency-ordered,
+// important, and explicitly disjoint from the always-on / docs channels.
+// -------------------------------------------------------------------------
+
+fn at(days_ago: i64) -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now() - chrono::Duration::days(days_ago)
+}
+
+#[tokio::test]
+async fn dynamic_profile_surfaces_recent_focus_and_excludes_other_channels() {
+    let mut recent = note(
+        "Migrating the auth store to LibSQL.",
+        MemoryType::Insight,
+        8,
+        vec!["work"],
+    );
+    recent.updated_at = at(0);
+    let mut older = note(
+        "Planning the recall-latency benchmark.",
+        MemoryType::Insight,
+        9,
+        vec!["work"],
+    );
+    older.updated_at = at(10);
+
+    let mut low = note(
+        "Mentioned a random tool once.",
+        MemoryType::Insight,
+        5,
+        vec![],
+    );
+    low.updated_at = at(0);
+    let mut standing = note(
+        "Call me Marco, not Dr. Feld.",
+        MemoryType::Entity,
+        9,
+        vec!["identity", "always_on"],
+    );
+    standing.updated_at = at(0);
+    let mut docs = note(
+        "Vendor API reference for the payments SDK.",
+        MemoryType::Reference,
+        9,
+        vec!["reference_only"],
+    );
+    docs.updated_at = at(0);
+
+    let storage = storage_with(&[older.clone(), recent.clone(), low, standing.clone(), docs]).await;
+
+    let dynamic = storage
+        .dynamic_profile(Some(ns()), 3)
+        .await
+        .expect("dynamic profile");
+    let ids: Vec<String> = dynamic.iter().map(|f| f.memory.id.to_string()).collect();
+    assert_eq!(
+        ids,
+        vec![recent.id.to_string(), older.id.to_string()],
+        "recent important focus leads, then older focus; below-threshold, \
+         always_on (static) and reference_only (docs) rows must never appear"
+    );
+    assert!(
+        dynamic.iter().all(|f| f.match_reason == "dynamic_profile"),
+        "dynamic entries must be attributable as such"
+    );
+
+    // The always_on row is offered on the static channel instead — never both.
+    let static_facts = storage
+        .profile_facts(Some(ns()), 3)
+        .await
+        .expect("profile facts");
+    assert!(
+        static_facts.iter().any(|f| f.memory.id == standing.id),
+        "the marked identity row belongs to the static profile"
+    );
+    assert!(
+        !dynamic.iter().any(|f| f.memory.id == standing.id),
+        "and must not be double-delivered by the dynamic slice"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_profile_respects_slots_expiry_archival_and_namespace() {
+    let mut live = note(
+        "Refactoring the event-log quorum.",
+        MemoryType::Insight,
+        8,
+        vec!["work"],
+    );
+    live.updated_at = at(0);
+    let mut expired = note(
+        "On-call incident from last week.",
+        MemoryType::Insight,
+        10,
+        vec![],
+    );
+    expired.updated_at = at(0);
+    expired.expires_at = Some(at(2));
+    let mut archived = note("Old abandoned spike.", MemoryType::Insight, 10, vec![]);
+    archived.updated_at = at(0);
+    archived.is_archived = true;
+    let mut superseded = note(
+        "The PCM approach we dropped.",
+        MemoryType::Insight,
+        10,
+        vec![],
+    );
+    superseded.updated_at = at(0);
+    superseded.superseded_by = Some(live.id.clone());
+    let mut foreign = note("Elsewhere's active focus.", MemoryType::Insight, 10, vec![]);
+    foreign.updated_at = at(0);
+    foreign.namespace = Namespace::Project {
+        name: "elsewhere".to_string(),
+    };
+
+    let storage = storage_with(&[live.clone(), expired, archived, superseded, foreign]).await;
+
+    let dynamic = storage
+        .dynamic_profile(Some(ns()), 2)
+        .await
+        .expect("dynamic profile");
+    assert_eq!(
+        dynamic
+            .iter()
+            .map(|f| f.memory.id.to_string())
+            .collect::<Vec<_>>(),
+        vec![live.id.to_string()],
+        "only the live row qualifies once expired/archived/superseded/foreign are walled off"
+    );
+
+    assert!(
+        storage
+            .dynamic_profile(Some(ns()), 0)
+            .await
+            .expect("zero slots")
+            .is_empty(),
+        "zero slots must disable the channel"
+    );
+    // Unscoped calls still work and must not lose the live row.
+    let all = storage.dynamic_profile(None, 3).await.expect("unscoped");
+    assert!(all.iter().any(|f| f.memory.id == live.id));
+}

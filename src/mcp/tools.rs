@@ -95,6 +95,12 @@ const DEFAULT_CONTENT_BUDGET: usize = 3500;
 /// be a token tax on every recall (and a trivial way to win the always-on class).
 const DEFAULT_PROFILE_SLOTS: usize = 3;
 
+/// Slots reserved for the dynamic profile slice in a recall response: recent,
+/// important memories that capture "what is being worked on right now", as
+/// distinct from standing identity. Kept small — it is a nudge beside the
+/// standing profile, not a second weaponized channel.
+const DEFAULT_DYNAMIC_SLOTS: usize = 3;
+
 #[derive(Debug, Clone, Copy)]
 struct PageInfo {
     offset: usize,
@@ -913,6 +919,16 @@ impl ToolHandler {
             .await
             .unwrap_or_default();
         let profile_count = profile_facts.len();
+        // Dynamic profile slice: recent important context the agent is actively
+        // working on (the counterpart to standing identity above). Borrowed from
+        // supermemory's static vs dynamic profile split; rides beside the static
+        // facts and never merges into the ranked lane.
+        let dynamic_facts = self
+            .storage
+            .dynamic_profile(namespace.clone(), DEFAULT_DYNAMIC_SLOTS)
+            .await
+            .unwrap_or_default();
+        let dynamic_count = dynamic_facts.len();
         // The old hand-rolled pipeline diverged from the CLI copy
         // (see src/cli/recall.rs and tests/recall_parity.rs).
         let ranked = crate::utils::retrieval::rank_recall(
@@ -1065,6 +1081,14 @@ impl ToolHandler {
                     fact.memory.id, fact.memory.summary
                 ));
             }
+            // Dynamic slice: recent current-focus context, after standing identity
+            // and before the ranked results.
+            for fact in &dynamic_facts {
+                lines.push(format!(
+                    "[now] {}\n  {}",
+                    fact.memory.id, fact.memory.summary
+                ));
+            }
             if abstained {
                 lines.push(format!(
                     "ABSTAINED (best_score={:.3} < threshold={:.3}): no confident results found",
@@ -1097,6 +1121,7 @@ impl ToolHandler {
                 "text": text_body,
                 "count": selected.len(),
                 "profile": crate::utils::retrieval::profile_payload(&profile_facts),
+                "dynamic_profile": crate::utils::retrieval::profile_payload(&dynamic_facts),
                 "abstained": abstained,
                 "best_score": selected.first().map(|r| r.score).unwrap_or(0.0),
                 "degraded": degraded,
@@ -1121,6 +1146,7 @@ impl ToolHandler {
             "capped": capped,
             "response_guidance": selected_policy,
             "profile": crate::utils::retrieval::profile_payload(&profile_facts),
+            "dynamic_profile": crate::utils::retrieval::profile_payload(&dynamic_facts),
             "channels": {
                 "factual": {
                     "quota": max_results,
@@ -1137,6 +1163,12 @@ impl ToolHandler {
                 "profile": {
                     "quota": DEFAULT_PROFILE_SLOTS,
                     "count": profile_count,
+                    "abstained": false,
+                    "abstention_reason": None::<&str>
+                },
+                "dynamic_profile": {
+                    "quota": DEFAULT_DYNAMIC_SLOTS,
+                    "count": dynamic_count,
                     "abstained": false,
                     "abstention_reason": None::<&str>
                 }

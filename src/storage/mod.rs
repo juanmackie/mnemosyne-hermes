@@ -200,6 +200,27 @@ pub trait StorageBackend: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Dynamic profile: recent, still-relevant context that does *not* belong
+    /// in the standing profile (supermemory's static vs dynamic split). Where
+    /// `profile_facts` is identity that no query is close to, the dynamic slice
+    /// is "what the agent is working on right now" — recently-updated,
+    /// important memories that are current focus rather than stable preference.
+    ///
+    /// Rows that belong to the static channel (`always_on`), bulk documentation
+    /// (`reference_only`) and turn-sync noise are excluded; superseded, expired
+    /// and archived rows never qualify. Ordering is recency, not relevance —
+    /// there is no query to rank against, and a stable recent prefix matters
+    /// more than a similarity guess. `slots` is a hard per-call cap (no token
+    /// budget: unlike `always_on` this is not a promise, just a nudge).
+
+    async fn dynamic_profile(
+        &self,
+        _namespace: Option<Namespace>,
+        _slots: usize,
+    ) -> Result<Vec<SearchResult>> {
+        Ok(Vec::new())
+    }
+
     /// List approved project constraints for the bounded bootstrap path.
     /// Alternate backends can return an empty list until they support the
     /// durable constraint-proposal table.

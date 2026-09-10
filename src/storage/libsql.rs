@@ -9839,6 +9839,64 @@ impl StorageBackend for LibsqlStorage {
         Ok(facts)
     }
 
+    /// Dynamic profile — see `StorageBackend::dynamic_profile`.
+    ///
+    /// Recency-ordered slice of current focus: recently-updated important
+    /// memories that are explicitly *not* standing identity (no `always_on`) and
+    /// not bulk docs (no `reference_only`). Same knowledge/turn-sync gate as the
+    /// recall lanes, same expiry/supersede/archive wall as `profile_facts`, and
+    /// a hard item cap instead of a token budget: the dynamic slice is a nudge,
+    /// not a promise.
+    async fn dynamic_profile(
+        &self,
+        namespace: Option<Namespace>,
+        slots: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if slots == 0 {
+            return Ok(Vec::new());
+        }
+        const MAX_ITEMS: usize = 8;
+        const MIN_IMPORTANCE: i64 = 6;
+        let slots = slots.min(MAX_ITEMS);
+        let ns_filter = if namespace.is_some() {
+            " AND m.namespace = ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            r#"
+            SELECT {columns} FROM memories m
+            WHERE {knowledge}
+              AND m.is_archived = 0
+              AND m.superseded_by IS NULL
+              AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))
+              AND m.importance >= {MIN_IMPORTANCE}
+              AND m.tags NOT LIKE '%"always_on"%'
+              AND m.tags NOT LIKE '%"reference_only"%'
+              {ns_filter}
+            ORDER BY m.updated_at DESC, m.id ASC
+            LIMIT {slots}
+            "#,
+            columns = self.memory_columns("m"),
+            knowledge = self.knowledge_predicate("m"),
+        );
+        let params_vec: Vec<libsql::Value> = match &namespace {
+            Some(ns) => vec![serde_json::to_string(ns)?.into()],
+            None => Vec::new(),
+        };
+        let conn = self.get_conn()?;
+        let mut rows = conn.query(&sql, params_vec).await?;
+        let mut facts: Vec<SearchResult> = Vec::with_capacity(slots);
+        while let Some(row) = rows.next().await? {
+            facts.push(SearchResult {
+                memory: self.row_to_memory(&row).await?,
+                score: 1.0,
+                match_reason: "dynamic_profile".to_string(),
+            });
+        }
+        Ok(facts)
+    }
+
     async fn list_approved_constraints(
         &self,
         namespace: &Namespace,

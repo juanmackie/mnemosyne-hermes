@@ -165,6 +165,13 @@ pub async fn handle(
         .profile_facts(ns.clone(), 3)
         .await
         .unwrap_or_default();
+    // Dynamic profile slice: recent important context the agent is actively
+    // working on. Same static/dynamic split supermemory uses — byte-for-byte
+    // the same wire shape as the static facts, in its own field.
+    let dynamic_facts = storage
+        .dynamic_profile(ns.clone(), 3)
+        .await
+        .unwrap_or_default();
 
     // Intent analysis first: chit-chat skips retrieval entirely. This is the
     // CLI entry policy and it gates before any candidate work is spent.
@@ -314,6 +321,13 @@ pub async fn handle(
         }
         eprintln!();
     }
+    if format != "json" && !dynamic_facts.is_empty() {
+        eprintln!("Currently working on:");
+        for fact in &dynamic_facts {
+            eprintln!("  - {}", fact.memory.summary);
+        }
+        eprintln!();
+    }
     if format == "json" {
         let json_results: Vec<_> = results
             .iter()
@@ -372,6 +386,7 @@ pub async fn handle(
                 "legend": recall_legend(),
                 "results": json_results,
                 "profile": mnemosyne_core::utils::retrieval::profile_payload(&profile_facts),
+                "dynamic_profile": mnemosyne_core::utils::retrieval::profile_payload(&dynamic_facts),
                 "scope": scope.as_str(),
                 "shown": results.len(),
                 "candidates": recall_candidates,

@@ -190,3 +190,23 @@ format-clean file when practical, and hoist `.await` out of `assert!` argument p
   production writer uses add_bidirectional_links (4 call sites).
   Fixed: add_links now mirrors production (both directions), with the
   same strict INSERT so a rejected type still fails the rebuild.
+
+## Supermemory borrow — dynamic profile (2026-09-11 session)
+
+Implemented + merged-ready: `StorageBackend::dynamic_profile` — the recent-focus
+half of supermemory's static/dynamic profile split. Standing `profile_facts`
+(identity, always_on) was already there; what was missing was "what is the agent
+working on right now" (supermemory: dynamic profile = recent context and
+temporary states, ~50ms, rides every prompt). Dynamic slice = recency-ordered,
+importance >= 6, excluding always_on (static) / reference_only (docs) /
+turn_sync, hardened by the same expiry/supersede/archive/namespace wall as
+profile_facts. Wired additively: `dynamic_profile` field (CLI + MCP) and `[now]`
+compact lines; `profile` wire shape untouched. Tests: 2 new in
+tests/profile_facts.rs (+4 total there); lib 881 green.
+
+Open (not done, ranked): (1) task-1 UPDATES/EXTENDS/DERIVES edges + indexed
+is_latest — the repo's own next needle, supermemory's graph core; (2) task-6
+DERIVES inference (needs task-1); (3) write-side reinforcement (preferences
+strengthen with repetition / episodes decay — supermemory memory types); (4)
+entity grounding (entityContext) to stop extraction drift; (5) `mnemosyne kb
+search` as a named verb (today recall --scope reference).
