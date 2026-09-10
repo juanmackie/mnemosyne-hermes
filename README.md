@@ -44,7 +44,7 @@ with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configur
 - **Project-Aware**: Automatic namespace detection from git repositories and CLAUDE.md
 - **Semantic Search**: LibSQL vector embeddings + full-text search (FTS5) + graph connectivity
 - **Type System**: Insight, Architecture, Decision, Task, Reference memory types
-- **Graph Linking**: Automatic bidirectional relationship management
+- **Graph Linking**: Automatic bidirectional relationship management. Session extraction now also records typed `extends` edges when a later turn restates a stored fact — repetition builds graph structure instead of being silently dropped.
 - **Privacy-First**: Local-only storage with optional privacy-preserving evaluation
 - **Hierarchical Topic Tree** *(OpenViking-inspired)*: memories organized into directories with L0 abstracts / L1 overviews / L2 full content; directory-recursive retrieval with score propagation, retrieval trajectories, and token-budgeted context assembly — see [docs/HIERARCHICAL_MEMORY.md](docs/HIERARCHICAL_MEMORY.md)
 - **Outcome-Aware Reasoning Memory** *(ReasoningBank-inspired)*: distills observable successful-task strategies and failure guardrails with verifier-supplied outcomes, provenance-bound evidence, sparse retrieval, and no hidden chain-of-thought storage — see [docs/REASONING_MEMORY.md](docs/REASONING_MEMORY.md)

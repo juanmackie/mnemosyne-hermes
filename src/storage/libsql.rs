@@ -4497,6 +4497,57 @@ impl LibsqlStorage {
         Ok(())
     }
 
+    /// Record a typed, bidirectional graph edge between two existing memories.
+    ///
+    /// Mirrors the shape every production writer uses (both directions, same
+    /// type, INSERT OR IGNORE, no self-links) and is idempotent. `Ok(false)`
+    /// when either endpoint no longer exists — session extraction races
+    /// consolidation, so a vanished target is dropped, never an error.
+    ///
+    /// Borrow: supermemory's typed `extends`/`updates`/`derives` ops. A later
+    /// turn that reaffirms or builds on a stored fact becomes a graph relation
+    /// instead of being silently discarded at dedup time.
+    pub async fn add_typed_edge(
+        &self,
+        from_id: &MemoryId,
+        to_id: &MemoryId,
+        link_type: crate::types::LinkType,
+        reason: &str,
+    ) -> Result<bool> {
+        if from_id == to_id {
+            return Ok(false);
+        }
+        let conn = self.get_conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*) FROM memories WHERE id IN (?, ?)",
+                params![from_id.to_string(), to_id.to_string()],
+            )
+            .await?;
+        let existing = match rows.next().await? {
+            Some(row) => row.get::<i64>(0)?,
+            None => 0,
+        };
+        if existing != 2 {
+            return Ok(false);
+        }
+        let now = Utc::now().to_rfc3339();
+        let ty = link_type.as_db_str().to_string();
+        let mut tx = conn.transaction().await?;
+        tx.execute(
+            "INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, 1.0, ?, ?, NULL, 0)",
+            params![from_id.to_string(), to_id.to_string(), ty.clone(), reason, now.clone()],
+        )
+        .await?;
+        tx.execute(
+            "INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type, strength, reason, created_at, last_traversed_at, user_created) VALUES (?, ?, ?, 1.0, ?, ?, NULL, 0)",
+            params![to_id.to_string(), from_id.to_string(), ty, reason, now],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     /// Count incoming links to a memory
     ///
     /// Returns the number of memories that link TO this memory.

@@ -1212,13 +1212,26 @@ impl MemoryManager {
         let mut accepted_contents = Vec::new();
         let mut items = Vec::new();
         let mut derived_ids = Vec::new();
+        // A later turn that restates an existing fact is dedup-skipped today and
+        // the relation is discarded. Keep the hit so a typed `extends` edge from
+        // this turn to the fact it reaffirms can be recorded after the batch
+        // (supermemory's `extends`: memory that learns graph structure instead
+        // of quietly dropping repetition).
+        let mut reaffirmed_targets = Vec::<MemoryId>::new();
         for candidate in extraction.candidates {
-            let duplicate = accepted_contents.iter().any(|content: &String| {
+            let duplicate_in_batch = accepted_contents.iter().any(|content: &String| {
                 lexical_similarity(content, &candidate.content) >= SKIP_THRESHOLD
-            }) || existing_knowledge.iter().any(|memory| {
-                lexical_similarity(&memory.content, &candidate.content) >= SKIP_THRESHOLD
             });
-            if duplicate {
+            let duplicate_in_store: Option<MemoryId> = existing_knowledge
+                .iter()
+                .find(|memory| {
+                    lexical_similarity(&memory.content, &candidate.content) >= SKIP_THRESHOLD
+                })
+                .map(|memory| memory.id.clone());
+            if let Some(existing_id) = duplicate_in_store.as_ref() {
+                reaffirmed_targets.push(existing_id.clone());
+            }
+            if duplicate_in_batch || duplicate_in_store.is_some() {
                 continue;
             }
             accepted_contents.push(candidate.content.clone());
@@ -1357,6 +1370,31 @@ impl MemoryManager {
         }
         derived_ids.sort_by_key(|id| id.to_string());
         derived_ids.dedup();
+
+        // Record the reaffirmation relation: every fact this turn restated (but
+        // did not re-store) gets an idempotent, bidirectional `extends` edge
+        // from the turn's source memory. Hooked after the batch so the target
+        // ids already exist; a target consolidated away in between is skipped.
+        if !reaffirmed_targets.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            for target in &reaffirmed_targets {
+                if target.to_string() == source_memory_id.to_string()
+                    || !seen.insert(target.to_string())
+                {
+                    continue;
+                }
+                let _ = inner
+                    .add_typed_edge(
+                        &source_memory_id,
+                        target,
+                        crate::types::LinkType::Extends,
+                        "reaffirmed by a later turn",
+                    )
+                    .await;
+            }
+        }
 
         let mut policy_proposal_ids = Vec::new();
         if let Some(policy) = policy_proposal {

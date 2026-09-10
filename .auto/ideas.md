@@ -191,22 +191,39 @@ format-clean file when practical, and hoist `.await` out of `assert!` argument p
   Fixed: add_links now mirrors production (both directions), with the
   same strict INSERT so a rejected type still fails the rebuild.
 
-## Supermemory borrow — dynamic profile (2026-09-11 session)
+## Supermemory borrow — dynamic profile + typed graph edges (2026-09-11 session)
 
-Implemented + merged-ready: `StorageBackend::dynamic_profile` — the recent-focus
-half of supermemory's static/dynamic profile split. Standing `profile_facts`
-(identity, always_on) was already there; what was missing was "what is the agent
-working on right now" (supermemory: dynamic profile = recent context and
-temporary states, ~50ms, rides every prompt). Dynamic slice = recency-ordered,
-importance >= 6, excluding always_on (static) / reference_only (docs) /
-turn_sync, hardened by the same expiry/supersede/archive/namespace wall as
-profile_facts. Wired additively: `dynamic_profile` field (CLI + MCP) and `[now]`
-compact lines; `profile` wire shape untouched. Tests: 2 new in
-tests/profile_facts.rs (+4 total there); lib 881 green.
+Implemented + merged-ready:
 
-Open (not done, ranked): (1) task-1 UPDATES/EXTENDS/DERIVES edges + indexed
-is_latest — the repo's own next needle, supermemory's graph core; (2) task-6
-DERIVES inference (needs task-1); (3) write-side reinforcement (preferences
-strengthen with repetition / episodes decay — supermemory memory types); (4)
-entity grounding (entityContext) to stop extraction drift; (5) `mnemosyne kb
-search` as a named verb (today recall --scope reference).
+1. `StorageBackend::dynamic_profile` — the recent-focus half of supermemory's
+   static/dynamic profile split. Standing `profile_facts` (identity, always_on)
+   was already there; what was missing was "what is the agent working on right
+   now" (supermemory: dynamic profile = recent context and temporary states,
+   ~50ms, rides every prompt). Dynamic slice = recency-ordered, importance
+   >= 6, excluding always_on (static) / reference_only (docs) / turn_sync,
+   hardened by the same expiry/supersede/archive/namespace wall as
+   profile_facts. Wired additively: `dynamic_profile` field (CLI + MCP) and
+   `[now]` compact lines; `profile` wire shape untouched. Tests: 2 new in
+   tests/profile_facts.rs (+4 total there); lib 881 green.
+
+2. Typed `extends` edges from session extraction — the write-side half of
+   supermemory's updates/extends/derives graph ops (task-1, the repo's own
+   next needle). A later turn that restates a stored fact used to be
+   dedup-skipped with the relation silently discarded; now it records an
+   idempotent, bidirectional `extends` edge from the turn's source memory to
+   the fact it reaffirms (`LibsqlStorage::add_typed_edge`, wired into
+   sync_* extraction). Benchmark proof: tests/typed_edges_extract.rs fails on
+   old code (no edge) / passes on new; full membench scoreboard run
+   old-vs-new shows no read-lane regression (frozen guard memberships hold).
+
+Open (not done, ranked): (1) edge-aware `is_latest` in recall — deferred
+until a contradiction/versioning detector writes real `supersedes` edges;
+supermersion to day stays pointer-based (superseded_by + 0.35 penalty) and is
+not edge-visible in the membench temporal_latest_wins fixtures, so an
+edge-only latest signal would not move that class; (2) task-6 DERIVES
+inference + `supersedes`/`updates` writes (needs a model or a stronger
+versioning detector than the deterministic distiller's >=SKIP_THRESHOLD
+dedup); (3) write-side reinforcement (preferences strengthen with repetition /
+episodes decay — supermemory memory types); (4) entity grounding
+(entityContext) to stop extraction drift; (5) `mnemosyne kb search` as a named
+verb (today recall --scope reference).

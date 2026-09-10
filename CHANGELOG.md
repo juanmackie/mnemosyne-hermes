@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Typed `extends` graph edges from session extraction** (supermemory graph-memory borrow): when a later turn restates a stored fact, the near-duplicate is still dedup-skipped but the relation is no longer discarded — an idempotent, bidirectional `extends` edge is recorded from the turn's source memory to the fact it reaffirms (`LibsqlStorage::add_typed_edge`, wired in `sync_*` extraction). Repeated turns now accumulate graph structure around a fact, feeding the graph lane and future DERIVES inference; covered by `tests/typed_edges_extract.rs`.
 - **Dynamic profile slice** (`StorageBackend::dynamic_profile`), the recent-focus counterpart to the standing always-on profile — supermemory's static vs dynamic split. Recency-ordered "what an agent is working on right now" (importance >= 6, no `always_on`/`reference_only`), surfaced as an additive `dynamic_profile` field beside the unchanged `profile` in `mnemosyne recall` (CLI + MCP) and `[now]` lines in compact text. Expiry/supersede/archive/namespace wall shared with `profile_facts`; covered by `tests/profile_facts.rs`.
 - Agent-scoped `MemoryManager` API with recall, listing, updates, archival, context prefetch, and turn sync helpers.
 - `mnemosyne recall` routed through the single shared `rank_recall` path; MCP and CLI outputs compared by `tests/recall_parity.rs` (caught divergent rerank-before-truncate order, abstention, and match_reason format).
