@@ -5,6 +5,8 @@
 > graceful degradation without OS keyrings or cloud LLMs, Hermes MCP stdio contract compliance, and
 > OpenViking-inspired hierarchical memory. All changes are released under the same MIT license.
 
+**Current status (v2.4.0):** dynamic profile slice + typed `extends` edges are delivered and benchmarked; graph-aware `is_latest` is deferred to P5.
+
 **Local-first persistent memory for Hermes and every MCP-compatible personal agent**
 
 Mnemosyne provides private semantic memory with LibSQL vector search, full-text
@@ -50,25 +52,6 @@ with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configur
 - **Outcome-Aware Reasoning Memory** *(ReasoningBank-inspired)*: distills observable successful-task strategies and failure guardrails with verifier-supplied outcomes, provenance-bound evidence, sparse retrieval, and no hidden chain-of-thought storage — see [docs/REASONING_MEMORY.md](docs/REASONING_MEMORY.md)
 - **Project-context Bootstrap**: a shared, read-only CLI/MCP assembly path for bounded project constraints, facts, reasoning guardrails, policies, skills, provenance, and explicit abstentions — see [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)
 - **Static + Dynamic Profile** *(supermemory-inspired)*: recall carries a standing always-on profile (identity, preferences — no query is close to them) plus a recency-ordered dynamic slice of what the agent is actively working on; both ride beside — never inside — the ranked results
-
-### Multi-Agent Orchestration
-- **Ractor Actors**: 4 specialized agents (Orchestrator, Optimizer, Reviewer, Executor)
-- **LLM-Enhanced Reviewer**: Automatic requirement extraction, semantic validation, intent verification with Claude API
-- **Work Queue**: Dependency-aware scheduling with priority management
-- **Quality Gates**: Automated test verification, anti-pattern detection, constraint validation, requirement traceability
-- **Deadlock Resolution**: Priority-based preemption (60s timeout)
-- **Sub-Agent Spawning**: Parallel work execution across child actors
-- **Event Persistence**: Complete audit trail of orchestration events with SSE broadcasting
-
-### Distributed Coordination
-- **Peer Discovery**: Automatic peer discovery on local network via `mnemosyne peer invite/join`
-- **Work Delegation**: Seamless offloading of tasks to available peers
-- **Iroh Networking**: P2P encrypted communication layer for secure direct connections
-
-### Network Visualization
-- **Network Graph**: Visual representation of connected peers and topology via `mnemosyne graph`
-- **Real-time Status**: Connection latency, bandwidth, and peer health monitoring
-- **Topology Awareness**: Automatic detection of network partitions and routing paths
 
 ### Evolution System
 - **Consolidation**: Detect and merge duplicate/similar memories with LLM-assisted analysis
@@ -116,62 +99,7 @@ mnemosyne ics --readonly --panel diagnostics review.md
 
 See [docs/guides/ICS_INTEGRATION.md](docs/guides/ICS_INTEGRATION.md) for complete guide.
 
-### Dashboard & Monitoring
-- **mnemosyne-dash**: Real-time monitoring dashboard with clean 4-panel layout (redesigned from "static wall of garbage")
-- **Panels**: System Overview (health metrics), Activity Stream (filtered event log), Agent Details (per-agent status), Operations (CLI command history)
-- **Smart Filtering**: Intelligent noise reduction (heartbeats hidden by default), 8 event categories, compound filter logic
-- **Event Correlation**: Links start→complete events with duration tracking, automatic slow operation detection
-- **Real-time Updates**: Server-Sent Events (SSE) streaming from API server with zero-latency event delivery
-- **Interactive Controls**: Full keyboard navigation (panel toggles, clear history, focus modes)
-- **HTTP API Server** (`:3000`): Automatic REST API with owner/client mode for multiple instances
-- **Event Streaming**: Real-time coordination via SSE for monitoring and cross-instance event forwarding
-- **Production Quality**: 124+ tests, 6,100+ lines of code, comprehensive error handling
 
-See [docs/DASHBOARD.md](docs/DASHBOARD.md) for complete documentation.
-
-### gRPC Remote Access (RPC Server)
-**Production-ready gRPC server for remote access to mnemosyne's memory system**
-
-- **Full CRUD Operations**: Store, retrieve, update, delete memories via gRPC
-- **Advanced Search**: Semantic search (vector embeddings), graph traversal, hybrid recall
-- **Streaming APIs**: Progressive results for large datasets, progress tracking for slow operations
-- **Type-Safe Protocol**: Protocol Buffers ensure schema validation and backward compatibility
-- **Multi-Language Support**: Client libraries for Python, Rust, Go, and any gRPC-compatible language
-- **Production Features**: Comprehensive error handling, input validation, rate limiting
-
-**Usage**:
-```bash
-# Start RPC server on default port (50051)
-mnemosyne-rpc
-
-# Custom configuration
-mnemosyne-rpc --host 0.0.0.0 --port 9090 --enable-llm
-
-# With custom database
-mnemosyne-rpc --db-path /path/to/mnemosyne.db
-```
-
-**Client Example (Python)**:
-```python
-import grpc
-from mnemosyne.v1 import memory_pb2, memory_pb2_grpc
-
-# Connect and store a memory
-channel = grpc.insecure_channel('localhost:50051')
-stub = memory_pb2_grpc.MemoryServiceStub(channel)
-
-response = stub.StoreMemory(memory_pb2.StoreMemoryRequest(
-    content="Important architectural decision",
-    namespace=memory_pb2.Namespace(
-        project=memory_pb2.ProjectNamespace(name="my-project")
-    ),
-    importance=9,
-    tags=["architecture", "decision"]
-))
-print(f"Stored memory: {response.memory_id}")
-```
-
-See [src/rpc/README.md](src/rpc/README.md) for complete API documentation, deployment guides, and client examples.
 
 ---
 
