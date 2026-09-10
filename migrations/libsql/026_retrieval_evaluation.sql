@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS retrieval_adaptive_weights (
 );
 INSERT OR IGNORE INTO retrieval_adaptive_weights
     (profile, weights, sample_count, last_evaluated_at)
-VALUES ('default', '{"keyword":0.40,"vector":0.35,"graph":0.18}', 0, 0);
+VALUES ('default', '{"keyword":0.40,"vector":0.35,"graph":0.30}', 0, 0);
 
 CREATE TABLE IF NOT EXISTS retrieval_evaluation_config (
     key TEXT PRIMARY KEY NOT NULL,

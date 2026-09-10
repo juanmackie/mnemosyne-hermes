@@ -33,7 +33,7 @@ LABEL = os.environ.get("MNEMOSYNE_EVAL_LABEL", "default")
 
 
 def fingerprint() -> str:
-    payload = CORPUS.read_bytes() + f"|model={MODEL}|label={LABEL}|v3".encode()
+    payload = CORPUS.read_bytes() + f"|model={MODEL}|label={LABEL}|v4".encode()
     return hashlib.sha256(payload).hexdigest()
 
 

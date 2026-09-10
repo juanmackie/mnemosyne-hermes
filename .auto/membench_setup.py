@@ -30,7 +30,7 @@ MODEL = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "bge-small-en-v1.5")
 
 
 def fingerprint(corpus: Path, label: str) -> str:
-    payload = corpus.read_bytes() + f"|model={MODEL}|label={label}|membench-v2".encode()
+    payload = corpus.read_bytes() + f"|model={MODEL}|label={label}|membench-v3".encode()
     return hashlib.sha256(payload).hexdigest()
 
 

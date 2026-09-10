@@ -26,7 +26,7 @@ impl Default for RetrievalWeights {
         Self {
             keyword: 0.40,
             vector: 0.35,
-            graph: 0.18,
+            graph: 0.30,
         }
     }
 }

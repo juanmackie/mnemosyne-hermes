@@ -95,7 +95,7 @@ impl Default for SearchConfig {
             // Balanced hybrid search weights (sum to 1.0)
             vector_weight: 0.35,     // Vector similarity is primary
             keyword_weight: 0.40,    // BM25 keyword relevance is secondary
-            graph_weight: 0.18,      // Graph connections for context
+            graph_weight: 0.30,      // Graph connections for context
             importance_weight: 0.05, // Importance is only a tie-breaker
             recency_weight: 0.02,    // Recency is only a slight tie-breaker
 
