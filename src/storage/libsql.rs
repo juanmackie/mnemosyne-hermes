@@ -880,6 +880,10 @@ pub struct LibsqlStorage {
     schema_type: SchemaType,
     db_path: String,
     temporary_path: Option<std::path::PathBuf>,
+    /// Cached retrieval weights with a timestamp. Weights are read from
+    /// the DB on every recall; a short-lived cache avoids repeated
+    /// SELECTs when the adaptive weights haven't changed.
+    weights_cache: std::sync::Mutex<(std::time::Instant, crate::utils::retrieval::RetrievalWeights)>,
 }
 
 /// How often (in recorded traces) the O(history) retrieval diagnostics inside
@@ -1412,6 +1416,10 @@ impl LibsqlStorage {
             schema_type,
             db_path,
             temporary_path,
+            weights_cache: std::sync::Mutex::new((
+                std::time::Instant::now(),
+                crate::utils::retrieval::RetrievalWeights::default(),
+            )),
         };
 
         // Verify database health and run migrations (skip for read-only databases)
@@ -1591,6 +1599,10 @@ impl LibsqlStorage {
             schema_type: SchemaType::LibSQL, // Use LibSQL schema (F32_BLOB support)
             db_path: ":memory:".to_string(), // Test databases typically use in-memory
             temporary_path: None,
+            weights_cache: std::sync::Mutex::new((
+                std::time::Instant::now(),
+                crate::utils::retrieval::RetrievalWeights::default(),
+            )),
         }
     }
 
@@ -4913,7 +4925,6 @@ impl LibsqlStorage {
         if let Some(limit) = max_results {
             param_values.push(libsql::Value::Integer(limit.min(1000) as i64));
         }
-
         let mut rows = conn
             .query(&sql, libsql::params_from_iter(param_values))
             .await?;
@@ -11352,6 +11363,13 @@ impl LibsqlStorage {
     /// Read learned weights, retaining safe defaults when the table is absent
     /// (for callers opening a pre-migration database).
     pub async fn retrieval_weights(&self) -> crate::utils::retrieval::RetrievalWeights {
+        // Check the short-lived cache first (1-second TTL).
+        {
+            let cached = self.weights_cache.lock().unwrap();
+            if cached.0.elapsed().as_secs() < 1 {
+                return cached.1.clone();
+            }
+        }
         let defaults = crate::utils::retrieval::RetrievalWeights::default();
         let Ok(conn) = self.get_conn() else {
             return defaults;
@@ -11368,10 +11386,14 @@ impl LibsqlStorage {
         let Ok(Some(row)) = rows.next().await else {
             return defaults;
         };
-        serde_json::from_str::<crate::utils::retrieval::RetrievalWeights>(
-            &row.get::<String>(0).unwrap_or_default(),
-        )
-        .unwrap_or(defaults)
+        let weights: crate::utils::retrieval::RetrievalWeights =
+            serde_json::from_str::<crate::utils::retrieval::RetrievalWeights>(
+                &row.get::<String>(0).unwrap_or_default(),
+            )
+            .unwrap_or(defaults);
+        // Update the cache.
+        *self.weights_cache.lock().unwrap() = (std::time::Instant::now(), weights.clone());
+        weights
     }
 
     /// Record a user-use signal without storing the raw response or query.
