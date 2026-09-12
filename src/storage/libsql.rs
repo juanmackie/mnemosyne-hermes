@@ -9560,7 +9560,7 @@ impl StorageBackend for LibsqlStorage {
         // get_memory round trip per candidate (two SQL queries per candidate
         // in the previous per-id loop).
         let candidate_ids: Vec<MemoryId> = memory_scores.keys().copied().collect();
-        let memories = self.get_memories_batch(&candidate_ids).await?;
+        let mut memories = self.get_memories_batch(&candidate_ids, false).await?;
 
         // Build rank maps for RRF fusion.
         // Keyword results are Vec<SearchResult> ordered best-first.
@@ -9637,8 +9637,8 @@ impl StorageBackend for LibsqlStorage {
 
         for (memory_id, (keyword_score, vector_score, graph_score, depth)) in memory_scores {
             // Take the pre-fetched memory
-            let memory = match memories.get(&memory_id) {
-                Some(m) => m.clone(),
+            let memory = match memories.remove(&memory_id) {
+                Some(m) => m,
                 None => {
                     warn!("Failed to fetch memory {}: not found in batch", memory_id);
                     continue;
@@ -9736,6 +9736,15 @@ impl StorageBackend for LibsqlStorage {
                 .unwrap_or(std::cmp::Ordering::Less)
         });
         scored_results.truncate(max_results);
+
+        // Only the rows recall returns need their links hydrated (candidates
+        // above were fetched without them).
+        let result_ids: Vec<MemoryId> = scored_results.iter().map(|r| r.memory.id).collect();
+        for (memory_id, links) in self.fetch_memory_links(&result_ids).await? {
+            if let Some(result) = scored_results.iter_mut().find(|r| r.memory.id == memory_id) {
+                result.memory.links = links;
+            }
+        }
 
         let mut trace =
             crate::utils::retrieval::RetrievalTrace::for_query(query, effective_weights);
@@ -11595,7 +11604,16 @@ impl LibsqlStorage {
     /// each query's time waiting on storage round trips. Missing ids are
     /// simply absent from the returned map so callers can keep their
     /// skip-and-warn behavior.
-    async fn get_memories_batch(&self, ids: &[MemoryId]) -> Result<HashMap<MemoryId, MemoryNote>> {
+    ///
+    /// `hydrate_links = false` is for recall, which fetches many more
+    /// candidates than it returns and needs the links only of the rows it
+    /// actually emits; those are hydrated by [`Self::fetch_memory_links`]
+    /// after truncation.
+    async fn get_memories_batch(
+        &self,
+        ids: &[MemoryId],
+        hydrate_links: bool,
+    ) -> Result<HashMap<MemoryId, MemoryNote>> {
         let mut memories: HashMap<MemoryId, MemoryNote> = HashMap::with_capacity(ids.len());
         if ids.is_empty() {
             return Ok(memories);
@@ -11640,7 +11658,37 @@ impl LibsqlStorage {
             }
         }
 
-        // Attach semantic links in one additional grouped query.
+        if hydrate_links {
+            // Attach semantic links in one additional grouped query.
+            for (memory_id, links) in self.fetch_memory_links(ids).await? {
+                if let Some(memory) = memories.get_mut(&memory_id) {
+                    memory.links = links;
+                }
+            }
+        }
+
+        debug!("Batch-fetched {} memories", memories.len());
+        Ok(memories)
+    }
+
+    /// Fetch the outgoing links for `ids` in one grouped query, keyed by source
+    /// memory. Rows with an unparsable id are skipped with a warning and rows
+    /// with an unknown link type are dropped, as before.
+    async fn fetch_memory_links(
+        &self,
+        ids: &[MemoryId],
+    ) -> Result<HashMap<MemoryId, Vec<crate::types::MemoryLink>>> {
+        let mut links: HashMap<MemoryId, Vec<crate::types::MemoryLink>> =
+            HashMap::with_capacity(ids.len());
+        if ids.is_empty() {
+            return Ok(links);
+        }
+        let conn = self.get_conn()?;
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let id_params: Vec<libsql::Value> = ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.to_string()))
+            .collect();
         let has_link_metadata = connection_has_column(&conn, "memory_links", "last_traversed_at")
             .await?
             && connection_has_column(&conn, "memory_links", "user_created").await?;
@@ -11666,9 +11714,6 @@ impl LibsqlStorage {
                     warn!("Invalid source_id in memory_links: {}", e);
                     continue;
                 }
-            };
-            let Some(memory) = memories.get_mut(&source_id) else {
-                continue;
             };
             let target_id_str: String = link_row.get(1)?;
             let target_id = match MemoryId::from_string(&target_id_str) {
@@ -11697,19 +11742,21 @@ impl LibsqlStorage {
                 false
             };
 
-            memory.links.push(crate::types::MemoryLink {
-                target_id,
-                link_type,
-                strength: strength as f32,
-                reason,
-                created_at,
-                last_traversed_at,
-                user_created,
-            });
+            links
+                .entry(source_id)
+                .or_default()
+                .push(crate::types::MemoryLink {
+                    target_id,
+                    link_type,
+                    strength: strength as f32,
+                    reason,
+                    created_at,
+                    last_traversed_at,
+                    user_created,
+                });
         }
 
-        debug!("Batch-fetched {} memories", memories.len());
-        Ok(memories)
+        Ok(links)
     }
 
     /// Map a stored link-type string to its typed representation.
