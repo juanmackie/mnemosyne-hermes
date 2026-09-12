@@ -9185,7 +9185,6 @@ impl StorageBackend for LibsqlStorage {
         let columns = self.memory_columns("m");
         let mut rows = if query.trim().is_empty() {
             // Empty query: list all memories (filtered by namespace if provided)
-            let columns = self.memory_columns("m");
             let sql = if namespace_filter.is_some() {
                 format!(
                     "SELECT {columns} FROM memories m WHERE m.namespace = ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}",
@@ -9209,12 +9208,6 @@ impl StorageBackend for LibsqlStorage {
             }
         } else {
             // Non-empty query: use FTS5 full-text search with OR logic. Keep
-            // bm25's relevance signal instead of returning rowid order; the
-            // latter makes common terms and unrelated early memories outrank
-            // a memory matching several query terms. The row cap is a wide
-            // candidate pool, not the final result limit: deep BM25 matches
-            // must reach fusion so multi-signal reranking can rescue them.
-            let columns = self.memory_columns("m");
             let sql = if namespace_filter.is_some() {
                 format!(
                     "SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.namespace = ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY fts_rank ASC LIMIT {candidate_limit}",
