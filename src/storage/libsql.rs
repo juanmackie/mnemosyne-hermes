@@ -9180,6 +9180,9 @@ impl StorageBackend for LibsqlStorage {
             return Ok(Vec::new());
         }
         let conn = self.get_conn()?;
+        // ponytail: SQL parse overhead is sub-ms vs query execution; keep
+        // format! for now. Upgrade to Connection::prepare only if profile
+        // shows parse > 1ms (deferred, see .auto/ideas.md SQL-prepare entry).
         let candidate_limit = self.search_config.fts_candidate_limit.max(1);
         let class_filter = self.knowledge_predicate("m");
         let mut rows = if query.trim().is_empty() {
