@@ -883,7 +883,10 @@ pub struct LibsqlStorage {
     /// Cached retrieval weights with a timestamp. Weights are read from
     /// the DB on every recall; a short-lived cache avoids repeated
     /// SELECTs when the adaptive weights haven't changed.
-    weights_cache: std::sync::Mutex<(std::time::Instant, crate::utils::retrieval::RetrievalWeights)>,
+    weights_cache: std::sync::Mutex<(
+        std::time::Instant,
+        crate::utils::retrieval::RetrievalWeights,
+    )>,
 }
 
 /// How often (in recorded traces) the O(history) retrieval diagnostics inside
