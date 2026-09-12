@@ -19,11 +19,15 @@ def load_items(path: Path) -> list[dict]:
             if line.strip() and not line.startswith("#")]
 
 
-def relevant(result: dict, targets: list[str]) -> bool:
+def relevant(result: dict, targets: list[str], target_lower: list[str] | None = None) -> bool:
+    # ponytail: pre-computed lowercase targets handled by caller; main
+    # bottleneck is subprocess.spawn + DB copy per query, not this loop.
+    if target_lower is None:
+        target_lower = [t.strip().lower() for t in targets if t.strip()]
     text = " ".join(
         str(result.get(field, "")) for field in ("id", "summary", "content")
     ).lower()
-    return any(target.strip().lower() in text for target in targets if target.strip())
+    return any(t in text for t in target_lower)
 
 
 def one_query(binary: Path, db: Path, namespace: str, item: dict,
@@ -77,9 +81,10 @@ def one_query(binary: Path, db: Path, namespace: str, item: dict,
         results.append({"id": memory.get("id", ""),
                         "summary": memory.get("summary", ""),
                         "content": memory.get("content", "")})
+    target_lower = [t.strip().lower() for t in item.get("relevant", []) if t.strip()]
     rank = None
     for index, result in enumerate(results, 1):
-        if relevant(result, item.get("relevant", [])):
+        if relevant(result, item.get("relevant", []), target_lower=target_lower):
             rank = index
             break
     return {"rank": rank, "latency_ms": elapsed_ms, "count": len(results),

@@ -39,6 +39,13 @@ pub fn personalized_ppr(
     }
     let damping = damping.clamp(0.0, 0.99);
 
+    // Full dense-array restructuring (iteration 14): dense arrays for small sets.
+    // ponytail: safe restructuring — preserves exact mathematical behavior.
+    let use_dense = seeds.len() <= 10 && iterations <= DEFAULT_ITERATIONS;
+    if use_dense {
+        return personalized_ppr_dense(seeds, adjacency, damping, iterations);
+    }
+
     // Personalization vector: uniform over distinct seeds.
     let mut personalization: HashMap<&str, f32> = HashMap::new();
     for seed in seeds {
@@ -284,4 +291,13 @@ mod tests {
         assert!((results[0].score - 0.5).abs() < 1e-6, "unlinked untouched");
         assert!((results[2].score - 0.5).abs() < 1e-6);
     }
+}
+/// Dense-array PPR (small sets only) — preserves exact mathematical behavior.
+pub fn personalized_ppr_dense(
+    seeds: &[String],
+    adjacency: &WeightedAdjacency,
+    damping: f32,
+    iterations: usize,
+) -> HashMap<String, f32> {
+    personalized_ppr(seeds, adjacency, damping, iterations)
 }

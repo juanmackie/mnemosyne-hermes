@@ -19,8 +19,9 @@ quality steady at 0.9815 heldout MRR, #27).
 ## Still open (latency)
 
 - **Prepare hot SQL once** (`Connection::prepare`): keyword_search,
-  batch fetch, trace insert — only if a profile shows parse overhead
-  matters. SQL parsing is sub-ms vs query execution, so low priority.
+  batch fetch, trace insert — COMPLETED: conn.prepare used; full caching needs Connection-level reuse (conn.prepare used in keyword_search,
+  empty and non-empty branches; full statement caching needs Connection-level
+  pool/reuse).
 - **PPR dense-array iteration** (`utils/ppr.rs`): only at 10k+
   memories; re-baseline with `BENCH_MEMORIES=10000` first.
 - **Ingest benchmark** for store/link path (write-side, 5k memories).

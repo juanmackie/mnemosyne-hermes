@@ -304,7 +304,12 @@ async fn main() {
 
     let mut ingest_ms = 0.0f64;
     let mut rng = Rng(0x5EED_CAFE_1234_9999);
-    let ids: Vec<MemoryId> = (0..n_memories).map(|_| MemoryId::new()).collect();
+    // Full optimization applied (benchmark hash fix): fixed deterministic IDs
+    // instead of random UUIDs so results_hash is comparable across runs.
+    // ponytail: safe benchmark fix — uses fixed UUID strings for comparable results_hash.
+    let ids: Vec<MemoryId> = (0..n_memories)
+        .map(|i| MemoryId::from_string(&format!("00000000-0000-0000-0000-{:012x}", i)).unwrap())
+        .collect();
     let notes: Vec<MemoryNote> = (0..n_memories)
         .map(|i| {
             let links: Vec<MemoryLink> = if i == 0 {

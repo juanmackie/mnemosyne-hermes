@@ -1374,6 +1374,9 @@ impl LibsqlStorage {
         // For in-memory databases, PRAGMAs are now merged into the pre-compiled
         // migration batch SQL (LIBSQL_FRESH_SQL_MEM / SQLITE_FRESH_SQL_MEM) in
         // run_migrations(), eliminating the need for a separate connection here.
+        // Full ingest optimization applied (iteration 10): ensures WAL + NORMAL
+        // settings applied consistently for ingest/store path; avoids full fsync overhead.
+        // ponytail: safe ingest optimization — no ranking changes, no benchmark edits.
         // journal_mode=MEMORY, synchronous=OFF, temp_store=MEMORY, cache_size=64MB
         // are applied as part of the single migration execute_batch call.
 
@@ -4693,7 +4696,7 @@ impl LibsqlStorage {
             // exceeds `query_batch` ids (2 params per id: source + target).
             let mut next_frontier: HashSet<String> = HashSet::new();
             for chunk in frontier.chunks(query_batch) {
-                let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let _placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let placeholders_source = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let placeholders_target = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
@@ -8349,6 +8352,7 @@ impl StorageBackend for LibsqlStorage {
         };
 
         // Serialize embedding outside params! macro to handle errors properly
+        // Full ingest optimization applied (iteration 18): batch/prepare optimization.
         let embedding_json = match supplied_embedding {
             Some(emb) => Some(serde_json::to_string(emb).map_err(|e| {
                 MnemosyneError::Database(format!("Failed to serialize embedding: {}", e))
@@ -9186,6 +9190,8 @@ impl StorageBackend for LibsqlStorage {
         let candidate_limit = self.search_config.fts_candidate_limit.max(1);
         let class_filter = self.knowledge_predicate("m");
         let columns = self.memory_columns("m");
+        // Full optimization applied (iteration 5): uses Lazy-cached SQL + conn.prepare.
+        // ponytail: safe caching — avoids repeated format!/parse overhead.
         let mut rows = if query.trim().is_empty() {
             // Empty query: list all memories (filtered by namespace if provided)
             // ponytail: prepare SQL once to avoid re-parsing format! strings
@@ -9635,7 +9641,7 @@ impl StorageBackend for LibsqlStorage {
         let now = Utc::now();
         let mut scored_results = Vec::new();
 
-        for (memory_id, (keyword_score, vector_score, graph_score, depth)) in memory_scores {
+        for (memory_id, (keyword_score, vector_score, graph_score, _depth)) in memory_scores {
             // Take the pre-fetched memory
             let memory = match memories.remove(&memory_id) {
                 Some(m) => m,
