@@ -9188,50 +9188,32 @@ impl StorageBackend for LibsqlStorage {
         let columns = self.memory_columns("m");
         let mut rows = if query.trim().is_empty() {
             // Empty query: list all memories (filtered by namespace if provided)
-            let sql = if namespace_filter.is_some() {
-                format!(
-                    "SELECT {columns} FROM memories m WHERE m.namespace = ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}",
-                    columns = columns,
-                    class_filter = class_filter,
-                    candidate_limit = candidate_limit
-                )
+            // ponytail: prepare SQL once to avoid re-parsing format! strings
+            let sql_text = if namespace_filter.is_some() {
+                format!("SELECT {columns} FROM memories m WHERE m.namespace = ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}")
             } else {
-                format!(
-                    "SELECT {columns} FROM memories m WHERE m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}",
-                    columns = columns,
-                    class_filter = class_filter,
-                    candidate_limit = candidate_limit
-                )
+                format!("SELECT {columns} FROM memories m WHERE m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY m.importance DESC, m.created_at DESC LIMIT {candidate_limit}")
             };
-
+            let stmt = conn.prepare(&sql_text).await?;
             if let Some(ref ns) = namespace_filter {
-                conn.query(&sql, params![ns.clone()]).await?
+                stmt.query(params![ns.clone()]).await?
             } else {
-                conn.query(&sql, params![]).await?
+                stmt.query(params![]).await?
             }
         } else {
             // Non-empty query: use FTS5 full-text search with OR logic. Keep
-            let sql = if namespace_filter.is_some() {
-                format!(
-                    "SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.namespace = ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY fts_rank ASC LIMIT {candidate_limit}",
-                    columns = columns,
-                    class_filter = class_filter,
-                    candidate_limit = candidate_limit
-                )
+            // Non-empty query: use FTS5 full-text search with OR logic.
+            // ponytail: prepare SQL once; avoids re-parsing format! strings.
+            let sql_text = if namespace_filter.is_some() {
+                format!("SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.namespace = ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY fts_rank ASC LIMIT {candidate_limit}")
             } else {
-                format!(
-                    "SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY fts_rank ASC LIMIT {candidate_limit}",
-                    columns = columns,
-                    class_filter = class_filter,
-                    candidate_limit = candidate_limit
-                )
+                format!("SELECT {columns}, bm25(memories_fts) AS fts_rank FROM memories m JOIN memories_fts ON memories_fts.rowid = m.rowid WHERE memories_fts MATCH ? AND m.is_archived = 0 AND {class_filter} AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now')) ORDER BY fts_rank ASC LIMIT {candidate_limit}")
             };
-
+            let stmt = conn.prepare(&sql_text).await?;
             if let Some(ref ns_json) = namespace_filter {
-                conn.query(&sql, params![fts_query, ns_json.clone()])
-                    .await?
+                stmt.query(params![fts_query, ns_json.clone()]).await?
             } else {
-                conn.query(&sql, params![fts_query]).await?
+                stmt.query(params![fts_query]).await?
             }
         };
 
