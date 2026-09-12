@@ -6,6 +6,25 @@ retrieval diagnostics sampled off the recall path; PPR adjacency OR →
 UNION ALL of indexed halves + weights/settings Lazy caches (61625e0,
 quality steady at 0.9815 heldout MRR, #27).
 
+## Found 2026-09-11 (retrieval-weights-cache session, run #46)
+
+- **Retrieval-weights cache**: Added a 1-second TTL Mutex cache to
+  `LibsqlStorage::retrieval_weights()`. The function reads from
+  `retrieval_adaptive_weights` on every recall; the cache avoids
+  repeated SELECTs when weights haven't changed.
+  Result: hybrid_ppr_p95 ~48ms (avg of 3 runs), hybrid_p95 ~32ms,
+  graph_delta ~7.8ms. Checks pass. Bench variability high due to
+  random UUIDs per run.
+
+## Still open (latency)
+
+- **Prepare hot SQL once** (`Connection::prepare`): keyword_search,
+  batch fetch, trace insert — only if a profile shows parse overhead
+  matters. SQL parsing is sub-ms vs query execution, so low priority.
+- **PPR dense-array iteration** (`utils/ppr.rs`): only at 10k+
+  memories; re-baseline with `BENCH_MEMORIES=10000` first.
+- **Ingest benchmark** for store/link path (write-side, 5k memories).
+
 ## Found 2026-09-09 (consolidation work, run #29)
 
 - **BUG (pre-existing, data loss): `memory_links.link_type` CHECK whitelists
