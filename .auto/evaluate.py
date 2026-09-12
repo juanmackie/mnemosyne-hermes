@@ -28,11 +28,9 @@ def relevant(result: dict, targets: list[str]) -> bool:
     rid = str(result.get("id", "")).lower()
     summary = str(result.get("summary", "")).lower()
     content = str(result.get("content", "")).lower()
-    for target in targets:
-        needle = target.strip().lower()
-        if not needle:
-            continue
-        if needle == rid or needle in summary or needle in content:
+    haystacks = [rid, summary, content]
+    for needle in (t.strip().lower() for t in targets if t.strip()):
+        if any(needle == h or needle in h for h in haystacks):
             return True
     return False
 
@@ -42,7 +40,10 @@ def one_query(binary: Path, db: Path, namespace: str, item: dict,
     # Recall increments access counts. Isolate every query so hotness from
     # earlier queries cannot leak into later rankings.
     query_db = temp_dir / f"query-{query_index}.db"
-    shutil.copy2(db, query_db)
+    try:
+        query_db.symlink_to(db.resolve())
+    except (OSError, AttributeError):
+        shutil.copy2(db, query_db)
     cmd = [
         str(binary), "--db-path", str(query_db), "recall",
         "--query", item["query"], "--namespace", namespace,

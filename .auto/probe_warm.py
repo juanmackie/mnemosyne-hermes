@@ -11,10 +11,14 @@ p = subprocess.Popen(["target/release/mnemosyne", "--db-path", str(tmp), "mcp"],
                      stderr=subprocess.PIPE, text=True, bufsize=1)
 p.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 1}) + "\n")
 p.stdin.flush()
+start_time = time.time()
 while True:
     line = p.stdout.readline()
     if not line:
-        print("died:", p.stderr.read()[-400:])
+        if time.time() - start_time > 30:
+            print("timeout: subprocess died after 30s")
+        else:
+            print("died:", p.stderr.read()[-400:])
         raise SystemExit(1)
     try:
         if json.loads(line).get("id") == 1:

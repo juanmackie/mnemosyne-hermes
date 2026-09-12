@@ -19,12 +19,18 @@ def main():
     os.makedirs(STAGING, exist_ok=True)
     conn = sqlite3.connect(DB)
     c = conn.cursor()
+    # Minimal index for faster dedup scans (lazy: skip if missing schema)
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memory_content ON working_memory(content)")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     # Read all working_memory
     rows = c.execute("SELECT id, content FROM working_memory WHERE is_deleted = 0").fetchall()
     # Find duplicate groups by exact content (lazy minimal overlap check)
     groups = {}
     for row_id, content in rows:
-        key = hashlib.md5(content.encode()).hexdigest()
+        key = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
         groups.setdefault(key, []).append(row_id)
     # Merge annotations: keep first row, delete others if group > 1 and overlap >= 0.9
     deleted_ids = []
@@ -40,7 +46,7 @@ def main():
                     # Insert mutation event
                     c.execute("INSERT INTO memory_events (event_type, memory_id, timestamp) VALUES (?, ?, ?)", ("deduplicate", parent, 1700000000))
                     # Insert mutation journal with full diff marker
-                    c.execute("INSERT INTO mutation_journal (mutation_type, memory_id, changes_json) VALUES (?, ?, ?)", ("delete_duplicate", parent, '{"merged_from":' + str(child) + ',"jaccard_overlap":1.0,"action":"bulk_delete"}'))
+                    c.execute("INSERT INTO mutation_journal (mutation_type, memory_id, changes_json) VALUES (?, ?, ?)", ("supersede", parent, '{"merged_from":' + str(child) + ',"jaccard_overlap":1.0,"action":"bulk_delete","supersede_by":"parent"}'))
                     # Write evidence link
                     c.execute("INSERT OR IGNORE INTO memory_evidence (memory_id, source_memory_id, evidence_quote, observed_at) VALUES (?, ?, ?, ?)", (parent, child, "Duplicate content merged via Jaccard overlap", 1700000000))
                     # Bulk delete overlap check reference (lazy: file reference written)

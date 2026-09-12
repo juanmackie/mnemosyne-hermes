@@ -1105,12 +1105,13 @@ Be specific and actionable. Focus on WHAT to fix and HOW to fix it."""
             #   "Handle token expiration errors"
             # ]
         """
+        context_str = f"# Additional Context\n{context}\n" if context else ""
         prompt = f"""Analyze the following user intent and extract explicit, testable requirements.
 
 # User Intent
 {original_intent}
 
-{f"# Additional Context\\n{context}\\n" if context else ""}
+{context_str}
 
 # Task
 Extract a list of concrete, actionable requirements from this intent. Each requirement should be:
