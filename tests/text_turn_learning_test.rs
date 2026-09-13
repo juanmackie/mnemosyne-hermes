@@ -1,7 +1,7 @@
 use chrono::{Duration, Utc};
 use mnemosyne_core::session_extract::{
-    ExtractedEntity, ExtractedMemoryCandidate, ExtractedResponseFeedback, SessionMessage,
-    TurnExtraction, EXTRACTION_SCHEMA_VERSION,
+    distill_turn, extract_response_feedback, ExtractedEntity, ExtractedMemoryCandidate,
+    ExtractedResponseFeedback, SessionMessage, TurnExtraction, EXTRACTION_SCHEMA_VERSION,
 };
 use mnemosyne_core::{
     ConnectionMode, InteractionPolicy, LearningMemory, LibsqlStorage, MemoryClass, MemoryEntity,
@@ -81,6 +81,7 @@ fn generic_feedback_is_not_promoted_but_explicit_style_feedback_is() {
         evidence_quote: "wrong".into(),
         source_role: "user".into(),
         anchors: vec!["coding".into()],
+        extractor: "llm".into(),
     };
     assert!(!generic.is_actionable());
 
@@ -93,10 +94,78 @@ fn generic_feedback_is_not_promoted_but_explicit_style_feedback_is() {
         evidence_quote: "This concise format is exactly right".into(),
         source_role: "user".into(),
         anchors: vec!["coding".into()],
+        extractor: "llm".into(),
     };
     assert!(explicit.is_actionable());
 }
 
+#[test]
+fn explicit_style_correction_yields_actionable_feedback() {
+    let messages = vec![
+        SessionMessage::new(
+            "assistant",
+            "Here is the implementation with an explanation of every line.",
+        ),
+        SessionMessage::new(
+            "user",
+            "Don't explain what the code does, just show the diff",
+        ),
+    ];
+    let feedback =
+        extract_response_feedback(&messages).expect("explicit correction should be extracted");
+    assert_eq!(feedback.source_role, "user");
+    assert_eq!(feedback.polarity, "avoid");
+    assert_eq!(feedback.signal, "correction");
+    assert!(feedback.is_actionable());
+    assert!(!feedback.anchors.is_empty());
+    assert_eq!(
+        feedback.extractor, "deterministic-local",
+        "deterministic extraction must label its own provenance"
+    );
+    assert!(messages
+        .iter()
+        .any(|message| message.role == "user" && message.text.contains(&feedback.evidence_quote)));
+
+    let extraction = TurnExtraction {
+        schema_version: EXTRACTION_SCHEMA_VERSION.into(),
+        candidates: vec![],
+        response_feedback: Some(feedback),
+    };
+    assert!(extraction.validate(&messages).is_ok());
+}
+
+#[test]
+fn generic_thanks_and_wrong_do_not_yield_feedback() {
+    assert!(extract_response_feedback(&[SessionMessage::new("user", "thanks")]).is_none());
+    assert!(extract_response_feedback(&[SessionMessage::new("user", "that was wrong")]).is_none());
+}
+
+#[test]
+fn assistant_authored_style_suggestion_does_not_yield_feedback() {
+    let messages = vec![SessionMessage::new(
+        "assistant",
+        "You should use concise bullet points and markdown headings in your replies.",
+    )];
+    assert!(extract_response_feedback(&messages).is_none());
+}
+
+#[test]
+fn distill_turn_surfaces_response_feedback() {
+    let messages = vec![
+        SessionMessage::new(
+            "user",
+            "Don't explain what the code does, just show the diff",
+        ),
+        SessionMessage::new("assistant", "Here is the diff."),
+    ];
+    let extraction = distill_turn(&messages);
+    let feedback = extraction
+        .response_feedback
+        .clone()
+        .expect("distill_turn should surface explicit feedback");
+    assert!(feedback.is_actionable());
+    assert!(extraction.validate(&messages).is_ok());
+}
 #[tokio::test]
 async fn learning_batch_rolls_back_all_derived_rows_on_failure() {
     let directory = tempfile::tempdir().unwrap();

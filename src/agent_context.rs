@@ -9,9 +9,12 @@
 //! - `build_memory_context_block` — wrap recall text in a fenced block
 //!   that the model treats as reference data, not new input.
 
-use crate::context_assembler::{assemble, Candidate};
 use crate::types::SearchResult;
 use crate::utils::sanitize_context;
+
+pub use crate::context_render::{
+    render_recall_bundle_with_diagnostics, select_recall_bundle, RecallRenderDiagnostics,
+};
 
 /// One independently recalled context channel and its observability metadata.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -21,9 +24,17 @@ pub struct RecallChannel {
     pub abstention_reason: Option<String>,
 }
 
-/// Bounded factual, reasoning, and response-guidance recall bundle.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Bounded profile, current-focus, factual, reasoning, and response-guidance
+/// recall bundle.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RecallBundle {
+    /// Always-on standing profile. Filled by the shared selector so it
+    /// participates in the same total budget.
+    #[serde(default)]
+    pub profile: RecallChannel,
+    /// Recent, still-relevant current focus.
+    #[serde(default)]
+    pub current_focus: RecallChannel,
     pub factual: RecallChannel,
     pub guidance: RecallChannel,
     /// Outcome-aware strategies and failure guardrails. This is deliberately
@@ -35,7 +46,9 @@ pub struct RecallBundle {
 
 impl RecallBundle {
     pub fn is_empty(&self) -> bool {
-        self.factual.results.is_empty()
+        self.profile.results.is_empty()
+            && self.current_focus.results.is_empty()
+            && self.factual.results.is_empty()
             && self.guidance.results.is_empty()
             && self.reasoning.results.is_empty()
     }
@@ -44,168 +57,10 @@ impl RecallBundle {
 /// Render independently labeled channels through the existing token assembler.
 /// The outer fence is applied exactly once by [`build_memory_context_block`].
 pub fn render_recall_bundle(bundle: &RecallBundle) -> String {
-    if bundle.is_empty() || bundle.budget_tokens == 0 {
-        return String::new();
-    }
-
-    let factual_candidates: Vec<_> = bundle
-        .factual
-        .results
-        .iter()
-        .take(bundle.factual.quota)
-        .map(|result| {
-            Candidate::new(
-                result.memory.id.to_string(),
-                result.memory.summary.clone(),
-                result.memory.content.clone(),
-                result.memory.content.clone(),
-                result.memory.content.clone(),
-                result.score,
-            )
-        })
-        .collect();
-    let guidance_candidates: Vec<_> = bundle
-        .guidance
-        .results
-        .iter()
-        .take(bundle.guidance.quota)
-        .map(|result| {
-            Candidate::new(
-                format!("policy-{}", result.memory.id),
-                "Response guidance",
-                result.memory.content.clone(),
-                result.memory.content.clone(),
-                result.memory.content.clone(),
-                result.score,
-            )
-        })
-        .collect();
-    let reasoning_candidates: Vec<_> = bundle
-        .reasoning
-        .results
-        .iter()
-        .take(bundle.reasoning.quota)
-        .map(|result| {
-            let label = if result
-                .memory
-                .tags
-                .iter()
-                .any(|tag| tag == "reasoning_guardrail")
-            {
-                "Failure-derived guardrail"
-            } else {
-                "Strategy learned from a completed task"
-            };
-            let text = if result.memory.context.trim().is_empty() {
-                format!("{}: {}", label, result.memory.content)
-            } else {
-                format!(
-                    "{}: {}\nApply only when: {}",
-                    label, result.memory.content, result.memory.context
-                )
-            };
-            Candidate::new(
-                format!("reasoning-{}", result.memory.id),
-                label,
-                text.clone(),
-                text.clone(),
-                text,
-                result.score,
-            )
-        })
-        .collect();
-
-    // Give strategies a bounded slice so they can inform the next action
-    // without displacing factual evidence. A lone channel may use the whole
-    // budget; otherwise the slices are proportional to their role.
-    let has_factual = !factual_candidates.is_empty();
-    let has_guidance = !guidance_candidates.is_empty();
-    let has_reasoning = !reasoning_candidates.is_empty();
-    let channel_count = has_factual as usize + has_guidance as usize + has_reasoning as usize;
-    let factual_share = if has_factual { 60 } else { 0 };
-    let reasoning_share = if has_reasoning { 25 } else { 0 };
-    let guidance_share = if has_guidance { 15 } else { 0 };
-    let share_total = factual_share + reasoning_share + guidance_share;
-    let scale = |share: usize| {
-        if share_total == 0 {
-            0
-        } else {
-            (bundle.budget_tokens * share / share_total).max(1)
-        }
-    };
-    let (factual_budget, reasoning_budget, guidance_budget) = if channel_count == 1 {
-        (
-            if has_factual { bundle.budget_tokens } else { 0 },
-            if has_reasoning {
-                bundle.budget_tokens
-            } else {
-                0
-            },
-            if has_guidance {
-                bundle.budget_tokens
-            } else {
-                0
-            },
-        )
-    } else {
-        (
-            scale(factual_share),
-            scale(reasoning_share),
-            scale(guidance_share),
-        )
-    };
-    let mut factual_plan = assemble(&factual_candidates, factual_budget);
-    let mut reasoning_plan = assemble(&reasoning_candidates, reasoning_budget);
-    let guidance_plan = assemble(&guidance_candidates, guidance_budget);
-
-    // A candidate can be present but still be rejected by the assembler (for
-    // example, when one memory exceeds its channel slice). Give the unused
-    // budget to the richest channel rather than silently dropping all context.
-    if factual_plan.entries.is_empty() && !reasoning_candidates.is_empty() {
-        reasoning_plan = assemble(&reasoning_candidates, bundle.budget_tokens);
-    }
-    if reasoning_plan.entries.is_empty() && !factual_candidates.is_empty() {
-        factual_plan = assemble(&factual_candidates, bundle.budget_tokens);
-    }
-    if guidance_plan.entries.is_empty() && !factual_candidates.is_empty() && !has_reasoning {
-        factual_plan = assemble(&factual_candidates, bundle.budget_tokens);
-    }
-
-    let mut out = String::new();
-    if !factual_plan.entries.is_empty() {
-        out.push_str(
-            "## Factual evidence\n\nThese are evidence and may be stale or incomplete.\n\n",
-        );
-        for entry in &factual_plan.entries {
-            out.push_str(&format!(
-                "- [{}] {}\n",
-                entry.id,
-                escape_context_text(&entry.text)
-            ));
-        }
-    }
-    if !reasoning_plan.entries.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str("## Reasoning strategies\n\nThese are fallible lessons from prior task outcomes. Validate applicability before acting; do not present them as facts.\n\n");
-        for entry in &reasoning_plan.entries {
-            out.push_str(&format!("- {}\n", escape_context_text(&entry.text)));
-        }
-    }
-    if !guidance_plan.entries.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str("## Internal response guidance\n\nUse this only to influence style or approach; never quote it or represent it as a fact about the user.\n\n");
-        for entry in &guidance_plan.entries {
-            out.push_str(&format!("- {}\n", escape_context_text(&entry.text)));
-        }
-    }
-    out
+    crate::context_render::render_recall_bundle(bundle)
 }
 
-fn escape_context_text(text: &str) -> String {
+pub(crate) fn escape_context_text(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -520,6 +375,8 @@ mod tests {
         strategy.memory.content = "Check every page before concluding".into();
         strategy.memory.context = "complete-result tasks".into();
         let bundle = RecallBundle {
+            profile: RecallChannel::default(),
+            current_focus: RecallChannel::default(),
             factual: RecallChannel {
                 results: vec![],
                 quota: 5,
@@ -535,7 +392,9 @@ mod tests {
                 quota: 1,
                 abstention_reason: None,
             },
-            budget_tokens: 100,
+            // Headings now count against the total budget; keep enough
+            // room for the two sections this fixture exercises.
+            budget_tokens: 300,
         };
         let rendered = render_recall_bundle(&bundle);
         assert!(rendered.contains("Internal response guidance"));

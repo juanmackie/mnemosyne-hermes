@@ -273,6 +273,19 @@ pub async fn handle(
             .map(|hit| hit.result)
             .collect();
         let bundle = RecallBundle {
+            // Profile and current focus now travel through the same shared
+            // renderer/budget as factual evidence instead of being printed
+            // separately from the assembled block.
+            profile: RecallChannel {
+                results: profile_facts.clone(),
+                quota: 5,
+                abstention_reason: None,
+            },
+            current_focus: RecallChannel {
+                results: dynamic_facts.clone(),
+                quota: 3,
+                abstention_reason: None,
+            },
             factual: RecallChannel {
                 results: factual,
                 quota: 5,

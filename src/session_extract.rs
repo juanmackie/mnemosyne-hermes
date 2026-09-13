@@ -170,7 +170,7 @@ pub fn distill_turn(messages: &[SessionMessage]) -> TurnExtraction {
     TurnExtraction {
         schema_version: EXTRACTION_SCHEMA_VERSION.into(),
         candidates,
-        response_feedback: None,
+        response_feedback: extract_response_feedback(messages),
     }
 }
 
@@ -276,6 +276,16 @@ pub struct ExtractedResponseFeedback {
     pub evidence_quote: String,
     pub source_role: String,
     pub anchors: Vec<String>,
+    /// Which extractor produced this feedback, so provenance stays truthful
+    /// when the deterministic local extractor is the one in play.
+    #[serde(default = "default_feedback_extractor")]
+    pub extractor: String,
+}
+
+/// Extractor label assumed when a producer does not declare one: the
+/// LLM-backed extraction path is the historical default.
+fn default_feedback_extractor() -> String {
+    "configured-anthropic".to_string()
 }
 
 impl ExtractedResponseFeedback {
@@ -318,30 +328,236 @@ impl ExtractedResponseFeedback {
         {
             return false;
         }
-        let characteristic = [
-            "concise",
-            "verbose",
-            "brief",
-            "detailed",
-            "bullets",
-            "bullet",
-            "format",
-            "structure",
-            "code",
-            "diff",
-            "example",
-            "explain",
-            "heading",
-            "step",
-            "tone",
-            "plain text",
-            "markdown",
-            "length",
-        ];
-        characteristic.iter().any(|value| guidance.contains(value)) && !self.anchors.is_empty()
+        RESPONSE_CHARACTERISTICS
+            .iter()
+            .any(|value| guidance.contains(value))
+            && !self.anchors.is_empty()
     }
 }
 
+/// Characteristic vocabulary that separates response guidance from generic
+/// sentiment. Shared by [`ExtractedResponseFeedback::is_actionable`] and the
+/// deterministic [`extract_response_feedback`] extractor.
+const RESPONSE_CHARACTERISTICS: &[&str] = &[
+    "concise",
+    "verbose",
+    "brief",
+    "detailed",
+    "bullets",
+    "bullet",
+    "format",
+    "structure",
+    "code",
+    "diff",
+    "example",
+    "explain",
+    "heading",
+    "step",
+    "tone",
+    "plain text",
+    "markdown",
+    "length",
+];
+
+/// Markers that a user message is directing the shape of the reply rather
+/// than merely reacting to its content. Combined with a characteristic term,
+/// this is what makes a statement explicit response guidance.
+const RESPONSE_GUIDANCE_MARKERS: &[&str] = &[
+    "please",
+    "prefer",
+    "just ",
+    "only ",
+    "keep ",
+    "make it",
+    "make sure",
+    "give me",
+    "show me",
+    "show the",
+    "show a",
+    "use ",
+    "respond",
+    "reply",
+    "answer",
+    "output",
+    "write",
+    "explain",
+    "summarize",
+    "shorten",
+    "be more",
+    "be less",
+    "less ",
+    "more ",
+    "i want",
+    "i'd like",
+    "i would like",
+    "don't",
+    "do not",
+    "stop ",
+    "instead",
+    "rather than",
+    "avoid",
+];
+
+/// Negative markers that turn explicit guidance into a correction (avoid).
+const RESPONSE_CORRECTION_MARKERS: &[&str] = &[
+    "don't",
+    "do not",
+    "stop ",
+    "instead",
+    "rather than",
+    "avoid",
+    "no more",
+    "never ",
+    "quit ",
+];
+
+/// Dissatisfaction markers describe a concrete, nameable response defect.
+const RESPONSE_DISSATISFACTION_MARKERS: &[&str] = &[
+    "too verbose",
+    "too long",
+    "too short",
+    "too much",
+    "too detailed",
+    "not concise",
+    "not enough detail",
+    "too wordy",
+];
+
+/// Approval markers acknowledge a specific response characteristic.
+const RESPONSE_APPROVAL_MARKERS: &[&str] = &[
+    "exactly right",
+    "exactly what",
+    "that's right",
+    "is right",
+    "perfect",
+    "love this",
+    "like this",
+    "keep doing",
+    "keep it",
+];
+
+/// Longest user sentence eligible to become feedback evidence. Keeps every
+/// generated field inside the `TurnExtraction::validate` length bounds.
+const MAX_FEEDBACK_SENTENCE_CHARS: usize = 900;
+
+/// Extract explicit response-preference or correction guidance from the USER
+/// messages of a turn, deterministically and without any model call.
+///
+/// A statement qualifies only when it is authored by the user, names a
+/// characteristic of the response (see [`RESPONSE_CHARACTERISTICS`]) and
+/// carries an explicit directive marker. Generic thanks/praise, inferred
+/// sentiment, and assistant-authored suggestions are intentionally ignored.
+/// The returned value is guaranteed to be actionable and to satisfy the
+/// `response_feedback` arm of [`TurnExtraction::validate`] against the same
+/// `messages`.
+pub fn extract_response_feedback(messages: &[SessionMessage]) -> Option<ExtractedResponseFeedback> {
+    for message in messages {
+        if !message.role.eq_ignore_ascii_case("user") {
+            continue;
+        }
+        for sentence in split_source_sentences(&message.text) {
+            if sentence.chars().count() > MAX_FEEDBACK_SENTENCE_CHARS {
+                continue;
+            }
+            let lower = sentence.to_ascii_lowercase();
+            let characteristics: Vec<String> = RESPONSE_CHARACTERISTICS
+                .iter()
+                .filter(|value| lower.contains(**value))
+                .map(|value| (*value).to_owned())
+                .collect();
+            if characteristics.is_empty() {
+                continue;
+            }
+            if !RESPONSE_GUIDANCE_MARKERS
+                .iter()
+                .any(|marker| lower.contains(marker))
+            {
+                continue;
+            }
+
+            let (polarity, signal, confidence) = if RESPONSE_DISSATISFACTION_MARKERS
+                .iter()
+                .any(|marker| lower.contains(marker))
+            {
+                ("avoid", "dissatisfaction", 0.85_f32)
+            } else if RESPONSE_CORRECTION_MARKERS
+                .iter()
+                .any(|marker| lower.contains(marker))
+            {
+                ("avoid", "correction", 0.9)
+            } else if RESPONSE_APPROVAL_MARKERS
+                .iter()
+                .any(|marker| lower.contains(marker))
+            {
+                ("prefer", "approval", 0.86)
+            } else {
+                ("prefer", "direct_preference", 0.88)
+            };
+
+            let mut anchors: Vec<String> = Vec::new();
+            for characteristic in &characteristics {
+                if !anchors.contains(characteristic) {
+                    anchors.push(characteristic.clone());
+                }
+            }
+            if anchors.is_empty() {
+                continue;
+            }
+
+            let feedback = ExtractedResponseFeedback {
+                polarity: polarity.into(),
+                guidance: format!(
+                    "{}: {}",
+                    if polarity == "avoid" {
+                        "Avoid"
+                    } else {
+                        "Prefer"
+                    },
+                    sentence
+                ),
+                applicability: applicability_for(&characteristics).into(),
+                signal: signal.into(),
+                confidence,
+                evidence_quote: sentence.clone(),
+                source_role: "user".into(),
+                anchors,
+                extractor: "deterministic-local".into(),
+            };
+            if feedback.is_actionable() {
+                return Some(feedback);
+            }
+        }
+    }
+    None
+}
+
+fn applicability_for(characteristics: &[String]) -> &'static str {
+    let has = |values: &[&str]| {
+        values
+            .iter()
+            .any(|value| characteristics.iter().any(|item| item == value))
+    };
+    if has(&["code", "diff", "example"]) {
+        "response_content"
+    } else if has(&[
+        "bullets",
+        "bullet",
+        "format",
+        "structure",
+        "heading",
+        "markdown",
+        "plain text",
+        "step",
+    ]) {
+        "response_format"
+    } else if has(&["tone"]) {
+        "response_tone"
+    } else if has(&["concise", "verbose", "brief", "detailed", "length"]) {
+        "response_length"
+    } else {
+        "response_style"
+    }
+}
 /// Structured result returned by the turn distiller or an optional extractor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

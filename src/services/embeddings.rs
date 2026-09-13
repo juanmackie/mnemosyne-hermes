@@ -86,6 +86,23 @@ impl EmbeddingService {
         }
     }
 
+    /// Effective embedding model name, including the keyless fallback.
+    pub fn model_name(&self) -> String {
+        #[cfg(feature = "local-embeddings")]
+        {
+            if let Some(local) = &self.local {
+                use crate::embeddings::EmbeddingService as _;
+                return local.model_name().to_string();
+            }
+        }
+        "deterministic-hash-fallback".to_string()
+    }
+
+    /// Effective embedding dimensionality.
+    pub fn dimensions(&self) -> usize {
+        EMBEDDING_DIM
+    }
+
     /// Create a new embedding service without loading optional local models.
     pub fn new(api_key: String, config: LlmConfig) -> Self {
         Self {

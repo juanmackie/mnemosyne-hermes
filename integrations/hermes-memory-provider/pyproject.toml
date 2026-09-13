@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mnemosyne-rust-hermes"
+version = "0.1.0"
+description = "Hermes Agent MemoryProvider adapter for the Mnemosyne Rust binary over persistent MCP stdio."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Mnemosyne Hermes integration" }]
+keywords = ["hermes", "memory", "mcp", "mnemosyne"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = []
+
+[project.entry-points."hermes_agent.memory_providers"]
+mnemosyne-rust = "mnemosyne_rust_hermes:register"
+
+[tool.setuptools]
+packages = ["mnemosyne_rust_hermes"]

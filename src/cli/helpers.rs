@@ -216,7 +216,8 @@ pub async fn start_mcp_server(db_path_arg: Option<String>) -> Result<()> {
     }
 
     // MCP server should create database if it doesn't exist (for first-time setup)
-    let storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(db_path), true).await?;
+    let storage =
+        LibsqlStorage::new_with_validation(ConnectionMode::Local(db_path.clone()), true).await?;
 
     // Initialize LLM service (will error on first use if no API key)
     let llm = match LlmService::with_default() {
@@ -326,7 +327,8 @@ pub async fn start_mcp_server(db_path_arg: Option<String>) -> Result<()> {
         embeddings,
         event_sink,
         default_namespace,
-    );
+    )
+    .with_capture_db_path(Some(PathBuf::from(&db_path)));
 
     // Create and run MCP server
     let mcp_server = McpServer::new(tool_handler);
@@ -385,7 +387,8 @@ pub async fn start_mcp_server_with_api(
         std::fs::create_dir_all(parent)?;
     }
 
-    let storage = LibsqlStorage::new_with_validation(ConnectionMode::Local(db_path), true).await?;
+    let storage =
+        LibsqlStorage::new_with_validation(ConnectionMode::Local(db_path.clone()), true).await?;
 
     // Initialize LLM service
     let llm = match LlmService::with_default() {
@@ -439,7 +442,8 @@ pub async fn start_mcp_server_with_api(
         embeddings,
         event_sink,
         default_namespace,
-    );
+    )
+    .with_capture_db_path(Some(PathBuf::from(&db_path)));
 
     // Create MCP server
     let mcp_server = McpServer::new(tool_handler);

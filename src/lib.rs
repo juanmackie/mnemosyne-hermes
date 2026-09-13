@@ -48,9 +48,11 @@ pub mod agents;
 pub mod api; // HTTP API for event streaming
 pub mod artifacts; // Specification workflow artifacts
 pub mod bootstrap; // Bounded, channel-separated project startup context
+pub mod capture; // Automatic memory capture execution contexts
 pub mod config;
 pub mod constraints;
 pub mod context_assembler; // Token-budgeted tiered context packing
+pub mod context_render; // Shared recall selection/rendering across surfaces
 pub mod coordination; // ICS handoff coordination
 pub mod daemon;
 pub mod diagnostics; // Memory profiling and resource tracking
@@ -96,13 +98,15 @@ pub mod rpc;
 
 // Re-export commonly used types
 pub use agent_context::{
-    render_recall_bundle, RecallBundle, RecallChannel, StreamingContextScrubber,
+    render_recall_bundle, render_recall_bundle_with_diagnostics, select_recall_bundle,
+    RecallBundle, RecallChannel, RecallRenderDiagnostics, StreamingContextScrubber,
 };
 pub use agents::{AgentMemoryView, AgentRole, CustomImportanceScorer, MemoryAccessControl};
 pub use bootstrap::{
     build_bootstrap, BootstrapBudget, BootstrapConstraint, BootstrapMemory, BootstrapRequest,
     BootstrapResponse, BootstrapSkill, BOOTSTRAP_SCHEMA_VERSION,
 };
+pub use capture::{ExecutionContext, SKIPPED_CONTEXTS};
 pub use config::{ConfigManager, EmbeddingConfig, SearchConfig};
 pub use constraints::{
     ConstraintError, ConstraintProposal, ConstraintProposalService, ConstraintStatus,

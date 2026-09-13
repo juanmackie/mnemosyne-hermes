@@ -100,6 +100,10 @@ const DEFAULT_PROFILE_SLOTS: usize = 3;
 /// distinct from standing identity. Kept small — it is a nudge beside the
 /// standing profile, not a second weaponized channel.
 const DEFAULT_DYNAMIC_SLOTS: usize = 3;
+/// Default total token budget for provider prefetch context (headings included).
+const DEFAULT_PREFETCH_BUDGET: usize = 1024;
+/// Default factual evidence limit for provider prefetch.
+const DEFAULT_PREFETCH_LIMIT: usize = 5;
 
 #[derive(Debug, Clone, Copy)]
 struct PageInfo {
@@ -136,6 +140,13 @@ pub struct ToolHandler {
     /// Namespace supplied by the MCP process environment. Explicit tool
     /// arguments still override this value.
     default_namespace: Namespace,
+    /// Database path used to open the shared lifecycle capture manager.
+    capture_db_path: Option<std::path::PathBuf>,
+    /// Lazily opened manager for automatic completed-turn capture.
+    capture_manager: Arc<tokio::sync::OnceCell<crate::memory_manager::MemoryManager>>,
+    /// Process-local capture/skip counters exposed in prefetch diagnostics.
+    captured_count: Arc<std::sync::atomic::AtomicU64>,
+    skipped_count: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ToolHandler {
@@ -179,7 +190,18 @@ impl ToolHandler {
             embeddings,
             event_sink,
             default_namespace,
+            capture_db_path: None,
+            capture_manager: Arc::new(tokio::sync::OnceCell::new()),
+            captured_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            skipped_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    /// Point lifecycle capture at the MCP server's database so
+    /// `mnemosyne.sync_turn` can reuse the Rust memory manager.
+    pub fn with_capture_db_path(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.capture_db_path = path;
+        self
     }
 
     /// Create a new tool handler with event broadcasting (deprecated - use new_with_event_sink)
@@ -511,6 +533,39 @@ impl ToolHandler {
                     "required": ["action", "subject", "predicate"]
                 }),
             },
+            Tool {
+                name: "mnemosyne.prefetch".to_string(),
+                description: "Lifecycle prefetch for a Hermes memory provider: return unfenced personal context (standing profile, current focus, relevant facts, approved response guidance) for one turn. Injection is skipped for non-interactive execution contexts.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The user's current request or topic"},
+                        "namespace": {"type": "string", "description": "Namespace override (defaults to the MCP process scope)"},
+                        "budget_tokens": {"type": "integer", "description": "Total context budget, section headings included"},
+                        "limit": {"type": "integer", "default": 5},
+                        "execution_context": {"type": "string", "description": "user_turn|cron|flush|subagent|background|skill_loop"}
+                    },
+                    "required": ["query"]
+                }),
+            },
+            Tool {
+                name: "mnemosyne.sync_turn".to_string(),
+                description: "Lifecycle capture for a Hermes memory provider: persist and distill one completed turn through the Rust memory manager. Capture is skipped for non-interactive execution contexts; retries with the same session_id and turn_id are idempotent.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "user_text": {"type": "string"},
+                        "assistant_text": {"type": "string"},
+                        "namespace": {"type": "string"},
+                        "session_id": {"type": "string"},
+                        "turn_id": {"type": "string", "description": "Stable id for this turn; enables idempotent retries"},
+                        "execution_context": {"type": "string"},
+                        "speaker": {"type": "string", "description": "Available speaker identity"},
+                        "policy_owner": {"type": "string", "description": "Reviewer for extracted response-guidance proposals"}
+                    },
+                    "required": ["user_text", "assistant_text"]
+                }),
+            },
         ];
 
         // Hermes exposes provider tools as underscore-separated names, while
@@ -533,6 +588,8 @@ impl ToolHandler {
             ("mnemosyne.persona", "mnemosyne_persona"),
             ("mnemosyne.canonical", "mnemosyne_canonical"),
             ("mnemosyne.triples", "mnemosyne_triples"),
+            ("mnemosyne.prefetch", "mnemosyne_prefetch"),
+            ("mnemosyne.sync_turn", "mnemosyne_sync_turn"),
         ];
         let aliased_tools: Vec<Tool> = aliases
             .into_iter()
@@ -572,6 +629,8 @@ impl ToolHandler {
             "mnemosyne_persona" => "mnemosyne.persona",
             "mnemosyne_canonical" => "mnemosyne.canonical",
             "mnemosyne_triples" => "mnemosyne.triples",
+            "mnemosyne_prefetch" => "mnemosyne.prefetch",
+            "mnemosyne_sync_turn" => "mnemosyne.sync_turn",
             other => other,
         };
         info!("🔧 MCP tool called: {} (external process)", tool_name);
@@ -592,6 +651,8 @@ impl ToolHandler {
             "mnemosyne.persona" => self.persona(params).await,
             "mnemosyne.canonical" => self.canonical(params).await,
             "mnemosyne.triples" => self.triples(params).await,
+            "mnemosyne.prefetch" => self.prefetch(params).await,
+            "mnemosyne.sync_turn" => self.sync_turn(params).await,
             _ => {
                 warn!(
                     "{} Unknown MCP tool: {}",
@@ -722,6 +783,199 @@ impl ToolHandler {
             ));
         }
         Ok(threshold)
+    }
+
+    /// Lifecycle prefetch for a Hermes memory provider.
+    ///
+    /// Returns UNFENCED context so Hermes can apply its own `<memory-context>`
+    /// wrapper and streaming scrubber. Injection is skipped (empty text) for
+    /// non-interactive execution contexts.
+    async fn prefetch(&self, params: Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct PrefetchParams {
+            query: String,
+            namespace: Option<String>,
+            budget_tokens: Option<usize>,
+            limit: Option<usize>,
+            execution_context: Option<String>,
+        }
+
+        let params: PrefetchParams = serde_json::from_value(params)?;
+        Self::validate_non_empty(&params.query, "query")?;
+
+        if let Some(raw) = params.execution_context.as_deref() {
+            let context = crate::capture::ExecutionContext::parse(raw);
+            if !context.allows_injection() {
+                self.skipped_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(serde_json::json!({
+                    "text": "",
+                    "count": 0,
+                    "skipped": true,
+                    "reason": context.skip_reason(),
+                }));
+            }
+        }
+
+        let namespace = self.namespace_or_default(params.namespace.as_deref())?;
+        let budget_tokens = params.budget_tokens.unwrap_or(DEFAULT_PREFETCH_BUDGET);
+        let limit = params.limit.unwrap_or(DEFAULT_PREFETCH_LIMIT);
+        let bundle = crate::context_render::select_recall_bundle(
+            self.storage.as_ref(),
+            &params.query,
+            Some(namespace.clone()),
+            budget_tokens,
+            limit,
+            None,
+            DEFAULT_PROFILE_SLOTS,
+            DEFAULT_DYNAMIC_SLOTS,
+        )
+        .await?;
+        let (text, render) = crate::context_render::render_recall_bundle_with_diagnostics(&bundle);
+        let selected_count = render.selected_ids.len();
+        let diagnostics = serde_json::json!({
+            "namespace": namespace.to_string(),
+            "embedding_mode": self.embeddings.embedding_mode(),
+            "embedding_model": self.embeddings.model_name(),
+            "embedding_dimensions": self.embeddings.dimensions(),
+            "fallback_reason": if self.embeddings.uses_fallback_embeddings() {
+                Some("deterministic hash fallback embeddings")
+            } else {
+                None
+            },
+            "section_counts": render.section_counts,
+            "candidate_ids": render.candidate_ids,
+            "selected_ids": render.selected_ids,
+            "dedup_exclusions": render.dedup_exclusions,
+            "total_context_chars": render.total_chars,
+            "estimated_tokens": render.estimated_tokens,
+            "budget_tokens": render.budget_tokens,
+            "spent_tokens": render.spent_tokens,
+            "heading_tokens": render.heading_tokens,
+            "capture_count": self.captured_count.load(std::sync::atomic::Ordering::Relaxed),
+            "skip_count": self.skipped_count.load(std::sync::atomic::Ordering::Relaxed),
+        });
+        Ok(serde_json::json!({
+            "text": text,
+            "count": selected_count,
+            "diagnostics": diagnostics,
+        }))
+    }
+
+    /// Lifecycle capture for a Hermes memory provider.
+    async fn sync_turn(&self, params: Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct SyncTurnParams {
+            user_text: String,
+            assistant_text: String,
+            namespace: Option<String>,
+            session_id: Option<String>,
+            turn_id: Option<String>,
+            execution_context: Option<String>,
+            speaker: Option<String>,
+            policy_owner: Option<String>,
+        }
+
+        let params: SyncTurnParams = serde_json::from_value(params)?;
+        Self::validate_non_empty(&params.user_text, "user_text")?;
+
+        if let Some(raw) = params.execution_context.as_deref() {
+            let context = crate::capture::ExecutionContext::parse(raw);
+            if !context.allows_capture() {
+                self.skipped_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(serde_json::json!({
+                    "status": "skipped",
+                    "reason": context.skip_reason(),
+                    "derived_ids": [],
+                    "policy_proposal_ids": [],
+                }));
+            }
+        }
+
+        let namespace = self.namespace_or_default(params.namespace.as_deref())?;
+        let manager = self.capture_manager().await?;
+        let mut config = crate::memory_manager::MemoryConfig::new().namespace(namespace);
+        if let Some(owner) = params.policy_owner.as_deref() {
+            if !owner.trim().is_empty() {
+                config = config.policy_owner(owner);
+            }
+        }
+        let mut tags = Vec::new();
+        if let Some(speaker) = params.speaker.as_deref() {
+            if !speaker.trim().is_empty() {
+                tags.push(format!("speaker:{}", speaker.trim()));
+            }
+        }
+        if let Some(raw) = params.execution_context.as_deref() {
+            if !raw.trim().is_empty() {
+                tags.push(format!(
+                    "execution_context:{}",
+                    crate::capture::ExecutionContext::parse(raw).as_str()
+                ));
+            }
+        }
+        if !tags.is_empty() {
+            config = config.tags(tags);
+        }
+
+        match manager
+            .capture_completed_turn(
+                &params.user_text,
+                &params.assistant_text,
+                config,
+                params.session_id.as_deref(),
+                params.turn_id.as_deref(),
+                params.execution_context.as_deref(),
+            )
+            .await?
+        {
+            crate::memory_manager::CaptureDecision::Skipped { reason } => {
+                self.skipped_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(serde_json::json!({
+                    "status": "skipped",
+                    "reason": reason,
+                    "derived_ids": [],
+                    "policy_proposal_ids": [],
+                }))
+            }
+            crate::memory_manager::CaptureDecision::Captured(result) => {
+                self.captured_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(serde_json::json!({
+                    "status": "captured",
+                    "source_memory_id": result.source_memory_id.to_string(),
+                    "derived_ids": result
+                        .derived_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                    "policy_proposal_ids": result.policy_proposal_ids,
+                    "extraction_status": format!("{:?}", result.extraction_status),
+                }))
+            }
+        }
+    }
+
+    /// Lazily open the shared memory manager used by lifecycle capture.
+    ///
+    /// ponytail: the MCP process already holds a `StorageBackend` for reads;
+    /// this opens one additional connection to the same database for the
+    /// higher-level learning path. Upgrade to a shared handle if the storage
+    /// trait ever exposes the learner directly.
+    async fn capture_manager(&self) -> Result<&crate::memory_manager::MemoryManager> {
+        self.capture_manager
+            .get_or_try_init(|| async {
+                let path = self.capture_db_path.clone().ok_or_else(|| {
+                    crate::error::MnemosyneError::ValidationError(
+                        "mnemosyne.sync_turn requires the MCP server database path; start the server via `mnemosyne mcp`"
+                            .to_string(),
+                    )
+                })?;
+                crate::memory_manager::MemoryManager::new_with_path("mcp-capture", Some(path)).await
+            })
+            .await
     }
 
     /// Validate non-empty string
@@ -984,6 +1238,29 @@ impl ToolHandler {
                 result.score,
             )
         }));
+        // Standing profile and current focus ride in the SAME budget as facts
+        // and guidance, so the whole block - headings included - respects one
+        // total budget instead of appending unbudgeted text after assembly.
+        assembler_candidates.extend(profile_facts.iter().map(|fact| {
+            crate::context_assembler::Candidate::new(
+                format!("profile-{}", fact.memory.id),
+                "Standing profile",
+                fact.memory.summary.clone(),
+                fact.memory.summary.clone(),
+                fact.memory.content.clone(),
+                fact.score,
+            )
+        }));
+        assembler_candidates.extend(dynamic_facts.iter().map(|fact| {
+            crate::context_assembler::Candidate::new(
+                format!("focus-{}", fact.memory.id),
+                "Current focus",
+                fact.memory.summary.clone(),
+                fact.memory.summary.clone(),
+                fact.memory.content.clone(),
+                fact.score,
+            )
+        }));
         let budget_plan = crate::context_assembler::assemble(&assembler_candidates, content_budget);
 
         // The assembler's SELECTED entries (admitted under budget), ordered
@@ -1011,13 +1288,51 @@ impl ToolHandler {
             })
             .collect();
 
+        // Profile and focus entries ADMITTED under the shared budget, in the
+        // assembler's best-first order.
+        let selected_profile: Vec<&crate::types::SearchResult> = budget_plan
+            .entries
+            .iter()
+            .filter_map(|e| {
+                e.id.strip_prefix("profile-").and_then(|pid| {
+                    profile_facts
+                        .iter()
+                        .find(|r| r.memory.id.to_string() == pid)
+                })
+            })
+            .collect();
+        let selected_focus: Vec<&crate::types::SearchResult> = budget_plan
+            .entries
+            .iter()
+            .filter_map(|e| {
+                e.id.strip_prefix("focus-").and_then(|pid| {
+                    dynamic_facts
+                        .iter()
+                        .find(|r| r.memory.id.to_string() == pid)
+                })
+            })
+            .collect();
+
         // Disclose content budget and protocol overhead in the token ledger.
         let token_ledger = {
             let protocol_overhead_tokens = 2 + budget_plan.entries.len() * 8;
             serde_json::json!({
                 "budget_tokens": content_budget,
+                "content_budget_tokens": content_budget,
                 "protocol_overhead_tokens": protocol_overhead_tokens,
                 "spent_tokens": budget_plan.ledger.spent_tokens,
+                "admitted": {
+                    "factual": selected.len(),
+                    "response_guidance": selected_policy.len(),
+                    "profile": selected_profile.len(),
+                    "dynamic_profile": selected_focus.len(),
+                },
+                "retrieved": {
+                    "factual": results.len(),
+                    "response_guidance": policy_results.len(),
+                    "profile": profile_count,
+                    "dynamic_profile": dynamic_count,
+                },
             })
         };
 
@@ -1075,15 +1390,16 @@ impl ToolHandler {
             let mut lines = Vec::new();
             // Profile first: standing guidance frames the retrieved facts rather
             // than trailing them (this is also where a prompt would place it).
-            for fact in &profile_facts {
+            // Only entries admitted under the shared budget are rendered.
+            for fact in &selected_profile {
                 lines.push(format!(
                     "[always-on] {}\n  {}",
                     fact.memory.id, fact.memory.summary
                 ));
             }
             // Dynamic slice: recent current-focus context, after standing identity
-            // and before the ranked results.
-            for fact in &dynamic_facts {
+            // and before the ranked results. Budget-admitted entries only.
+            for fact in &selected_focus {
                 lines.push(format!(
                     "[now] {}\n  {}",
                     fact.memory.id, fact.memory.summary

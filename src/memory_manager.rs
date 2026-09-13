@@ -137,6 +137,15 @@ impl MemoryConfig {
     }
 }
 
+/// Outcome of an automatic completed-turn capture.
+#[derive(Debug, Clone)]
+pub enum CaptureDecision {
+    /// The turn was persisted and distilled.
+    Captured(TurnLearningResult),
+    /// The execution context forbids automatic capture; nothing was written.
+    Skipped { reason: String },
+}
+
 /// Ergonomic, agent-first memory API.
 ///
 /// Owns a [`LibsqlStorage`] in `Arc<Mutex<…>>` – thread-safe and `Clone`.
@@ -664,102 +673,42 @@ impl MemoryManager {
         budget_tokens: usize,
     ) -> Result<crate::agent_context::RecallBundle> {
         let q = query.into();
-        if is_trivial_prompt(&q) {
-            return Ok(crate::agent_context::RecallBundle {
-                factual: crate::agent_context::RecallChannel {
-                    results: Vec::new(),
-                    quota: 5,
-                    abstention_reason: Some("trivial prompt".into()),
-                },
-                guidance: crate::agent_context::RecallChannel {
-                    results: Vec::new(),
-                    quota: 3,
-                    abstention_reason: Some("trivial prompt".into()),
-                },
-                reasoning: crate::agent_context::RecallChannel {
-                    results: Vec::new(),
-                    quota: 1,
-                    abstention_reason: Some("trivial prompt".into()),
-                },
+        let namespace = config
+            .namespace
+            .clone()
+            .unwrap_or_else(|| self.default_namespace.clone());
+        let factual_limit = config.max_results.unwrap_or(5);
+
+        // One shared selection path: profile, current focus, facts, and
+        // approved response guidance. The MCP prefetch tool calls the same
+        // function through `StorageBackend`, so the surfaces cannot drift.
+        let mut bundle = {
+            let guard = self.storage.lock().await;
+            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
+            crate::context_render::select_recall_bundle(
+                inner,
+                &q,
+                Some(namespace.clone()),
                 budget_tokens,
-            });
-        }
-        let mut factual_results = {
-            let guard = self.storage.lock().await;
-            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
-            inner
-                .hybrid_search_by_class(
-                    &q,
-                    Some(
-                        config
-                            .namespace
-                            .clone()
-                            .unwrap_or_else(|| self.default_namespace.clone()),
-                    ),
-                    5,
-                    true,
-                    MemoryClass::Knowledge,
-                )
-                .await?
-        };
-        // Reasoning memories have their own sparse channel; do not let them
-        // crowd out factual evidence in the ordinary knowledge lane.
-        factual_results.retain(|result| {
-            !result
-                .memory
-                .tags
-                .iter()
-                .any(|tag| tag == "reasoning_strategy")
-        });
-        if let Some(min_importance) = config.min_importance {
-            factual_results.retain(|result| result.memory.importance >= min_importance);
-        }
-        let best_factual = factual_results
-            .iter()
-            .map(|result| result.score)
-            .fold(0.0_f32, f32::max);
-        let (factual, factual_reason) = if factual_results.is_empty() {
-            (
-                Vec::new(),
-                Some("no factual memories matched the query".to_string()),
+                factual_limit,
+                config.min_importance,
+                5,
+                3,
             )
-        } else if best_factual < DEFAULT_ABSTENTION_THRESHOLD {
-            (
-                Vec::new(),
-                Some(format!(
-                    "best factual match score {:.2} below abstention threshold {:.2}",
-                    best_factual, DEFAULT_ABSTENTION_THRESHOLD
-                )),
-            )
-        } else {
-            (factual_results, None)
+            .await?
         };
-        // Policies are global and selected independently. Their source turns
-        // must still be live, and anchor matching never calls an LLM.
-        let guidance = {
-            let guard = self.storage.lock().await;
-            let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
-            inner.search_interaction_policies(&q, 3).await?
-        };
-        let guidance_reason = if guidance.is_empty() {
-            Some("no eligible anchored policy matched the query".to_string())
-        } else {
-            None
-        };
+
+        if is_trivial_prompt(&q) {
+            return Ok(bundle);
+        }
+
+        // Reasoning stays a separate, deliberately sparse channel retrieved
+        // through the outcome-aware LibsqlStorage API.
         let raw_reasoning = {
             let guard = self.storage.lock().await;
             let inner: &crate::storage::libsql::LibsqlStorage = &*guard;
             inner
-                .search_reasoning_strategies(
-                    &q,
-                    Some(
-                        config
-                            .namespace
-                            .clone()
-                            .unwrap_or_else(|| self.default_namespace.clone()),
-                    ),
-                    1,
-                )
+                .search_reasoning_strategies(&q, Some(namespace), 1)
                 .await?
                 .into_iter()
                 .map(|hit| hit.result)
@@ -769,43 +718,32 @@ impl MemoryManager {
             .iter()
             .map(|result| result.score)
             .fold(0.0_f32, f32::max);
-        let (reasoning, reasoning_reason) = if raw_reasoning.is_empty() {
-            (
-                Vec::new(),
-                Some("no eligible reasoning strategy matched the query".to_string()),
-            )
+        bundle.reasoning = if raw_reasoning.is_empty() {
+            crate::agent_context::RecallChannel {
+                results: Vec::new(),
+                quota: 1,
+                abstention_reason: Some(
+                    "no eligible reasoning strategy matched the query".to_string(),
+                ),
+            }
         } else if best_reasoning < DEFAULT_ABSTENTION_THRESHOLD {
-            (
-                Vec::new(),
-                Some(format!(
+            crate::agent_context::RecallChannel {
+                results: Vec::new(),
+                quota: 1,
+                abstention_reason: Some(format!(
                     "best reasoning match score {:.2} below abstention threshold {:.2}",
                     best_reasoning, DEFAULT_ABSTENTION_THRESHOLD
                 )),
-            )
+            }
         } else {
-            (raw_reasoning, None)
-        };
-        // Reasoning items are selected independently and deliberately kept
-        // sparse: one high-quality lesson is safer than a noisy bundle of
-        // contradictory strategies.
-        Ok(crate::agent_context::RecallBundle {
-            factual: crate::agent_context::RecallChannel {
-                results: factual.into_iter().take(5).collect(),
-                quota: 5,
-                abstention_reason: factual_reason,
-            },
-            guidance: crate::agent_context::RecallChannel {
-                results: guidance,
-                quota: 3,
-                abstention_reason: guidance_reason,
-            },
-            reasoning: crate::agent_context::RecallChannel {
-                results: reasoning,
+            crate::agent_context::RecallChannel {
+                results: raw_reasoning,
                 quota: 1,
-                abstention_reason: reasoning_reason,
-            },
-            budget_tokens,
-        })
+                abstention_reason: None,
+            }
+        };
+
+        Ok(bundle)
     }
 
     pub async fn prefetch(&self, query: impl Into<String>) -> String {
@@ -945,6 +883,45 @@ impl MemoryManager {
     ) -> Result<TurnLearningResult> {
         self.sync_and_learn_with_config_metadata(user_text, assistant_text, config, None, None)
             .await
+    }
+
+    /// Capture a completed turn through the ONE automatic ingestion path.
+    ///
+    /// Returns [`CaptureDecision::Skipped`] without writing anything when the
+    /// caller's execution context is a non-interactive surface (cron, flush,
+    /// subagent, background, skill loop). An unrecognized context is treated
+    /// as interactive, but no path can re-enable capture for an explicitly
+    /// skipped context.
+    pub async fn capture_completed_turn(
+        &self,
+        user_text: &str,
+        assistant_text: &str,
+        config: MemoryConfig,
+        session_id: Option<&str>,
+        turn_id: Option<&str>,
+        execution_context: Option<&str>,
+    ) -> Result<CaptureDecision> {
+        if let Some(raw) = execution_context {
+            let context = crate::capture::ExecutionContext::parse(raw);
+            if !context.allows_capture() {
+                return Ok(CaptureDecision::Skipped {
+                    reason: context
+                        .skip_reason()
+                        .unwrap_or("automatic capture skipped for this execution context")
+                        .to_string(),
+                });
+            }
+        }
+        let result = self
+            .sync_and_learn_with_config_metadata(
+                user_text,
+                assistant_text,
+                config,
+                session_id,
+                turn_id,
+            )
+            .await?;
+        Ok(CaptureDecision::Captured(result))
     }
 
     fn completed_learning_result(
@@ -1335,7 +1312,7 @@ impl MemoryManager {
                 },
                 observed_at: now,
                 evidence_quote: feedback.evidence_quote.clone(),
-                extractor_model: Some("configured-anthropic".into()),
+                extractor_model: Some(feedback.extractor.clone()),
                 extraction_schema_version: Some(
                     crate::session_extract::EXTRACTION_SCHEMA_VERSION.into(),
                 ),
@@ -1734,6 +1711,55 @@ pub use crate::agent_context::build_memory_context_block;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn capture_completed_turn_skips_non_interactive_contexts() {
+        let dir = std::env::temp_dir().join(format!("mnm-capture-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("capture.db");
+        let manager = MemoryManager::new_with_path("capture-skip", Some(path))
+            .await
+            .unwrap();
+
+        let skipped = manager
+            .capture_completed_turn(
+                "I always want concise answers with bullets",
+                "Understood.",
+                MemoryConfig::new(),
+                None,
+                None,
+                Some("cron"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(skipped, CaptureDecision::Skipped { .. }),
+            "cron must skip automatic capture"
+        );
+        assert_eq!(
+            manager.recall("concise answers", 5).await.unwrap().len(),
+            0,
+            "a skipped context must not persist memories"
+        );
+
+        let captured = manager
+            .capture_completed_turn(
+                "I always want concise answers with bullets",
+                "Understood.",
+                MemoryConfig::new(),
+                Some("session-1"),
+                Some("turn-1"),
+                Some("user_turn"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(captured, CaptureDecision::Captured(_)),
+            "an interactive turn must capture"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn mn_mgr_new_sets_agent_id() {

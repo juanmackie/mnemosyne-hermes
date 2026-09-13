@@ -230,6 +230,39 @@ impl EmbeddingConfig {
         self.device == "cuda"
     }
 
+    /// Deployment preset matching a `bge-small-en-v1.5` memory bank
+    /// (384 dimensions) on the existing optional local runtime.
+    pub fn bge_small_preset() -> Self {
+        Self {
+            model: "bge-small-en-v1.5".to_string(),
+            ..Self::default()
+        }
+    }
+
+    /// Human-readable effective configuration for diagnostics.
+    pub fn describe(&self) -> String {
+        format!(
+            "enabled={} model={} dimensions={} device={} cache_dir={}",
+            self.enabled,
+            self.model,
+            self.dimensions(),
+            self.device,
+            self.cache_dir.display()
+        )
+    }
+
+    /// Report a model conflict when stored vectors were produced by a
+    /// different model than the one currently configured.
+    pub fn model_conflict(&self, stored_model: &str) -> Option<String> {
+        if stored_model.is_empty() || stored_model == self.model {
+            return None;
+        }
+        Some(format!(
+            "stored vectors use '{}' but the effective model is '{}'; re-run `mnemosyne embed --all`",
+            stored_model, self.model
+        ))
+    }
+
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
         // Check if model is supported
