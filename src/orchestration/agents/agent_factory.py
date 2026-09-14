@@ -9,6 +9,8 @@ Used by the Python agent bridge (claude_agent_session) to spawn Python agents.
 
 from typing import Any, Dict, Optional, List
 import asyncio
+import tempfile
+import os
 
 # Import agent implementations
 from .orchestrator import OrchestratorAgent, OrchestratorConfig
@@ -18,10 +20,11 @@ from .executor import ExecutorAgent, ExecutorConfig
 
 
 class MockCoordinator:
-    """Mock coordinator for testing/standalone agent usage."""
+    """Lightweight coordinator for standalone agent usage."""
 
     def __init__(self):
         self._agents = {}
+        self._metrics = {}
 
     def register_agent(self, agent_id: str):
         """Register an agent."""
@@ -36,38 +39,65 @@ class MockCoordinator:
         """Get context utilization (mock returns 0.5)."""
         return 0.5
 
+    def set_metric(self, name: str, value: Any):
+        """Track a metric."""
+        self._metrics[name] = value
+
+    def get_metric(self, name: str, default: Any = None) -> Any:
+        """Get a metric value."""
+        return self._metrics.get(name, default)
+
 
 class MockStorage:
-    """Mock storage for testing/standalone agent usage."""
+    """Mock storage that delegates to real PythonMemoryStorage."""
 
     def __init__(self, db_path: Optional[str] = None):
-        """Initialize mock storage with optional real backend."""
-        self._db_path = db_path
-        self._real_storage = None
+        """Initialize storage with real backend (in-memory if no path)."""
+        from lib.storage import PythonMemoryStorage
         if db_path:
-            from lib.storage import PythonMemoryStorage
-            self._real_storage = PythonMemoryStorage(db_path)
+            self._storage = PythonMemoryStorage(db_path)
+        else:
+            # Use in-memory database for standalone usage
+            import tempfile, os
+            fd, tmp = tempfile.mkstemp(suffix='.db')
+            os.close(fd)
+            self._storage = PythonMemoryStorage(tmp)
+            self._tmp_path = tmp
 
     def store(self, memory: Dict[str, Any]):
-        """Store memory — delegates to real storage if available."""
-        if self._real_storage:
-            self._real_storage.remember(
-                content=memory.get("content", ""),
-                namespace=memory.get("namespace", "default"),
-                importance=memory.get("importance", 5)
-            )
+        """Store memory in real storage."""
+        self._storage.remember(
+            content=memory.get("content", ""),
+            namespace=memory.get("namespace", "default"),
+            importance=memory.get("importance", 5)
+        )
+
+    async def remember(self, content: str, namespace: str, importance: int,
+                       context: Optional[str] = None) -> Dict[str, Any]:
+        """Remember - async alias for store."""
+        return self._storage.remember(content, namespace, importance, context)
 
     def recall(self, query: str, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
         """Search memories."""
-        if self._real_storage:
-            return self._real_storage.recall(query, namespace)
-        return []
+        return self._storage.recall(query, namespace)
 
     def list_memories(self, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
         """List memories."""
-        if self._real_storage:
-            return self._real_storage.list_memories(namespace)
-        return []
+        return self._storage.list_memories(namespace)
+
+    def count(self, namespace: Optional[str] = None) -> int:
+        """Count memories."""
+        return self._storage.count(namespace)
+
+    def graph(self, query: Optional[str] = None, namespace: Optional[str] = None,
+              depth: int = 1) -> Dict[str, Any]:
+        """Get memory graph."""
+        return self._storage.graph(query, namespace, depth)
+
+    def consolidate(self, namespace: Optional[str] = None,
+                    auto_apply: bool = False) -> Dict[str, Any]:
+        """Consolidate similar memories."""
+        return self._storage.consolidate(namespace, auto_apply)
 
 
 class MockParallelExecutor:
@@ -138,7 +168,7 @@ def create_agent(
         )
         return OptimizerAgent(
             config=agent_config,
-            skills_directory=config.get("skills_directory", "skills"),
+            coordinator=mock_coordinator,
             storage=mock_storage
         )
 
@@ -149,6 +179,7 @@ def create_agent(
         )
         return ReviewerAgent(
             config=agent_config,
+            coordinator=mock_coordinator,
             storage=mock_storage
         )
 
