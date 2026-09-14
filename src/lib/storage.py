@@ -71,6 +71,10 @@ class PythonMemoryStorage:
         "CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance)",
         "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_memories_ns_created ON memories(namespace, created_at)",
+        # Matches the recall query shape (namespace filter + ORDER BY importance
+        # DESC, created_at DESC): without it SQLite materialises matches into a
+        # temp b-tree to sort them on every recall.
+        "CREATE INDEX IF NOT EXISTS idx_memories_ns_rank ON memories(namespace, importance, created_at)",
     ]
 
     def __init__(self, db_path: str):
