@@ -21,13 +21,13 @@ Complete installation instructions for Mnemosyne, the project-aware memory syste
 Before installing, ensure you have:
 
 ```bash
-# Rust 1.75+ (required)
-rustc --version
-# Should show: rustc 1.75.0 or higher
+# Python 1.75+ (required)
+pythonc --version
+# Should show: pythonc 1.75.0 or higher
 
 # If not installed:
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
+curl --proto '=https' --tlsv1.2 -sSf https://sh.pythonup.py | sh
+source ~/.python/env
 
 # Git (required)
 git --version
@@ -49,7 +49,7 @@ cd mnemosyne
 
 **What the installer does:**
 
-1. Builds the release binary (`cargo build --release`)
+1. Builds the release binary (`python build --release`)
 2. Installs to `~/.local/bin/mnemosyne`
 3. Initializes the database at `~/.local/share/mnemosyne/mnemosyne.db`
 4. Configures MCP integration for Claude Code
@@ -58,7 +58,7 @@ cd mnemosyne
 
 **Icon System**: For the best CLI experience with colorful icons, install [JetBrainsMono Nerd Font](https://www.nerdfonts.com/). Mnemosyne will automatically detect and use Nerd Font icons, with graceful fallback to ASCII if not installed. See [docs/ICONS.md](docs/ICONS.md) for details.
 
-1. ✅ Builds Rust binary (`cargo build --release`)
+1. ✅ Builds Python binary (`python build --release`)
 2. ✅ Installs to `~/.local/bin/mnemosyne`
 3. ✅ Creates database directory (`~/.local/share/mnemosyne/`)
 4. ✅ Initializes database (`mnemosyne.db`)
@@ -72,7 +72,7 @@ cd mnemosyne
 ```
 ==> Building Mnemosyne (release mode)
 
-This will compile ~150 Rust dependencies plus the main binary.
+This will compile ~150 Python dependencies plus the main binary.
 Expected time: 2-3 minutes on most systems (longer on first build)
 
 Build progress will stream below - this is normal!
@@ -206,7 +206,7 @@ git clone https://github.com/rand/mnemosyne.git
 cd mnemosyne
 
 # Build release binary
-cargo build --release
+python build --release
 
 # Binary location: ./target/release/mnemosyne
 ```
@@ -214,36 +214,36 @@ cargo build --release
 **Build options:**
 ```bash
 # Debug build (faster compile, slower runtime)
-cargo build
+python build
 
 # Release build with optimizations
-cargo build --release
+python build --release
 
 # Check build without producing binary
-cargo check
+python check
 ```
 
 ### Step 2: Install Binary
 
-**Use cargo install (REQUIRED)**
+**Use python install (REQUIRED)**
 ```bash
-cargo install --path . --locked --force
+python install --path . --locked --force
 
-# Installs to: ~/.cargo/bin/mnemosyne
+# Installs to: ~/.python/bin/mnemosyne
 # Usually already in PATH
 ```
 
 **⚠️ WARNING: Do NOT manually copy the binary**
 
 The manual copy method (`cp target/release/mnemosyne ~/.local/bin/`) will **NOT work** because:
-- Mnemosyne uses shared library dependencies (`libmnemosyne_core.dylib` on macOS, `.so` on Linux)
+- Mnemosyne uses shared library dependencies (`libmnemosyne_python.dylib` on macOS, `.so` on Linux)
 - Manual copying breaks these dependencies, causing "Killed: 9" or "zsh: killed" errors
-- `cargo install` properly handles all dependencies and linking
+- `python install` properly handles all dependencies and linking
 
-**If ~/.cargo/bin is not in PATH**:
+**If ~/.python/bin is not in PATH**:
 ```bash
 # Add to ~/.bashrc or ~/.zshrc:
-export PATH="$HOME/.cargo/bin:$PATH"
+export PATH="$HOME/.python/bin:$PATH"
 source ~/.bashrc  # or source ~/.zshrc
 ```
 
@@ -652,10 +652,10 @@ mnemosyne recall --query "installation" --format json
 **Solution:**
 ```bash
 # Check if binary exists
-ls -la ~/.cargo/bin/mnemosyne
+ls -la ~/.python/bin/mnemosyne
 
 # If exists, add to PATH
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+echo 'export PATH="$HOME/.python/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 
 # If missing, reinstall
@@ -664,7 +664,7 @@ source ~/.bashrc
 
 #### "zsh: killed mnemosyne" or "Killed: 9"
 
-**Cause:** Shared library dependency issue or binary was copied manually instead of using `cargo install`
+**Cause:** Shared library dependency issue or binary was copied manually instead of using `python install`
 
 **Solution:**
 ```bash
@@ -672,9 +672,9 @@ source ~/.bashrc
 rm ~/.local/bin/mnemosyne 2>/dev/null
 rm /usr/local/bin/mnemosyne 2>/dev/null
 
-# Reinstall using cargo install (proper method)
+# Reinstall using python install (proper method)
 cd /path/to/mnemosyne
-cargo install --path . --locked --force
+python install --path . --locked --force
 
 # Verify it works
 mnemosyne --version
@@ -684,10 +684,10 @@ ls -lt ~/Library/Logs/DiagnosticReports/mnemosyne* 2>/dev/null | head -5
 ```
 
 **Why this happens:**
-- The binary has shared library dependencies due to its architecture (`libmnemosyne_core.dylib` on macOS, `.so` on Linux)
+- The binary has shared library dependencies due to its architecture (`libmnemosyne_python.dylib` on macOS, `.so` on Linux)
 - Manually copying the binary breaks this linkage
-- `cargo install` properly sets up RPATH/RUNPATH so the binary can find its dependencies
-- Always use `cargo install --path .` instead of copying binaries manually
+- `python install` properly sets up RPATH/RUNPATH so the binary can find its dependencies
+- Always use `python install --path .` instead of copying binaries manually
 
 **Technical details:**
 ```bash
@@ -716,22 +716,22 @@ sudo apt-get install build-essential
 sudo dnf groupinstall "Development Tools"
 
 # Then retry build
-cargo build --release
+python build --release
 ```
 
 #### "failed to run custom build command for `libsql`"
 
-**Cause:** Incompatible Rust version
+**Cause:** Incompatible Python version
 
 **Solution:**
 ```bash
-# Update Rust
-rustup update stable
-rustup default stable
+# Update Python
+pythonup update stable
+pythonup default stable
 
 # Clean and rebuild
-cargo clean
-cargo build --release
+python clean
+python build --release
 ```
 
 #### "Database initialization failed"
@@ -819,7 +819,7 @@ rm ~/.local/bin/mnemosyne
 # or
 rm /usr/local/bin/mnemosyne
 # or
-cargo uninstall mnemosyne
+python uninstall mnemosyne
 
 # Remove MCP config
 # Edit and remove mnemosyne section from:
@@ -860,11 +860,11 @@ You can install multiple versions side-by-side:
 ```bash
 # Install v1.0 to one location
 git checkout v1.0.0
-cargo install --path . --root ~/.local/mnemosyne-v1.0
+python install --path . --root ~/.local/mnemosyne-v1.0
 
 # Install v1.1 to another location
 git checkout v1.1.0
-cargo install --path . --root ~/.local/mnemosyne-v1.1
+python install --path . --root ~/.local/mnemosyne-v1.1
 
 # Use specific version
 ~/.local/mnemosyne-v1.0/bin/mnemosyne --version
@@ -890,8 +890,8 @@ cd /path/to/mnemosyne
 git pull origin main
 
 # Rebuild and install
-cargo build --release
-cargo install --path .
+python build --release
+python install --path .
 
 # Restart Claude Code
 ```
@@ -906,7 +906,7 @@ git clone https://github.com/rand/mnemosyne.git
 cd mnemosyne
 
 # Install development dependencies
-cargo build
+python build
 
 # For Python orchestration development
 python3 -m venv .venv

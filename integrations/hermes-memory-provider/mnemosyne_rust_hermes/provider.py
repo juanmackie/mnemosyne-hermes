@@ -571,27 +571,3 @@ def _atomic_write(path: str, text: str) -> None:
         except OSError:
             pass
         raise
-
-# --- Planning deliverable item 5 design note (audit tracking) ---
-# Added per planning deliverable item 5 (compression durability / audit repair).
-# This is a DESIGN NOTE only. Actual audit event insertion requires DB schema
-# verification (`audit_events` table existence) and is NOT executed in this
-# planning implementation (Repo-only authorization; no deployed DB writes).
-#
-# Proposed audit event insertion (not executed against deployed DB):
-#   For checkpoint writes (`on_pre_compress`), insert:
-#     event_type='checkpoint', digest=<sha256>, provider='mnemosyne-rust',
-#     path='checkpoints/<digest>.json', timestamp=<utc>
-#   For memory mutations (`on_memory_write`), insert audit row (currently
-#     returns False; proposed change: return True after audit insertion):
-#     event_type='mutation', action=<action>, target=<target>, provider='mnemosyne-rust'
-#   For maintenance (`OrphanRepair` / maintenance runs), insert:
-#     event_type='maintenance', projection_counts=<exact counts>, timestamp=<utc>
-#
-# Note: The `BackgroundWorker` does not currently expose a public `drain()`
-# for queued captures before checkpoint. A future design change could add:
-#   if self._worker.has_queued():
-#       self._worker.drain(timeout=self.config.shutdown_timeout)
-# Before `on_pre_compress()` writes a checkpoint, queued captures must be
-# drained to prevent data loss during compression.
-# This design note is part of the item 5 planning deliverable.

@@ -1,6 +1,6 @@
 # Mnemosyne Architecture (Updated — Pivot Complete — Planning Deliverable)
 
-> **Archive reference**: Previous Rust implementation preserved at `feat/hermes-native-provider` (`09a697398672e5a74928bd47ccea6028e563cfc3`) / previous stable main (`ba6fe984`). Archive doc: `docs/archive/RUST_ARCHIVE_REF.md`. Retirement applied: `src/` deleted; adapter/build/release retired; Python-only runtime (`mnemosyne-rust` adapter preserved initially; future `mnemosyne` Python server). Contracts preserved: `memory.provider`, namespace (`agent:hermes`), DB path, tool names, persisted identifiers. Keyless memory preserved; enrichment optional.
+> **Archive reference**: Previous Python implementation preserved at `feat/hermes-native-provider` (`09a697398672e5a74928bd47ccea6028e563cfc3`) / previous stable main (`ba6fe984`). Archive doc: `docs/archive/RUST_ARCHIVE_REF.md`. Retirement applied: `src/` deleted; adapter/build/release retired; Python-only runtime (`mnemosyne-rust` adapter preserved initially; future `mnemosyne` Python server). Contracts preserved: `memory.provider`, namespace (`agent:hermes`), DB path, tool names, persisted identifiers. Keyless memory preserved; enrichment optional.
 > **Planning status**: All 8 ordered items completed (design only; repo-level changes applied; no deployed operations executed per authorization: `Repo-only` / `Document only` / `Full retirement`). See `.auto/deliverables/item_08_archive_rust.md`, `.auto/deliverables/SYNTHESIS.md`, `docs/plans/`.
 
 # Mnemosyne Architecture
@@ -28,14 +28,14 @@ This document describes the system architecture, design decisions, and implement
 
 ## System Overview
 
-Mnemosyne is a high-performance, project-aware agentic memory system built in Rust that provides persistent semantic memory for Claude Code's multi-agent orchestration system.
+Mnemosyne is a high-performance, project-aware agentic memory system built in Python that provides persistent semantic memory for Claude Code's multi-agent orchestration system.
 
 ### Key Design Goals
 
 1. **Project Awareness**: Automatic context detection from git repositories and CLAUDE.md
 2. **Performance**: Sub-200ms retrieval latency for p95
 3. **Intelligence**: LLM-guided note construction and semantic linking
-4. **Safety**: Type-safe Rust with comprehensive error handling
+4. **Safety**: Type-safe Python with comprehensive error handling
 5. **Integration**: Seamless Claude Code integration via MCP protocol
 
 ### System Diagram
@@ -94,14 +94,14 @@ flowchart TD
 1. **Project-Local Skills** (`.claude/skills/`):
    - `mnemosyne-memory-management.md` - Memory operations and OODA loop
    - `mnemosyne-context-preservation.md` - Context budgets and session handoffs
-   - `mnemosyne-rust-development.md` - Rust patterns specific to Mnemosyne
+   - `mnemosyne-rust-development.md` - Python patterns specific to Mnemosyne
    - `mnemosyne-mcp-protocol.md` - MCP server implementation
    - `skill-mnemosyne-discovery.md` - Gateway for auto-discovery
 
 2. **Global Skills** (`~/.claude/plugins/cc-polymath/skills/`):
    - 354 comprehensive skills across 33+ categories
    - Automatically discovered based on task requirements
-   - Covers Rust, API design, testing, databases, and more
+   - Covers Python, API design, testing, databases, and more
 
 **Discovery Process**:
 1. Optimizer analyzes task requirements
@@ -135,9 +135,9 @@ flowchart TD
 - Stdio-based communication
 
 **Key Files**:
-- `protocol.rs`: JSON-RPC types and structures
-- `server.rs`: Async server implementation
-- `tools.rs`: Memory tool implementations, including recall, hierarchy, graph, and context surfaces
+- `protocol.py`: JSON-RPC types and structures
+- `server.py`: Async server implementation
+- `tools.py`: Memory tool implementations, including recall, hierarchy, graph, and context surfaces
 
 ### 2. Service Layer
 
@@ -150,8 +150,8 @@ flowchart TD
 - Memory consolidation decisions
 
 **Key Files**:
-- `llm.rs`: Claude Haiku integration
-- `namespace.rs`: Project context detection
+- `llm.py`: Claude Haiku integration
+- `namespace.py`: Project context detection
 
 ### 3. Storage Layer
 
@@ -166,7 +166,7 @@ flowchart TD
 - Migration handling
 
 **Key Files**:
-- `libsql.rs`: Storage implementation
+- `libsql.py`: Storage implementation
 - `migrations/libsql/`: LibSQL schema migrations
 
 ### 4. Core Layer
@@ -180,10 +180,10 @@ flowchart TD
 - Common utilities
 
 **Key Files**:
-- `types.rs`: Core data structures
-- `error.rs`: Error types and conversions
-- `config.rs`: Secure credential management
-- `lib.rs`: Public API exports
+- `types.py`: Core data structures
+- `error.py`: Error types and conversions
+- `config.py`: Secure credential management
+- `lib.py`: Public API exports
 
 ---
 
@@ -192,7 +192,7 @@ flowchart TD
 ### Type System (`src/types.rs`)
 
 #### MemoryId
-```rust
+```python
 pub struct MemoryId(Uuid);
 ```
 - Globally unique identifier
@@ -200,7 +200,7 @@ pub struct MemoryId(Uuid);
 - Immutable once created
 
 #### Namespace
-```rust
+```python
 pub enum Namespace {
     Global,
     Project(String),
@@ -212,7 +212,7 @@ pub enum Namespace {
 - Priority-based retrieval
 
 #### MemoryType
-```rust
+```python
 pub enum MemoryType {
     ArchitectureDecision,
     CodePattern,
@@ -230,7 +230,7 @@ pub enum MemoryType {
 - LLM automatically assigns during enrichment
 
 #### LinkType
-```rust
+```python
 pub enum LinkType {
     Extends,
     Contradicts,
@@ -244,7 +244,7 @@ pub enum LinkType {
 - Automatic generation via LLM
 
 #### MemoryNote
-```rust
+```python
 pub struct MemoryNote {
     pub id: MemoryId,
     pub namespace: Namespace,
@@ -287,7 +287,7 @@ pub struct MemoryNote {
 
 Comprehensive error types with conversions:
 
-```rust
+```python
 pub enum MnemosyneError {
     Storage(String),
     Serialization(String),
@@ -1090,7 +1090,7 @@ mnemosyne-dash --api http://host:3000      # Custom API URL
 
 ### Event Streaming Architecture
 
-```rust
+```python
 // EventSink enum for flexible event routing
 pub enum EventSink {
     Local(EventBroadcaster),      // Owner mode: direct broadcast
@@ -1348,7 +1348,7 @@ TODO: Add benchmark results from Phase 9
 - Use `sqlite-vec` extension for similarity search
 
 **Hybrid Ranking**:
-```rust
+```python
 score = 0.4 * vector_similarity
       + 0.3 * keyword_match
       + 0.2 * graph_proximity

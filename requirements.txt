@@ -1,6 +1,7 @@
 # Multi-Agent Orchestration Dependencies
+anthropic>=0.72.0
 claude-agent-sdk>=0.1.0
-asyncio>=3.4.3
+dspy-ai>=3.0.3
 rich>=13.0.0
 
 # Development

@@ -1,0 +1,54 @@
+# Mnemosyne Makefile (Python runtime)
+# All Rust targets retired; Python equivalents below.
+
+.PHONY: help install test clean check lint format doctor
+
+# Default target: show help
+help:
+	@echo "Mnemosyne Development Commands"
+	@echo ""
+	@echo "Build & Install:"
+	@echo "  make install      Install Python package"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test         Run all tests"
+	@echo "  make check        Run type/style checks"
+	@echo "  make doctor       Run health check"
+	@echo ""
+	@echo "Code Quality:"
+	@echo "  make lint         Run linter"
+	@echo "  make format       Format code"
+	@echo ""
+	@echo "Cleanup:"
+	@echo "  make clean        Remove build artifacts"
+	@echo ""
+
+# Install Python package
+install:
+	python -m pip install -e .
+
+# Run Python tests
+test:
+	python -m pytest tests/ -v
+
+# Type/style check (placeholder for CI)
+check:
+	@echo "Python check not configured (see item 4 Python CI proposal)"
+
+# Health check
+doctor:
+	python -c "from mnemosyne_rust_hermes.config import default_config; cfg=default_config(); print('Contracts:', cfg.provider_id, cfg.namespace, cfg.resolved_db_path())" 2>/dev/null || echo "Health check requires installed package."
+
+# Lint (placeholder)
+lint:
+	@echo "Python lint not configured (see item 4 Python CI proposal)"
+
+# Format (placeholder)
+format:
+	@echo "Python format not configured (see item 4)"
+
+# Clean build artifacts
+clean:
+	rm -rf build/ dist/ *.egg-info
+	rm -rf .pytest_cache __pycache__
+	@echo "Build artifacts cleaned"

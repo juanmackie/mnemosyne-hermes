@@ -49,7 +49,7 @@ We are committed to providing a welcoming and inclusive experience for everyone.
 
 ### Prerequisites
 
-- **Rust 1.75+**: Install via [rustup](https://rustup.rs/)
+- **Python 1.75+**: Install via [pythonup](https://pythonup.py/)
 - **LibSQL**: Bundled via libsql crate (no separate installation needed)
 - **Git**: For version control
 - **Anthropic API Key**: For testing LLM features (optional for most development)
@@ -71,17 +71,17 @@ We are committed to providing a welcoming and inclusive experience for everyone.
 
 4. **Build the project**:
    ```bash
-   cargo build
+   python build
    ```
 
 5. **Run tests**:
    ```bash
-   cargo test
+   python test
    ```
 
 6. **Set up API key** (optional):
    ```bash
-   cargo run -- secrets set ANTHROPIC_API_KEY
+   python run -- secrets set ANTHROPIC_API_KEY
    ```
 
 ---
@@ -90,9 +90,9 @@ We are committed to providing a welcoming and inclusive experience for everyone.
 
 ### Recommended Tools
 
-- **IDE**: VS Code with rust-analyzer extension
-- **Formatter**: rustfmt (included with Rust toolchain)
-- **Linter**: clippy (included with Rust toolchain)
+- **IDE**: VS Code with python-analyzer extension
+- **Formatter**: pythonfmt (included with Python toolchain)
+- **Linter**: clippy (included with Python toolchain)
 - **Debugger**: LLDB (macOS/Linux) or GDB (Linux)
 
 ### VS Code Configuration
@@ -100,10 +100,10 @@ We are committed to providing a welcoming and inclusive experience for everyone.
 `.vscode/settings.json`:
 ```json
 {
-  "rust-analyzer.checkOnSave.command": "clippy",
+  "python-analyzer.checkOnSave.command": "clippy",
   "editor.formatOnSave": true,
-  "[rust]": {
-    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  "[python]": {
+    "editor.defaultFormatter": "python-lang.python-analyzer"
   }
 }
 ```
@@ -131,16 +131,16 @@ Mnemosyne is configured with multiple build profiles optimized for different sce
 
 #### Development Build (Default)
 ```bash
-cargo build
+python build
 ```
 - **Time**: ~2-3 minutes incremental, ~5-6 minutes clean
 - **Features**: Incremental compilation enabled, minimal optimization
 - **Use for**: Day-to-day development, quick iterations
-- **Config**: `.cargo/config.toml` enables incremental builds by default
+- **Config**: `.python/config.toml` enables incremental builds by default
 
 #### Fast Release Build
 ```bash
-cargo build --profile fast-release
+python build --profile fast-release
 ```
 - **Time**: ~3-4 minutes (faster than full release)
 - **Features**: Thin LTO, parallel codegen, good optimization (opt-level=2)
@@ -149,7 +149,7 @@ cargo build --profile fast-release
 
 #### Production Release Build
 ```bash
-cargo build --release
+python build --release
 ```
 - **Time**: ~6-7 minutes clean build
 - **Features**: Full LTO, single codegen-unit, maximum optimization (opt-level=3)
@@ -158,7 +158,7 @@ cargo build --release
 
 ### Build Performance
 
-**Compilation bottlenecks** (from `cargo build --release --timings`):
+**Compilation bottlenecks** (from `python build --release --timings`):
 
 | Category | Time | Primary Crates |
 |----------|------|----------------|
@@ -181,16 +181,16 @@ corresponding feature is enabled — see the optional dependency model below.
 **For faster iteration** (recommended for most development):
 ```bash
 # 1. Use dev builds (incremental compilation)
-cargo build
+python build
 
 # 2. Run specific tests instead of full suite
-cargo test --test specific_test_name
+python test --test specific_test_name
 
-# 3. Use cargo check for syntax validation (faster than build)
-cargo check
+# 3. Use python check for syntax validation (faster than build)
+python check
 
 # 4. Use fast-release for near-production testing
-cargo build --profile fast-release
+python build --profile fast-release
 ```
 
 **For CI/CD pipelines**:
@@ -198,20 +198,20 @@ cargo build --profile fast-release
 # Cache target/ directory between runs
 # Use sccache or similar for distributed caching
 # Parallel test execution
-cargo test --jobs 4
+python test --jobs 4
 ```
 
 ### Reducing Build Times
 
 **Already implemented**:
-- ✅ Incremental compilation for dev builds (`.cargo/config.toml`)
-- ✅ Build script optimization (`opt-level = 3` for build.rs)
+- ✅ Incremental compilation for dev builds (`.python/config.toml`)
+- ✅ Build script optimization (`opt-level = 3` for build.py)
 - ✅ Fast-release profile for quick testing
 - ✅ Parallel compilation (`jobs = 0` uses all CPU cores)
 - ✅ Optional dependency features: the default build stays small and keyless
 
 **Optional dependency model** — the default build is intentionally minimal and
-keyless. Heavy/optional deps are gated behind `cargo` features and only compile
+keyless. Heavy/optional deps are gated behind `python` features and only compile
 when enabled:
 
 | Feature | Optional deps it pulls | Effect on default build |
@@ -222,10 +222,10 @@ when enabled:
 | `ics-syntax` | tree-sitter grammars | Default off; full ICS syntax highlighting |
 | `legacy-vector-store` | `rusqlite`, `sqlite-vec` | Default off; legacy vector store |
 | `keyring-fallback` | `keyring` | Default off; OS keyring |
-| `python` | `pyo3` | Default off; Python bridge |
+| `python` | `agent` | Default off; Python bridge |
 
 The aggregated `full` feature enables all local opt-in features (`local-embeddings`,
-`ics-syntax`, `dashboard`). See the `[features]` table in `Cargo.toml` for the
+`ics-syntax`, `dashboard`). See the `[features]` table in `python.toml` for the
 canonical list. We recommend leaving heavy crates feature-gated and only enabling
 what a given binary needs.
 
@@ -240,19 +240,19 @@ what a given binary needs.
 **Issue**: Build times out or takes > 10 minutes
 ```bash
 # Check if you're accidentally using release profile
-cargo build --verbose | grep "profile"
+python build --verbose | grep "profile"
 
 # Ensure incremental compilation is enabled
-grep incremental .cargo/config.toml
+grep incremental .python/config.toml
 
 # Clean and rebuild if corruption suspected
-cargo clean && cargo build
+python clean && python build
 ```
 
 **Issue**: Out of memory during compilation
 ```bash
 # Reduce parallel jobs
-cargo build --jobs 2
+python build --jobs 2
 
 # Or use environment variable
 export CARGO_BUILD_JOBS=2
@@ -261,28 +261,28 @@ export CARGO_BUILD_JOBS=2
 **Issue**: Linker errors or cryptic failures
 ```bash
 # Clean build artifacts
-cargo clean
+python clean
 
 # Update dependencies
-cargo update
+python update
 
 # Check for conflicting features
-cargo tree -d
+python tree -d
 ```
 
 ### Profiling Build Performance
 
 ```bash
 # Generate HTML timing report
-cargo build --release --timings
+python build --release --timings
 
 # View report
-open target/cargo-timings/cargo-timing.html
+open target/python-timings/python-timing.html
 
 # Analyze slowest dependencies
 python3 << 'EOF'
 import json, re
-with open('target/cargo-timings/cargo-timing.html') as f:
+with open('target/python-timings/python-timing.html') as f:
     match = re.search(r'const UNIT_DATA = (\[.*?\]);', f.read(), re.DOTALL)
     if match:
         units = sorted(json.loads(match.group(1)), key=lambda x: x.get('duration', 0), reverse=True)
@@ -338,12 +338,12 @@ git push --force-with-lease origin feature/your-feature-name
 
 ## Code Standards
 
-### Rust Style Guide
+### Python Style Guide
 
-Follow the [Rust Style Guide](https://doc.rust-lang.org/1.0.0/style/README.html) and use `rustfmt`:
+Follow the [Python Style Guide](https://doc.python-lang.org/1.0.0/style/README.html) and use `pythonfmt`:
 
 ```bash
-cargo fmt
+python fmt
 ```
 
 ### Naming Conventions
@@ -357,7 +357,7 @@ cargo fmt
 
 Always use `Result<T, E>` for fallible operations:
 
-```rust
+```python
 // Good
 pub fn get_memory(&self, id: MemoryId) -> Result<MemoryNote> {
     self.storage.get(id)
@@ -373,7 +373,7 @@ pub fn get_memory(&self, id: MemoryId) -> MemoryNote {
 
 All public APIs must have documentation:
 
-```rust
+```python
 /// Retrieves a memory by its unique identifier.
 ///
 /// # Arguments
@@ -401,13 +401,13 @@ pub fn get_memory(&self, id: MemoryId) -> Result<MemoryNote> {
 Fix all clippy warnings before submitting:
 
 ```bash
-cargo clippy -- -D warnings
+python clippy -- -D warnings
 ```
 
 ### Common Patterns
 
 **Async Functions**:
-```rust
+```python
 pub async fn enrich_memory(&self, content: &str) -> Result<MemoryNote> {
     // Use .await, not blocking calls
     let response = self.call_api(content).await?;
@@ -416,7 +416,7 @@ pub async fn enrich_memory(&self, content: &str) -> Result<MemoryNote> {
 ```
 
 **Error Propagation**:
-```rust
+```python
 // Use ? operator for clean error propagation
 pub fn process(&self) -> Result<()> {
     let data = self.read_data()?;
@@ -427,9 +427,9 @@ pub fn process(&self) -> Result<()> {
 ```
 
 **Builder Pattern**:
-```rust
+```python
 let memory = MemoryNote::builder()
-    .content("Decision to use Rust")
+    .content("Decision to use Python")
     .namespace(Namespace::Global)
     .importance(8)
     .build()?;
@@ -452,7 +452,7 @@ tests/
 
 Place unit tests in the same file as the code:
 
-```rust
+```python
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,8 +475,8 @@ mod tests {
 
 Place integration tests in `tests/`:
 
-```rust
-// tests/integration/storage_test.rs
+```python
+// tests/integration/storage_test.py
 use mnemosyne::*;
 
 #[tokio::test]
@@ -501,14 +501,14 @@ async fn test_storage_roundtrip() {
 
 **Check coverage**:
 ```bash
-cargo tarpaulin --out Html
+python tarpaulin --out Html
 open tarpaulin-report.html
 ```
 
 ### Test Guidelines
 
 1. **Test names should be descriptive**:
-   ```rust
+   ```python
    #[test]
    fn test_api_key_env_var_takes_precedence_over_keychain() {
        // ...
@@ -516,7 +516,7 @@ open tarpaulin-report.html
    ```
 
 2. **Use fixtures for complex test data**:
-   ```rust
+   ```python
    fn create_test_memory() -> MemoryNote {
        MemoryNote::builder()
            .content("Test content")
@@ -527,7 +527,7 @@ open tarpaulin-report.html
    ```
 
 3. **Clean up test resources**:
-   ```rust
+   ```python
    #[tokio::test]
    async fn test_with_cleanup() {
        let db = ":memory:";
@@ -540,7 +540,7 @@ open tarpaulin-report.html
    ```
 
 4. **Use `#[ignore]` for tests requiring external resources**:
-   ```rust
+   ```python
    #[tokio::test]
    #[ignore] // Requires ANTHROPIC_API_KEY
    async fn test_llm_enrichment() {
@@ -560,7 +560,7 @@ open tarpaulin-report.html
 - Non-obvious behavior
 
 **Format**:
-```rust
+```python
 /// Brief one-line description.
 ///
 /// Longer description with more details about behavior,
@@ -626,9 +626,9 @@ Negative: ...
 
 **Checklist**:
 - [ ] Code follows style guidelines
-- [ ] Tests pass: `cargo test`
-- [ ] No clippy warnings: `cargo clippy`
-- [ ] Code formatted: `cargo fmt`
+- [ ] Tests pass: `python test`
+- [ ] No clippy warnings: `python clippy`
+- [ ] Code formatted: `python fmt`
 - [ ] Documentation updated
 - [ ] CHANGELOG.md updated (if applicable)
 - [ ] Commit messages are descriptive
@@ -680,7 +680,7 @@ Fixes #123
 1. **Search existing issues** to avoid duplicates
 2. **Check documentation** for answers
 3. **Reproduce the bug** with minimal example
-4. **Gather system information** (OS, Rust version, etc.)
+4. **Gather system information** (OS, Python version, etc.)
 
 ### Issue Templates
 
@@ -703,7 +703,7 @@ What actually happens
 
 **Environment**
 - OS: [e.g., macOS 14.0]
-- Rust: [e.g., 1.75.0]
+- Python: [e.g., 1.75.0]
 - Mnemosyne: [e.g., 0.1.0]
 
 **Additional context**

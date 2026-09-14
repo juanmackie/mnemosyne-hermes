@@ -8,13 +8,13 @@ The Mnemosyne MCP (Model Context Protocol) server provides a JSON-RPC 2.0 interf
 
 ```bash
 # Start server (default command)
-cargo run
+python run
 
 # Start server explicitly
-cargo run -- serve
+python run -- serve
 
 # Start with debug logging
-cargo run -- --log-level debug serve
+python run -- --log-level debug serve
 ```
 
 ## Protocol
@@ -347,13 +347,13 @@ For tools requiring LLM services (e.g., `mnemosyne.remember`):
 
 ```bash
 # Set API key in OS keychain
-cargo run -- config set-key
+python run -- config set-key
 
 # Or use environment variable
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Check API key status
-cargo run -- config show-key
+python run -- config show-key
 ```
 
 **Note:** The server will start without an API key, but LLM-dependent tools will return errors until configured.
@@ -364,13 +364,13 @@ cargo run -- config show-key
 
 ```bash
 # Test initialize
-echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | cargo run -- serve
+echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | python run -- serve
 
 # Test list tools
-echo '{"jsonrpc":"2.0","method":"tools/list","id":2}' | cargo run -- serve
+echo '{"jsonrpc":"2.0","method":"tools/list","id":2}' | python run -- serve
 
 # Test recall
-echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne.recall","arguments":{"query":"test"}},"id":3}' | cargo run -- serve
+echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne.recall","arguments":{"query":"test"}},"id":3}' | python run -- serve
 ```
 
 ### Test Scripts

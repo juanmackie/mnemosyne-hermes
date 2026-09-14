@@ -40,7 +40,7 @@ mnemosyne remember --content "The user prefers local-only storage" \
   --namespace agent:hermes --no-enrich --format json
 ```
 
-> **Python-only quickstart (pivot)**: `python -m pip install .` (pure Python; no `maturin`/PyO3 if `mnemosyne_core` retired). Contracts (`agent:hermes`, `mnemosyne-rust` provider, DB at `MNEMOSYNE_DB_PATH`) preserved. See `docs/plans/item_02_python_baseline.md` and `scripts/baseline/verify_baseline_install.sh`. Rust binary retired; archive reference: `feat/hermes-native-provider` (`09a6973`).
+> **Python-only quickstart (pivot)**: `python -m pip install .` (pure Python; no `maturin`/PyO3 if `mnemosyne_core` retired). Contracts (`agent:hermes`, `mnemosyne-rust` provider, DB at `MNEMOSYNE_DB_PATH`) preserved. See `docs/plans/item_02_python_baseline.md` and `scripts/baseline/verify_baseline_install.sh`. Python binary retired; archive reference: `feat/hermes-native-provider` (`09a6973`).
 
 Then register `mnemosyne` in Hermes' `~/.hermes/config.yaml` under `mcp.servers`
 with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configure
