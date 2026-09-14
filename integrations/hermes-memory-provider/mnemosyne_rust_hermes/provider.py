@@ -58,28 +58,51 @@ class MnemosyneRustProvider:
 
     def is_available(self):
         binary = self.config.binary
-        # If a specific binary is named, check executable access
-        if binary is None or binary == "":
+        if not binary:
             return False
         import shutil
-        binary_exists = shutil.which(binary) is not None
-        file_is_executable = False
-        if not binary_exists and binary:
-            if os.path.isfile(binary):
-                if binary.lower().endswith((".exe", ".com", ".bat", ".cmd")):
-                    file_is_executable = True
-                else:
-                    file_is_executable = False
-        else:
-            file_is_executable = binary_exists
-        return binary_exists or file_is_executable
+        result = shutil.which(binary)
+        if result is not None:
+            # For absolute/relative paths without standard executable extensions,
+            # treat cautiously on Windows where shutil.which is permissive.
+            if ("\\" in binary or "/" in binary) and not binary.lower().endswith(
+                (".exe", ".com", ".bat", ".cmd", ".py", ".pyw")):
+                # Non-standard extension: verify executable access explicitly.
+                # On Windows os.access(X_OK) is permissive for regular files,
+                # so also verify it's actually executable (not just a file).
+                if not os.path.isfile(binary):
+                    return False
+                # A stricter executable check: try to get file stat or verify
+                # it's not an empty/non-executable text file.
+                try:
+                    import stat
+                    st = os.stat(binary)
+                    # Executable bits: only consider executable if it has
+                    # at least user/others execute permission, or treat as
+                    # executable only for known executable extensions.
+                    # For non-standard extensions, be conservative.
+                    mode = st.st_mode
+                    is_exec = bool(mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+                    # If no executable bits set on non-standard extension,
+                    # treat as not available.
+                    if not is_exec:
+                        return False
+                    return True
+                except Exception:
+                    return False
+            return True
+        return False
 
     def initialize(self, session_id, hermes_home=None, agent_context="primary"):
         if hermes_home is not None:
+            # Update hermes_home but preserve any explicitly-set db_path.
+            # The adapter contract expects DB resolution from hermes_home
+            # when no db_path is specified; when db_path IS specified,
+            # it should remain authoritative (used by checkpoint tests).
             self.config.hermes_home = hermes_home
-            self.config.db_path = None  # reset so resolved_db_path uses hermes_home
-        if agent_context in ("primary", "subagent", None) or agent_context == "":
+        if agent_context in ("primary", None) or agent_context == "":
             agent_context = "primary"
+        self.agent_context = agent_context
         # Set up client from injection or factory if available
         if self._client is None:
             if self._injected_client is not None:
@@ -87,6 +110,8 @@ class MnemosyneRustProvider:
             elif self._client_factory is not None:
                 try:
                     self._client = self._client_factory()
+                    if hasattr(self._client, 'start') and callable(getattr(self._client, 'start')):
+                        self._client.start()
                 except Exception:
                     self._client = None
         return True
@@ -100,6 +125,9 @@ class MnemosyneRustProvider:
         ]
 
     def handle_tool_call(self, name, arguments):
+        context = getattr(self, 'agent_context', 'primary')
+        if context in ("cron", "flush", "subagent", "background", "skill_loop"):
+            return {"ok": False, "error": f"Tool disabled for context: {context}"}
         if name == "mnemosyne_memory_search" or name == "mnemosyne_memory_remember":
             query = arguments.get("query", "")
             namespace = arguments.get("namespace", self.config.resolved_namespace())
@@ -180,8 +208,9 @@ class MnemosyneRustProvider:
     def system_prompt_block(self):
         return self.system_prompt_text
 
-    def prefetch(self, query, session_id=None, agent_context="primary"):
-        if agent_context in ("cron", "flush", "subagent", "background", "skill_loop"):
+    def prefetch(self, query, session_id=None, agent_context=None):
+        context = agent_context if agent_context is not None else getattr(self, 'agent_context', 'primary')
+        if context in ("cron", "flush", "subagent", "background", "skill_loop"):
             return ""
         if not query or not query.strip():
             return ""
@@ -218,24 +247,30 @@ class MnemosyneRustProvider:
         except Exception:
             return ""
 
-    def queue_prefetch(self, query, session_id=None, agent_context="primary"):
-        if agent_context in ("cron", "flush", "subagent", "background", "skill_loop"):
+    def queue_prefetch(self, query, session_id=None, agent_context=None):
+        context = agent_context if agent_context is not None else getattr(self, 'agent_context', 'primary')
+        if context in ("cron", "flush", "subagent", "background", "skill_loop"):
             return False
         if not query or not query.strip():
             return False
-        # Async prefetch is a best-effort; for simplicity, we store in internal cache
-        self.prefetched_texts[session_id] = query
+        # Async prefetch is a best-effort: trigger prefetch and cache result
+        try:
+            text = self.prefetch(query, session_id=session_id, agent_context=context)
+        except Exception:
+            text = ""
+        self.prefetched_texts[session_id] = text
         return True
 
     def take_prefetched(self, session_id):
         return self.prefetched_texts.get(session_id, "")
 
-    def sync_turn(self, user_text, assistant_text="", session_id="default", agent_context="primary", speaker="user"):
-        if agent_context in ("cron", "flush", "subagent", "background", "skill_loop"):
+    def sync_turn(self, user_text, assistant_text="", session_id="default", agent_context=None, speaker="user"):
+        context = agent_context if agent_context is not None else getattr(self, 'agent_context', 'primary')
+        if context in ("cron", "flush", "subagent", "background", "skill_loop"):
             return False
         if not user_text or not user_text.strip():
             return False
-        if speaker == "assistant" and not user_text.strip():
+        if speaker == "assistant":
             return False
         # Skip capture when policy_owner is set and different from this provider
         if self.config.policy_owner and self.config.policy_owner != self.config.provider_id:
@@ -246,7 +281,7 @@ class MnemosyneRustProvider:
                 self._client.call_tool("mnemosyne_sync_turn", {
                     "user_text": user_text,
                     "assistant_text": assistant_text,
-                    "execution_context": agent_context,
+                    "execution_context": context,
                     "namespace": self.config.resolved_namespace(),
                     "policy_owner": self.config.policy_owner,
                     "session_id": session_id,
@@ -265,7 +300,7 @@ class MnemosyneRustProvider:
                 except Exception:
                     pass
             with open(store_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"user_text": user_text, "assistant_text": assistant_text, "context": agent_context}) + "\n")
+                f.write(json.dumps({"user_text": user_text, "assistant_text": assistant_text, "context": context}) + "\n")
         except Exception:
             pass
         return True
@@ -282,13 +317,19 @@ class MnemosyneRustProvider:
                 if not os.path.isdir(checkpoint_dir):
                     try:
                         os.makedirs(checkpoint_dir, exist_ok=True)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # Blocker file (not directory) prevents checkpoint creation.
+                        # Fail closed: propagate as CheckpointError.
+                        raise CheckpointError(str(exc))
                 # Write a durable content-addressed checkpoint file
                 import hashlib
                 content = str(messages)
                 digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
                 checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-{digest}.json")
+                if os.path.isfile(checkpoint_path):
+                    # Idempotent: same digest already checkpointed; do NOT
+                    # increment checkpoints_written (already counted once).
+                    return True
                 with open(checkpoint_path, "w", encoding="utf-8") as fh:
                     fh.write(json.dumps({"digest": digest, "message_count": len(messages)}))
                     fh.flush()
