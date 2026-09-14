@@ -1,0 +1,2 @@
+[hermes_agent.memory_providers]
+mnemosyne-rust = mnemosyne_rust_hermes:register

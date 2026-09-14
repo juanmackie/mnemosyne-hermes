@@ -1,4 +1,3 @@
 {
-  "workingDir": "/Mnemosyne",
-  "maxIterations": 60
+  "maxIterations": 30
 }

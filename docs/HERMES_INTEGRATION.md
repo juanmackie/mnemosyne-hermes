@@ -4,6 +4,16 @@ This is the canonical setup guide for using Mnemosyne as a local memory layer
 for Hermes. It covers the shortest path from zero installation to a verified
 memory, then shows how to migrate an existing Python `mnemosyne-memory` store.
 
+## Adapter Status (Updated)
+
+The Python adapter (`mnemosyne_rust_hermes`) has been reconstructed from the preserved contracts (`mnemosyne-rust` provider id, `agent:hermes` namespace, DB path `MNEMOSYNE_DB_PATH`, fail-closed checkpoint, skill_loop/cron/subagent/background context gating). It is pure Python (std lib only) — no Rust reintroduced. Install with:
+
+```bash
+python -m pip install integrations/hermes-memory-provider/
+```
+
+The adapter communicates with the `mnemosyne` binary over a persistent stdio JSON-RPC session (`MNEMOSYNE_BIN`, default `mnemosyne`). If the binary is unavailable, `is_available()` returns False gracefully rather than spawning a broken process.
+
 ## 1. Install a release
 
 The release installer does not require Rust, Cargo, Python, or a cloud API key.
