@@ -101,6 +101,10 @@ class PythonMemoryStorage:
         """Open a fresh connection with WAL mode and safe settings."""
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
+        # WAL + NORMAL skips an fsync per commit (only at checkpoint). Still
+        # crash-safe for this store, and commits were the bulk of warm recall
+        # cost once connection setup was cached.
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
