@@ -64,6 +64,32 @@ def test_storage_reuses_one_connection_per_thread():
         s.close()
 
 
+def test_buffered_access_counts_are_exact_and_flushed():
+    """recall() defers access counts; they must still land, exactly."""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "m.db")
+        s = PythonMemoryStorage(path)
+        s.remember("alpha beta", "ns", 5)
+
+        s.recall("alpha", namespace="ns")
+        s.recall("alpha", namespace="ns")
+        # Two hits of one memory inside one buffer must count twice, not once.
+        assert s.list_memories("ns")[0]["access_count"] == 2
+
+        s.recall("alpha", namespace="ns")
+        s.close()  # close() must flush rather than drop
+        assert PythonMemoryStorage(path).list_memories("ns")[0]["access_count"] == 3
+
+        # The buffer is capped, so a read-only workload cannot grow it forever.
+        s2 = PythonMemoryStorage(path)
+        for _ in range(s2.ACCESS_FLUSH_HITS + 10):
+            s2.recall("alpha", namespace="ns")
+        assert len(s2._pending()) < s2.ACCESS_FLUSH_DISTINCT
+        # Recalling one memory forever must still reach the database unwritten-to.
+        assert PythonMemoryStorage(path).list_memories("ns")[0]["access_count"] > 3
+        s2.close()
+
+
 def test_resolve_db_path_rejects_non_sqlite():
     old = os.environ.get("DATABASE_URL")
     try:
