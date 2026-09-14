@@ -57,7 +57,8 @@ def validate_environment() -> None:
             "Get your key from: https://console.anthropic.com/settings/keys"
         )
     else:
-        print(f"✓ ANTHROPIC_API_KEY configured ({api_key[:7]}...{api_key[-4:]})")
+        # Never log any part of the key: CI logs and bug reports persist it.
+        print("ANTHROPIC_API_KEY configured")
 
     # Check Python path includes agents directory
     agents_dir = os.path.dirname(os.path.abspath(__file__))

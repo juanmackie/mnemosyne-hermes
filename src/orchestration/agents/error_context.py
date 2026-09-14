@@ -90,12 +90,11 @@ def get_environment_info() -> Dict[str, str]:
         "Platform": sys.platform,
     }
 
-    # Check for API key
-    if "ANTHROPIC_API_KEY" in os.environ:
-        key = os.environ["ANTHROPIC_API_KEY"]
-        info["API Key"] = f"Configured ({key[:7]}...{key[-4:]})"
+    # Check for API key (report presence only; never echo key material)
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        info["API Key"] = "Configured"
     else:
-        info["API Key"] = "❌ NOT CONFIGURED"
+        info["API Key"] = "NOT CONFIGURED"
 
     # Check for Claude SDK
     try:

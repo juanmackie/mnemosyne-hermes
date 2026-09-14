@@ -80,6 +80,7 @@ class LowLatencyContextMonitor:
         self._monitor_task: Optional[asyncio.Task] = None
         self._last_metrics: Optional[ContextMetrics] = None
         self._last_state = ContextState.SAFE
+        self._prev_utilization: Optional[float] = None
 
         # Callbacks
         self._preservation_callback: Optional[Callable] = None
@@ -211,7 +212,13 @@ class LowLatencyContextMonitor:
         )
 
     async def _check_thresholds(self, metrics: ContextMetrics):
-        """Check and trigger threshold callbacks."""
+        """Check and trigger threshold callbacks.
+
+        Preservation and critical callbacks are edge-triggered: they fire once
+        when utilization crosses up into the band, not on every poll while it
+        stays there. At a 10ms poll interval a level-triggered callback would
+        fire ~100 times/second and re-run preservation continuously.
+        """
         # State change callback
         if metrics.state != self._last_state:
             if self._state_change_callback:
@@ -220,19 +227,25 @@ class LowLatencyContextMonitor:
                 )
             self._last_state = metrics.state
 
-        # Preservation threshold (75%)
-        if metrics.utilization >= self.preservation_threshold:
-            if metrics.utilization < self.critical_threshold:
-                # Only trigger preservation, not critical
-                if self._preservation_callback:
-                    self._preservation_count += 1
-                    await self._maybe_async(self._preservation_callback(metrics))
+        prev = self._prev_utilization
+        was_preservation = prev is not None and prev >= self.preservation_threshold
+        is_preservation = metrics.utilization >= self.preservation_threshold
+        was_critical = prev is not None and prev >= self.critical_threshold
+        is_critical = metrics.utilization >= self.critical_threshold
 
-        # Critical threshold (90%)
-        if metrics.utilization >= self.critical_threshold:
+        # Preservation band: trigger on the upward crossing into it.
+        if is_preservation and not is_critical and not was_preservation:
+            if self._preservation_callback:
+                self._preservation_count += 1
+                await self._maybe_async(self._preservation_callback(metrics))
+
+        # Critical band: trigger on the upward crossing into it.
+        if is_critical and not was_critical:
             if self._critical_callback:
                 self._critical_count += 1
                 await self._maybe_async(self._critical_callback(metrics))
+
+        self._prev_utilization = metrics.utilization
 
     async def _maybe_async(self, result):
         """Handle both sync and async callbacks."""

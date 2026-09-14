@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional, List
 import asyncio
 import tempfile
 import os
+import atexit
+import shutil
 
 # Import agent implementations
 from .orchestrator import OrchestratorAgent, OrchestratorConfig
@@ -18,85 +20,100 @@ from .optimizer import OptimizerAgent, OptimizerConfig
 from .reviewer import ReviewerAgent, ReviewerConfig
 from .executor import ExecutorAgent, ExecutorConfig
 
+# Shared coordinator (single complete implementation)
+from ..coordinator import MockCoordinator
 
-class MockCoordinator:
-    """Lightweight coordinator for standalone agent usage."""
-
-    def __init__(self):
-        self._agents = {}
-        self._metrics = {}
-
-    def register_agent(self, agent_id: str):
-        """Register an agent."""
-        self._agents[agent_id] = "idle"
-
-    def update_agent_state(self, agent_id: str, state: str):
-        """Update agent state."""
-        if agent_id in self._agents:
-            self._agents[agent_id] = state
-
-    def get_context_utilization(self) -> float:
-        """Get context utilization (mock returns 0.5)."""
-        return 0.5
-
-    def set_metric(self, name: str, value: Any):
-        """Track a metric."""
-        self._metrics[name] = value
-
-    def get_metric(self, name: str, default: Any = None) -> Any:
-        """Get a metric value."""
-        return self._metrics.get(name, default)
+# Import storage (relative to src/)
+import sys
+_sys_path_added = False
+def _ensure_storage_import():
+    global _sys_path_added
+    if not _sys_path_added:
+        _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if _repo_root not in sys.path:
+            sys.path.insert(0, _repo_root)
+        _sys_path_added = True
+_ensure_storage_import()
+from lib.storage import PythonMemoryStorage  # noqa: E402
 
 
 class MockStorage:
-    """Mock storage that delegates to real PythonMemoryStorage."""
+    """Mock storage that delegates to real PythonMemoryStorage.
+
+    Uses an in-memory SQLite database by default for standalone usage,
+    or a persistent file if db_path is provided.
+    """
+
+    _temp_dirs: set = set()
 
     def __init__(self, db_path: Optional[str] = None):
-        """Initialize storage with real backend (in-memory if no path)."""
-        from lib.storage import PythonMemoryStorage
+        """Initialize storage with real backend."""
         if db_path:
             self._storage = PythonMemoryStorage(db_path)
+            self._tmp_dir = None
         else:
-            # Use in-memory database for standalone usage
-            import tempfile, os
-            fd, tmp = tempfile.mkstemp(suffix='.db')
-            os.close(fd)
-            self._storage = PythonMemoryStorage(tmp)
-            self._tmp_path = tmp
+            # Use temp directory for standalone usage
+            self._tmp_dir = tempfile.mkdtemp(prefix='mnemosyne_')
+            db_file = os.path.join(self._tmp_dir, 'memories.db')
+            self._storage = PythonMemoryStorage(db_file)
+            MockStorage._temp_dirs.add(self._tmp_dir)
+            atexit.register(self._cleanup_temp)
+
+    @staticmethod
+    def _cleanup_temp():
+        """Clean up temp directories on exit."""
+        for d in list(MockStorage._temp_dirs):
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+        MockStorage._temp_dirs.clear()
+
+    def _ensure_storage(self):
+        """Ensure storage backend is available."""
+        if not hasattr(self, '_storage') or self._storage is None:
+            raise RuntimeError("Storage not initialized")
 
     def store(self, memory: Dict[str, Any]):
         """Store memory in real storage."""
+        self._ensure_storage()
         self._storage.remember(
             content=memory.get("content", ""),
             namespace=memory.get("namespace", "default"),
             importance=memory.get("importance", 5)
         )
 
-    async def remember(self, content: str, namespace: str, importance: int,
-                       context: Optional[str] = None) -> Dict[str, Any]:
-        """Remember - async alias for store."""
+    def remember(self, content: str, namespace: str, importance: int,
+                 context: Optional[str] = None) -> Dict[str, Any]:
+        """Remember a memory."""
+        self._ensure_storage()
         return self._storage.remember(content, namespace, importance, context)
 
     def recall(self, query: str, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
         """Search memories."""
+        self._ensure_storage()
         return self._storage.recall(query, namespace)
 
     def list_memories(self, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
         """List memories."""
+        self._ensure_storage()
         return self._storage.list_memories(namespace)
 
     def count(self, namespace: Optional[str] = None) -> int:
         """Count memories."""
+        self._ensure_storage()
         return self._storage.count(namespace)
 
     def graph(self, query: Optional[str] = None, namespace: Optional[str] = None,
               depth: int = 1) -> Dict[str, Any]:
         """Get memory graph."""
+        self._ensure_storage()
         return self._storage.graph(query, namespace, depth)
 
     def consolidate(self, namespace: Optional[str] = None,
                     auto_apply: bool = False) -> Dict[str, Any]:
         """Consolidate similar memories."""
+        self._ensure_storage()
         return self._storage.consolidate(namespace, auto_apply)
 
 
@@ -134,8 +151,6 @@ def create_agent(
     Raises:
         ValueError: If role is unknown
     """
-    import os
-
     config = config or {}
 
     # If API key is provided in config, set it as environment variable

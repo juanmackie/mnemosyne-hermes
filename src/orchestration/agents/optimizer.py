@@ -41,9 +41,18 @@ except ImportError:
 
 logger = get_logger("optimizer")
 
-# Evaluation system (Python-native, no external bindings required)
-EVALUATION_AVAILABLE = True
-logger.info("Python-native evaluation system initialized")
+# Evaluation system (optional, Python-native).
+#
+# The adaptive-learning classes this block expects (FeedbackCollector,
+# RelevanceScorer, FeatureExtractor) are not part of the current runtime, so
+# enabling it only produced a swallowed NameError and a warning on every
+# Optimizer construction. Report it as unavailable and let the optimizer run
+# without adaptive learning; the guarded construction below stays in place so
+# restoring those modules only requires flipping this flag (or probing the
+# import) again.
+#
+# ponytail: set True once src/evaluation ships the collectors.
+EVALUATION_AVAILABLE = False
 
 
 @dataclass

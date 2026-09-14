@@ -179,6 +179,24 @@ class ParallelExecutor:
         if not await self._check_safety(plan):
             raise RuntimeError("Safety checks failed - cannot execute plan")
 
+        # Reset per-run state so a single executor can be reused. Without this,
+        # completed/failed ids from a previous run corrupt the loop's exit
+        # condition and the reported statistics.
+        self._running_tasks.clear()
+        self._completed_tasks = set()
+        self._failed_tasks = set()
+        self._successful_tasks = 0
+        self._failed_task_count = 0
+
+        # Reset task state so the same plan can be re-executed.
+        for task in plan.tasks.values():
+            task.status = TaskStatus.PENDING
+            task.result = None
+            task.error = None
+            task.start_time = None
+            task.end_time = None
+            task.agent_id = None
+
         self._plan = plan
         self._total_tasks = len(plan.tasks)
         start_time = time.time()
@@ -186,28 +204,28 @@ class ParallelExecutor:
         try:
             # Execute tasks with dependency-aware scheduling
             await self._execute_tasks()
-
-            # Check results
-            if self._failed_tasks:
-                raise RuntimeError(
-                    f"Execution failed: {len(self._failed_tasks)} tasks failed"
-                )
-
-            return {
-                "status": "success",
-                "completed": len(self._completed_tasks),
-                "failed": len(self._failed_tasks),
-                "duration": time.time() - start_time,
-                "statistics": self._get_statistics()
-            }
-
         except Exception as e:
+            self._total_execution_time = time.time() - start_time
             # Rollback on failure
             await self._rollback()
             raise RuntimeError(f"Execution failed: {e}") from e
 
-        finally:
-            self._total_execution_time += time.time() - start_time
+        self._total_execution_time = time.time() - start_time
+
+        # Check results
+        if self._failed_tasks:
+            await self._rollback()
+            raise RuntimeError(
+                f"Execution failed: {len(self._failed_tasks)} tasks failed"
+            )
+
+        return {
+            "status": "success",
+            "completed": len(self._completed_tasks),
+            "failed": len(self._failed_tasks),
+            "duration": time.time() - start_time,
+            "statistics": self._get_statistics()
+        }
 
     async def _execute_tasks(self):
         """Execute tasks with parallel scheduling."""
@@ -236,14 +254,24 @@ class ParallelExecutor:
                 for task_future in done:
                     await self._process_completed_task(task_future)
 
-            # Check for deadlock
+            # Check for deadlock/unmet dependencies: nothing is running and
+            # nothing is ready, yet tasks are still pending. Their inputs can
+            # never be satisfied (e.g. a dependency that failed or an id that
+            # does not exist), so fail them instead of spinning forever.
             if not self._running_tasks and not ready:
-                # No tasks running and no tasks ready = deadlock
-                blocked = self._plan.get_blocked_tasks()
-                if blocked:
-                    raise RuntimeError(
-                        f"Deadlock detected: {len(blocked)} tasks blocked"
-                    )
+                pending = [
+                    t for t in self._plan.tasks.values()
+                    if t.status == TaskStatus.PENDING
+                ]
+                if pending:
+                    for task in pending:
+                        task.status = TaskStatus.BLOCKED
+                        task.error = RuntimeError(
+                            "Unmet dependencies: " + ", ".join(task.depends_on)
+                        )
+                        self._failed_tasks.add(task.id)
+                        self._failed_task_count += 1
+                    return
 
             # Small delay to prevent tight loop
             await asyncio.sleep(0.01)

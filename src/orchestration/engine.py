@@ -11,28 +11,18 @@ Integrates all components:
 """
 
 import asyncio
+import os
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
 
-class MockCoordinator:
-    """Mock coordinator for engine initialization."""
-
-    def __init__(self):
-        self._agents = {}
-
-    def register_agent(self, agent_id: str):
-        self._agents[agent_id] = "idle"
-
-    def set_metric(self, name: str, value: Any):
-        pass
-
 # Python-native storage (no agent bindings needed)
 BINDINGS_AVAILABLE = True
 
-# Python-native storage (no agent bindings needed)
-from lib.storage import PythonMemoryStorage
+# Import Python-native storage
+from lib.storage import PythonMemoryStorage  # noqa: E402
 
+from .coordinator import MockCoordinator
 from .context_monitor import LowLatencyContextMonitor, ContextState
 from .parallel_executor import ParallelExecutor, ExecutionPlan, SubTask
 from .agents import (
@@ -93,12 +83,12 @@ class OrchestrationEngine:
             config.db_path or os.path.expanduser("~/.mnemosyne/mnemosyne.db")
         )
 
-        # Initialize coordinator (mock for now — real impl TBD)
-        self.coordinator = None
+        # Initialize coordinator
+        self.coordinator = MockCoordinator()
 
         # Initialize context monitor
         self.context_monitor = LowLatencyContextMonitor(
-            coordinator=self.coordinator or MockCoordinator(),
+            coordinator=self.coordinator,
             polling_interval=config.polling_interval,
             preservation_threshold=config.preservation_threshold,
             critical_threshold=config.critical_threshold
@@ -106,7 +96,7 @@ class OrchestrationEngine:
 
         # Initialize parallel executor
         self.parallel_executor = ParallelExecutor(
-            coordinator=self.coordinator or MockCoordinator(),
+            coordinator=self.coordinator,
             storage=self.storage,
             max_concurrent=config.max_concurrent,
             spawn_timeout=config.spawn_timeout
@@ -156,9 +146,9 @@ class OrchestrationEngine:
         if self.config.enable_dashboard:
             from .dashboard import run_dashboard
             self._dashboard_task = asyncio.create_task(run_dashboard(self))
-            print(f"Dashboard: enabled")
+            print("Dashboard: enabled")
 
-        print(f"Orchestration engine started")
+        print("Orchestration engine started")
         print(f"- Context monitoring: {self.config.polling_interval*1000:.1f}ms interval")
         print(f"- Max concurrent agents: {self.config.max_concurrent}")
         print(f"- Preservation threshold: {self.config.preservation_threshold:.0%}")
@@ -210,22 +200,23 @@ class OrchestrationEngine:
                     "available_tokens": self.context_monitor.get_available_budget()
                 }
             )
-            print(f"[Optimizer] Loaded {len(optimized_context['skills'])} skills")
+            print(f"[Optimizer] Loaded {len(optimized_context.get('skills', []))} skills")
 
             # Step 2: Executor validates and executes work plan
             print("\n[Executor] Executing work plan...")
             execution_result = await self.executor.execute_work_plan(work_plan)
+            exec_status = execution_result.get("status")
 
             # If executor challenged requirements, return immediately
-            if execution_result["status"] == "challenged":
+            if exec_status == "challenged":
                 print(f"\n[Executor] Requirements challenged: {len(execution_result.get('issues', []))} issues")
                 return execution_result
 
             # Step 3: Reviewer validates results
-            if execution_result["status"] == "success":
+            if exec_status == "success":
                 print("\n[Reviewer] Validating artifacts...")
                 # Extract first artifact from list (executor returns list of artifacts)
-                artifacts = execution_result["artifacts"]
+                artifacts = execution_result.get("artifacts") or []
                 artifact_to_review = artifacts[0] if artifacts else {}
                 review_result = await self.reviewer.review(artifact_to_review)
 
@@ -258,7 +249,9 @@ class OrchestrationEngine:
             }
 
             print("\n=== Orchestration Complete ===")
-            print(f"- Context utilization: {self.context_monitor.get_current_metrics().utilization:.0%}")
+            current = self.context_monitor.get_current_metrics()
+            if current:
+                print(f"- Context utilization: {current.utilization:.0%}")
             if execution_result.get("status") == "success":
                 print(f"- Tasks completed: {execution_result.get('completed_tasks', 0)}")
                 print(f"- Checkpoints: {execution_result.get('checkpoints', 0)}")

@@ -6,8 +6,53 @@ Uses Python-native SQLite storage — no subprocess overhead.
 """
 import os
 from typing import List, Optional, Dict, Any
+from urllib.parse import urlparse
 
 from .storage import PythonMemoryStorage
+
+
+def resolve_db_path(db_path: Optional[str] = None) -> str:
+    """Resolve a usable SQLite file path from an explicit path or DATABASE_URL.
+
+    SQLite only understands filesystem paths (and the ``:memory:`` special
+    case). A URL like ``sqlite:///var/lib/mnemosyne.db`` is stripped to its
+    path; any other scheme (``postgres://``, ``mysql://``, ...) is rejected
+    loudly instead of being silently used to create a bogus file whose name is
+    the URL.
+
+    Args:
+        db_path: Explicit path. When omitted, ``DATABASE_URL`` is consulted,
+            then ``~/.mnemosyne/mnemosyne.db``.
+
+    Returns:
+        A filesystem path (or ``:memory:``).
+
+    Raises:
+        ValueError: If DATABASE_URL uses an unsupported scheme.
+    """
+    if db_path:
+        return db_path
+
+    raw = (os.getenv("DATABASE_URL") or "").strip()
+    if not raw:
+        return os.path.expanduser("~/.mnemosyne/mnemosyne.db")
+
+    if "://" in raw:
+        parsed = urlparse(raw)
+        if parsed.scheme not in ("sqlite", "sqlite3", "file"):
+            raise ValueError(
+                f"Unsupported DATABASE_URL scheme {parsed.scheme!r}; "
+                "Mnemosyne storage is SQLite-only (use sqlite:///path or a plain path)"
+            )
+        # sqlite:///abs/path -> /abs/path; sqlite:///rel -> rel; sqlite:// -> ''
+        path = parsed.path or parsed.netloc
+        if parsed.netloc and parsed.netloc != "localhost":
+            path = parsed.netloc + parsed.path
+        if path in ("", "/"):
+            return ":memory:"
+        return path
+
+    return raw
 
 
 class MnemosyneClient:
@@ -30,10 +75,7 @@ class MnemosyneClient:
             db_path: Optional path to SQLite database
             storage: Optional pre-configured storage backend
         """
-        self.db_path = db_path or os.getenv(
-            "DATABASE_URL",
-            os.path.expanduser("~/.mnemosyne/mnemosyne.db")
-        )
+        self.db_path = resolve_db_path(db_path)
         self.storage = storage or PythonMemoryStorage(self.db_path)
 
     async def remember(
