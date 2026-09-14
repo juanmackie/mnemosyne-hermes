@@ -7,7 +7,7 @@ This module provides a factory function for creating specialized agents
 Used by the Python agent bridge (claude_agent_session) to spawn Python agents.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import asyncio
 
 # Import agent implementations
@@ -40,9 +40,34 @@ class MockCoordinator:
 class MockStorage:
     """Mock storage for testing/standalone agent usage."""
 
+    def __init__(self, db_path: Optional[str] = None):
+        """Initialize mock storage with optional real backend."""
+        self._db_path = db_path
+        self._real_storage = None
+        if db_path:
+            from lib.storage import PythonMemoryStorage
+            self._real_storage = PythonMemoryStorage(db_path)
+
     def store(self, memory: Dict[str, Any]):
-        """Store memory (no-op for testing)."""
-        pass
+        """Store memory — delegates to real storage if available."""
+        if self._real_storage:
+            self._real_storage.remember(
+                content=memory.get("content", ""),
+                namespace=memory.get("namespace", "default"),
+                importance=memory.get("importance", 5)
+            )
+
+    def recall(self, query: str, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search memories."""
+        if self._real_storage:
+            return self._real_storage.recall(query, namespace)
+        return []
+
+    def list_memories(self, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List memories."""
+        if self._real_storage:
+            return self._real_storage.list_memories(namespace)
+        return []
 
 
 class MockParallelExecutor:
@@ -60,13 +85,18 @@ class MockContextMonitor:
         pass
 
 
-def create_agent(role: str, config: Optional[Dict[str, Any]] = None) -> Any:
+def create_agent(
+    role: str,
+    config: Optional[Dict[str, Any]] = None,
+    db_path: Optional[str] = None
+) -> Any:
     """
     Create an agent instance based on role.
 
     Args:
         role: Agent role ("orchestrator", "optimizer", "reviewer", "executor")
         config: Optional configuration dict (may include 'anthropic_api_key')
+        db_path: Optional path to SQLite database for real storage
 
     Returns:
         Agent instance with Claude SDK client initialized
@@ -79,15 +109,13 @@ def create_agent(role: str, config: Optional[Dict[str, Any]] = None) -> Any:
     config = config or {}
 
     # If API key is provided in config, set it as environment variable
-    # This ensures Python agents can access it via os.getenv()
     if "anthropic_api_key" in config:
         os.environ["ANTHROPIC_API_KEY"] = config["anthropic_api_key"]
-        # Remove from config dict since it's now in environment
         del config["anthropic_api_key"]
 
-    # Create mock dependencies for standalone/testing usage
+    # Use real storage if db_path provided, otherwise mock
     mock_coordinator = MockCoordinator()
-    mock_storage = MockStorage()
+    mock_storage = MockStorage(db_path=db_path)
     mock_parallel_executor = MockParallelExecutor()
     mock_context_monitor = MockContextMonitor()
 

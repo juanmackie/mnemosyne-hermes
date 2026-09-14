@@ -1,31 +1,40 @@
 """
-Python client for Mnemosyne, wrapping the Python CLI.
+Python client for Mnemosyne.
 
 Provides async interface for storing and retrieving memories from Python code.
+Uses Python-native SQLite storage — no subprocess overhead.
 """
-import subprocess
-import json
 import os
 from typing import List, Optional, Dict, Any
+
+from .storage import PythonMemoryStorage
 
 
 class MnemosyneClient:
     """
     Async client for Mnemosyne memory operations.
 
-    Wraps the Python CLI binary to provide Python-friendly interface.
+    Uses Python-native SQLite storage for direct database access.
+    No subprocess overhead — all operations are in-process.
     """
 
-    def __init__(self, db_path: Optional[str] = None, binary_path: str = "mnemosyne"):
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        storage: Optional[PythonMemoryStorage] = None
+    ):
         """
         Initialize Mnemosyne client.
 
         Args:
-            db_path: Optional custom database path
-            binary_path: Path to mnemosyne binary (default: "mnemosyne" in PATH)
+            db_path: Optional path to SQLite database
+            storage: Optional pre-configured storage backend
         """
-        self.db_path = db_path or os.getenv("DATABASE_URL")
-        self.binary_path = binary_path
+        self.db_path = db_path or os.getenv(
+            "DATABASE_URL",
+            os.path.expanduser("~/.mnemosyne/mnemosyne.db")
+        )
+        self.storage = storage or PythonMemoryStorage(self.db_path)
 
     async def remember(
         self,
@@ -34,8 +43,7 @@ class MnemosyneClient:
         importance: int,
         context: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Store a memory in Mnemosyne.
+        """Store a memory in Mnemosyne.
 
         Args:
             content: Memory content
@@ -46,30 +54,7 @@ class MnemosyneClient:
         Returns:
             dict: Memory metadata (id, summary, keywords)
         """
-        cmd = [
-            self.binary_path, "remember",
-            content,
-            "--namespace", namespace,
-            "--importance", str(importance),
-            "--format", "json",
-        ]
-
-        if context:
-            cmd.extend(["--context", context])
-
-        if self.db_path:
-            cmd.extend(["--db", self.db_path])
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise RuntimeError(f"mnemosyne remember failed: {result.stderr}")
-
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            # Fallback if JSON parsing fails
-            return {"output": result.stdout, "success": True}
+        return self.storage.remember(content, namespace, importance, context)
 
     async def recall(
         self,
@@ -78,8 +63,7 @@ class MnemosyneClient:
         max_results: int = 10,
         min_importance: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """
-        Search Mnemosyne memories.
+        """Search Mnemosyne memories.
 
         Args:
             query: Search query
@@ -90,37 +74,7 @@ class MnemosyneClient:
         Returns:
             List[dict]: Matching memories
         """
-        cmd = [self.binary_path, "recall", query]
-
-        if namespace:
-            cmd.extend(["--namespace", namespace])
-
-        cmd.extend(["--limit", str(max_results)])
-        cmd.extend(["--format", "json"])
-
-        if min_importance:
-            cmd.extend(["--min-importance", str(min_importance)])
-
-        if self.db_path:
-            cmd.extend(["--db", self.db_path])
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            # Return empty list if search fails (e.g., no results)
-            return []
-
-        try:
-            output = json.loads(result.stdout)
-            # Handle both list and dict response formats
-            if isinstance(output, list):
-                return output
-            elif isinstance(output, dict) and "memories" in output:
-                return output["memories"]
-            # Fallback
-            return [{"content": result.stdout, "raw": output}]
-        except json.JSONDecodeError:
-            return [{"content": result.stdout}]
+        return self.storage.recall(query, namespace, max_results, min_importance)
 
     async def list_memories(
         self,
@@ -128,8 +82,7 @@ class MnemosyneClient:
         limit: int = 20,
         sort_by: str = "recent"
     ) -> List[Dict[str, Any]]:
-        """
-        List memories.
+        """List memories.
 
         Args:
             namespace: Optional namespace filter
@@ -139,31 +92,14 @@ class MnemosyneClient:
         Returns:
             List[dict]: Memories
         """
-        cmd = [self.binary_path, "list"]
-
-        if namespace:
-            cmd.extend(["--namespace", namespace])
-
-        cmd.extend(["--limit", str(limit)])
-        cmd.extend(["--sort", sort_by])
-
-        if self.db_path:
-            cmd.extend(["--db", self.db_path])
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            return []
-
-        return [{"content": result.stdout}]
+        return self.storage.list_memories(namespace, limit, sort_by)
 
     async def consolidate(
         self,
         namespace: Optional[str] = None,
         auto_apply: bool = False
     ) -> Dict[str, Any]:
-        """
-        Consolidate similar memories.
+        """Consolidate similar memories.
 
         Args:
             namespace: Optional namespace filter
@@ -172,23 +108,7 @@ class MnemosyneClient:
         Returns:
             dict: Consolidation results
         """
-        cmd = [self.binary_path, "consolidate"]
-
-        if namespace:
-            cmd.extend(["--namespace", namespace])
-
-        if auto_apply:
-            cmd.append("--auto")
-
-        if self.db_path:
-            cmd.extend(["--db", self.db_path])
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        return {
-            "output": result.stdout,
-            "success": result.returncode == 0
-        }
+        return self.storage.consolidate(namespace, auto_apply)
 
     async def graph(
         self,
@@ -196,8 +116,7 @@ class MnemosyneClient:
         namespace: Optional[str] = None,
         depth: int = 1,
     ) -> Dict[str, Any]:
-        """
-        Get memory graph.
+        """Get memory graph.
 
         Args:
             query: Optional search query to center graph
@@ -207,27 +126,7 @@ class MnemosyneClient:
         Returns:
             dict: Graph structure (nodes, edges)
         """
-        cmd = [
-            self.binary_path, "graph",
-            "--format", "json",
-            "--depth", str(depth)
-        ]
+        return self.storage.graph(query, namespace, depth)
 
-        if query:
-            cmd.extend(["--query", query])
-
-        if namespace:
-            cmd.extend(["--namespace", namespace])
-
-        if self.db_path:
-            cmd.extend(["--db", self.db_path])
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise RuntimeError(f"mnemosyne graph failed: {result.stderr}")
-
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {"error": "Failed to parse JSON output", "raw_output": result.stdout}
+    def __repr__(self) -> str:
+        return f"MnemosyneClient(db={self.db_path})"

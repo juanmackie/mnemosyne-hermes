@@ -14,8 +14,24 @@ import asyncio
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
+
+class MockCoordinator:
+    """Mock coordinator for engine initialization."""
+
+    def __init__(self):
+        self._agents = {}
+
+    def register_agent(self, agent_id: str):
+        self._agents[agent_id] = "idle"
+
+    def set_metric(self, name: str, value: Any):
+        pass
+
 # Python-native storage (no agent bindings needed)
 BINDINGS_AVAILABLE = True
+
+# Python-native storage (no agent bindings needed)
+from lib.storage import PythonMemoryStorage
 
 from .context_monitor import LowLatencyContextMonitor, ContextState
 from .parallel_executor import ParallelExecutor, ExecutionPlan, SubTask
@@ -72,20 +88,17 @@ class OrchestrationEngine:
         """
         self.config = config
 
-        # Check agent bindings
-        if not BINDINGS_AVAILABLE:
-            raise RuntimeError(
-                "agent bindings not available. "
-                "Build and install with: maturin develop --features python"
-            )
+        # Initialize Python-native storage
+        self.storage = PythonMemoryStorage(
+            config.db_path or os.path.expanduser("~/.mnemosyne/mnemosyne.db")
+        )
 
-        # Initialize agent components
-        self.coordinator = mnemosyne_python.PyCoordinator()
-        self.storage = mnemosyne_python.PyStorage(config.db_path)
+        # Initialize coordinator (mock for now — real impl TBD)
+        self.coordinator = None
 
         # Initialize context monitor
         self.context_monitor = LowLatencyContextMonitor(
-            coordinator=self.coordinator,
+            coordinator=self.coordinator or MockCoordinator(),
             polling_interval=config.polling_interval,
             preservation_threshold=config.preservation_threshold,
             critical_threshold=config.critical_threshold
@@ -93,7 +106,7 @@ class OrchestrationEngine:
 
         # Initialize parallel executor
         self.parallel_executor = ParallelExecutor(
-            coordinator=self.coordinator,
+            coordinator=self.coordinator or MockCoordinator(),
             storage=self.storage,
             max_concurrent=config.max_concurrent,
             spawn_timeout=config.spawn_timeout
