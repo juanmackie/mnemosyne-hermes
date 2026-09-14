@@ -1,6 +1,8 @@
 import subprocess
 import json
 import os
+import threading
+import queue
 
 
 class McpDisconnected(Exception):
@@ -13,6 +15,9 @@ class StdioJsonRpcClient:
         self.timeout = timeout
         self.initialize_timeout = initialize_timeout
         self.process = None
+        self._line_queue = queue.Queue()
+        self._reader_thread = None
+        self._reader_stop = threading.Event()
 
     def start(self):
         self.process = subprocess.Popen(
@@ -22,6 +27,22 @@ class StdioJsonRpcClient:
             stderr=subprocess.PIPE,
             text=True,
         )
+        self._reader_stop.clear()
+        self._line_queue = queue.Queue()
+        self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
+        self._reader_thread.start()
+
+    def _read_stdout(self):
+        try:
+            for line in iter(self.process.stdout.readline, ""):
+                if self._reader_stop.is_set():
+                    break
+                if line and line.strip():
+                    self._line_queue.put(line)
+            # Once stdout is closed, signal end by putting None
+            self._line_queue.put(None)
+        except Exception:
+            pass
 
     def call(self, method, params=None, timeout=None):
         if params is None:
@@ -35,37 +56,34 @@ class StdioJsonRpcClient:
             self.process.stdin.flush()
         except (BrokenPipeError, OSError):
             raise McpDisconnected("MCP stdin broken")
-        # Read response line from stdout (blocking until newline or timeout)
+        # Read response from queue with timeout (avoids blocking readline)
         try:
-            # For stdio transport, read exactly one JSON-RPC response line.
-            # This blocks briefly; if the server doesn't respond, fall back.
-            line = self.process.stdout.readline()
-            if line and line.strip():
-                resp = json.loads(line)
-                if "result" in resp:
-                    return resp.get("result", {})
-                if "error" in resp:
-                    return {"ok": False, "error": resp["error"]}
+            line = self._line_queue.get(timeout=timeout)
+            if line is None:
+                # Reader ended; fall back
+                return {"ok": True, "result": {}}
+            resp = json.loads(line)
+            if "result" in resp:
+                return resp.get("result", {})
+            if "error" in resp:
+                return {"ok": False, "error": resp["error"]}
+        except queue.Empty:
+            pass
         except Exception:
             pass
         return {"ok": True, "result": {}}
 
     def call_tool(self, name, arguments=None):
-        # Delegate to call() method using the tool name as method
         result = self.call("tools/call", params={"name": name, "arguments": arguments or {}})
-        # Map stdio JSON-RPC result shape into adapter contract
         if isinstance(result, dict):
             if "structuredContent" in result:
                 sc = result.get("structuredContent", {}) or {}
-                # Prefetch: extract text field if present
                 if "text" in sc:
                     return {"ok": True, "text": sc.get("text", "")}
                 if "status" in sc:
                     return {"ok": True, "status": sc.get("status", "")}
                 return {"ok": True, "result": result}
-            # Already in adapter contract shape
             if "ok" not in result:
-                # Convert raw result dict to adapter contract if needed
                 return {"ok": True, "results": result.get("results", []),
                         "count": result.get("count", 0),
                         "namespace": result.get("namespace", "agent:hermes")}
@@ -75,7 +93,7 @@ class StdioJsonRpcClient:
     def close(self):
         if self.process is not None:
             try:
-                # Give the process a brief moment to flush stdout before terminating
+                self._reader_stop.set()
                 self.process.stdin.close()
                 self.process.terminate()
                 self.process.wait(timeout=5)
