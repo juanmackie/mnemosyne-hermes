@@ -11,6 +11,7 @@ For concurrent access, use WAL mode and external locking.
 """
 import sqlite3
 import os
+import threading
 import hashlib
 import time
 import logging
@@ -87,6 +88,7 @@ class PythonMemoryStorage:
             raise ValueError("db_path is required")
         self.db_path = db_path
         self._ensure_db_dir()
+        self._local = threading.local()
         self._init_schema()
 
     def _ensure_db_dir(self):
@@ -95,27 +97,48 @@ class PythonMemoryStorage:
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
 
-    def _get_conn(self) -> sqlite3.Connection:
-        """Get a connection with WAL mode and safe settings."""
+    def _new_conn(self) -> sqlite3.Connection:
+        """Open a fresh connection with WAL mode and safe settings."""
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
+    def _conn(self) -> sqlite3.Connection:
+        """Return this thread's cached connection, opening it on first use.
+
+        Opening a connection costs a WAL pragma round-trip, and the old code
+        did it (twice) on every recall -- that dominated warm recall latency.
+        SQLite connections are not shareable across threads, so cache one per
+        thread. Use close() to release it.
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._new_conn()
+            self._local.conn = conn
+        return conn
+
+    def close(self) -> None:
+        """Close this thread's cached connection, if any."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
     def _init_schema(self):
         """Initialize database schema if not exists."""
-        conn = self._get_conn()
+        init_conn = self._new_conn()
         try:
-            conn.execute(self.SCHEMA)
+            init_conn.execute(self.SCHEMA)
             for idx_sql in self.INDEXES:
-                conn.execute(idx_sql)
-            conn.commit()
+                init_conn.execute(idx_sql)
+            init_conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Schema initialization failed: {e}")
             raise
         finally:
-            conn.close()
+            init_conn.close()
 
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """Convert a database row to a memory dict."""
@@ -166,7 +189,7 @@ class PythonMemoryStorage:
             f"{content}:{namespace}:{time.time()}".encode()
         ).hexdigest()[:16]
 
-        conn = self._get_conn()
+        conn = self._conn()
         try:
             conn.execute(
                 """INSERT INTO memories
@@ -190,8 +213,6 @@ class PythonMemoryStorage:
         except sqlite3.Error:
             logger.exception("Failed to store memory")
             raise
-        finally:
-            conn.close()
 
         return {
             "id": mem_id,
@@ -228,7 +249,7 @@ class PythonMemoryStorage:
 
         max_results = max(1, min(100, max_results))
 
-        conn = self._get_conn()
+        conn = self._conn()
         try:
             sql = "SELECT * FROM memories WHERE content LIKE ? ESCAPE '\\'"
             # Escape LIKE metacharacters so a literal '%' or '_' in the query
@@ -253,14 +274,12 @@ class PythonMemoryStorage:
         except sqlite3.Error:
             logger.exception("Recall query failed")
             return []
-        finally:
-            conn.close()
 
         results = [self._row_to_dict(row) for row in rows]
 
         # Update access count
         if results:
-            conn = self._get_conn()
+            conn = self._conn()
             try:
                 now = time.time()
                 for r in results:
@@ -271,8 +290,6 @@ class PythonMemoryStorage:
                 conn.commit()
             except sqlite3.Error:
                 logger.warning("Failed to update access counts")
-            finally:
-                conn.close()
 
         return results
 
@@ -295,7 +312,7 @@ class PythonMemoryStorage:
         """
         limit = max(1, min(1000, limit))
 
-        conn = self._get_conn()
+        conn = self._conn()
         try:
             sql = "SELECT * FROM memories"
             params = []
@@ -318,8 +335,6 @@ class PythonMemoryStorage:
         except sqlite3.Error:
             logger.exception("List query failed")
             return []
-        finally:
-            conn.close()
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -338,7 +353,7 @@ class PythonMemoryStorage:
         Returns:
             Consolidation results
         """
-        conn = self._get_conn()
+        conn = self._conn()
         try:
             sql = "SELECT id, content, namespace FROM memories"
             params = []
@@ -350,8 +365,6 @@ class PythonMemoryStorage:
         except sqlite3.Error:
             logger.exception("Consolidate read failed")
             return {"total": 0, "duplicate_groups": 0, "removed": 0, "auto_applied": auto_apply}
-        finally:
-            conn.close()
 
         # Simple dedup: group by namespace + first 50 chars of content
         groups: Dict[str, List[str]] = {}
@@ -363,7 +376,7 @@ class PythonMemoryStorage:
         removed = 0
 
         if auto_apply and duplicates:
-            conn = self._get_conn()
+            conn = self._conn()
             try:
                 for dup_ids in duplicates.values():
                     for dup_id in dup_ids[1:]:
@@ -372,8 +385,6 @@ class PythonMemoryStorage:
                 conn.commit()
             except sqlite3.Error:
                 logger.exception("Consolidate delete failed")
-            finally:
-                conn.close()
 
         return {
             "total": len(rows),
@@ -445,7 +456,7 @@ class PythonMemoryStorage:
         Returns:
             Number of memories
         """
-        conn = self._get_conn()
+        conn = self._conn()
         try:
             if namespace:
                 row = conn.execute(
@@ -458,5 +469,3 @@ class PythonMemoryStorage:
         except sqlite3.Error:
             logger.exception("Count query failed")
             return 0
-        finally:
-            conn.close()

@@ -40,6 +40,30 @@ def test_recall_treats_wildcards_literally():
         assert len(s.recall("100%", namespace="ns")) == 1
 
 
+def test_storage_reuses_one_connection_per_thread():
+    import threading
+    with tempfile.TemporaryDirectory() as d:
+        s = PythonMemoryStorage(os.path.join(d, "m.db"))
+        s.remember("alpha beta", "ns", 5)
+        main_conn = s._conn()
+        assert s._conn() is main_conn, "connection must be reused, not reopened"
+        seen = {}
+
+        def worker(k):
+            seen[k] = s._conn()
+            s.remember(f"worker {k} note", "ns", 5)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert seen[0] is not seen[1], "connections must not be shared across threads"
+        assert seen[0] is not main_conn
+        assert s.count("ns") == 3
+        s.close()
+
+
 def test_resolve_db_path_rejects_non_sqlite():
     old = os.environ.get("DATABASE_URL")
     try:
