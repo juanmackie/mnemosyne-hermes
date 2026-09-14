@@ -1,3 +1,9 @@
+# Mnemosyne (Python Runtime — Pivot Complete — Design/Implementation)
+
+> **Archive reference**: Previous Rust implementation preserved at `feat/hermes-native-provider` (`09a697398672e5a74928bd47ccea6028e563cfc3`) / previous stable main (`ba6fe984`). Archive doc: `docs/archive/RUST_ARCHIVE_REF.md`.
+> **Planning deliverable status**: All 8 ordered items completed (design only; repo-level changes applied; no deployed changes; no DB rebuild/redeploy executed per authorization: `Repo-only`; backup/auth: `Document only`; Rust retirement: `Full retirement`).
+> Contracts preserved: `memory.provider` (`mnemosyne-rust` / future `mnemosyne`), namespace (`agent:hermes`), DB path (`MNEMOSYNE_DB_PATH`), tool names (`mnemosyne_memory_search`, `mnemosyne_memory_remember`), persisted identifiers.
+
 # Mnemosyne
 
 > **Fork notice**: This is a community-maintained fork of [rand/mnemosyne](https://github.com/rand/mnemosyne),
@@ -33,6 +39,8 @@ unset ANTHROPIC_API_KEY OPENAI_API_KEY
 mnemosyne remember --content "The user prefers local-only storage" \
   --namespace agent:hermes --no-enrich --format json
 ```
+
+> **Python-only quickstart (pivot)**: `python -m pip install .` (pure Python; no `maturin`/PyO3 if `mnemosyne_core` retired). Contracts (`agent:hermes`, `mnemosyne-rust` provider, DB at `MNEMOSYNE_DB_PATH`) preserved. See `docs/plans/item_02_python_baseline.md` and `scripts/baseline/verify_baseline_install.sh`. Rust binary retired; archive reference: `feat/hermes-native-provider` (`09a6973`).
 
 Then register `mnemosyne` in Hermes' `~/.hermes/config.yaml` under `mcp.servers`
 with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configure

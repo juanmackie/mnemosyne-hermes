@@ -1,0 +1,13 @@
+{
+  "provider_id": "mnemosyne-rust",
+  "namespace": "agent:hermes",
+  "binary": "mnemosyne",
+  "mcp_args": ["mcp"],
+  "db_path": null,
+  "request_timeout": 10,
+  "initialize_timeout": 15,
+  "prefetch_timeout": 3,
+  "shutdown_timeout": 5,
+  "eager_connect": false,
+  "description": "Sanitized provider config example — contracts preserved. Real DB path and binary path must be set via environment or runtime initialization."
+}

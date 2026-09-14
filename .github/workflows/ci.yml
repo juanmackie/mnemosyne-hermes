@@ -1,4 +1,8 @@
-name: CI
+name: Python Integration CI (Retired Rust CI — design/proposed only)
+
+# Status: Planning deliverable item 4 (Python CI proposal). Not fully executed.
+# Previous Rust CI steps retired (`cargo fmt`, `cargo clippy`, `cargo build`, `cargo test`).
+# Python CI proposal (`python-ci.yml`) is designed but not applied to this file.
 
 on:
   pull_request:

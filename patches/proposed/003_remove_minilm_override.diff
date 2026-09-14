@@ -1,0 +1,16 @@
+# Proposed patch: Remove MiniLM override (design only — applied directly to src/embeddings/local.rs before retirement)
+# Context: Planning deliverable item 3 (embedding standardization — BGE standardization).
+# The source file `src/embeddings/local.rs` was edited (MiniLM mapping removed at lines 139-140) before `src/` retirement.
+# This patch documents the design change for audit/review purposes.
+
+File: src/embeddings/local.rs (before retirement)
+Change: Remove mapping entries for `all-MiniLM-L6-v2` and `all-MiniLM-L12-v2`.
+
+Before (lines ~139-140):
+    "all-MiniLM-L6-v2" => Ok(EmbeddingModel::AllMiniLML6V2),
+    "all-MiniLM-L12-v2" => Ok(EmbeddingModel::AllMiniLML12V2),
+
+After (applied before retirement):
+    (lines removed — MiniLM variants no longer supported; BGE `bge-small-en-v1.5` is standard)
+
+Note: The `embedding-gemma-300m` default was also changed to `bge-small-en-v1.5` (see `patches/proposed/003_set_bge_default.diff`). The identity comparison (`model_conflict()` in `src/config.rs`) uses identity check (`stored_model == self.model`), not dimension equality, ensuring incompatible vectors are rejected.

@@ -1,3 +1,8 @@
+# Mnemosyne Architecture (Updated — Pivot Complete — Planning Deliverable)
+
+> **Archive reference**: Previous Rust implementation preserved at `feat/hermes-native-provider` (`09a697398672e5a74928bd47ccea6028e563cfc3`) / previous stable main (`ba6fe984`). Archive doc: `docs/archive/RUST_ARCHIVE_REF.md`. Retirement applied: `src/` deleted; adapter/build/release retired; Python-only runtime (`mnemosyne-rust` adapter preserved initially; future `mnemosyne` Python server). Contracts preserved: `memory.provider`, namespace (`agent:hermes`), DB path, tool names, persisted identifiers. Keyless memory preserved; enrichment optional.
+> **Planning status**: All 8 ordered items completed (design only; repo-level changes applied; no deployed operations executed per authorization: `Repo-only` / `Document only` / `Full retirement`). See `.auto/deliverables/item_08_archive_rust.md`, `.auto/deliverables/SYNTHESIS.md`, `docs/plans/`.
+
 # Mnemosyne Architecture
 
 > **Note**: Mnemosyne has migrated from SQLite to LibSQL/Turso for native vector search support.

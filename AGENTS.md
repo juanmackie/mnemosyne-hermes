@@ -1,4 +1,6 @@
-# mnemosyne-hermes agent contract
+# mnemosyne-hermes agent contract (Updated — Pivot Complete — Planning Deliverable)
+
+> **Archive reference**: Previous Rust implementation at `feat/hermes-native-provider` (`09a6973`) / `main` (`ba6fe984`). Retirement applied (`src/` deleted; adapter/build/release retired). Python-only runtime (`mnemosyne-rust` adapter preserved initially; future `mnemosyne` Python server). Contracts preserved: `memory.provider`, namespace (`agent:hermes`), DB path (`MNEMOSYNE_DB_PATH`), tool names (`mnemosyne_memory_search`, `mnemosyne_memory_remember`), persisted identifiers. Keyless memory preserved; enrichment optional. No DB migration to Rust; no nomic switch applied.
 
 ## Operating Standard
 
@@ -29,12 +31,12 @@
 
 ## Verification
 
-- Fast unit tests: `cargo test --lib`
-- Full suite: `make test` (runs `cargo test --all`), or `./test-all.sh` (`--skip-llm` skips LLM-dependent tests)
-- ICS integration: `cargo test --test ics_integration_test`
-- Compile check: `make check` · Lint: `make lint` · Format: `make format`
-- Health check after install: `make doctor` (runs `mnemosyne doctor`; requires a built binary)
-- Build: `cargo build --release` (pure Rust); dev install: `./scripts/rebuild-and-update-install.sh`; production: `./scripts/rebuild-and-update-install.sh --full-release`
+- Fast unit tests: `python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v` (Python adapter); `python -m pytest` (optional)
+- Python CI proposal: `.github/workflows/ci.yml` (retired Rust steps); `.github/workflows/python-ci.yml` (proposed — see item 4 deliverable)
+- Health check after install (Python): verify adapter contracts (`provider.name == 'mnemosyne-rust'`, namespace == 'agent:hermes', DB resolves, checkpoint dir writable); see `scripts/verify_backup_auth.sh` (design) and `scripts/baseline/verify_baseline_install.sh`.
+- Build (retired Rust): `python -m pip install .` (pure Python; `maturin` retired with `mnemosyne_core`); previous `cargo build --release` retired; `Makefile` updated.
+- Rust archive reference: `feat/hermes-native-provider` (`09a6973`) / `main` (`ba6fe984`); `docs/archive/RUST_ARCHIVE_REF.md`.
+- No deployed operations executed in this planning deliverable (Repo-only authorization for items 4-7; Document-only for item 1; No DB rebuild/redeploy/smoke/rollback executed).
 - All commands above are evidenced in `Makefile`, `scripts/`, and `tests/`. There is no browser/UI harness for the TUI/ICS — exercise `mnemosyne edit` / `mnemosyne ics` interactively and report what was actually exercised.
 - LLM-dependent tests need a configured `ANTHROPIC_API_KEY` via the secret manager or environment; without it, use `./test-all.sh --skip-llm` and disclose the gap.
 

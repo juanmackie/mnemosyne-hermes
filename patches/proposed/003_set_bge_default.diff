@@ -1,0 +1,15 @@
+# Proposed patch: Standardize BGE default (already applied to src/config.rs in this implementation)
+
+Context: Planning deliverable item 3 (embedding standardization).
+Applied edit: Default model changed from `embedding-gemma-300m` to `bge-small-en-v1.5`.
+File: `src/config.rs` (line ~183-184 area).
+
+Before:
+    model: std::env::var("MNEMOSYNE_EMBEDDING_MODEL")
+        .unwrap_or_else(|_| "embedding-gemma-300m".to_string()),
+
+After:
+    model: std::env::var("MNEMOSYNE_EMBEDDING_MODEL")
+        .unwrap_or_else(|_| "bge-small-en-v1.5".to_string()),
+
+Note: The `effective_identity()` method and identity-based `model_conflict()` comparison are also applied (see `src/config.rs`). MiniLM override removed (`src/embeddings/local.rs`).
