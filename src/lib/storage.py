@@ -72,10 +72,18 @@ class PythonMemoryStorage:
         "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_memories_ns_created ON memories(namespace, created_at)",
         # Matches the recall query shape (namespace filter + ORDER BY importance
-        # DESC, created_at DESC): without it SQLite materialises matches into a
-        # temp b-tree to sort them on every recall.
-        "CREATE INDEX IF NOT EXISTS idx_memories_ns_rank ON memories(namespace, importance, created_at)",
+        # DESC, created_at DESC) *and* carries content, so the scan can filter
+        # on the LIKE and walk rows in output order without touching the table.
+        # Without content here, every scanned row cost a table fetch (~0.4ms of
+        # the ~0.8ms tail for selective queries); with it, only the returned
+        # rows are fetched. Costs one content-sized index (see README notes).
+        "CREATE INDEX IF NOT EXISTS idx_memories_recall ON memories(namespace, importance, created_at, content)",
     ]
+
+    # Superseded by idx_memories_recall (same leading columns, plus content).
+    # Dropped rather than reused because IF NOT EXISTS matches on the name
+    # only, so an existing index would keep the old column list.
+    DROPPED_INDEXES = ["DROP INDEX IF EXISTS idx_memories_ns_rank"]
 
     def __init__(self, db_path: str):
         """
@@ -139,6 +147,8 @@ class PythonMemoryStorage:
         init_conn = self._new_conn()
         try:
             init_conn.execute(self.SCHEMA)
+            for drop_sql in self.DROPPED_INDEXES:
+                init_conn.execute(drop_sql)
             for idx_sql in self.INDEXES:
                 init_conn.execute(idx_sql)
             init_conn.commit()
