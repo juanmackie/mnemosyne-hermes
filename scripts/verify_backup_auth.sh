@@ -6,7 +6,7 @@ set -euo pipefail
 
 echo "=== Backup/Restore Verification (design) ==="
 echo "Status: Planning only — not executed against deployed host."
-echo "Contracts preserved: namespace=agent:hermes, provider=mnemosyne-rust (preserved), DB path=MNEMOSYNE_DB_PATH."
+echo "Contracts preserved: namespace=agent:hermes, provider=python (preserved), DB path=MNEMOSYNE_DB_PATH."
 
 DB_PATH="${MNEMOSYNE_DB_PATH:-}"
 if [[ -z "$DB_PATH" ]]; then

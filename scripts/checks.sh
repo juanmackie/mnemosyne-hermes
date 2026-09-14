@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-export PATH="$HOME/.cargo/bin:$PATH"
+# Python-only repo; no cargo path needed
 
 failed=0
 run() {
@@ -17,7 +17,7 @@ run() {
     fi
 }
 
-run cargo fmt --check
+# rustfmt removed with rust source
 run bash scripts/check_notes.sh
 
 if [ "$failed" -gt 0 ]; then
