@@ -1,0 +1,777 @@
+Metadata-Version: 2.4
+Name: mnemosyne
+Version: 2.4.0
+Summary: Self-hostable Python memory system with SQLite storage, MCP/CLI surface, and optional multi-agent orchestration.
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: orchestration
+Requires-Dist: dspy-ai>=3.0.3; extra == "orchestration"
+Requires-Dist: anthropic>=0.72.0; extra == "orchestration"
+Requires-Dist: claude-agent-sdk>=0.1.0; extra == "orchestration"
+Requires-Dist: rich>=13.0.0; extra == "orchestration"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+Dynamic: license-file
+
+# Mnemosyne (Python Runtime — Pivot Complete — Design/Implementation)
+
+> **Archive reference**: Previous Rust implementation preserved at `feat/hermes-native-provider` (`09a697398672e5a74928bd47ccea6028e563cfc3`) / previous stable main (`ba6fe984`). Archive doc: `docs/archive/RUST_ARCHIVE_REF.md`.
+> **Planning deliverable status**: All 8 ordered items completed (design only; repo-level changes applied; no deployed changes; no DB rebuild/redeploy executed per authorization: `Repo-only`; backup/auth: `Document only`; Rust retirement: `Full retirement`).
+> Contracts preserved: `memory.provider` (`mnemosyne-rust` / future `mnemosyne`), namespace (`agent:hermes`), DB path (`MNEMOSYNE_DB_PATH`), tool names (`mnemosyne_memory_search`, `mnemosyne_memory_remember`), persisted identifiers.
+
+# Mnemosyne
+
+> **Fork notice**: This is a community-maintained fork of [rand/mnemosyne](https://github.com/rand/mnemosyne),
+> optimized for the [Hermes](docs/HERMES_INTEGRATION.md) agent runtime — keyless personal-agent operation,
+> graceful degradation without OS keyrings or cloud LLMs, Hermes MCP stdio contract compliance, and
+> OpenViking-inspired hierarchical memory. All changes are released under the same MIT license.
+
+**Current status (v2.4.0):** dynamic profile slice + typed `extends` edges are delivered and benchmarked; graph-aware `is_latest` is deferred to P5.
+
+**Local-first persistent memory for Hermes and every MCP-compatible personal agent**
+
+Mnemosyne provides private semantic memory with LibSQL vector search, full-text
+search, graph links, and hierarchical retrieval. It works without a cloud API
+key and keeps the standard MCP surface available for Claude Code, Cursor, Codex,
+Windsurf, and custom agents.
+
+## Hermes-first quickstart
+
+```bash
+# No Rust or Python required: downloads and verifies a native release binary.
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+hermes config set memory.provider mnemosyne
+
+# Optional: preserve an existing Python mnemosyne-memory store.
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
+  --namespace agent:hermes --dry-run --format json
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
+  --namespace agent:hermes --format json
+
+# Verify the local path without a cloud key.
+unset ANTHROPIC_API_KEY OPENAI_API_KEY
+mnemosyne remember --content "The user prefers local-only storage" \
+  --namespace agent:hermes --no-enrich --format json
+```
+
+> **Python-only quickstart (pivot)**: `python -m pip install .` (pure Python; no `maturin`/PyO3 if `mnemosyne_core` retired). Contracts (`agent:hermes`, `mnemosyne-rust` provider, DB at `MNEMOSYNE_DB_PATH`) preserved. See `docs/plans/item_02_python_baseline.md` and `scripts/baseline/verify_baseline_install.sh`. Python binary retired; archive reference: `feat/hermes-native-provider` (`09a6973`).
+
+Then register `mnemosyne` in Hermes' `~/.hermes/config.yaml` under `mcp.servers`
+with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configure
+→ import → verify path is [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md).
+
+---
+
+## Features
+
+### Core Memory System
+- **Project-Aware**: Automatic namespace detection from git repositories and CLAUDE.md
+- **Semantic Search**: LibSQL vector embeddings + full-text search (FTS5) + graph connectivity
+- **Type System**: Insight, Architecture, Decision, Task, Reference memory types
+- **Graph Linking**: Automatic bidirectional relationship management. Session extraction now also records typed `extends` edges when a later turn restates a stored fact — repetition builds graph structure instead of being silently dropped.
+- **Privacy-First**: Local-only storage with optional privacy-preserving evaluation
+- **Hierarchical Topic Tree** *(OpenViking-inspired)*: memories organized into directories with L0 abstracts / L1 overviews / L2 full content; directory-recursive retrieval with score propagation, retrieval trajectories, and token-budgeted context assembly — see [docs/HIERARCHICAL_MEMORY.md](docs/HIERARCHICAL_MEMORY.md)
+- **Outcome-Aware Reasoning Memory** *(ReasoningBank-inspired)*: distills observable successful-task strategies and failure guardrails with verifier-supplied outcomes, provenance-bound evidence, sparse retrieval, and no hidden chain-of-thought storage — see [docs/REASONING_MEMORY.md](docs/REASONING_MEMORY.md)
+- **Project-context Bootstrap**: a shared, read-only CLI/MCP assembly path for bounded project constraints, facts, reasoning guardrails, policies, skills, provenance, and explicit abstentions — see [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)
+- **Static + Dynamic Profile** *(supermemory-inspired)*: recall carries a standing always-on profile (identity, preferences — no query is close to them) plus a recency-ordered dynamic slice of what the agent is actively working on; both ride beside — never inside — the ranked results
+
+### Evolution System
+- **Consolidation**: Detect and merge duplicate/similar memories with LLM-assisted analysis
+- **Importance Scoring**: Graph-based importance recalibration
+- **Link Decay**: Time-based link strength management
+- **Archival**: Automatic cleanup of low-value memories
+- **Supersede**: Track memory replacements with audit trail
+
+### Evaluation System *(Privacy-Preserving)*
+- **Feedback Collection**: Implicit signals (access, edit, commit) with privacy-preserving task hashing
+- **Feature Extraction**: 13 privacy-preserving features (keyword overlap, semantic similarity, recency, etc.)
+- **Online Learning**: Hierarchical weight adaptation (session → project → global)
+- **Relevance Scoring**: Context-aware ranking with learned weights
+
+### Interactive Collaborative Space (ICS)
+**Integrated context editor accessible via `mnemosyne edit` or `/ics` slash command**
+
+- **CRDT Editing**: Automerge-based collaborative text editor
+- **Template System**: 5 built-in templates (API, Architecture, Bugfix, Feature, Refactor)
+- **Panels**: Memory browser, diagnostics, proposals, typed holes
+- **Syntax Highlighting**: Tree-sitter 0.23 based highlighting for 13 languages (Rust, Python, Go, TypeScript, JavaScript, JSON, TOML, YAML, Markdown, Bash, C, C++, Zig)
+- **Semantic Highlighting (3-Tier System)**:
+  - **Tier 1: Structural** (<5ms real-time) - XML tags, RFC 2119 constraints, modality/hedging, ambiguity detection, domain patterns
+  - **Tier 2: Relational** (<200ms incremental) - Named entities, relationships, semantic roles, coreference resolution, anaphora
+  - **Tier 3: Analytical** (2s+ background, optional) - Discourse analysis, contradiction detection, pragmatics, LLM-powered
+- **ICS Patterns**: `#file`, `@symbol`, `?hole` with color-coded highlighting
+- **Hybrid Highlighting**: Combines tree-sitter syntax with semantic pattern detection (3-layer priority system)
+- **Vim Mode**: Complete vi/vim keybindings with modal editing (14 movement commands: w/b/e, f/F/t/T, PageUp/Down, gg/G)
+- **Semantic Analysis**: Real-time triple extraction, typed hole detection, dependency graphs
+- **Undo/Redo**: Transaction-based history with Automerge
+- **Claude Code Integration**: Seamless handoff via file-based coordination protocol
+
+**Usage**:
+```bash
+# From Claude Code session
+/ics context.md
+/ics --template feature new-feature.md
+/ics --panel memory --template api auth.md
+
+# Command-line
+mnemosyne edit context.md
+mnemosyne edit --template architecture decision.md
+mnemosyne ics --readonly --panel diagnostics review.md
+```
+
+See [docs/guides/ICS_INTEGRATION.md](docs/guides/ICS_INTEGRATION.md) for complete guide.
+
+
+
+---
+
+## Quick Start
+
+### Installation
+
+**Release Installation** (Recommended):
+```bash
+# Downloads a checksum-verified native binary; no Rust toolchain required.
+curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+mnemosyne --version
+```
+
+**Source Installation** (development fallback):
+```bash
+git clone https://github.com/juanmackie/mnemosyne-hermes.git
+cd mnemosyne-hermes
+./install.sh --from-source
+```
+
+The release installer supports Linux x86_64/aarch64 and macOS x86_64/arm64,
+verifies SHA-256 checksums, and leaves MCP configuration to the agent runtime.
+
+**Icon System**: Mnemosyne uses Nerd Font icons (Font Awesome) for a polished CLI experience with automatic fallback to ASCII. For best results, install [JetBrainsMono Nerd Font](https://www.nerdfonts.com/). See [docs/ICONS.md](docs/ICONS.md) for details.
+
+**Manual Source Build**:
+```bash
+# Prerequisites: Rust 1.75+
+cargo build --release
+
+# Copy binary to PATH
+cp target/release/mnemosyne ~/.local/bin/
+
+# Initialize database
+mnemosyne init
+
+# (Optional) Enable model-backed embeddings for higher retrieval quality
+cargo build --release --features local-embeddings
+cp target/release/mnemosyne ~/.local/bin/
+mnemosyne embed --all
+```
+
+A source build is pure Rust; no Python or uv toolchain is required unless you
+opt in to the `python` (PyO3) feature.
+
+**Migration**:
+```bash
+# Preview, then import an existing Python mnemosyne-memory database.
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db --dry-run --format json
+mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db --namespace agent:hermes --format json
+```
+
+**Uninstallation**:
+```bash
+# Remove binary and MCP config (preserves data)
+./scripts/install/uninstall.sh
+
+# Remove everything including data
+./scripts/install/uninstall.sh --purge
+```
+
+### Set up with your agent (copy-paste)
+
+Paste this to Claude Code, Cursor, Codex, Windsurf, or any agent:
+
+```text
+Set up Mnemosyne local memory on this machine. Fetch the official agent
+runbook and follow it exactly, step by step:
+
+  curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/docs/AGENT_SETUP.md
+
+Verify each step's check before the next. Never overwrite existing config
+or data. No API keys required — if one seems needed, stop. Finish with a
+pass/fail checklist (step, pass/fail, one-line evidence).
+```
+
+The agent reads `docs/AGENT_SETUP.md`, runs install → DB → health check →
+smoke test → MCP wiring, and reports back.
+
+### Basic Usage
+
+**Store memories**:
+```bash
+# Store with automatic namespace detection
+mnemosyne remember --content "User prefers concise code reviews" --importance 8
+
+# Store with explicit namespace
+mnemosyne remember "Database uses LibSQL with vector search" \
+  --namespace "project:mnemosyne" \
+  --type architecture \
+  --importance 9
+```
+
+**Build bounded project context**:
+```bash
+mnemosyne bootstrap \
+  --project . \
+  --task "review the authentication changes" \
+  --agent hermes \
+  --capability security-review \
+  --budget-tokens 3500
+```
+
+The structured `bootstrap.v1` response keeps approved constraints, factual
+memories, failure guardrails, interaction policies, and relevant project-local
+skills in separate channels. It is also available as `mnemosyne.bootstrap`
+(and the Hermes alias `mnemosyne_bootstrap`).
+
+**Search memories**:
+```bash
+# Semantic search
+mnemosyne recall --query "code review preferences"
+
+# Search with namespace filter
+mnemosyne recall "database" --namespace "project:mnemosyne"
+
+# Limit results
+mnemosyne recall "architecture decisions" --limit 5
+```
+
+**Evolution operations**:
+```bash
+# Consolidate duplicate memories
+mnemosyne evolve consolidate
+
+# Recalibrate importance scores
+mnemosyne evolve importance
+
+# Archive old/low-value memories
+mnemosyne evolve archive
+```
+
+**Interactive Collaborative Space (Standalone)**:
+```bash
+# Launch standalone ICS context editor
+mnemosyne-ics
+
+# Create from template
+mnemosyne-ics --template feature
+
+# Open existing file
+mnemosyne-ics path/to/context.md
+
+# Read-only mode (view memory dumps)
+mnemosyne-ics --read-only path/to/dump.md
+
+# Features:
+# - Full terminal ownership (no conflicts)
+# - Template system (api, architecture, bugfix, feature, refactor)
+# - Storage backend integration
+# - Semantic highlighting (3-tier system)
+# - Vim mode with modal editing
+```
+
+**Real-time Monitoring Dashboard**:
+```bash
+# API server starts automatically with first MCP instance (owner mode)
+# Launch monitoring dashboard (connects to http://localhost:3000 by default)
+mnemosyne-dash
+
+# Custom configuration
+mnemosyne-dash --api http://localhost:3000 --refresh 500
+
+# Features:
+# - Clean 4-panel layout (System Overview, Activity Stream, Agent Details, Operations)
+# - Smart event filtering (heartbeats hidden by default, 8 categories)
+# - Event correlation (links start→complete with durations)
+# - Real-time SSE updates with zero latency
+# - Full keyboard control (0-3 panel toggles, c to clear, q to quit)
+# - Automatic slow operation and failure detection
+# - 124+ tests, production-ready monitoring
+
+# See docs/DASHBOARD.md for keyboard shortcuts and advanced usage
+```
+
+**TUI Wrapper Mode** (Deprecated in v2.1.0):
+```bash
+⚠️ Deprecated: Use mnemosyne-ics + mnemosyne-dash instead
+See docs/guides/migration.md for migration guide
+
+# Launch TUI with command palette, ICS editor, and agent dashboard
+mnemosyne tui
+
+# Start with ICS panel visible
+mnemosyne tui --with-ics
+
+# Features:
+# - Helix-style command palette (Ctrl+P)
+# - ICS editor with markdown highlighting (Ctrl+E)
+# - Real-time agent dashboard (Ctrl+D)
+# - Context-aware help overlay (?)
+# - Pattern highlighting: #file.rs @symbol ?hole
+```
+
+**Orchestration** (Python agents):
+```bash
+# Run orchestration workflow
+mnemosyne orchestrate --session-id dev-001 --work-items plan.json
+```
+
+---
+
+## Architecture
+
+### Storage Layer
+- **LibSQL**: SQLite-compatible with native vector search (sqlite-vec)
+- **Embeddings**:
+  - Default release: deterministic local hash embeddings (keyless, no model download)
+  - Large stores (>1,000 active memories) report when fallback embeddings may reduce semantic recall
+  - Optional source-build feature: fastembed/ONNX (`--features local-embeddings`)
+  - Remote: Voyage AI (voyage-3-large, 1536d)
+- **Search Config**: Hybrid scoring (semantic 70%, FTS 20%, graph 10%)
+- **Performance**: 2.25ms avg operations, 0.88ms list, 1.61ms search
+- **Read-Only Support**: Auto-detects and handles read-only databases gracefully
+
+### Multi-Agent System
+```
+┌─────────────────────────────────────────────────────┐
+│           Multi-Agent Orchestration                  │
+│                                                      │
+│  ┌──────────────┐    ┌──────────────┐              │
+│  │ Orchestrator │◄──►│  Optimizer   │              │
+│  │  (Ractor)    │    │  (Ractor)    │              │
+│  └──────┬───────┘    └──────┬───────┘              │
+│         │                   │                        │
+│         │              Skill Discovery               │
+│         ▼                   ▼                        │
+│  ┌──────────────┐    ┌──────────────┐              │
+│  │   Executor   │◄──►│   Reviewer   │              │
+│  │  (Ractor)    │    │  (Ractor)    │              │
+│  │  + Sub-agents│    │ Quality Gates│              │
+│  └──────────────┘    └──────────────┘              │
+└─────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────┐
+│       Storage + Evolution + Evaluation               │
+│                                                      │
+│  LibSQL  ◄──►  Consolidation  ◄──►  Evaluation     │
+│  Vector       (Deduplication)     (Learning Weights)│
+└─────────────────────────────────────────────────────┘
+```
+
+**Actor Responsibilities**:
+- **Orchestrator**: Work queue, deadlock detection/resolution, phase transitions
+- **Optimizer**: Context management, dynamic skill discovery, memory loading
+- **Reviewer**: Quality gates, test verification, anti-pattern detection
+- **Executor**: Work execution, sub-agent spawning for parallel work
+
+---
+
+## CLI Reference
+
+### Memory Operations
+```bash
+# Store memory
+mnemosyne remember [OPTIONS] <CONTENT>
+  --namespace <NS>      Namespace (auto-detected from git/CLAUDE.md)
+  --importance <1-10>   Importance score (default: 5)
+  --type <TYPE>         Memory type (insight|architecture|decision|task|reference)
+  --tags <TAGS>         Comma-separated tags
+  --links <IDS>         Link to existing memory IDs
+
+# Search memories
+mnemosyne recall [OPTIONS] <QUERY>
+  --namespace <NS>      Filter by namespace
+  --limit <N>           Max results (default: 10)
+  --min-importance <N>  Minimum importance score
+
+# Generate embeddings
+mnemosyne embed <TEXT>
+  --model <MODEL>       Embedding model (local|remote)
+```
+
+### Evolution
+```bash
+# Run evolution jobs
+mnemosyne evolve <OPERATION>
+  consolidate           Detect and merge duplicate memories
+  importance            Recalibrate importance scores
+  archive               Archive low-value memories
+  links                 Update link decay scores
+```
+
+### Orchestration
+```bash
+# Run orchestration workflow
+mnemosyne orchestrate [OPTIONS]
+  --session-id <ID>     Session identifier
+  --work-items <FILE>   Work items JSON file
+```
+
+### ICS (Integrated Context Studio) - Standalone Binary
+```bash
+# Launch standalone ICS context editor
+mnemosyne-ics [OPTIONS] [FILE]
+  --template <TEMPLATE>  Use template (api|architecture|bugfix|feature|refactor)
+  --read-only            Open in read-only mode
+  --vim-mode             Enable vim keybindings (default: on)
+  --theme <THEME>        Color theme (dark|light)
+
+# Features:
+# • Full terminal ownership (no conflicts with Claude Code)
+# • Template system for common contexts
+# • 3-tier semantic highlighting (<5ms→<200ms→2s+)
+# • Storage backend integration
+# • Vim modal editing
+# • Pattern syntax: #file.rs @symbol ?hole
+```
+
+### Monitoring Dashboard - Standalone Binary
+```bash
+# Launch real-time monitoring dashboard
+mnemosyne-dash [OPTIONS]
+  --api-url <URL>       API server URL (default: http://localhost:3000)
+  --refresh-rate <MS>   Update interval (default: 100ms)
+
+# API server starts automatically with first MCP instance
+# No manual startup required
+
+# Features:
+# • Live agent activity via SSE across all MCP instances
+# • Color-coded agent states
+# • System statistics (memory, CPU, context)
+# • Event log with scrollback
+# • Auto-reconnect on disconnect
+```
+
+### API Server (Automatic)
+```bash
+# MCP server automatically starts HTTP API on first instance (owner mode)
+# Subsequent instances connect as clients and forward events via HTTP
+mnemosyne serve
+
+# Owner mode (first instance):
+# • Binds port 3000 (or 3001-3010 if 3000 unavailable)
+# • Starts API server with SSE event streaming
+# • Broadcasts events locally
+
+# Client mode (subsequent instances):
+# • Detects existing API server via health check
+# • Forwards events via POST /events/emit
+# • No port conflicts - seamless multi-instance support
+
+# Endpoints:
+# GET  /health                Health check (used for auto-detection)
+# GET  /events                SSE event stream (real-time)
+# POST /events/emit           Event forwarding (client mode)
+# GET  /state/agents          List agent states
+# GET  /state/context-files   Context files across instances
+
+# Features:
+# • Automatic owner/client mode detection
+# • Zero-configuration multi-instance support
+# • Event forwarding via HTTP POST (100ms timeout, fire-and-forget)
+# • REST API with Axum + Server-Sent Events (SSE)
+# • CORS support for web clients
+```
+
+### TUI (Terminal User Interface) - Deprecated
+```bash
+⚠️ Deprecated in v2.1.0: Use mnemosyne-ics + mnemosyne-dash instead
+See docs/guides/migration.md for migration guide
+
+# Launch enhanced TUI wrapper mode
+mnemosyne tui [OPTIONS]
+  --with-ics            Start with ICS panel visible
+  --no-dashboard        Disable agent dashboard
+
+# TUI Features:
+# • Command Palette (Ctrl+P): Helix-style fuzzy command selector
+# • ICS Editor (Ctrl+E): Integrated Context Studio with highlighting
+# • Agent Dashboard (Ctrl+D): Real-time agent status and work queue
+# • Help Overlay (?): Context-aware keyboard shortcuts
+# • Status Bar: Dynamic action hints based on current mode
+
+# Keyboard Shortcuts:
+# General Navigation:
+#   Ctrl+P          Open command palette
+#   Ctrl+E          Toggle ICS panel
+#   Ctrl+D          Toggle dashboard
+#   Ctrl+Q          Quit application
+#   ?               Show help overlay
+
+# ICS Mode:
+#   Ctrl+Enter      Submit refined context to Claude
+#   Ctrl+S          Save edited document
+#   Pattern syntax:
+#     #file.rs      File reference (blue, bold)
+#     @symbol       Symbol reference (green, bold)
+#     ?interface    Typed hole (yellow, bold)
+```
+
+### Configuration
+```bash
+# Initialize database
+mnemosyne init [PATH]
+
+# Manage secrets
+mnemosyne secrets set --provider <PROVIDER> --key <KEY>
+mnemosyne secrets list
+
+# Database info
+mnemosyne info
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+```bash
+# Database
+export DATABASE_URL="sqlite:///path/to/mnemosyne.db"
+
+# API Keys (for LLM enrichment)
+export ANTHROPIC_API_KEY="sk-ant-..."
+export VOYAGE_API_KEY="pa-..."   # For remote embeddings
+
+# Logging
+export RUST_LOG="info"           # debug|info|warn|error
+```
+
+### Search Configuration
+```rust
+SearchConfig {
+    semantic_weight: 0.7,  // 70% semantic similarity
+    fts_weight: 0.2,       // 20% keyword match
+    graph_weight: 0.1,     // 10% link connectivity
+}
+```
+
+### Connection Modes
+```rust
+ConnectionMode::Local(path)              // Local SQLite file
+ConnectionMode::LocalReadOnly(path)      // Read-only database
+ConnectionMode::Remote { url, token }    // Remote LibSQL/Turso
+ConnectionMode::EmbeddedReplica { ... }  // Local replica with sync
+```
+
+---
+
+## Documentation
+
+### Getting Started
+- [README.md](README.md) - Project overview and quick start (this file)
+- [QUICK_START.md](QUICK_START.md) - Get up and running in 5 minutes
+- [INSTALL.md](INSTALL.md) - Detailed installation guide
+
+### For Agents/Developers
+- **[AGENT_GUIDE.md](AGENT_GUIDE.md)** - **START HERE** - Comprehensive development guide
+- [docs/INDEX.md](docs/INDEX.md) - Documentation navigation hub
+- [docs/TYPES_REFERENCE.md](docs/TYPES_REFERENCE.md) - Complete type system reference
+- [docs/STORAGE_SCHEMA.md](docs/STORAGE_SCHEMA.md) - Database schema and query patterns
+
+### Core System
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture and design decisions
+- [ORCHESTRATION.md](ORCHESTRATION.md) - Multi-agent coordination guide
+- [MCP_SERVER.md](MCP_SERVER.md) - MCP protocol integration
+
+### Features
+- [docs/features/EVOLUTION.md](docs/features/EVOLUTION.md) - Memory evolution system
+- [docs/features/VECTOR_SEARCH.md](docs/features/VECTOR_SEARCH.md) - Semantic search implementation
+- [docs/features/PRIVACY.md](docs/features/PRIVACY.md) - Privacy-preserving evaluation
+- [docs/features/ICS_README.md](docs/features/ICS_README.md) - Integrated Context Studio
+- [docs/features/semantic_highlighting.md](docs/features/semantic_highlighting.md) - 3-tier highlighting system
+
+### Guides
+- [docs/guides/migration.md](docs/guides/migration.md) - Migration from TUI to composable tools
+- [docs/guides/llm-reviewer.md](docs/guides/llm-reviewer.md) - LLM reviewer system
+- [docs/guides/llm-reviewer-setup.md](docs/guides/llm-reviewer-setup.md) - Setup and troubleshooting
+- [docs/guides/workflows.md](docs/guides/workflows.md) - Common development workflows
+
+### Specifications
+- [docs/specs/background-processing-spec.md](docs/specs/background-processing-spec.md) - Tier 3 background processing
+- [docs/features/ics-integration-spec.md](docs/features/ics-integration-spec.md) - ICS integration specification
+- [docs/specs/incremental-analysis-spec.md](docs/specs/incremental-analysis-spec.md) - Incremental semantic analysis
+- [docs/features/semantic-highlighter-test-plan.md](docs/features/semantic-highlighter-test-plan.md) - Semantic highlighter testing strategy
+- [docs/specs/tier3-llm-integration-spec.md](docs/specs/tier3-llm-integration-spec.md) - LLM integration architecture
+
+### Development
+- [CHANGELOG.md](CHANGELOG.md) - Version history
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Common issues and solutions
+- [TODO_TRACKING.md](TODO_TRACKING.md) - Development progress tracking
+- [docs/BUILD_OPTIMIZATION.md](docs/BUILD_OPTIMIZATION.md) - Build performance tuning
+
+---
+
+## Testing
+
+```bash
+# Unit tests
+cargo test --lib
+
+# Integration tests
+cargo test --test ics_integration_test
+
+# E2E tests
+bash tests/e2e/human_workflow_1_new_project.sh
+bash tests/e2e/agentic_workflow_1_orchestrator.sh
+bash tests/e2e/recovery_1_graceful_degradation.sh
+
+# All E2E tests
+find tests/e2e -name '*.sh' -executable -exec {} \;
+
+# With coverage
+cargo tarpaulin --lib --out Html
+```
+
+---
+
+## Troubleshooting
+
+### macOS "killed" Error
+
+If you see `zsh: killed  mnemosyne` when trying to run the binary:
+
+**Quick Fix**:
+```bash
+xattr -d com.apple.provenance ~/.cargo/bin/mnemosyne
+codesign --force --sign - ~/.cargo/bin/mnemosyne
+```
+
+**Root Cause**: macOS Gatekeeper invalidates code signatures when binaries are relocated (e.g., by `cargo install`). The binary in `target/release/` works fine, but the installed copy in `~/.cargo/bin/` gets killed by taskgated.
+
+**Permanent Fix**: Always use the install script, which handles re-signing automatically:
+```bash
+./scripts/install/install.sh
+```
+
+**Quick rebuild during development**:
+```bash
+./scripts/build-and-install.sh
+```
+
+For more troubleshooting help, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+---
+
+## Performance
+
+**Hermes recall path** (177-memory eval corpus, one warm `mnemosyne serve` process):
+
+- Warm `mnemosyne_recall` p95: **20 ms** (was 418 ms before the shared-connection and
+  WAL work). Ranking is unchanged; all of it was fixed per-call cost.
+- The local store runs in WAL mode with `busy_timeout=5000` and `synchronous=NORMAL`.
+  That is what makes a commit-heavy recall path usable: one single-row commit costs
+  ~0.3 ms instead of ~29 ms (rollback journal + `synchronous=FULL`).
+- `synchronous=NORMAL` survives application crashes; an OS or power failure can lose
+  the last few commits. Set `MNEMOSYNE_SQLITE_SYNCHRONOUS=full` for per-commit fsync —
+  still ~2.4× cheaper per commit than the pre-WAL setting. WAL keeps `-wal`/`-shm`
+  sidecars, so the database must live on a local filesystem, not NFS.
+- Retrieval diagnostics are written per query, but the fallback-rate sweep over trace
+  history (O(all traces): 5 ms at 10k rows, 27 ms at 50k) plus golden evaluation runs
+  once every 64 traces, so it never lands on the recall critical path.
+
+**Storage Operations** (PyO3 vs subprocess):
+- Store: 2.25ms avg (was 20-50ms) - **10-20x faster**
+- List: 0.88ms avg (<1ms target) - **22-56x faster**
+- Search: 1.61ms avg (was 30-60ms) - **18-37x faster**
+
+**Memory**:
+- Rust memory management (no GC pauses)
+- Zero-copy data passing for agent messages
+- Efficient vector storage with LibSQL
+
+**Scalability**:
+- Sub-agent spawning for parallel work
+- Deadlock prevention via dependency-aware scheduling
+- Context preservation at 75% utilization threshold
+
+---
+
+## Contributing
+
+1. Follow Work Plan Protocol (Phases 1-4: Prompt → Spec → Plan → Artifacts)
+2. Use Beads for task tracking: `bd import -i .beads/issues.jsonl`
+3. Quality gates: Tests pass, no anti-patterns, constraints maintained
+4. Commit before testing (never test uncommitted code)
+5. Run `cargo clippy` and `cargo fmt` before PRs
+
+**Development Workflow**:
+```bash
+# Setup
+git checkout -b feature/my-feature
+bd import -i .beads/issues.jsonl
+
+# Development cycle
+cargo build --lib
+cargo test --lib
+cargo clippy
+
+# E2E testing
+bash tests/e2e/relevant_test.sh
+
+# Commit
+git add . && git commit -m "Descriptive message"
+
+# Before PR
+cargo fmt
+cargo clippy --all-targets
+cargo test --all
+
+# Export Beads state
+bd export -o .beads/issues.jsonl
+```
+
+---
+
+## License
+
+See LICENSE file for details.
+
+---
+
+## Status
+
+**Current Version**: 2.3.3
+
+Hermes is the primary target runtime. The native release is keyless and
+local-first by default; distributed Iroh networking and model-backed
+embeddings are opt-in `cargo` features.
+
+### Support matrix
+
+| Aspect | Supported | Notes |
+|---|---|---|
+| Primary runtime | Hermes MCP stdio | `command: mnemosyne`, `args: ["mcp"]` |
+| Other MCP clients | Claude Code, Cursor, Codex, Windsurf | standard `mcpServers` config |
+| Platforms | Linux x86_64/aarch64, macOS x86_64/arm64 | checksum-verified release binaries |
+| Storage | Local SQLite/LibSQL | no cloud service required |
+| Vector search | LibSQL native vector ops | deterministic fallback in default release |
+| Default release | local-only, keyless | no ONNX runtime, no network access |
+| Opt-in features | `local-embeddings`, `full`, `rpc`, `distributed` | see [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) |
+| Python | optional `python` (PyO3) feature only | not needed for the Hermes memory provider |
+
+Full historical release notes (previously listed here) are superseded by
+[CHANGELOG.md](CHANGELOG.md), the single source of truth for release history.
+Older superseded status reports live in [docs/archive/](docs/archive/). Current
+roadmap and known issues are tracked in [TODO_TRACKING.md](TODO_TRACKING.md).
+
+---
+
+For detailed technical documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+For MCP server integration, see [MCP_SERVER.md](MCP_SERVER.md).
+For development progress, see [TODO_TRACKING.md](TODO_TRACKING.md).

@@ -10,7 +10,7 @@ Reference commit: `48a2197` (repo HEAD unchanged for source; M1 edits applied on
 2. **Service boundary (Python native)** — `src/lib/storage.py` and `src/lib/mnemosyne_client.py` preserved as direct SQLite interface (`PythonMemoryStorage`). No subprocess overhead for core memory operations. Thread-local connections (`_local`) and bounded access-count flushing (`ACCESS_FLUSH_DISTINCT = 256`, `ACCESS_FLUSH_HITS = 1024`) preserved.
 3. **JSONL fallback removed from active capture/recall** — `integrations/hermes-memory-provider/mnemosyne_rust_hermes/provider.py`: `handle_tool_call` for `mnemosyne_memory_search` / `mnemosyne_memory_remember` now uses `PythonMemoryStorage` directly (resolves DB path from `MNEMOSYNE_DB_PATH` or adapter contract default). The old `.jsonl` persistence (`turn_store.jsonl`, `mnemosyne_turn_store.jsonl`) is no longer used by the memory tool path. `.jsonl` files remain present in adapter design (`_get_store_path`) but are not invoked for memory operations.
 4. **Orchestration import separation** — `pyproject.toml` updated: `name = "mnemosyne"`; core dependencies are stdlib-only; `dspy-ai`, `anthropic`, `claude-agent-sdk`, `rich` moved to optional `[project.optional-dependencies] orchestration = [ ... ]`. `dev` group preserved. `packages.find` points to `src/` with `mnemosyne*`, `lib*` included; orchestration excluded by design (optional import only).
-5. **Executable product structure** — `pyproject.toml` includes `[project.scripts] mnemosyne = "mnemosyne.cli:main"`. Note: `mnemosyne.cli:main` is a design reference; no `cli.py` exists in repo; the executable surface relies on the adapter (`mnemosyne_rust_hermes`) and `PythonMemoryStorage` as the shared boundary. A future `src/cli/` or `mnemosyne/cli.py` is required for full executable completeness but is out of M1 minimal scope.
+5. **Executable product structure** — `pyproject.toml` includes `[project.scripts] mnemosyne = "mnemosyne.cli:main"`. Created `src/mnemosyne/cli.py` with `main()` providing `remember` / `recall` / `list` subcommands over `PythonMemoryStorage`. Entry point verified working (`mnemosyne --help`, `mnemosyne remember`, `mnemosyne recall`). Old `mnemosyne-orchestration` dist-info conflict resolved.
 6. **WAL + durability preserved** — `PRAGMA journal_mode=WAL`, `PRAGMA wal_autocheckpoint=0`, `PRAGMA foreign_keys=ON`, `PRAGMA busy_timeout=5000`, manual `_maybe_checkpoint()` with `TRUNCATE` and bounded `WAL_CHECKPOINT_BYTES = 4MB` preserved.
 
 ## What was NOT done (intentionally minimized; blocked by upstream source)
@@ -25,14 +25,13 @@ Reference commit: `48a2197` (repo HEAD unchanged for source; M1 edits applied on
 - `mnemosyne-memory 3.15.1` upstream source: MISSING (`docs/plans/item_02_python_baseline.md`, `.auto/deliverables/item_02_python_baseline.md`).
 - Deployed binary (`mnemosyne`): NOT FOUND.
 - Verified DB clone (`MNEMOSYNE_DB_PATH` / `~/.hermes/mnemosyne/mnemosyne.db`): NOT FOUND; `.auto/data/template.db` is benchmark-only.
-- `mnemosyne.cli:main` executable entry point: design reference only; `cli.py` not implemented.
+- M2–M5 implementation (data model adoption, capture pipeline, retrieval/embedding parity, maintenance/security): DEFERRED until upstream source and verified DB clone available.
 
 ## Evidence
 
-- `git diff --stat`: `pyproject.toml` changed; `src/lib/storage.py` edited; `integrations/hermes-memory-provider/mnemosyne_rust_hermes/provider.py` edited. `src/` otherwise unchanged.
-- `python3 -c` verification: `PythonMemoryStorage` works with `FULL` sync (remember + recall pass).
-- `grep -n` verification: adapter `handle_tool_call` uses `PythonMemoryStorage`; no `.jsonl` invocation for memory path.
-- Package verification: `pyproject.toml` has separated core/optional dependencies.
+- `git diff --stat`: `pyproject.toml` changed; `src/lib/storage.py` edited; `integrations/hermes-memory-provider/mnemosyne_rust_hermes/provider.py` edited; `src/mnemosyne/cli.py` added. `src/` otherwise unchanged.
+- `mnemosyne` executable verified: `--help`, `remember`, `recall` all pass.
+- Old `mnemosyne-orchestration` dist-info conflict removed; `import mnemosyne` resolves to `src/mnemosyne/__init__.py` (v2.2.0).
 
 ## Next smallest step (requires user authorization / upstream resolution)
 

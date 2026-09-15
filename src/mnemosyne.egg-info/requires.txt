@@ -1,0 +1,10 @@
+
+[dev]
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+[orchestration]
+dspy-ai>=3.0.3
+anthropic>=0.72.0
+claude-agent-sdk>=0.1.0
+rich>=13.0.0
