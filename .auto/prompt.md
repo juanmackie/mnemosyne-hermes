@@ -1,32 +1,30 @@
-# Autoresearch: Hermes adapter + retrieval optimization
+# Autoresearch: latency — all 4 pipelines
 
 ## Objective
-Optimize the `mnemosyne-rust` adapter (reconstructed pure-Python adapter) and retrieval path for first-class Hermes integration. Focus on adapter contract reliability, retrieval quality, and graceful degradation without reintroducing Rust.
+Reduce latency across all four memory pipelines: search/recall, remember/ingest, MCP server roundtrip, and embedding generation. Primary metric is p99 latency (ms), lower is better. Workload: ~100 memories in the test DB.
 
 ## Metrics
-- **Primary**: `realquery_heldout_mrr` (unitless, higher is better) — retrieval ranking quality.
-- **Secondary**: adapter test pass rate, build/install time, contract verification pass/fail.
+- **Primary**: `p99_latency_ms` (ms, lower is better) — worst-case latency across all pipelines
+- **Secondary**: `search_latency_ms`, `remember_latency_ms`, `mcp_roundtrip_ms`, `embed_latency_ms`
 
 ## How to Run
-`.auto/measure.sh` runs `.auto/evaluate_membench.py` (or `.auto/evaluate.py`) against the adapter/retrieval pipeline.
+`./.auto/measure.sh` — outputs `METRIC name=value` lines.
 
 ## Files in Scope
-- `integrations/hermes-memory-provider/` (adapter source, tests)
-- `docs/HERMES_INTEGRATION.md`, `README.md`
-- `.auto/` session files only (no external DB changes)
+- `src/lib/storage.py` — PythonMemoryStorage (recall, remember, list, consolidate)
+- `src/mnemosyne/cli.py` — CLI entry point (recall, remember commands)
+- `integrations/hermes-memory-provider/mnemosyne_rust_hermes/provider.py` — MCP provider
+- `src/orchestration/` — orchestration agents (executor, orchestrator)
 
 ## Off Limits
-- No Rust source changes (`src/` retired).
-- No new dependencies (adapter is stdlib-only).
-- Do not modify `.auto/evaluate_membench.py` or `.auto/evaluate.py` contracts.
+- No new dependencies
+- No Rust source changes
+- No DB migration scripts
 
 ## Constraints
-- Adapter contracts (`provider_id`, `namespace`, `DB`, `checkpoint`) must be preserved.
-- No `maturin` / `PyO3` reintroduction.
-- Tests should pass or degrade gracefully.
+- Tests must pass (`python -m unittest discover -s tests -t . -v`)
+- No new external packages
+- Pure Python / stdlib only
 
 ## What's Been Tried
-- Adapter source reconstructed from `docs/plans/item_02_python_baseline.md` contracts.
-- Pure Python adapter installed (`pip install -e integrations/hermes-memory-provider/`).
-- Entry point verified (`mnemosyne-rust`).
-- Some adapter tests still fail due to environment-level module caching (installed editable vs in-repo import). Needs resolution.
+(Update as experiments accumulate.)
