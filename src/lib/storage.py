@@ -119,6 +119,8 @@ class PythonMemoryStorage:
         # NORMAL: in WAL mode, commits skip fsync (still crash-safe via WAL).
         # FULL was the dominant cost in remember p99 (~1.8ms → target <1ms).
         conn.execute("PRAGMA synchronous=NORMAL")
+        # Memory-mapped I/O for faster reads.
+        conn.execute("PRAGMA mmap_size=268435456")
         # Auto-checkpoint runs a PASSIVE checkpoint *inside* whichever commit
         # crosses the page threshold -- and recall commits (the access-count
         # bump), so a read could stall for 12-481ms (measured p99 11.3ms, max
@@ -153,6 +155,8 @@ class PythonMemoryStorage:
 
     # Checkpoint when the WAL outgrows this. Called from the write paths only.
     WAL_CHECKPOINT_BYTES = 4 * 1024 * 1024
+    # Only check WAL size every N writes to avoid expensive stat calls on every remember.
+    WAL_CHECKPOINT_INTERVAL = 10
 
     def _maybe_checkpoint(self) -> None:
         """Fold a large WAL back into the database once it outgrows a bound.
@@ -166,6 +170,9 @@ class PythonMemoryStorage:
         and the next write retries.
         """
         try:
+            self._checkpoint_counter = getattr(self._local, "_checkpoint_counter", 0) + 1
+            if self._checkpoint_counter % self.WAL_CHECKPOINT_INTERVAL != 0:
+                return
             wal = self.db_path + "-wal"
             if os.path.exists(wal) and os.path.getsize(wal) >= self.WAL_CHECKPOINT_BYTES:
                 self._conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
