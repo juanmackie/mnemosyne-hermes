@@ -17,9 +17,9 @@ Get Mnemosyne running and store your first memory in **under 5 minutes**.
 Before starting, verify you have:
 
 ```bash
-# Rust 1.75+ installed
-rustc --version
-# Should show: rustc 1.75.0 or higher
+# Python 3.11+ installed
+python --version
+# Should show: Python 3.11 or higher
 
 # If not installed:
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -43,7 +43,7 @@ cd mnemosyne
 ```
 
 The installer will:
-- ✅ Build the Rust binary
+- ✅ Install the Python-native package
 - ✅ Install to `~/.local/bin/mnemosyne`
 - ✅ Create database at `~/.local/share/mnemosyne/`
 - ✅ Set up MCP integration with Claude Code
@@ -249,7 +249,7 @@ See [Hooks Testing Guide](HOOKS_TESTING.md) for details.
 
 ### Advanced Features
 
-- **PyO3 Orchestration**: 10-20x faster multi-agent coordination
+- **Orchestration**: Optional Python multi-agent coordination (separate install)
 - **Project Namespaces**: Automatic memory isolation per project
 - **Importance Decay**: Memories age naturally over time
 - **Memory Consolidation**: Automatic deduplication

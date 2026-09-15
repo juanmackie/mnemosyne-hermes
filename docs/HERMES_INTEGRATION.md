@@ -276,37 +276,22 @@ because fallback vectors can materially reduce semantic recall. For higher
 retrieval quality, upgrade to the model-backed path:
 
 ```bash
-# 1. Build the model-backed binary (ONNX runtime via fastembed).
-cargo build --release --features local-embeddings
-#    (or `--features full` for model-backed embeddings, full ICS syntax
-#    grammars, and companion TUI/dashboard binaries)
+# 1. Install the Python-native package (no Rust compiler needed).
+pip install -e .
 
-# 2. Install or invoke the rebuilt executable so `mnemosyne` on your PATH is
-#    the feature-enabled build, not the older release binary.
-cp target/release/mnemosyne ~/.local/bin/mnemosyne
+# 2. Verify the provider mode: the adapter uses PythonMemoryStorage
+#    with synchronous=NORMAL durability.
+mnemosyne diagnostics
 
-# 3. Verify the provider mode: the loaded provider should no longer report
-#    fallback/deterministic embeddings.
-mnemosyne status
-
-# 4. Complete the backfill so existing memories get model-backed vectors.
-mnemosyne embed --all
+# 3. Embedding rebuilds require upstream mnemosyne-memory 3.15.1 source
+#    (blocked until upstream source is fetched).
+mnemosyne embed --all  # blocked: upstream source MISSING
 ```
 
-If you run the model-backed build, pin the bank to a known model. The
-`bge-small-en-v1.5` bank (384 dimensions) is a sensible small local default:
-select the embedding preset, rebuild with `--features local-embeddings`, reinstall
-the rebuilt binary, then confirm the effective configuration before backfilling.
-
-`mnemosyne status` reports the effective embedding configuration (enabled,
-model, dimensions, device, cache directory). If a store was written with a
-different model than the one now configured, the vector space has changed and the
-older vectors are no longer comparable; the configuration reports that conflict
-instead of silently mixing the two. Run `mnemosyne embed --all` to re-embed the
-whole bank so it matches the configured model again. Never mix models within one
-database.
-If you prefer not to replace the on-PATH binary, invoke the rebuilt executable
-explicitly for each command, e.g. `./target/release/mnemosyne embed --all`.
+The `bge-small-en-v1.5` embedding identity (384 dimensions) is preserved
+in `.mnemosyne_notes` and adapter contracts. Do not mix embedding models
+within one database. Run `mnemosyne embed --all` to re-embed the
+whole bank once upstream source is available.
 
 ## Configuration and namespaces
 
@@ -322,9 +307,9 @@ explicitly for each command, e.g. `./target/release/mnemosyne embed --all`.
 For other MCP clients, use the same `mnemosyne mcp` stdio command and the
 standard `mcpServers` configuration shape. The underscore aliases are safe for
 clients that expose provider tools as native commands. The release is local-only
-by default; distributed Iroh peer networking is an explicit source-build
-feature (`cargo build --release --features distributed`). See
-[MCP client configuration examples](MCP_CLIENT_CONFIGS.md) for Claude Code,
+by default. Distributed Iroh peer networking
+is an explicit source-build feature (blocked until upstream source is fetched).
+See [MCP client configuration examples](MCP_CLIENT_CONFIGS.md) for Claude Code,
 Cursor, Codex, Windsurf, OpenClaw, and generic MCP clients.
 
 ## Troubleshooting

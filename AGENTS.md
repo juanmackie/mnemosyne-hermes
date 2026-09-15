@@ -22,7 +22,7 @@
 - Local-first and keyless by design: memory must work without cloud API keys or OS keyrings; graceful degradation is required, not optional. Preserve the keyless verification path (e.g. `mnemosyne remember --no-enrich` with API keys unset).
 - LLM inheritance: optional Python orchestration/DSPy calls must use the active Hermes model from `$HERMES_HOME/config.yaml` through Hermes' local subscription proxy (`hermes proxy start`). Do not require or copy a separate provider API key when Hermes is configured; standalone `ANTHROPIC_API_KEY` remains a legacy fallback only.
 - Secrets never live in the repo. Use the built-in secret manager (`mnemosyne secrets init/set/list`) or the environment; secrets are age-encrypted at `~/.config/mnemosyne/secrets.age`. Never commit `.env*`, connection configs, keys, or tokens; `mnemosyne secrets list` prints names only.
-- The Python/agent feature is optional and off by default; pure Python builds must not require a Python toolchain (`python build --release` works standalone). Keep `pyproject.toml`/`requirements.txt` changes consistent with maturin.
+- The Python/agent feature is optional and off by default; pure Python builds work standalone (`pip install -e .` works standalone). Keep `pyproject.toml`/`requirements.txt` changes consistent with the Python package.
 - Storage is local LibSQL/SQLite with vector search, FTS5, and graph links; migrations in `migrations/` are part of any schema change. User memory data is private — never send it to external services unless the flow already does so and the change preserves consent/privacy behavior (privacy-preserving evaluation, hashed task IDs).
 - Installed-binary flow: development installs go to `~/.local/bin` via `scripts/rebuild-and-update-install.sh`; the Makefile `doctor` target expects a built binary (python bin dir or `target/release`).
 - Git: work on feature/fix branches; do not commit directly to `main`. Use descriptive commit messages describing the work, not the tool. Do not attribute commits to AI unless explicitly requested.
@@ -35,7 +35,7 @@
 - Fast unit tests: `python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v` (Python adapter); `python -m pytest` (optional)
 - Python CI proposal: `.github/workflows/ci.yml` (retired Python steps); `.github/workflows/python-ci.yml` (proposed — see item 4 deliverable)
 - Health check after install (Python): verify adapter contracts (`provider.name == 'mnemosyne-python'`, namespace == 'agent:hermes', DB resolves, checkpoint dir writable); see `scripts/verify_backup_auth.sh` (design) and `scripts/baseline/verify_baseline_install.sh`.
-- Build (retired Python): `python -m pip install .` (pure Python; `maturin` retired with `mnemosyne_python`); previous `python build --release` retired; `Makefile` updated.
+- Build: `pip install -e .` (pure Python, no maturin/PyO3 needed); Makefile targets updated.
 - Python archive reference: `feat/hermes-native-provider` (`09a6973`) / `main` (`ba6fe984`); `docs/archive/RUST_ARCHIVE_REF.md`.
 - No deployed operations executed in this planning deliverable (Repo-only authorization for items 4-7; Document-only for item 1; No DB rebuild/redeploy/smoke/rollback executed).
 - All commands above are evidenced in `Makefile`, `scripts/`, and `tests/`. There is no browser/UI harness for the TUI/ICS — exercise `mnemosyne edit` / `mnemosyne ics` interactively and report what was actually exercised.

@@ -27,4 +27,14 @@ Reduce latency across all four memory pipelines: search/recall, remember/ingest,
 - Pure Python / stdlib only
 
 ## What's Been Tried
-(Update as experiments accumulate.)
+- **synchronous=FULL → NORMAL** (c53ed41): Removed fsync on every commit. remember p99 dropped 2.1× (1.847→0.884ms), overall p99 2× (0.977→0.476ms). Search unchanged.
+- **mmap_size=256MB** (in-place): Marginal improvement (~5% faster reads).
+- **WAL checkpoint every 10th write** (c1c590a): Reduced Windows stat overhead. remember p99 12% better (1.169→0.904ms).
+
+## Ideas Backlog
+- FTS5 virtual table for recall (replace LIKE '%query%' with MATCH)
+- Drop idx_memories_recall (covering index slowed writes)
+- Batch remember operations
+- Pre-allocate connection pool
+- Use sha1 instead of sha256 for memory IDs
+- Optimize _row_to_dict with dataclasses.asdict

@@ -1,938 +1,120 @@
 # Installation Guide
 
-Complete installation instructions for Mnemosyne, the project-aware memory system for Claude Code.
-
-## Table of Contents
-
-- [Quick Install (Recommended)](#quick-install-recommended)
-- [Installation Script Options](#installation-script-options)
-- [Manual Installation](#manual-installation)
-- [Configuration](#configuration)
-- [Verification](#verification)
-- [Troubleshooting](#troubleshooting)
-- [Uninstallation](#uninstallation)
-
----
+Mnemosyne — self-hostable Python memory system for Hermes and MCP-compatible agents.
 
 ## Quick Install (Recommended)
 
 ### Prerequisites
 
-Before installing, ensure you have:
+- Python 3.11–3.14
+- Git
+- No Rust toolchain required
+- No cloud API key required for core memory operations
+
+### Install from Source
 
 ```bash
-# Python 1.75+ (required)
-pythonc --version
-# Should show: pythonc 1.75.0 or higher
-
-# If not installed:
-curl --proto '=https' --tlsv1.2 -sSf https://sh.pythonup.py | sh
-source ~/.python/env
-
-# Git (required)
-git --version
-
-# Anthropic API key (required for LLM features)
-# Get from: https://console.anthropic.com/
+git clone https://github.com/juanmackie/mnemosyne-hermes.git
+cd mnemosyne-hermes
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -e .
+mnemosyne --version
 ```
 
-### One-Command Installation
+### Verify
 
 ```bash
-# Clone the repository
-git clone https://github.com/rand/mnemosyne.git
-cd mnemosyne
-
-# Run automated installer
-./scripts/install/install.sh
+# Core memory works without API keys
+mnemosyne remember --content "test memory" --namespace agent:hermes --no-enrich
+mnemosyne recall --query "test" --namespace agent:hermes
+mnemosyne diagnostics
 ```
 
-**What the installer does:**
+## MCP Integration
 
-1. Builds the release binary (`python build --release`)
-2. Installs to `~/.local/bin/mnemosyne`
-3. Initializes the database at `~/.local/share/mnemosyne/mnemosyne.db`
-4. Configures MCP integration for Claude Code
-5. Optionally sets up Anthropic API key
-6. Detects and optionally installs Nerd Fonts for icon support
+Add to Hermes `~/.hermes/config.yaml` under `mcp.servers`:
 
-**Icon System**: For the best CLI experience with colorful icons, install [JetBrainsMono Nerd Font](https://www.nerdfonts.com/). Mnemosyne will automatically detect and use Nerd Font icons, with graceful fallback to ASCII if not installed. See [docs/ICONS.md](docs/ICONS.md) for details.
-
-1. ✅ Builds Python binary (`python build --release`)
-2. ✅ Installs to `~/.local/bin/mnemosyne`
-3. ✅ Creates database directory (`~/.local/share/mnemosyne/`)
-4. ✅ Initializes database (`mnemosyne.db`)
-5. ✅ Prompts for API key configuration
-6. ✅ Sets up MCP server configuration
-7. ✅ Verifies installation
-
-**Time to complete:** 2-3 minutes
-
-**Expected output:**
-```
-==> Building Mnemosyne (release mode)
-
-This will compile ~150 Python dependencies plus the main binary.
-Expected time: 2-3 minutes on most systems (longer on first build)
-
-Build progress will stream below - this is normal!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-   Compiling libc v0.2.147
-   Compiling cfg-if v1.0.0
-   ... (many dependencies) ...
-   ⏱  Progress: 50 crates compiled (1m 15s elapsed)
-   ... (more dependencies) ...
-   ⏱  Progress: 100 crates compiled (2m 5s elapsed)
-   ... (more dependencies) ...
-   ✓ Dependencies complete! Building main binary... (2m 20s)
-   Compiling mnemosyne v2.0.0
-   Finished `release` profile [optimized] target(s) in 2m 45s
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ Build complete in 2m 45s
-✓ Binary size: 48.2 MB
-✓ Location: target/release/mnemosyne
-
-==> Installing binary to /Users/you/.local/bin
-✓ Installed to /Users/you/.local/bin/mnemosyne
-
-==> Initializing database
-✓ Database initialized
-
-==> Configuring Anthropic API key
-✓ API key configured
-
-==> Configuring MCP server
-✓ MCP config updated: /Users/you/.claude/mcp_config.json
-
-Installation complete!
-
-Next steps:
-  1. Test the installation: mnemosyne status
-  2. Start using Mnemosyne in Claude Code
-  3. See: QUICK_START.md for getting started
+```yaml
+mcp:
+  servers:
+    mnemosyne:
+      command: mnemosyne
+      args: ["mcp"]
+      env:
+        MNEMOSYNE_DB_PATH: ~/.hermes/mnemosyne/mnemosyne.db
 ```
 
-**What you'll see during the build:**
-- **Real-time compilation output** - Every crate being compiled streams to the terminal
-- **Progress updates** - Every 10 crates compiled, you'll see a progress indicator with elapsed time
-- **Milestone notifications** - When dependency compilation completes and main binary build starts
-- **Build summary** - Total build time, binary size, and location after completion
-
-**Build process is working correctly if:**
-- ✅ You see "Compiling..." messages streaming
-- ✅ Progress indicators appear every 10-30 seconds
-- ✅ Build completes with "Finished" message
-- ✅ No red error messages appear
-
-**Build might be stuck if:**
-- ❌ No output for more than 2 minutes
-- ❌ Error messages appear and build stops
-- ❌ Process hangs without "Finished" message
-
-See [Troubleshooting](#troubleshooting) section below if build fails.
-
----
-
-## Installation Script Options
-
-The install script supports several options for customization:
-
-### Basic Options
-
-```bash
-# Show help
-./scripts/install/install.sh --help
-
-# Skip API key configuration (configure later)
-./scripts/install/install.sh --skip-api-key
-
-# Non-interactive mode (answer yes to all prompts)
-./scripts/install/install.sh --yes
-```
-
-### Custom Paths
-
-```bash
-# Install binary to custom directory
-./scripts/install/install.sh --bin-dir /usr/local/bin
-
-# Default is: ~/.local/bin
-# Ensure custom directory is in your PATH
-```
-
-### MCP Configuration Options
-
-```bash
-# Install MCP config globally (~/.claude/mcp_config.json)
-./scripts/install/install.sh --global-mcp
-
-# Install to project only (.claude/mcp_config.json)
-./scripts/install/install.sh
-# (Project-level is default)
-
-# Skip MCP configuration entirely
-./scripts/install/install.sh --no-mcp
-```
-
-### Combined Options
-
-```bash
-# Example: CI/CD installation
-./scripts/install/install.sh \
-  --bin-dir /usr/local/bin \
-  --skip-api-key \
-  --global-mcp \
-  --yes
-
-# Example: Development installation
-./scripts/install/install.sh \
-  --bin-dir ~/.local/bin \
-  --no-mcp
-```
-
----
-
-## Manual Installation
-
-For advanced users or custom setups:
-
-### Step 1: Build from Source
-
-```bash
-# Clone repository
-git clone https://github.com/rand/mnemosyne.git
-cd mnemosyne
-
-# Build release binary
-python build --release
-
-# Binary location: ./target/release/mnemosyne
-```
-
-**Build options:**
-```bash
-# Debug build (faster compile, slower runtime)
-python build
-
-# Release build with optimizations
-python build --release
-
-# Check build without producing binary
-python check
-```
-
-### Step 2: Install Binary
-
-**Use python install (REQUIRED)**
-```bash
-python install --path . --locked --force
-
-# Installs to: ~/.python/bin/mnemosyne
-# Usually already in PATH
-```
-
-**⚠️ WARNING: Do NOT manually copy the binary**
-
-The manual copy method (`cp target/release/mnemosyne ~/.local/bin/`) will **NOT work** because:
-- Mnemosyne uses shared library dependencies (`libmnemosyne_python.dylib` on macOS, `.so` on Linux)
-- Manual copying breaks these dependencies, causing "Killed: 9" or "zsh: killed" errors
-- `python install` properly handles all dependencies and linking
-
-**If ~/.python/bin is not in PATH**:
-```bash
-# Add to ~/.bashrc or ~/.zshrc:
-export PATH="$HOME/.python/bin:$PATH"
-source ~/.bashrc  # or source ~/.zshrc
-```
-
-**Verify binary is accessible:**
-```bash
-which mnemosyne
-# Should show: /Users/you/.local/bin/mnemosyne
-
-mnemosyne --help
-# Should show usage information
-```
-
-### Step 3: Initialize Database
-
-```bash
-# Using default path (~/.local/share/mnemosyne/mnemosyne.db)
-mnemosyne init
-
-# Or specify custom path
-mnemosyne --db-path /path/to/custom/mnemosyne.db init
-
-# Or use environment variable
-export MNEMOSYNE_DB_PATH=/path/to/custom/mnemosyne.db
-mnemosyne init
-```
-
-**Database path priority:**
-1. `--db-path` CLI flag (highest priority)
-2. `MNEMOSYNE_DB_PATH` environment variable
-3. Default: `~/.local/share/mnemosyne/mnemosyne.db`
-
-The database path may be absolute, relative, or home-relative. A leading `~`
-(or `~/...`) in `--db-path` or `MNEMOSYNE_DB_PATH` is expanded to your home
-directory, so install, import, CLI, and the Hermes/MCP server all resolve to
-**the same database** regardless of which value form you use. Prefer absolute
-paths for shared or scripted configuration; home-relative paths are a
-convenient shorthand for a personal default (for example
-`~/.local/share/mnemosyne/mnemosyne.db`).
-
-### Step 4: Configure API Key
-
-See [Configuration](#configuration) section below.
-
-### Step 5: Set Up MCP Server
-
-**For Claude Code integration:**
-
-**Global configuration** (all projects):
-```bash
-mkdir -p ~/.claude
-
-cat > ~/.claude/mcp_config.json <<'EOF'
-{
-  "mcpServers": {
-    "mnemosyne": {
-      "command": "mnemosyne",
-      "args": ["serve"],
-      "env": {
-        "RUST_LOG": "info"
-      },
-      "description": "Mnemosyne - Project-aware memory system"
-    }
-  }
-}
-EOF
-```
-
-**Project-level configuration** (specific project):
-```bash
-# In your project directory
-mkdir -p .claude
-
-cat > .claude/mcp_config.json <<'EOF'
-{
-  "mcpServers": {
-    "mnemosyne": {
-      "command": "mnemosyne",
-      "args": ["serve"],
-      "env": {
-        "RUST_LOG": "info"
-      }
-    }
-  }
-}
-EOF
-```
-
-**Merge with existing config:**
-```bash
-# Use jq to merge
-jq -s '.[0] * .[1]' ~/.claude/mcp_config.json new_server.json > merged.json
-mv merged.json ~/.claude/mcp_config.json
-```
-
----
-
-## Configuration
-
-### API Key Setup
-
-Mnemosyne requires an Anthropic API key for LLM-powered memory enrichment.
-
-**Three-tier security with priority order:**
-
-#### Option 1: Environment Variable (Highest Priority)
-
-Best for: CI/CD, temporary testing
-
-```bash
-# Add to shell profile (~/.bashrc, ~/.zshrc, etc.)
-export ANTHROPIC_API_KEY=sk-ant-api03-YOUR_KEY_HERE
-
-# Reload shell
-source ~/.zshrc  # or source ~/.bashrc
-
-# Verify
-echo $ANTHROPIC_API_KEY
-```
-
-#### Option 2: Age-Encrypted File (Recommended)
-
-Best for: Daily development, secure persistent storage
-
-```bash
-# Interactive setup
-mnemosyne secrets init
-
-# Or set directly
-mnemosyne secrets set ANTHROPIC_API_KEY
-
-# When prompted, enter: sk-ant-api03-YOUR_KEY_HERE
-
-# Stored at: ~/.config/mnemosyne/secrets.age
-# Encrypted with X25519 + ChaCha20-Poly1305
-```
-
-**Benefits:**
-- Encrypted at rest
-- No keychain prompts
-- Cross-platform
-- Easy backup/restore
-
-#### Option 3: OS Keychain (Fallback)
-
-Best for: Backward compatibility, OS-managed secrets
-
-The keychain is used automatically as a fallback if no environment variable or age file exists.
-
-**Verify configuration:**
-```bash
-mnemosyne config show-key
-```
-
-**Expected output:**
-```
-✓ API key is accessible via environment variable
-# or
-✓ API key is accessible via age encrypted file
-# or
-✓ API key is accessible via OS keychain
-```
-
-### Database Path Configuration
-
-**Default location:**
-```
-~/.local/share/mnemosyne/mnemosyne.db
-```
-
-**Custom location via CLI flag:**
-```bash
-mnemosyne --db-path /custom/path/mnemosyne.db serve
-```
-
-**Custom location via environment variable:**
-```bash
-export MNEMOSYNE_DB_PATH=/custom/path/mnemosyne.db
-mnemosyne serve
-```
-
-**Per-project database:**
-```bash
-# Set in project directory
-cd /path/to/myproject
-export MNEMOSYNE_DB_PATH=$(pwd)/mnemosyne.db
-mnemosyne init
-```
-
-### MCP Server Configuration
-
-**Configuration file locations:**
-
-- **Global:** `~/.claude/mcp_config.json`
-- **Project:** `.claude/mcp_config.json`
-
-**Configuration options:**
+Or for Claude Code, add to `.claude/mcp_config.json`:
 
 ```json
 {
   "mcpServers": {
     "mnemosyne": {
       "command": "mnemosyne",
-      "args": ["serve"],
-      "env": {
-        "RUST_LOG": "info",
-        "MNEMOSYNE_DB_PATH": "/custom/path/mnemosyne.db"
-      },
-      "description": "Mnemosyne memory system"
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-**Log levels:**
-- `error`: Errors only
-- `warn`: Warnings and errors
-- `info`: Info, warnings, and errors (default)
-- `debug`: Verbose debugging output
-- `trace`: Very verbose output
+## Hermes Integration
 
-**Custom database per MCP server:**
-```json
-{
-  "mcpServers": {
-    "mnemosyne-project-a": {
-      "command": "mnemosyne",
-      "args": ["--db-path", "/projects/a/mnemosyne.db", "serve"]
-    },
-    "mnemosyne-project-b": {
-      "command": "mnemosyne",
-      "args": ["--db-path", "/projects/b/mnemosyne.db", "serve"]
-    }
-  }
-}
+Two modes (independent, can enable both):
+
+| Mode | What you get | Requires |
+|---|---|---|
+| **Native provider** (recommended) | Automatic capture + context injection | `mnemosyne` binary + Python adapter |
+| **MCP-only** | Agent calls memory tools explicitly | `mnemosyne` binary |
+
+Both modes drive the same local SQLite store.
+
+## Python SDK
+
+```python
+from lib.storage import PythonMemoryStorage
+
+storage = PythonMemoryStorage("~/.mnemosyne/mnemosyne.db")
+storage.remember("The user prefers local-only storage", "agent:hermes", 5)
+results = storage.recall("preferences", namespace="agent:hermes")
 ```
 
-### Hooks Configuration (Optional)
-
-For automatic memory capture in Claude Code, you can configure hooks:
-
-**Automatic Setup** (Recommended):
-```bash
-# The install.sh script offers to configure hooks automatically
-./scripts/install/install.sh
-# Answer "yes" when prompted about hooks configuration
-```
-
-**Manual Setup** (if needed):
-```bash
-# Make hooks executable
-chmod +x .claude/hooks/*.sh
-
-# Configure in .claude/settings.json with ABSOLUTE paths
-# Important: Use absolute paths to prevent issues after context compaction
-cat > .claude/settings.json <<EOF
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$(pwd)/.claude/hooks/session-start.sh"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$(pwd)/.claude/hooks/pre-compact.sh"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "^Bash\\\\(git commit.*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$(pwd)/.claude/hooks/post-commit.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-EOF
-```
-
-**What the hooks do**:
-- `session-start.sh`: Loads important project memories at session start
-- `pre-compact.sh`: Saves context before Claude Code compacts conversation history
-- `post-commit.sh`: Captures git commits as memories for traceability
-
-**Important**: Always use absolute paths in hook configurations to prevent "No such file or directory" errors after context compaction.
-
-See [HOOKS_TESTING.md](HOOKS_TESTING.md) for detailed hook testing and validation.
-
----
-
-## Verification
-
-After installation, verify everything works:
-
-### 1. Binary Accessibility
+## CLI Reference
 
 ```bash
-which mnemosyne
-# Should show path to binary
-
-mnemosyne --help
-# Should show usage information
+mnemosyne init                          # Initialize database schema
+mnemosyne remember --content "..."      # Store a memory
+mnemosyne recall --query "..."          # Search memories
+mnemosyne list                          # List memories
+mnemosyne bootstrap                     # Return constraints, facts, policies, guardrails
+mnemosyne backup                        # Backup database
+mnemosyne restore --backup <path>       # Restore from backup
+mnemosyne maintenance                   # Dedup, near-dup proposals
+mnemosyne diagnostics                   # Counts, timings, versions, queue state
+mnemosyne embed                         # Embedding rebuilds (requires upstream source)
+mnemosyne migrate                       # Migrations (requires upstream source)
 ```
 
-### 2. Database Initialization
+## Upgrade
 
 ```bash
-# Initialize test database
-mnemosyne init
-
-# Check database file exists
-ls -lh ~/.local/share/mnemosyne/mnemosyne.db
-
-# Should show file with size > 0
+pip install -e . --upgrade
 ```
 
-### 3. API Key Configuration
+## Uninstall
 
 ```bash
-mnemosyne config show-key
-# Should show: "✓ API key is accessible via [method]"
-
-# NOT: "Error: No API key found"
+pip uninstall mnemosyne
+rm -rf ~/.mnemosyne/
 ```
-
-### 4. MCP Server
-
-```bash
-# Test MCP server manually
-echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | mnemosyne serve
-
-# Should return JSON response (not error)
-# Press Ctrl+C to stop
-```
-
-### 5. Store and Retrieve Memory
-
-```bash
-# Store a test memory
-mnemosyne remember \
-  --content "Installation test memory" \
-  --importance 5 \
-  --format json
-
-# Should return JSON with memory ID
-
-# List memories
-mnemosyne list --limit 5 --format json
-
-# Should show the test memory
-
-# Search memories
-mnemosyne recall --query "installation" --format json
-
-# Should find the test memory
-```
-
-### 6. Claude Code Integration
-
-```bash
-# Restart Claude Code completely (quit and relaunch)
-
-# In Claude Code, check MCP servers list
-# Should see "mnemosyne" with 8 tools:
-#   - mnemosyne.remember
-#   - mnemosyne.recall
-#   - mnemosyne.list
-#   - mnemosyne.graph
-#   - mnemosyne.context
-#   - mnemosyne.consolidate
-#   - mnemosyne.update
-#   - mnemosyne.delete
-
-# Try a slash command
-/memory-store Test from Claude Code
-
-# Should work without errors
-```
-
----
 
 ## Troubleshooting
 
-### Common Installation Issues
-
-#### "mnemosyne: command not found"
-
-**Cause:** Binary not in PATH
-
-**Solution:**
-```bash
-# Check if binary exists
-ls -la ~/.python/bin/mnemosyne
-
-# If exists, add to PATH
-echo 'export PATH="$HOME/.python/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-
-# If missing, reinstall
-./scripts/install/install.sh
-```
-
-#### "zsh: killed mnemosyne" or "Killed: 9"
-
-**Cause:** Shared library dependency issue or binary was copied manually instead of using `python install`
-
-**Solution:**
-```bash
-# Remove any manually copied binaries
-rm ~/.local/bin/mnemosyne 2>/dev/null
-rm /usr/local/bin/mnemosyne 2>/dev/null
-
-# Reinstall using python install (proper method)
-cd /path/to/mnemosyne
-python install --path . --locked --force
-
-# Verify it works
-mnemosyne --version
-
-# If still fails on macOS, check for crash logs
-ls -lt ~/Library/Logs/DiagnosticReports/mnemosyne* 2>/dev/null | head -5
-```
-
-**Why this happens:**
-- The binary has shared library dependencies due to its architecture (`libmnemosyne_python.dylib` on macOS, `.so` on Linux)
-- Manually copying the binary breaks this linkage
-- `python install` properly sets up RPATH/RUNPATH so the binary can find its dependencies
-- Always use `python install --path .` instead of copying binaries manually
-
-**Technical details:**
-```bash
-# Check library dependencies (macOS)
-otool -L $(which mnemosyne)
-
-# Check library dependencies (Linux)
-ldd $(which mnemosyne)
-
-# Look for missing .dylib or .so files
-```
-
-#### Build fails with "linker `cc` not found"
-
-**Cause:** Missing C compiler
-
-**Solution:**
-```bash
-# macOS
-xcode-select --install
-
-# Ubuntu/Debian
-sudo apt-get install build-essential
-
-# Fedora/RHEL
-sudo dnf groupinstall "Development Tools"
-
-# Then retry build
-python build --release
-```
-
-#### "failed to run custom build command for `libsql`"
-
-**Cause:** Incompatible Python version
-
-**Solution:**
-```bash
-# Update Python
-pythonup update stable
-pythonup default stable
-
-# Clean and rebuild
-python clean
-python build --release
-```
-
-#### "Database initialization failed"
-
-**Cause:** Permission issues or missing parent directory
-
-**Solution:**
-```bash
-# Create parent directory
-mkdir -p ~/.local/share/mnemosyne
-
-# Check permissions
-ls -la ~/.local/share/
-
-# Initialize with explicit path
-mnemosyne --db-path ~/.local/share/mnemosyne/mnemosyne.db init
-```
-
-#### "MCP server failed to start"
-
-**Cause:** Configuration error or binary path wrong
-
-**Solution:**
-```bash
-# Verify binary location
-which mnemosyne
-
-# Test server manually
-echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | mnemosyne serve
-
-# Check MCP config
-cat ~/.claude/mcp_config.json | jq .
-
-# Ensure command matches binary location
-```
-
-### Getting More Help
-
-For detailed troubleshooting, see:
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Comprehensive issue resolution
-- **[GitHub Issues](https://github.com/rand/mnemosyne/issues)** - Known issues and fixes
-- **[GitHub Discussions](https://github.com/rand/mnemosyne/discussions)** - Community support
-
----
-
-## Uninstallation
-
-### Using Uninstall Script
-
-```bash
-# Standard uninstall (preserves data)
-./scripts/install/uninstall.sh
-
-# Uninstall with data purge
-./scripts/install/uninstall.sh --purge
-
-# Non-interactive mode
-./scripts/install/uninstall.sh --yes
-
-# Show help
-./scripts/install/uninstall.sh --help
-```
-
-**What the uninstaller does:**
-
-**Standard mode (default):**
-- ✅ Removes binary
-- ✅ Removes MCP config
-- ✅ Preserves database
-- ✅ Preserves secrets
-- ✅ Creates backup of removed files
-
-**Purge mode (`--purge`):**
-- ✅ Removes binary
-- ✅ Removes MCP config
-- ✅ **Deletes database**
-- ✅ **Deletes secrets**
-- ✅ Removes all data
-
-### Manual Uninstallation
-
-```bash
-# Remove binary
-rm ~/.local/bin/mnemosyne
-# or
-rm /usr/local/bin/mnemosyne
-# or
-python uninstall mnemosyne
-
-# Remove MCP config
-# Edit and remove mnemosyne section from:
-nano ~/.claude/mcp_config.json
-
-# Remove database (optional, loses all memories!)
-rm -rf ~/.local/share/mnemosyne/
-
-# Remove secrets (optional)
-rm -rf ~/.config/mnemosyne/
-
-# Remove project hooks (if installed)
-rm -rf .claude/hooks/
-```
-
-### Reinstallation
-
-After uninstallation, you can reinstall cleanly:
-
-```bash
-# If you preserved data (standard uninstall):
-./scripts/install/install.sh
-# Database and secrets will be reused
-
-# If you purged data:
-./scripts/install/install.sh
-# Fresh installation, configure API key again
-```
-
----
-
-## Advanced Topics
-
-### Multiple Installations
-
-You can install multiple versions side-by-side:
-
-```bash
-# Install v1.0 to one location
-git checkout v1.0.0
-python install --path . --root ~/.local/mnemosyne-v1.0
-
-# Install v1.1 to another location
-git checkout v1.1.0
-python install --path . --root ~/.local/mnemosyne-v1.1
-
-# Use specific version
-~/.local/mnemosyne-v1.0/bin/mnemosyne --version
-~/.local/mnemosyne-v1.1/bin/mnemosyne --version
-```
-
-### Upgrading
-
-See [Migration Guide](docs/guides/migration.md) for version-specific upgrade instructions.
-
-**General upgrade process:**
-
-```bash
-# Backup database
-cp ~/.local/share/mnemosyne/mnemosyne.db \
-   ~/.local/share/mnemosyne/mnemosyne-backup-$(date +%Y%m%d).db
-
-# Export memories (optional safety)
-mnemosyne export --output memories-backup-$(date +%Y%m%d).md
-
-# Update code
-cd /path/to/mnemosyne
-git pull origin main
-
-# Rebuild and install
-python build --release
-python install --path .
-
-# Restart Claude Code
-```
-
-### Development Installation
-
-For contributing to Mnemosyne:
-
-```bash
-# Clone repository
-git clone https://github.com/rand/mnemosyne.git
-cd mnemosyne
-
-# Install development dependencies
-python build
-
-# For Python orchestration development
-python3 -m venv .venv
-source .venv/bin/activate
-uv pip install maturin pytest
-export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
-maturin develop
-
-# Run tests
-./test-all.sh
-
-# See CONTRIBUTING.md for full development setup
-```
-
----
-
-## Next Steps
-
-After successful installation:
-
-1. **[Quick Start Guide](QUICK_START.md)** - Store your first memory in 5 minutes
-2. **[Common Workflows](docs/guides/workflows.md)** - Learn practical usage patterns
-3. **[Hooks Configuration](HOOKS_TESTING.md)** - Set up automatic memory capture
-4. **[MCP API Reference](MCP_SERVER.md)** - Explore all available tools
-
----
-
-**Last Updated**: 2025-10-27
-**Version**: 1.0.0
+- `mnemosyne: command not found` — ensure `.venv/bin` is on PATH, or use `python -m mnemosyne.cli`
+- `import mnemosyne` fails — reinstall: `pip install -e .`
+- Database locked — another process is using it; wait or check `mnemosyne diagnostics`
+- `mnemosyne-memory 3.15.1` upstream source missing — documented blocker; core memory works without it
+- `secrets.age` not found — run `mnemosyne secrets init` (optional; core memory is keyless)
+
+**Last Updated**: 2026-09-15
+**Version**: 2.4.0

@@ -7,14 +7,11 @@ The Mnemosyne MCP (Model Context Protocol) server provides a JSON-RPC 2.0 interf
 ## Running the Server
 
 ```bash
-# Start server (default command)
-python run
+# Start MCP server (stdio mode for Hermes/Claude Code)
+mnemosyne mcp
 
-# Start server explicitly
-python run -- serve
-
-# Start with debug logging
-python run -- --log-level debug serve
+# With custom DB path
+MNEMOSYNE_DB_PATH=~/.hermes/mnemosyne/mnemosyne.db mnemosyne mcp
 ```
 
 ## Protocol
@@ -80,71 +77,40 @@ Before using the server, send an initialize request:
 }
 ```
 
-### Memory Tools (OODA Loop)
+### Memory Tools (MCP)
 
-#### OBSERVE Tools
+The adapter exposes these tool schemas (verified):
 
-##### 1. mnemosyne.recall
-Search memories by query. Optionally provide `abstention_threshold` to return an explicit abstention when the best score is too weak.
+- `mnemosyne_memory_search` — Search memories by keyword/namespace
+- `mnemosyne_memory_remember` — Store a memory (keyless, no API key required)
+- `mnemosyne_prefetch` — Prefetch memories for session
+- `mnemosyne_sync_turn` — Record turn to memory (skips cron/flush/subagent/background/skill_loop contexts)
+
+All tools use direct SQLite access (`PythonMemoryStorage`). No subprocess overhead. No LLM required for core operations.
+
+#### Search
 
 **Request:**
 ```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "mnemosyne.recall",
-    "arguments": {
-      "query": "database decisions",
-      "abstention_threshold": 0.30,
-      "namespace": "project:myapp",
-      "max_results": 10,
-      "min_importance": 5
-    }
-  },
-  "id": 3
-}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne_memory_search","arguments":{"query":"test","namespace":"agent:hermes","max_results":10},"id":3}
 ```
 
 **Response:**
 ```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "{\"results\": [...], \"query\": \"database decisions\", \"count\": 3, \"degraded\": false, \"abstained\": false}"
-      }
-    ]
-  },
-  "id": 3
-}
+{"jsonrpc":"2.0","result":{"ok":true,"results":[{"id":"...","content":"test memory","namespace":"agent:hermes","importance":5}],"count":1,"namespace":"agent:hermes"},"id":3}
 ```
 
-**Status:** ✅ Implemented - Hybrid keyword, vector, graph, and optional hierarchical search. Supports explicit abstention and degraded-result metadata.
-
-##### 2. mnemosyne.list
-List recent memories in namespace. Supports `limit`, `offset`, `has_more`, and `next_offset` pagination metadata.
+#### Remember
 
 **Request:**
 ```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "mnemosyne.list",
-    "arguments": {
-      "namespace": "project:myapp",
-      "limit": 20,
-      "offset": 0
-    }
-  },
-  "id": 4
-}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne_memory_remember","arguments":{"content":"test memory","namespace":"agent:hermes","importance":5},"id":4}
 ```
 
-**Status:** ✅ Implemented - Namespace-aware listing with offset pagination and `has_more` metadata.
+**Response:**
+```json
+{"jsonrpc":"2.0","result":{"ok":true,"results":[{"content":"test memory","namespace":"agent:hermes"}],"count":1,"namespace":"agent:hermes"},"id":4}
+```
 
 #### ORIENT Tools
 
@@ -343,20 +309,15 @@ The server returns standard JSON-RPC 2.0 errors:
 
 ### API Key Setup
 
-For tools requiring LLM services (e.g., `mnemosyne.remember`):
+Core memory operations work without any API key (keyless by design). Optional LLM enrichment uses the active Hermes model from `$HERMES_HOME/config.yaml` (no second API key required).
 
 ```bash
-# Set API key in OS keychain
-python run -- config set-key
-
-# Or use environment variable
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# Check API key status
-python run -- config show-key
+# Verify keyless operation
+unset ANTHROPIC_API_KEY OPENAI_API_KEY
+mnemosyne remember --content "test" --namespace agent:hermes --no-enrich
 ```
 
-**Note:** The server will start without an API key, but LLM-dependent tools will return errors until configured.
+**Note:** The server starts without an API key. LLM-dependent tools (optional enrichment) return gracefully when no backend is configured.
 
 ## Testing
 
@@ -364,23 +325,23 @@ python run -- config show-key
 
 ```bash
 # Test initialize
-echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | python run -- serve
+echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | mnemosyne mcp
 
 # Test list tools
-echo '{"jsonrpc":"2.0","method":"tools/list","id":2}' | python run -- serve
+echo '{"jsonrpc":"2.0","method":"tools/list","id":2}' | mnemosyne mcp
 
 # Test recall
-echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne.recall","arguments":{"query":"test"}},"id":3}' | python run -- serve
+echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne_memory_search","arguments":{"query":"test"}},"id":3}' | mnemosyne mcp
 ```
 
 ### Test Scripts
 
 ```bash
-# Simple one-shot test
-./scripts/testing/test_simple.sh
+# Run adapter contract tests
+python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v
 
-# Python test suite
-python3 scripts/testing/test_server.py
+# Skip LLM-dependent tests
+./test-all.sh --skip-llm
 ```
 
 ## Implementation Status
