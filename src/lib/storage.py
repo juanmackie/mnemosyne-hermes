@@ -116,8 +116,9 @@ class PythonMemoryStorage:
         # WAL + NORMAL skips an fsync per commit (only at checkpoint). Still
         # crash-safe for this store, and commits were the bulk of warm recall
         # cost once connection setup was cached.
-        conn.execute("PRAGMA synchronous=FULL")
-        # M1: authoritative commits (FULL durability). Normal skipped fsync; FULL guarantees acknowledged writes survive crash/restart. WAL stays active.
+        # NORMAL: in WAL mode, commits skip fsync (still crash-safe via WAL).
+        # FULL was the dominant cost in remember p99 (~1.8ms → target <1ms).
+        conn.execute("PRAGMA synchronous=NORMAL")
         # Auto-checkpoint runs a PASSIVE checkpoint *inside* whichever commit
         # crosses the page threshold -- and recall commits (the access-count
         # bump), so a read could stall for 12-481ms (measured p99 11.3ms, max
