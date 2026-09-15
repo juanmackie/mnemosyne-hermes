@@ -1,5 +1,6 @@
 NAMESPACE_DEFAULT = "agent:hermes"
 PROVIDER_ID_DEFAULT = "mnemosyne-rust"
+MCP_ARGS_DEFAULT = ("mcp",)
 PREFETCH_TOOL = "mnemosyne_prefetch"
 SYNC_TURN_TOOL = "mnemosyne_sync_turn"
 CHECKPOINT_API_VERSION = 2
@@ -8,14 +9,15 @@ CHECKPOINT_API_VERSION = 2
 class ProviderConfig:
     def __init__(self, binary="mnemosyne", namespace=NAMESPACE_DEFAULT, db_path=None,
                  hermes_home=None, policy_owner=None, provider_id=PROVIDER_ID_DEFAULT,
-                 request_timeout=10, initialize_timeout=15, prefetch_timeout=3,
-                 shutdown_timeout=5, eager_connect=False):
+                 mcp_args=MCP_ARGS_DEFAULT, request_timeout=10, initialize_timeout=15,
+                 prefetch_timeout=3, shutdown_timeout=5, eager_connect=False):
         self.binary = binary
         self.namespace = namespace
         self.db_path = db_path
         self.hermes_home = hermes_home
         self.policy_owner = policy_owner if policy_owner is not None else provider_id
         self.provider_id = provider_id
+        self.mcp_args = tuple(mcp_args)
         self.request_timeout = request_timeout
         self.initialize_timeout = initialize_timeout
         self.prefetch_timeout = prefetch_timeout
@@ -51,6 +53,17 @@ def default_config():
     hermes_home = os.environ.get("MNEMOSYNE_HERMES_HOME", None)
     policy_owner = os.environ.get("MNEMOSYNE_POLICY_OWNER", None)
     provider_id = os.environ.get("MNEMOSYNE_PROVIDER_ID", PROVIDER_ID_DEFAULT)
+    raw_mcp_args = os.environ.get("MNEMOSYNE_MCP_ARGS")
+    if raw_mcp_args:
+        import json
+        import shlex
+        try:
+            parsed_mcp_args = json.loads(raw_mcp_args)
+            mcp_args = tuple(parsed_mcp_args) if isinstance(parsed_mcp_args, list) else tuple(shlex.split(raw_mcp_args))
+        except (TypeError, ValueError):
+            mcp_args = tuple(shlex.split(raw_mcp_args))
+    else:
+        mcp_args = MCP_ARGS_DEFAULT
     request_timeout = int(os.environ.get("MNEMOSYNE_REQUEST_TIMEOUT", "10"))
     initialize_timeout = int(os.environ.get("MNEMOSYNE_INITIALIZE_TIMEOUT", "15"))
     prefetch_timeout = int(os.environ.get("MNEMOSYNE_PREFETCH_TIMEOUT", "3"))
@@ -63,6 +76,7 @@ def default_config():
         hermes_home=hermes_home,
         policy_owner=policy_owner,
         provider_id=provider_id,
+        mcp_args=mcp_args,
         request_timeout=request_timeout,
         initialize_timeout=initialize_timeout,
         prefetch_timeout=prefetch_timeout,

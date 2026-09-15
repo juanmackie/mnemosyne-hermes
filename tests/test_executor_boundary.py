@@ -62,6 +62,30 @@ def test_create_file_nested_parent_created():
         assert os.path.isfile(os.path.join(workspace, "src", "lib", "mod.rs"))
 
 
+def test_create_file_dot_relative_path():
+    """./file.txt resolves inside the workspace."""
+    with tempfile.TemporaryDirectory(prefix="mnem_exec_") as workspace:
+        executor = _make_executor(workspace)
+        result = asyncio.run(executor._execute_tool(
+            "create_file",
+            {"file_path": "./file.txt", "content": "ok"},
+        ))
+        assert result["success"] is True
+        assert os.path.isfile(os.path.join(workspace, "file.txt"))
+
+
+def test_boundary_rejects_relative_parent_escape():
+    """A relative ../ path must not escape the workspace."""
+    with tempfile.TemporaryDirectory(prefix="mnem_exec_") as workspace:
+        executor = _make_executor(workspace)
+        result = asyncio.run(executor._execute_tool(
+            "create_file",
+            {"file_path": "../escape.txt", "content": "evil"},
+        ))
+        assert result["success"] is False
+        assert "boundary" in result["error"]
+
+
 def test_boundary_rejects_escape():
     """A path escaping the trusted boundary must be rejected, not written."""
     with tempfile.TemporaryDirectory(prefix="mnem_exec_") as workspace, \

@@ -611,10 +611,21 @@ Always follow best practices and validate your work before marking it complete."
         workspace so the executor cannot touch the host filesystem at will.
         """
         import os
-        resolved = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
-        root = self._boundary_root
-        # A path is inside iff it equals the root or is under root + sep.
-        if resolved != root and not resolved.startswith(root + os.sep):
+        root = os.path.realpath(self._boundary_root)
+        candidate = os.path.expanduser(path)
+        # Relative tool paths are relative to the trusted workspace, not the
+        # process cwd. Resolve before checking containment so ./ and .. behave
+        # consistently on every platform.
+        if not os.path.isabs(candidate):
+            candidate = os.path.join(root, candidate)
+        resolved = os.path.realpath(os.path.abspath(candidate))
+        try:
+            within_boundary = os.path.commonpath((root, resolved)) == root
+        except ValueError:
+            # Different Windows drives (or another platform-specific path
+            # domain) cannot be inside the same execution boundary.
+            within_boundary = False
+        if not within_boundary:
             raise ValueError(
                 f"Path escapes trusted execution boundary ({root}): {path}"
             )

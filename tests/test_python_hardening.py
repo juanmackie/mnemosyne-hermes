@@ -38,6 +38,7 @@ def test_recall_treats_wildcards_literally():
         assert len(s.recall("%", namespace="ns")) == 1
         assert len(s.recall("_", namespace="ns")) == 1
         assert len(s.recall("100%", namespace="ns")) == 1
+        s.close()
 
 
 def test_storage_reuses_one_connection_per_thread():
@@ -50,8 +51,11 @@ def test_storage_reuses_one_connection_per_thread():
         seen = {}
 
         def worker(k):
-            seen[k] = s._conn()
-            s.remember(f"worker {k} note", "ns", 5)
+            try:
+                seen[k] = s._conn()
+                s.remember(f"worker {k} note", "ns", 5)
+            finally:
+                s.close()
 
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
         for t in threads:
@@ -78,7 +82,11 @@ def test_buffered_access_counts_are_exact_and_flushed():
 
         s.recall("alpha", namespace="ns")
         s.close()  # close() must flush rather than drop
-        assert PythonMemoryStorage(path).list_memories("ns")[0]["access_count"] == 3
+        verifier = PythonMemoryStorage(path)
+        try:
+            assert verifier.list_memories("ns")[0]["access_count"] == 3
+        finally:
+            verifier.close()
 
         # The buffer is capped, so a read-only workload cannot grow it forever.
         s2 = PythonMemoryStorage(path)
@@ -86,7 +94,11 @@ def test_buffered_access_counts_are_exact_and_flushed():
             s2.recall("alpha", namespace="ns")
         assert len(s2._pending()) < s2.ACCESS_FLUSH_DISTINCT
         # Recalling one memory forever must still reach the database unwritten-to.
-        assert PythonMemoryStorage(path).list_memories("ns")[0]["access_count"] > 3
+        verifier = PythonMemoryStorage(path)
+        try:
+            assert verifier.list_memories("ns")[0]["access_count"] > 3
+        finally:
+            verifier.close()
         s2.close()
 
 

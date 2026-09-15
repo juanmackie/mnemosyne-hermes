@@ -438,7 +438,8 @@ class TestRealStdioTransport(ProviderTestCase):
         self.assertTrue(provider.sync_turn("I prefer dark mode everywhere", "ok"))
         provider.shutdown()
         with open(store, encoding="utf-8") as handle:
-            self.assertIn("dark mode", handle.read())
+            persisted = [json.loads(line) for line in handle if line.strip()]
+        self.assertEqual(persisted, [{"user_text": "I prefer dark mode everywhere"}])
 
         fresh = MnemosyneRustProvider(config, client_factory=factory)
         fresh.initialize("session-2", hermes_home=self.home)

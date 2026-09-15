@@ -10,9 +10,11 @@ class McpDisconnected(Exception):
 
 
 class StdioJsonRpcClient:
-    def __init__(self, command, timeout=10, initialize_timeout=15):
+    def __init__(self, command, timeout=10, initialize_timeout=15, request_timeout=None):
         self.command = command
-        self.timeout = timeout
+        # request_timeout is the adapter's configuration name; keep timeout
+        # as a backwards-compatible transport-level alias.
+        self.timeout = timeout if request_timeout is None else request_timeout
         self.initialize_timeout = initialize_timeout
         self.process = None
         self._line_queue = queue.Queue()
@@ -91,12 +93,22 @@ class StdioJsonRpcClient:
         return {"ok": False, "error": "Unexpected response type"}
 
     def close(self):
-        if self.process is not None:
-            try:
-                self._reader_stop.set()
-                self.process.stdin.close()
-                self.process.terminate()
-                self.process.wait(timeout=5)
-            except Exception:
-                pass
+        process = self.process
+        if process is None:
+            return
+        self._reader_stop.set()
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+            process.terminate()
+            process.wait(timeout=5)
+        except Exception:
+            pass
+        finally:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
             self.process = None

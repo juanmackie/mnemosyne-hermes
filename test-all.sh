@@ -1,137 +1,67 @@
-#!/bin/bash
-# Comprehensive test runner for Mnemosyne
+#!/usr/bin/env bash
+# Python test runner for Mnemosyne and the Hermes adapter.
 #
-# Runs all tests including LLM tests if API key is available
 # Usage:
-#   ./test-all.sh              # Run all tests
-#   ./test-all.sh --skip-llm   # Skip LLM tests even if API key available
-#   ./test-all.sh --llm-only   # Run only LLM tests
+#   ./test-all.sh              # contract and non-LLM tests; run LLM tests if configured
+#   ./test-all.sh --skip-llm   # contract and non-LLM tests only
+#   ./test-all.sh --llm-only   # integration/LLM-marked tests only
 
-set -e
+set -euo pipefail
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# Parse arguments
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 SKIP_LLM=false
 LLM_ONLY=false
 
 for arg in "$@"; do
-    case $arg in
-        --skip-llm)
-            SKIP_LLM=true
-            ;;
-        --llm-only)
-            LLM_ONLY=true
-            ;;
+    case "$arg" in
+        --skip-llm) SKIP_LLM=true ;;
+        --llm-only) LLM_ONLY=true ;;
         --help)
-            echo "Usage: $0 [OPTIONS]"
-            echo ""
-            echo "Options:"
-            echo "  --skip-llm    Skip LLM tests even if API key is available"
-            echo "  --llm-only    Run only LLM tests"
-            echo "  --help        Show this help message"
+            sed -n '2,8p' "$0"
             exit 0
             ;;
         *)
-            echo -e "${RED}Unknown option: $arg${NC}"
-            echo "Run '$0 --help' for usage information"
-            exit 1
+            printf 'Unknown option: %s\n' "$arg" >&2
+            exit 2
             ;;
     esac
 done
 
-# Check if API key is available
-check_api_key() {
-    if [ -n "$ANTHROPIC_API_KEY" ]; then
-        echo -e "${GREEN}✓${NC} ANTHROPIC_API_KEY found in environment"
-        return 0
-    fi
+cd "$ROOT"
+if [[ ! -f pyproject.toml ]]; then
+    printf 'Error: pyproject.toml not found at %s\n' "$ROOT" >&2
+    exit 1
+fi
 
-    # Check via mnemosyne config
-    if cargo run -q -- config show-key >/dev/null 2>&1; then
-        echo -e "${GREEN}✓${NC} API key found via mnemosyne config"
-        return 0
-    fi
-
-    echo -e "${YELLOW}✗${NC} No API key found"
-    return 1
+run_contract_tests() {
+    printf '\n== Hermes adapter contract tests ==\n'
+    "$PYTHON_BIN" -m unittest discover \
+        -s integrations/hermes-memory-provider/tests -t . -v
 }
 
-# Print section header
-print_header() {
-    echo ""
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
+run_non_llm_tests() {
+    printf '\n== Python unit tests (integration/LLM tests deselected) ==\n'
+    "$PYTHON_BIN" -m pytest tests -m 'not integration' -q
 }
 
-# Run unit tests
-run_unit_tests() {
-    print_header "Running Unit Tests"
-    cargo test --lib
-    echo -e "${GREEN}✓ Unit tests passed${NC}"
-}
-
-# Run integration tests (non-ignored)
-run_integration_tests() {
-    print_header "Running Integration Tests"
-    cargo test --test '*'
-    echo -e "${GREEN}✓ Integration tests passed${NC}"
-}
-
-# Run LLM tests (ignored tests)
 run_llm_tests() {
-    print_header "Running LLM Tests (requires API key)"
-
-    if ! check_api_key; then
-        echo -e "${YELLOW}Skipping LLM tests: No API key found${NC}"
-        echo -e "Set API key with: ${BLUE}export ANTHROPIC_API_KEY=sk-ant-...${NC}"
-        echo -e "Or run: ${BLUE}cargo run -- secrets set ANTHROPIC_API_KEY${NC}"
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+        printf '\n== LLM tests skipped: ANTHROPIC_API_KEY is not configured ==\n'
         return 0
     fi
-
-    echo "Running ignored tests..."
-    cargo test --lib -- --ignored
-    cargo test --test llm_enrichment_test -- --ignored
-    echo -e "${GREEN}✓ LLM tests passed${NC}"
+    printf '\n== Python integration/LLM tests ==\n'
+    "$PYTHON_BIN" -m pytest tests -m integration -q
 }
 
-# Main execution
-main() {
-    echo -e "${BLUE}Mnemosyne Test Suite${NC}"
-    echo -e "Running in: ${PWD}"
-    echo ""
-
-    # Check if in correct directory
-    if [ ! -f "Cargo.toml" ]; then
-        echo -e "${RED}Error: Cargo.toml not found. Please run from project root.${NC}"
-        exit 1
-    fi
-
-    if [ "$LLM_ONLY" = true ]; then
-        run_llm_tests
-    elif [ "$SKIP_LLM" = true ]; then
-        run_unit_tests
-        run_integration_tests
-    else
-        run_unit_tests
-        run_integration_tests
+if [[ "$LLM_ONLY" == true ]]; then
+    run_llm_tests
+else
+    run_contract_tests
+    run_non_llm_tests
+    if [[ "$SKIP_LLM" == false ]]; then
         run_llm_tests
     fi
+fi
 
-    echo ""
-    print_header "Test Summary"
-    echo -e "${GREEN}✓ All tests completed successfully${NC}"
-    echo ""
-}
-
-# Run main
-main
-
-exit 0
+printf '\nPython test suite completed.\n'

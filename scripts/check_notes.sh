@@ -6,6 +6,16 @@ NOTES="$ROOT/.mnemosyne_notes"
 fail=0
 data_count=0
 
+commit_is_reachable() {
+    local sha="$1"
+    case "$sha" in
+        ''|*[!0-9a-fA-F]*) return 1 ;;
+    esac
+    local commit
+    commit=$(git -C "$ROOT" rev-parse --verify "${sha}^{commit}" 2>/dev/null) || return 1
+    git -C "$ROOT" rev-list --all | grep -Fqx "$commit"
+}
+
 if [ ! -f "$NOTES" ]; then
     printf 'FAIL: %s missing\n' "$NOTES"
     exit 1
@@ -32,8 +42,8 @@ while IFS= read -r line; do
         printf 'FAIL: %s:%d bad date %s\n' "$NOTES" "$line_no" "$date"
         fail=1
     fi
-    if ! git -C "$ROOT" cat-file -e "${sha}^{commit}" 2>/dev/null; then
-        printf 'FAIL: %s:%d unknown sha %s\n' "$NOTES" "$line_no" "$sha"
+    if ! commit_is_reachable "$sha"; then
+        printf 'FAIL: %s:%d unknown or unreachable sha %s\n' "$NOTES" "$line_no" "$sha"
         fail=1
     fi
 done < "$NOTES"

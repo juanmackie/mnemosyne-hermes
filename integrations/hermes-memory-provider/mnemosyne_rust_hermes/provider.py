@@ -105,15 +105,28 @@ class MnemosyneRustProvider:
         self.agent_context = agent_context
         # Set up client from injection or factory if available
         if self._client is None:
-            if self._injected_client is not None:
-                self._client = self._injected_client
-            elif self._client_factory is not None:
-                try:
-                    self._client = self._client_factory()
-                    if hasattr(self._client, 'start') and callable(getattr(self._client, 'start')):
-                        self._client.start()
-                except Exception:
-                    self._client = None
+            try:
+                if self._injected_client is not None:
+                    self._client = self._injected_client
+                elif self._client_factory is not None:
+                    try:
+                        self._client = self._client_factory(self.config)
+                    except TypeError:
+                        # Preserve compatibility with older zero-argument test
+                        # factories while allowing factories to consume config.
+                        self._client = self._client_factory()
+                else:
+                    from mnemosyne_rust_hermes.mcp_client import StdioJsonRpcClient
+                    command = [self.config.binary, *self.config.mcp_args]
+                    self._client = StdioJsonRpcClient(
+                        command,
+                        timeout=self.config.request_timeout,
+                        initialize_timeout=self.config.initialize_timeout,
+                    )
+                if hasattr(self._client, 'start') and callable(getattr(self._client, 'start')):
+                    self._client.start()
+            except Exception:
+                self._client = None
         return True
 
     def get_tool_schemas(self):
@@ -139,16 +152,19 @@ class MnemosyneRustProvider:
                 if not db_path:
                     db_path = os.path.expanduser(os.path.join(getattr(self.config, 'hermes_home', '~/.hermes'), 'mnemosyne/mnemosyne.db'))
                 storage = PythonMemoryStorage(db_path)
-                if name == "mnemosyne_memory_remember":
-                    content = arguments.get("content", query)
-                    importance = arguments.get("importance", 5)
-                    # Preserve keyless operation: no external LLM required for basic storage
-                    storage.remember(content, namespace, importance, context=arguments.get("context"))
-                    return {"ok": True, "results": [{"content": content[:200], "namespace": namespace}], "count": 1, "namespace": namespace}
-                else:
-                    # Search: use direct storage recall; falls back to namespace filter
-                    results = storage.recall(query, namespace=namespace, max_results=10, min_importance=0)
-                    return {"ok": True, "results": results, "count": len(results), "namespace": namespace}
+                try:
+                    if name == "mnemosyne_memory_remember":
+                        content = arguments.get("content", query)
+                        importance = arguments.get("importance", 5)
+                        # Preserve keyless operation: no external LLM required for basic storage
+                        storage.remember(content, namespace, importance, context=arguments.get("context"))
+                        return {"ok": True, "results": [{"content": content[:200], "namespace": namespace}], "count": 1, "namespace": namespace}
+                    else:
+                        # Search: use direct storage recall; falls back to namespace filter
+                        results = storage.recall(query, namespace=namespace, max_results=10, min_importance=0)
+                        return {"ok": True, "results": results, "count": len(results), "namespace": namespace}
+                finally:
+                    storage.close()
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}
         # Delegate other tool calls to MCP client
