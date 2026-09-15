@@ -23,6 +23,10 @@ Better for <200 examples - simpler, faster, often more effective.
 """
 
 import dspy
+try:
+    from .llm_config import configure_dspy
+except ImportError:
+    from llm_config import configure_dspy
 from dspy.teleprompt import BootstrapFewShot
 import os
 import json
@@ -209,14 +213,10 @@ def main():
 
     args = parser.parse_args()
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        logger.error("ANTHROPIC_API_KEY not set")
-        return
-
     try:
-        dspy.configure(lm=dspy.LM('anthropic/claude-haiku-4-5-20251001', api_key=api_key))
-        logger.info("DSPy configured with Claude Haiku 4.5")
+        if configure_dspy(dspy) is None:
+            logger.error("Hermes model not configured")
+            return
     except Exception as e:
         logger.error(f"Failed to configure DSPy: {e}")
         return

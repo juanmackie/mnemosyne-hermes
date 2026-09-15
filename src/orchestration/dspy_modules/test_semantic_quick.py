@@ -2,12 +2,24 @@
 """Quick validation of semantic metrics (reduced API calls)."""
 
 import dspy
+import sys
+try:
+    from .llm_config import configure_dspy
+except ImportError:
+    from llm_config import configure_dspy
 import os
 from semantic_metrics import SemanticSimilarityJudge, semantic_requirement_f1
 
+# This file is a CLI smoke script, not a pytest module; avoid making a model
+# call while pytest is collecting files named test_*.py.
+if "pytest" in sys.modules:
+    import pytest
+    pytest.skip("CLI smoke script", allow_module_level=True)
+
 # Configure DSPy
-api_key = os.getenv("ANTHROPIC_API_KEY")
-dspy.configure(lm=dspy.LM('anthropic/claude-haiku-4-5-20251001', api_key=api_key))
+if configure_dspy(dspy) is None:
+    print("Hermes model not configured; run `hermes setup --portal`")
+    raise SystemExit(1)
 
 print("Testing semantic similarity judge...")
 print()

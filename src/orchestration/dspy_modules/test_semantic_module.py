@@ -11,19 +11,19 @@ Tests verify:
 import os
 import pytest
 import dspy
+try:
+    from .llm_config import configure_dspy
+except ImportError:
+    from llm_config import configure_dspy
 from semantic_module import SemanticModule
 
 
 @pytest.fixture
 def semantic_module():
-    """Create SemanticModule with Claude API (requires ANTHROPIC_API_KEY)."""
+    """Create SemanticModule with Claude API (requires an active Hermes model/proxy)."""
     # Check for API key
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        pytest.skip("ANTHROPIC_API_KEY not set - skipping integration tests")
-
-    # Configure DSPy with Anthropic Claude
-    dspy.configure(lm=dspy.LM('anthropic/claude-haiku-4-5-20251001', api_key=api_key))
+    if configure_dspy(dspy) is None:
+        pytest.skip("Hermes model not configured")
 
     return SemanticModule()
 

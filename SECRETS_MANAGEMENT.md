@@ -4,11 +4,15 @@
 
 ## Overview
 
-Mnemosyne uses a multi-layered approach to secrets management that prioritizes security, usability, and zero manual configuration:
+Mnemosyne inherits LLM access from the active Hermes instance when one is
+configured. Hermes' local subscription proxy owns the provider credential, so
+Mnemosyne does not need a second API key. Legacy secret storage remains
+available only for standalone Mnemosyne runs:
 
-1. **Environment variables** (highest priority) - For CI/CD and container deployments
-2. **Age-encrypted config file** (primary method) - Secure local storage with zero external dependencies
-3. **OS keychain** (optional fallback) - For backward compatibility
+1. **Hermes subscription proxy** (preferred in Hermes) - Active model and OAuth credentials come from Hermes
+2. **Environment variables** (legacy fallback) - For standalone CI/CD and container deployments
+3. **Age-encrypted config file** (legacy local fallback) - Secure local storage
+4. **OS keychain** (optional legacy fallback) - Backward compatibility
 
 This design ensures:
 - ✅ **Zero manual installation** - All dependencies bundled with Mnemosyne
@@ -27,8 +31,8 @@ This design ensures:
 # Initialize secrets management (interactive)
 mnemosyne secrets init
 
-# You'll be prompted for:
-# - ANTHROPIC_API_KEY (required)
+# You'll be prompted for legacy standalone secrets:
+# - ANTHROPIC_API_KEY (optional when Hermes proxy is used)
 # - TURSO_AUTH_TOKEN (optional, for Turso Cloud)
 ```
 
@@ -38,7 +42,15 @@ This command:
 3. Prompts for required and optional secrets
 4. Encrypts secrets to `~/.config/mnemosyne/secrets.age`
 
-**Get your Anthropic API key**: https://console.anthropic.com/settings/keys
+When running under Hermes, use its inherited model instead:
+
+```bash
+hermes setup --portal
+hermes proxy start
+```
+
+The proxy listens on `http://127.0.0.1:8645/v1` and accepts a placeholder
+bearer from Mnemosyne; Hermes attaches the real subscription credential.
 
 ### Setting Individual Secrets
 
@@ -67,16 +79,22 @@ mnemosyne secrets get ANTHROPIC_API_KEY
 
 ## Priority Order
 
-When Mnemosyne looks for a secret, it checks in this order:
+When an active Hermes instance exists (`~/.hermes/config.yaml`, or
+`$HERMES_HOME/config.yaml`), Mnemosyne uses its `model.default` through the
+Hermes subscription proxy. Portal/OAuth credentials are never copied from Hermes' `auth.json`; the local
+proxy attaches them. For custom providers, Mnemosyne may use the provider
+credential already present in Hermes' `.env` in memory, but never asks for a
+second key, logs it, or persists it.
 
-1. **Environment variable** - `export ANTHROPIC_API_KEY=sk-ant-...`
-2. **Encrypted config file** - `~/.config/mnemosyne/secrets.age`
-3. **OS keychain** (if `keyring-fallback` feature enabled) - macOS Keychain, Windows Credential Manager, Linux Secret Service
+For standalone Mnemosyne, the legacy order is:
 
-This ensures:
-- Environment variables always win (critical for CI/CD)
-- Local development uses encrypted config (secure and portable)
-- Backward compatibility with older Mnemosyne installations
+1. **Explicit/configured legacy key**
+2. **`ANTHROPIC_API_KEY` environment variable**
+3. **Encrypted config file** - `~/.config/mnemosyne/secrets.age`
+4. **OS keychain** (if enabled)
+
+If neither Hermes nor a legacy key is configured, LLM features degrade without
+preventing local memory operations.
 
 ---
 
@@ -206,11 +224,11 @@ mnemosyne config delete-key
 
 ## Secrets Reference
 
-### Required Secrets
+### Legacy Standalone Secrets
 
 | Secret | Purpose | Where to Get |
 |--------|---------|--------------|
-| `ANTHROPIC_API_KEY` | Claude Haiku API access | https://console.anthropic.com/settings/keys |
+| `ANTHROPIC_API_KEY` | Direct Anthropic access outside Hermes | https://console.anthropic.com/settings/keys |
 
 ### Optional Secrets
 

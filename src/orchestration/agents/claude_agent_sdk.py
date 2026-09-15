@@ -15,17 +15,13 @@ remain accurate. Remove it together with those doc sections in a future
 cleanup; do not add new importers.
 """
 
-import os
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
 try:
-    import anthropic
+    from ..hermes_llm import get_llm
 except ImportError:
-    raise ImportError(
-        "anthropic package not installed. "
-        "Install with: uv pip install anthropic"
-    )
+    from orchestration.hermes_llm import get_llm
 
 
 @dataclass
@@ -67,20 +63,16 @@ class ClaudeSDKClient:
             options: Configuration options for the client
 
         Raises:
-            RuntimeError: If ANTHROPIC_API_KEY environment variable not set
+            RuntimeError: If no Hermes model or legacy fallback is configured
         """
         self.options = options
 
-        # Get API key from environment
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
+        self.client = get_llm()
+        if not self.client.configured:
             raise RuntimeError(
-                "ANTHROPIC_API_KEY environment variable not set. "
-                "Get your API key from: https://console.anthropic.com/settings/keys"
+                "No Hermes model configured. Run `hermes setup --portal` and "
+                "`hermes proxy start`."
             )
-
-        # Initialize Anthropic client
-        self.client = anthropic.Anthropic(api_key=api_key)
 
         # Conversation state
         self._messages = []
@@ -128,20 +120,12 @@ class ClaudeSDKClient:
         if not self._messages:
             return
 
-        # Call Claude API
-        response = self.client.messages.create(
-            model=self.options.model,
+        response = self.client.chat(
+            self._messages,
+            system=self._system_prompt or "",
             max_tokens=self.options.max_tokens,
-            temperature=self.options.temperature,
-            system=self._system_prompt if self._system_prompt else "",
-            messages=self._messages
         )
-
-        # Add assistant response to conversation
-        assistant_message = {
-            "role": "assistant",
-            "content": response.content[0].text if response.content else ""
-        }
+        assistant_message = response["choices"][0]["message"]
         self._messages.append(assistant_message)
 
         # Yield response

@@ -7,6 +7,11 @@ Provides standard interface for multi-agent orchestration.
 import sys
 import os
 from typing import Any, Dict, List
+
+try:
+    from ..hermes_llm import get_llm
+except ImportError:
+    from orchestration.hermes_llm import get_llm
 from dataclasses import dataclass
 
 
@@ -16,8 +21,7 @@ def validate_environment() -> None:
 
     Checks:
     - Python version >= 3.9
-    - anthropic package installed
-    - ANTHROPIC_API_KEY environment variable set
+    - Hermes proxy/model or legacy Anthropic fallback is configured
 
     Raises:
         RuntimeError: If environment is invalid
@@ -37,28 +41,16 @@ def validate_environment() -> None:
             f"Install with: brew install python@3.11 or pyenv install 3.11"
         )
 
-    # Check anthropic package
-    try:
-        import anthropic
-        version = getattr(anthropic, "__version__", "unknown")
-        print(f"✓ anthropic SDK installed: {version}")
-    except ImportError:
-        raise RuntimeError(
-            "anthropic package not installed. "
-            "Install with: uv pip install anthropic OR pip install anthropic"
-        )
-
-    # Check API key (warning only, not fatal)
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print(
-            "⚠ Warning: ANTHROPIC_API_KEY not set. "
-            "Agent initialization will fail without API key. "
-            "Get your key from: https://console.anthropic.com/settings/keys"
-        )
+    llm = get_llm()
+    if llm.hermes:
+        print(f"✓ Hermes model configured: {llm.model}")
+    elif llm.api_key:
+        print("✓ Legacy Anthropic fallback configured")
     else:
-        # Never log any part of the key: CI logs and bug reports persist it.
-        print("ANTHROPIC_API_KEY configured")
+        print(
+            "⚠ No Hermes model/proxy or legacy API key configured. "
+            "LLM calls will be unavailable; local memory remains usable."
+        )
 
     # Check Python path includes agents directory
     agents_dir = os.path.dirname(os.path.abspath(__file__))

@@ -17,7 +17,7 @@ files) is most relevant over time. The system is designed with privacy as a core
 - Hashed Tasks: SHA256 hash of task descriptions (16 chars only)
 - Limited Keywords: Max 10 generic keywords, no sensitive terms
 - Statistical Features: Only computed metrics stored, never raw content
-- No Network Calls: Uses existing Anthropic API calls, no separate requests
+- No Network Calls: Uses existing LLM calls, no separate requests
 - Graceful Degradation: System works perfectly when disabled
 
 For complete privacy documentation, see:
@@ -33,11 +33,13 @@ import hashlib
 try:
     from .base_agent import AgentExecutionMixin, WorkItem, WorkResult
     from .logging_config import get_logger
+    from ..hermes_llm import get_llm
 except ImportError:
     import sys, os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from base_agent import AgentExecutionMixin, WorkItem, WorkResult
     from logging_config import get_logger
+    from orchestration.hermes_llm import get_llm
 
 logger = get_logger("optimizer")
 
@@ -67,7 +69,7 @@ class OptimizerConfig:
     - Hashes task descriptions (SHA256, 16 chars only)
     - Extracts max 10 generic keywords, no sensitive terms
     - Stores only statistical features (keyword overlap scores, recency, etc.)
-    - Makes no network calls beyond existing Anthropic API usage
+    - Makes no network calls beyond existing LLM usage
     - Works perfectly when disabled (falls back to basic keyword matching)
 
     To disable evaluation:
@@ -88,7 +90,7 @@ class OptimizerConfig:
     max_skills_loaded: int = 7
     skill_relevance_threshold: float = 0.60
     prioritize_local_skills: bool = True   # Give project-local skills +10% score bonus
-    # Anthropic API key (from environment)
+    # Optional legacy API key fallback; Hermes is preferred
     api_key: Optional[str] = None
     # Evaluation system configuration (privacy-preserving)
     enable_evaluation: bool = True  # Enable adaptive learning (local-only, privacy-preserving)
@@ -108,7 +110,7 @@ class SkillMatch:
 
 class OptimizerAgent(AgentExecutionMixin):
     """
-    Context and resource optimization specialist using direct Anthropic API.
+    Context and resource optimization specialist using the active Hermes model.
 
     Manages:
     - Dynamic skill discovery and loading
@@ -153,7 +155,7 @@ Provide reasoning for your optimization decisions."""
 
     def __init__(self, config: OptimizerConfig, coordinator, storage):
         """
-        Initialize Optimizer agent with direct Anthropic API access and evaluation system.
+        Initialize Optimizer agent with active Hermes model access and evaluation system.
 
         Args:
             config: Optimizer configuration
@@ -167,6 +169,7 @@ Provide reasoning for your optimization decisions."""
         # Store API key (from environment)
         import os
         self.api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
+        self.llm = get_llm(self.api_key)
 
         # Register with coordinator
         self.coordinator.register_agent(config.agent_id)
@@ -197,18 +200,17 @@ Provide reasoning for your optimization decisions."""
         self._context_metadata: Dict[str, Any] = {}  # Task metadata for evaluation
         self._conversation_history: List[Dict[str, Any]] = []
 
-        logger.info(f"[Optimizer] Initialized with direct Anthropic API access")
+        logger.info(f"[Optimizer] Initialized with active Hermes model access")
 
     async def start_session(self):
         """Start agent session (validates API key availability)."""
         if not self._session_active:
             logger.info(f"Starting session for agent {self.config.agent_id}")
 
-            # Validate API key is available
-            if not self.api_key:
+            if not self.llm.configured:
                 raise ValueError(
-                    "ANTHROPIC_API_KEY not set. Cannot start session without API access. "
-                    "Get your key from: https://console.anthropic.com/settings/keys"
+                    "No Hermes model is configured. Run `hermes setup --portal` and "
+                    "`hermes proxy start`, or configure the legacy API key."
                 )
 
             # Initialize conversation with system prompt
@@ -226,7 +228,7 @@ Provide reasoning for your optimization decisions."""
 
     async def _call_api(self, prompt: str) -> str:
         """
-        Helper method to make Anthropic API calls.
+        Helper method to make LLM calls.
 
         Args:
             prompt: User prompt to send
@@ -234,12 +236,6 @@ Provide reasoning for your optimization decisions."""
         Returns:
             Text response from API
         """
-        import anthropic
-
-        if not self.api_key:
-            raise ValueError("ANTHROPIC_API_KEY not set. Cannot make API calls.")
-
-        client = anthropic.Anthropic(api_key=self.api_key)
 
         # Add to conversation history
         self._conversation_history.append({
@@ -247,19 +243,12 @@ Provide reasoning for your optimization decisions."""
             "content": prompt
         })
 
-        # Call API
-        response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=2048,
+        response = self.llm.chat(
+            self._conversation_history,
             system=self.OPTIMIZER_SYSTEM_PROMPT,
-            messages=self._conversation_history
+            max_tokens=2048,
         )
-
-        # Extract text
-        response_text = ""
-        for block in response.content:
-            if block.type == "text":
-                response_text += block.text
+        response_text = response["choices"][0]["message"].get("content") or ""
 
         # Add to conversation history
         self._conversation_history.append({

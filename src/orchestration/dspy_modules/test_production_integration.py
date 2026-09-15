@@ -30,6 +30,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 try:
     import dspy
+    try:
+        from .llm_config import configure_dspy
+    except ImportError:
+        from llm_config import configure_dspy
     from reviewer_module import ReviewerModule
     from dspy_telemetry import TelemetryCollector, DSpyEvent, TokenUsage
     from dspy_production_logger import ProductionLogger, LogConfig, LogSink, InteractionLog
@@ -51,18 +55,10 @@ def temp_dir():
 
 
 @pytest.fixture
-def api_key():
-    """Get API key or skip tests."""
-    key = os.getenv("ANTHROPIC_API_KEY")
-    if not key:
-        pytest.skip("ANTHROPIC_API_KEY not set - skipping integration tests")
-    return key
-
-
-@pytest.fixture
-def configured_lm(api_key):
-    """Configure DSPy language model."""
-    dspy.configure(lm=dspy.LM('anthropic/claude-haiku-4-5-20251001', api_key=api_key))
+def configured_lm():
+    """Configure DSPy from the active Hermes model."""
+    if configure_dspy(dspy) is None:
+        pytest.skip("Hermes model not configured")
     return dspy.settings.lm
 
 

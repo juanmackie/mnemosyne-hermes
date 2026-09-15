@@ -24,6 +24,7 @@ try:
     )
     from .validation import validate_work_item, validate_agent_state, validate_review_artifact
     from .metrics import get_metrics_collector
+    from ..hermes_llm import get_llm
 except ImportError:
     import sys, os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +37,7 @@ except ImportError:
     )
     from validation import validate_work_item, validate_agent_state, validate_review_artifact
     from metrics import get_metrics_collector
+    from orchestration.hermes_llm import get_llm
 
 logger = get_logger("reviewer")
 
@@ -74,7 +76,7 @@ class ReviewerConfig:
     required_gates: Set[QualityGate] = None
     min_test_coverage: float = 0.70  # 70% minimum
     antipattern_patterns: List[str] = None
-    # Anthropic API key (from environment)
+    # Optional legacy API key fallback; Hermes is preferred
     api_key: Optional[str] = None
 
     def __post_init__(self):
@@ -96,7 +98,7 @@ class ReviewerConfig:
 
 class ReviewerAgent(AgentExecutionMixin):
     """
-    Quality assurance and validation specialist using direct Anthropic API.
+    Quality assurance and validation specialist using the active Hermes model.
 
     Enforces quality standards before work completion:
     - All tests passing
@@ -146,7 +148,7 @@ Be thorough but constructive. Identify real issues, not nitpicks. Suggest tests 
 
     def __init__(self, config: ReviewerConfig, coordinator, storage):
         """
-        Initialize Reviewer agent with direct Anthropic API access.
+        Initialize Reviewer agent with active Hermes model access.
 
         Args:
             config: Reviewer configuration
@@ -160,6 +162,7 @@ Be thorough but constructive. Identify real issues, not nitpicks. Suggest tests 
         # Store API key (injected from environment environment)
         import os
         self.api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
+        self.llm = get_llm(self.api_key)
 
         # Register with coordinator
         self.coordinator.register_agent(config.agent_id)
@@ -171,18 +174,17 @@ Be thorough but constructive. Identify real issues, not nitpicks. Suggest tests 
         self._session_active = False
         self._conversation_history: List[Dict[str, Any]] = []
 
-        logger.info(f"[Reviewer] Initialized with direct Anthropic API access")
+        logger.info(f"[Reviewer] Initialized with active Hermes model access")
 
     async def start_session(self):
         """Start agent session (validates API key availability)."""
         if not self._session_active:
             logger.info(f"Starting session for agent {self.config.agent_id}")
 
-            # Validate API key is available
-            if not self.api_key:
+            if not self.llm.configured:
                 raise ValueError(
-                    "ANTHROPIC_API_KEY not set. Cannot start session without API access. "
-                    "Get your key from: https://console.anthropic.com/settings/keys"
+                    "No Hermes model is configured. Run `hermes setup --portal` and "
+                    "`hermes proxy start`, or configure the legacy API key."
                 )
 
             # Initialize conversation with system prompt
@@ -200,7 +202,7 @@ Be thorough but constructive. Identify real issues, not nitpicks. Suggest tests 
 
     async def _call_api(self, prompt: str) -> str:
         """
-        Helper method to make Anthropic API calls.
+        Helper method to make LLM calls.
 
         Args:
             prompt: User prompt to send
@@ -208,12 +210,6 @@ Be thorough but constructive. Identify real issues, not nitpicks. Suggest tests 
         Returns:
             Text response from API
         """
-        import anthropic
-
-        if not self.api_key:
-            raise ValueError("ANTHROPIC_API_KEY not set. Cannot make API calls.")
-
-        client = anthropic.Anthropic(api_key=self.api_key)
 
         # Add to conversation history
         self._conversation_history.append({
@@ -221,19 +217,12 @@ Be thorough but constructive. Identify real issues, not nitpicks. Suggest tests 
             "content": prompt
         })
 
-        # Call API
-        response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=2048,
+        response = self.llm.chat(
+            self._conversation_history,
             system=self.REVIEWER_SYSTEM_PROMPT,
-            messages=self._conversation_history
+            max_tokens=2048,
         )
-
-        # Extract text
-        response_text = ""
-        for block in response.content:
-            if block.type == "text":
-                response_text += block.text
+        response_text = response["choices"][0]["message"].get("content") or ""
 
         # Add to conversation history
         self._conversation_history.append({

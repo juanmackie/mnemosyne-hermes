@@ -11,6 +11,10 @@ This ensures metrics are working correctly before using them in optimization.
 """
 
 import dspy
+try:
+    from .llm_config import configure_dspy
+except ImportError:
+    from llm_config import configure_dspy
 import os
 import json
 from pathlib import Path
@@ -21,13 +25,10 @@ from semantic_metrics import (
 )
 
 # Configure DSPy
-api_key = os.getenv("ANTHROPIC_API_KEY")
-if not api_key:
-    print("ERROR: ANTHROPIC_API_KEY not set")
-    exit(1)
-
-dspy.configure(lm=dspy.LM('anthropic/claude-haiku-4-5-20251001', api_key=api_key))
-print("DSPy configured with Claude Haiku 4.5\n")
+if configure_dspy(dspy) is None:
+    print("Hermes model not configured; run `hermes setup --portal`")
+    raise SystemExit(1)
+print("DSPy configured from the active Hermes model\n")
 
 
 # =============================================================================

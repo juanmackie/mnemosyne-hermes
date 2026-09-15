@@ -5,7 +5,7 @@ optimization and LLM interactions. It manages:
 
 - Agent DSPy modules (Orchestrator, Optimizer, Reviewer, Executor)
 - Semantic DSPy modules (Discourse, Contradiction, Pragmatics)
-- LLM provider configuration (Anthropic, OpenAI)
+- LLM provider configuration inherited from Hermes
 - Module registry and lifecycle
 
 # Architecture
@@ -24,11 +24,12 @@ result = reviewer_module(user_intent="Implement auth", ...)
 ```
 """
 
-import os
 import sys
 import logging
 from typing import Dict, List, Any, Optional
 from pathlib import Path
+
+from .hermes_llm import configure_dspy
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -47,7 +48,7 @@ class DSpyService:
     Attributes:
         agent_modules: Dictionary of agent name -> DSPy module
         semantic_module: Tier 3 semantic analysis module
-        lm: Configured language model (Anthropic/OpenAI)
+        lm: Configured language model (Hermes active model)
     """
 
     def __init__(self):
@@ -80,37 +81,14 @@ class DSpyService:
         logger.info("DSpyService initialized successfully")
 
     def _configure_lm(self):
-        """Configure language model from environment variables.
-
-        Supports:
-        - Anthropic (ANTHROPIC_API_KEY)
-        - OpenAI (OPENAI_API_KEY)
-
-        Defaults to Anthropic Claude 3.5 Haiku if available.
-        """
-        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        openai_key = os.getenv("OPENAI_API_KEY")
-
-        if anthropic_key:
-            logger.info("Configuring Anthropic Claude as LLM provider")
-            self.lm = self.dspy.Claude(
-                model="claude-haiku-4-5-20251001",
-                api_key=anthropic_key,
-                max_tokens=4096,
+        """Configure DSPy from Hermes' active model, or legacy fallback."""
+        self.lm = configure_dspy(self.dspy)
+        if self.lm is None:
+            logger.warning(
+                "No Hermes proxy or legacy API key found; DSPy remains unavailable"
             )
-            self.dspy.settings.configure(lm=self.lm)
-        elif openai_key:
-            logger.info("Configuring OpenAI GPT-4 as LLM provider")
-            self.lm = self.dspy.OpenAI(
-                model="gpt-4-turbo-preview",
-                api_key=openai_key,
-                max_tokens=4096,
-            )
-            self.dspy.settings.configure(lm=self.lm)
         else:
-            logger.warning("No API keys found, DSPy modules will fail at runtime")
-            logger.warning("Set ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable")
-            self.lm = None
+            logger.info("DSPy configured from the active Hermes model")
 
     def _load_agent_modules(self):
         """Load all agent DSPy modules from dspy_modules package.

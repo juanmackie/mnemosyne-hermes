@@ -11,19 +11,19 @@ Tests verify:
 import os
 import pytest
 import dspy
+try:
+    from .llm_config import configure_dspy
+except ImportError:
+    from llm_config import configure_dspy
 from memory_evolution_module import MemoryEvolutionModule
 
 
 @pytest.fixture
 def evolution_module():
-    """Create MemoryEvolutionModule with Claude API (requires ANTHROPIC_API_KEY)."""
+    """Create MemoryEvolutionModule with Claude API (requires an active Hermes model/proxy)."""
     # Check for API key
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        pytest.skip("ANTHROPIC_API_KEY not set - skipping integration tests")
-
-    # Configure DSPy with Anthropic Claude
-    dspy.configure(lm=dspy.LM('anthropic/claude-haiku-4-5-20251001', api_key=api_key))
+    if configure_dspy(dspy) is None:
+        pytest.skip("Hermes model not configured")
 
     return MemoryEvolutionModule()
 

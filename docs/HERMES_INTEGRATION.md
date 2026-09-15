@@ -54,7 +54,29 @@ memory tools explicitly.
 Both modes drive the same local store, so anything written by one is visible to
 the other.
 
-### 2a. Native provider mode (automatic memory)
+### 2. LLM inheritance (no second API key)
+
+Mnemosyne's optional orchestration and DSPy features inherit the active Hermes
+model from `$HERMES_HOME/config.yaml` (default `~/.hermes/config.yaml`). The
+configured `model.default` is sent through Hermes' local OpenAI-compatible
+subscription proxy when using Portal/OAuth. For a configured custom provider,
+its endpoint and provider credential are inherited from the Hermes profile
+(`.env`) rather than a second Mnemosyne key; secrets are never logged or
+persisted by Mnemosyne.
+
+Start the proxy once in the Hermes environment:
+
+```bash
+hermes setup --portal
+hermes proxy start
+```
+
+The default endpoint is `http://127.0.0.1:8645/v1`. Set
+`HERMES_PROXY_BASE_URL` only when the proxy uses another address. If no Hermes
+instance or proxy is configured, local memory still works and standalone
+`ANTHROPIC_API_KEY` remains a legacy fallback.
+
+### 3a. Native provider mode (automatic memory)
 
 The adapter ships in this repository at
 [`integrations/hermes-memory-provider/`](../integrations/hermes-memory-provider/).
@@ -88,7 +110,7 @@ executions are skipped for both capture and injection.
 > provider. This repository does not package it. The provider documented here is
 > `mnemosyne-rust`.
 
-### 2b. MCP-only mode (explicit tool calls)
+### 3b. MCP-only mode (explicit tool calls)
 
 Add the server to `~/.hermes/config.yaml` under the `mcp_servers` key:
 
@@ -112,7 +134,7 @@ to the same database.
 stdout is reserved for JSON-RPC; diagnostics go to stderr, so the process is safe
 for stdio clients.
 
-### 2c. Docker: keep the store and the model cache on volumes
+### 3c. Docker: keep the store and the model cache on volumes
 
 No image is published from this repository. Build and tag one yourself, then
 mount the two paths that must outlive the container. The container filesystem is
@@ -145,7 +167,7 @@ If Hermes runs on the host, point `mcp_servers.command` at a wrapper that keeps
 stdio attached, for example `docker run -i --rm -v mnemosyne-db:/data/mnemosyne
 mnemosyne-hermes:2.3.3 mcp`. If Hermes runs in the same Compose project, both
 services share the `mnemosyne-db` volume instead.
-## 3. Tool surface
+## 4. Tool surface
 
 Mnemosyne retains its original dotted MCP names and advertises Hermes-compatible
 underscore aliases with identical schemas:

@@ -41,6 +41,10 @@ from specflow_integration import (
 
 try:
     import dspy
+    try:
+        from .llm_config import configure_dspy
+    except ImportError:
+        from llm_config import configure_dspy
     from reviewer_module import ReviewerModule
 except ImportError:
     ReviewerModule = None
@@ -207,12 +211,8 @@ def reviewer_module():
     if not DSPY_AVAILABLE or ReviewerModule is None:
         pytest.skip("DSPy not available - skipping integration tests")
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        pytest.skip("ANTHROPIC_API_KEY not set - skipping integration tests")
-
-    # Configure DSPy with Claude Haiku for fast testing
-    dspy.configure(lm=dspy.LM('anthropic/claude-haiku-4-5-20251001', api_key=api_key))
+    if configure_dspy(dspy) is None:
+        pytest.skip("Hermes model not configured")
 
     return ReviewerModule()
 
@@ -441,7 +441,7 @@ class TestPublicAPI:
 # =============================================================================
 
 class TestDSpyIntegration:
-    """Test DSPy-powered validation (requires ANTHROPIC_API_KEY)."""
+    """Test DSPy-powered validation (requires an active Hermes model/proxy)."""
 
     @pytest.mark.skipif(not DSPY_AVAILABLE, reason="DSPy not available")
     def test_dspy_requirement_extraction(self, reviewer_module, minimal_spec):

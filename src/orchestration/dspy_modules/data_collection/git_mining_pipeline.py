@@ -19,7 +19,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import anthropic
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from hermes_llm import get_llm
 
 
 @dataclass
@@ -52,9 +53,11 @@ class TrainingExample:
 class GitMiner:
     """Extract training data from git history"""
 
-    def __init__(self, repo_path: Path, api_key: str):
+    def __init__(self, repo_path: Path, api_key: Optional[str] = None):
         self.repo_path = repo_path
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = get_llm(api_key)
+        if not self.client.configured:
+            raise RuntimeError("Hermes model not configured; run `hermes setup --portal`")
 
     def get_commits(self, since_days: int = 180, limit: int = 500) -> List[CommitData]:
         """Get commits from the last N days"""
@@ -235,13 +238,12 @@ Format your response as JSON:
 Only extract if this appears to be a meaningful feature/fix. Return null if it's just minor tweaks."""
 
         try:
-            response = self.client.messages.create(
-                model="claude-sonnet-4-5-20250929",
+            response = self.client.chat(
+                [{"role": "user", "content": prompt}],
                 max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
             )
 
-            content = response.content[0].text
+            content = response["choices"][0]["message"].get("content") or ""
 
             # Extract JSON from response
             json_match = re.search(r'\{[\s\S]*\}', content)
@@ -373,16 +375,12 @@ def main():
     parser.add_argument('--since-days', type=int, default=180,
                        help='Look back N days in git history')
     parser.add_argument('--api-key', type=str,
-                       help='Anthropic API key (or set ANTHROPIC_API_KEY env var)')
+                       help='Legacy API key override; Hermes proxy is preferred')
 
     args = parser.parse_args()
 
-    # Get API key
-    import os
-    api_key = args.api_key or os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        print("Error: ANTHROPIC_API_KEY not set", file=sys.stderr)
-        sys.exit(1)
+    # Inherit the active Hermes model and proxy credentials.
+    api_key = args.api_key
 
     # Run mining pipeline
     miner = GitMiner(args.repo, api_key)

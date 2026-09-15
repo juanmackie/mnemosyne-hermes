@@ -17,6 +17,7 @@ import json
 try:
     from .base_agent import AgentExecutionMixin, WorkItem, WorkResult
     from .logging_config import get_logger
+    from ..hermes_llm import get_llm
 except ImportError:
     # Running as standalone script
     import sys
@@ -24,6 +25,7 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from base_agent import AgentExecutionMixin, WorkItem, WorkResult
     from logging_config import get_logger
+    from orchestration.hermes_llm import get_llm
 
 logger = get_logger("orchestrator")
 
@@ -47,13 +49,13 @@ class OrchestratorConfig:
     snapshot_dir: str = ".claude/context-snapshots"
     checkpoint_frequency: int = 5  # Checkpoint every 5 phase transitions
     deadlock_timeout: float = 60.0  # Detect deadlock after 60s of no progress
-    # Anthropic API key (injected # from Python environment)
+    # Optional legacy API key fallback; Hermes is preferred
     api_key: Optional[str] = None
 
 
 class OrchestratorAgent(AgentExecutionMixin):
     """
-    Central coordinator for multi-agent orchestration using direct Anthropic API.
+    Central coordinator for multi-agent orchestration using the active Hermes model.
 
     Manages:
     - Agent lifecycle (spawn, monitor, terminate)
@@ -89,7 +91,7 @@ Focus on orchestration strategy, not implementation details."""
 
     def __init__(self, config: OrchestratorConfig, coordinator, storage, context_monitor):
         """
-        Initialize Orchestrator agent with direct Anthropic API access.
+        Initialize Orchestrator agent with active Hermes model access.
 
         Args:
             config: Orchestrator configuration
@@ -105,6 +107,7 @@ Focus on orchestration strategy, not implementation details."""
         # Store API key (injected from environment environment)
         import os
         self.api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
+        self.llm = get_llm(self.api_key)
 
         # Register with coordinator
         self.coordinator.register_agent(config.agent_id)
@@ -117,18 +120,17 @@ Focus on orchestration strategy, not implementation details."""
         self._session_active = False
         self._conversation_history: List[Dict[str, Any]] = []
 
-        logger.info(f"[Orchestrator] Initialized with direct Anthropic API access")
+        logger.info(f"[Orchestrator] Initialized with active Hermes model access")
 
     async def start_session(self):
         """Start agent session (validates API key availability)."""
         if not self._session_active:
             logger.info(f"Starting session for agent {self.config.agent_id}")
 
-            # Validate API key is available
-            if not self.api_key:
+            if not self.llm.configured:
                 raise ValueError(
-                    "ANTHROPIC_API_KEY not set. Cannot start session without API access. "
-                    "Get your key from: https://console.anthropic.com/settings/keys"
+                    "No Hermes model is configured. Run `hermes setup --portal` and "
+                    "`hermes proxy start`, or configure the legacy API key."
                 )
 
             # Initialize conversation with system prompt
@@ -210,7 +212,7 @@ Focus on orchestration strategy, not implementation details."""
 
     async def coordinate_workflow(self, work_plan: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Coordinate multi-agent workflow execution using direct Anthropic API.
+        Coordinate multi-agent workflow execution using the active Hermes model.
 
         Args:
             work_plan: Work plan with phases and tasks
@@ -226,15 +228,6 @@ Focus on orchestration strategy, not implementation details."""
             if not self._session_active:
                 await self.start_session()
 
-            # Import Anthropic API
-            import anthropic
-
-            if not self.api_key:
-                raise ValueError(
-                    "ANTHROPIC_API_KEY not set. Cannot coordinate workflow without API access."
-                )
-
-            client = anthropic.Anthropic(api_key=self.api_key)
 
             # Phase 1: Ask Claude to analyze work plan and build dependency graph
             planning_prompt = self._build_planning_prompt(work_plan)
@@ -245,21 +238,15 @@ Focus on orchestration strategy, not implementation details."""
                 "content": planning_prompt
             })
 
-            logger.info("[Orchestrator] Calling Anthropic API for workflow planning")
+            logger.info("[Orchestrator] Calling active Hermes model for workflow planning")
 
-            # Call Anthropic API for planning analysis
-            response = client.messages.create(
-                model="claude-sonnet-4-5-20250929",
-                max_tokens=4096,
+            # Call the active Hermes model through its local proxy.
+            response = self.llm.chat(
+                self._conversation_history,
                 system=self.ORCHESTRATOR_SYSTEM_PROMPT,
-                messages=self._conversation_history
+                max_tokens=4096,
             )
-
-            # Extract text response
-            planning_analysis = ""
-            for block in response.content:
-                if block.type == "text":
-                    planning_analysis += block.text
+            planning_analysis = response["choices"][0]["message"].get("content") or ""
 
             # Add assistant response to conversation
             self._conversation_history.append({
@@ -297,7 +284,7 @@ Focus on orchestration strategy, not implementation details."""
 
         except ImportError as e:
             self.coordinator.update_agent_state(self.config.agent_id, "failed")
-            error_msg = f"Anthropic SDK not installed: {e}. Install with: uv pip install anthropic"
+            error_msg = f"LLM backend unavailable: {e}. Configure Hermes or the legacy fallback."
             logger.error(f"[Orchestrator] {error_msg}")
             return {
                 "status": "failed",

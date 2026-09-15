@@ -3,7 +3,7 @@ Executor Agent - Primary Work Agent and Sub-Agent Manager.
 
 Responsibilities:
 - Follow Work Plan Protocol (Phases 1-4)
-- Execute atomic tasks from plans using direct Anthropic API
+- Execute atomic tasks from plans using the active Hermes model
 - Spawn sub-agents for safe parallel work
 - Apply loaded skills
 - Challenge vague requirements
@@ -27,6 +27,7 @@ try:
     )
     from .validation import validate_work_item, validate_agent_state
     from .metrics import get_metrics_collector
+    from ..hermes_llm import get_llm
 except ImportError:
     import sys, os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,6 +40,7 @@ except ImportError:
     )
     from validation import validate_work_item, validate_agent_state
     from metrics import get_metrics_collector
+    from orchestration.hermes_llm import get_llm
 
 logger = get_logger("executor")
 
@@ -201,7 +203,7 @@ class ExecutorConfig:
     # Trusted execution boundary: all file tools and commands are confined to
     # this directory. None -> current working directory at agent construction.
     working_dir: Optional[str] = None
-    # Anthropic API key (from environment)
+    # Optional legacy API key fallback; Hermes is preferred
     api_key: Optional[str] = None
 
 
@@ -221,13 +223,13 @@ class ExecutorAgent(AgentExecutionMixin):
     """
     Primary work agent and sub-agent manager.
 
-    Executes work following the Work Plan Protocol using direct Anthropic API:
+    Executes work following the Work Plan Protocol using the active Hermes model:
     - Phase 1: Prompt → Spec
     - Phase 2: Spec → Full Spec
     - Phase 3: Full Spec → Plan
     - Phase 4: Plan → Artifacts
 
-    Uses direct Anthropic API calls with tool execution for intelligent work execution.
+    Uses the active Hermes model with tool execution for intelligent work execution.
 
     **Agent Execution Mixin**: Inherits from AgentExecutionMixin to provide
     standard interface for agent orchestration.
@@ -259,7 +261,7 @@ Always follow best practices and validate your work before marking it complete."
         parallel_executor
     ):
         """
-        Initialize Executor agent with direct Anthropic API access.
+        Initialize Executor agent with active Hermes model access.
 
         Args:
             config: Executor configuration
@@ -275,6 +277,7 @@ Always follow best practices and validate your work before marking it complete."
         # Store API key (injected from environment environment)
         import os
         self.api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
+        self.llm = get_llm(self.api_key)
 
         # Trusted execution boundary root (resolve symlinks so path containment
         # checks cannot be bypassed via .. or symlink escapes). Default to the
@@ -299,18 +302,17 @@ Always follow best practices and validate your work before marking it complete."
             half_open_attempts=1
         )
 
-        logger.info(f"[Executor] Initialized with direct Anthropic API access")
+        logger.info(f"[Executor] Initialized with active Hermes model access")
 
     async def start_session(self):
         """Start agent session (validates API key availability)."""
         if not self._session_active:
             logger.info(f"Starting session for agent {self.config.agent_id}")
 
-            # Validate API key is available
-            if not self.api_key:
+            if not self.llm.configured:
                 raise ValueError(
-                    "ANTHROPIC_API_KEY not set. Cannot start session without API access. "
-                    "Get your key from: https://console.anthropic.com/settings/keys"
+                    "No Hermes model is configured. Run `hermes setup --portal` and "
+                    "`hermes proxy start`, or configure the legacy API key."
                 )
 
             self._session_active = True
@@ -325,7 +327,7 @@ Always follow best practices and validate your work before marking it complete."
 
     async def execute_work_plan(self, work_plan: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute work plan using Anthropic API for LLM reasoning.
+        Execute work plan using active Hermes model for LLM reasoning.
 
         ZFC: Deterministic state machine + LLM API calls for intelligent decisions.
 
@@ -357,9 +359,9 @@ Always follow best practices and validate your work before marking it complete."
 
             # Phase 2: Planning - Prepare API call
             self._current_phase = ExecutorPhase.PLANNING
-            logger.info(f"[Executor] Phase 2: Calling Anthropic API for intelligent execution")
+            logger.info(f"[Executor] Phase 2: Calling active Hermes model for intelligent execution")
 
-            # Phase 3: Execution - Call Anthropic API
+            # Phase 3: Execution - Call the active Hermes model
             self._current_phase = ExecutorPhase.EXECUTING
 
             # Check circuit breaker before attempting API calls
@@ -394,16 +396,6 @@ Always follow best practices and validate your work before marking it complete."
                     "retry_after": circuit_status['cooldown_remaining']
                 }
 
-            # Import here to allow graceful degradation if not available
-            import anthropic
-
-            if not self.api_key:
-                raise ValueError(
-                    "ANTHROPIC_API_KEY not set. Cannot execute work without API access. "
-                    "Get your key from: https://console.anthropic.com/settings/keys"
-                )
-
-            client = anthropic.Anthropic(api_key=self.api_key)
 
             # Get tool definitions
             tools = self._get_tool_definitions()
@@ -421,12 +413,10 @@ Always follow best practices and validate your work before marking it complete."
                 logger.info(f"[Executor] API call iteration {iteration + 1}")
 
                 try:
-                    # Call Claude API with tools
-                    response = client.messages.create(
-                        model="claude-sonnet-4-5-20250929",
-                        max_tokens=4096,
+                    response = self.llm.chat(
+                        messages,
                         tools=tools,
-                        messages=messages
+                        max_tokens=4096,
                     )
 
                     # Record success with circuit breaker
@@ -443,62 +433,31 @@ Always follow best practices and validate your work before marking it complete."
                     # Re-raise for outer exception handler
                     raise
 
-                total_input_tokens += response.usage.input_tokens
-                total_output_tokens += response.usage.output_tokens
+                usage = response.get("usage", {})
+                total_input_tokens += usage.get("prompt_tokens", 0)
+                total_output_tokens += usage.get("completion_tokens", 0)
+                choice = response["choices"][0]
+                message = choice.get("message", {})
+                tool_calls = message.get("tool_calls", [])
+                logger.debug(f"[Executor] Response finish reason: {choice.get('finish_reason')}")
 
-                logger.debug(f"[Executor] Response stop_reason: {response.stop_reason}")
-
-                # Check if Claude wants to use tools
-                if response.stop_reason == "tool_use":
-                    # Extract tool use requests
-                    assistant_content = []
-                    tool_results = []
-
-                    for block in response.content:
-                        if block.type == "tool_use":
-                            tool_name = block.name
-                            tool_input = block.input
-                            tool_use_id = block.id
-
-                            logger.info(f"[Executor] Tool requested: {tool_name}")
-                            tool_uses.append({"name": tool_name, "input": tool_input})
-
-                            # Execute the tool
-                            tool_result = await self._execute_tool(tool_name, tool_input)
-
-                            # Format result for API
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": str(tool_result)
-                            })
-
-                            assistant_content.append(block)
-
-                        elif block.type == "text":
-                            assistant_content.append(block)
-
-                    # Add assistant message with tool use
-                    messages.append({
-                        "role": "assistant",
-                        "content": assistant_content
-                    })
-
-                    # Add tool results
-                    messages.append({
-                        "role": "user",
-                        "content": tool_results
-                    })
-
-                    logger.info(f"[Executor] Executed {len(tool_results)} tools, continuing conversation")
-
+                if tool_calls:
+                    messages.append(message)
+                    for call in tool_calls:
+                        tool_name = call["function"]["name"]
+                        import json
+                        tool_input = json.loads(call["function"].get("arguments", "{}"))
+                        tool_uses.append({"name": tool_name, "input": tool_input})
+                        logger.info(f"[Executor] Tool requested: {tool_name}")
+                        tool_result = await self._execute_tool(tool_name, tool_input)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": str(tool_result),
+                        })
+                    logger.info(f"[Executor] Executed {len(tool_calls)} tools, continuing conversation")
                 else:
-                    # Got final response, extract text
-                    response_text = ""
-                    for block in response.content:
-                        if block.type == "text":
-                            response_text += block.text
-
+                    response_text = message.get("content") or ""
                     logger.info(f"[Executor] Final response received ({len(response_text)} chars)")
                     logger.debug(f"[Executor] Response preview: {response_text[:200]}...")
                     break
@@ -513,7 +472,7 @@ Always follow best practices and validate your work before marking it complete."
                 "content": response_text,
                 "phase": phase,
                 "work_id": work_id,
-                "model": "claude-sonnet-4-5-20250929",
+                "model": self.llm.model,
                 "tokens_used": {
                     "input": total_input_tokens,
                     "output": total_output_tokens
@@ -522,14 +481,16 @@ Always follow best practices and validate your work before marking it complete."
                 "iterations": iteration + 1
             }]
 
-            execution_summary = f"Executed work via Claude API: {prompt[:100]}"
+            execution_summary = f"Executed work via the active Hermes model: {prompt[:100]}"
 
             # Phase 4: Completion
             self._current_phase = ExecutorPhase.COMPLETED
             self.coordinator.update_agent_state(self.config.agent_id, "complete")
 
             logger.info(f"[Executor] Work completed successfully: {work_id}")
-            logger.info(f"[Executor] Tokens: {response.usage.input_tokens} in, {response.usage.output_tokens} out")
+            logger.info(
+                f"[Executor] Tokens: {total_input_tokens} in, {total_output_tokens} out"
+            )
 
             return {
                 "status": "success",
@@ -542,7 +503,7 @@ Always follow best practices and validate your work before marking it complete."
 
         except ImportError as e:
             self.coordinator.update_agent_state(self.config.agent_id, "failed")
-            error_msg = f"Anthropic SDK not installed: {e}. Install with: uv pip install anthropic"
+            error_msg = f"LLM backend unavailable: {e}. Configure Hermes or the legacy fallback."
             logger.error(f"[Executor] {error_msg}")
             return {
                 "status": "failed",
@@ -597,81 +558,49 @@ Always follow best practices and validate your work before marking it complete."
         """
         Define tools available to the executor.
 
-        Tools follow Anthropic's tool use API format.
+        Tools use the OpenAI-compatible format exposed by the Hermes proxy.
         """
-        return [
-            {
-                "name": "read_file",
-                "description": "Read the contents of a file. Use this to examine existing code or configuration.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute path to the file to read"
-                        }
-                    },
-                    "required": ["file_path"]
-                }
-            },
-            {
-                "name": "create_file",
-                "description": "Create a new file with the specified content. Use this to write code, tests, or documentation.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute path where the file should be created"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Content to write to the file"
-                        }
-                    },
-                    "required": ["file_path", "content"]
-                }
-            },
-            {
-                "name": "edit_file",
-                "description": "Edit an existing file by replacing old_text with new_text. Use this to modify code.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute path to the file to edit"
-                        },
-                        "old_text": {
-                            "type": "string",
-                            "description": "Exact text to find and replace"
-                        },
-                        "new_text": {
-                            "type": "string",
-                            "description": "New text to insert"
-                        }
-                    },
-                    "required": ["file_path", "old_text", "new_text"]
-                }
-            },
-            {
-                "name": "run_command",
-                "description": "Execute a shell command. Use this to run tests, build code, or perform other operations.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to execute"
-                        },
-                        "working_dir": {
-                            "type": "string",
-                            "description": "Working directory for command execution (optional)"
-                        }
-                    },
-                    "required": ["command"]
-                }
+        def function(name: str, description: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                },
             }
+
+        return [
+            function("read_file", "Read the contents of a file. Use this to examine existing code or configuration.", {
+                "type": "object",
+                "properties": {"file_path": {"type": "string", "description": "Absolute path to the file to read"}},
+                "required": ["file_path"],
+            }),
+            function("create_file", "Create a new file with the specified content. Use this to write code, tests, or documentation.", {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Absolute path where the file should be created"},
+                    "content": {"type": "string", "description": "Content to write to the file"},
+                },
+                "required": ["file_path", "content"],
+            }),
+            function("edit_file", "Edit an existing file by replacing old_text with new_text. Use this to modify code.", {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Absolute path to the file to edit"},
+                    "old_text": {"type": "string", "description": "Exact text to find and replace"},
+                    "new_text": {"type": "string", "description": "New text to insert"},
+                },
+                "required": ["file_path", "old_text", "new_text"],
+            }),
+            function("run_command", "Execute a shell command. Use this to run tests, build code, or perform other operations.", {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute"},
+                    "working_dir": {"type": "string", "description": "Working directory for command execution (optional)"},
+                },
+                "required": ["command"],
+            }),
         ]
 
     def _resolve_within_boundary(self, path: str) -> str:
@@ -965,7 +894,7 @@ Always follow best practices and validate your work before marking it complete."
 
     async def spawn_subagent(self, task: WorkTask) -> str:
         """
-        Spawn sub-agent for task execution using direct Anthropic API.
+        Spawn sub-agent for task execution using the active Hermes model.
 
         Safety checks:
         - Task truly independent

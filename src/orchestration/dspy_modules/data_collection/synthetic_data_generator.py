@@ -20,7 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import anthropic
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from hermes_llm import get_llm
 
 
 # Categories for diverse example generation
@@ -56,8 +57,10 @@ class SyntheticExample:
 class SyntheticDataGenerator:
     """Generate and validate synthetic training data"""
 
-    def __init__(self, api_key: str):
-        self.client = anthropic.Anthropic(api_key=api_key)
+    def __init__(self, api_key: Optional[str] = None):
+        self.client = get_llm(api_key)
+        if not self.client.configured:
+            raise RuntimeError("Hermes model not configured; run `hermes setup --portal`")
 
     def generate_scenario(
         self,
@@ -108,13 +111,12 @@ Output as JSON:
 Be creative and diverse - avoid repetitive scenarios."""
 
         try:
-            response = self.client.messages.create(
-                model="claude-sonnet-4-5-20250929",
+            response = self.client.chat(
+                [{"role": "user", "content": prompt}],
                 max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
             )
 
-            content = response.content[0].text
+            content = response["choices"][0]["message"].get("content") or ""
 
             # Extract JSON
             import re
@@ -360,19 +362,18 @@ def main():
     parser.add_argument('--target', type=int, default=40,
                        help='Target number of examples to generate')
     parser.add_argument('--api-key', type=str,
-                       help='Anthropic API key (or set ANTHROPIC_API_KEY env var)')
+                       help='Legacy API key override; Hermes proxy is preferred')
 
     args = parser.parse_args()
 
-    # Get API key
-    import os
-    api_key = args.api_key or os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        print("Error: ANTHROPIC_API_KEY not set", file=sys.stderr)
+    # Inherit the active Hermes model and proxy credentials.
+    try:
+        generator = SyntheticDataGenerator(args.api_key)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)
 
     # Run generation pipeline
-    generator = SyntheticDataGenerator(api_key)
     counts = generator.generate_and_save(
         output_dir=args.output,
         target_examples=args.target
