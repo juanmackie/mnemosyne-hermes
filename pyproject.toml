@@ -1,20 +1,37 @@
 [project]
-name = "mnemosyne-orchestration"
-version = "1.0.0"
-description = "Multi-agent orchestration system for Mnemosyne with Python-native storage"
-requires-python = ">=3.10"
+name = "mnemosyne"
+version = "2.4.0"
+description = "Self-hostable Python memory system with SQLite storage, MCP/CLI surface, and optional multi-agent orchestration."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.72.0",
-    "claude-agent-sdk>=0.1.0",
-    "dspy-ai>=3.0.3",
-    "rich>=13.0.0",
+    # Core memory requires only Python stdlib (sqlite3, threading, hashlib).
 ]
 
 [project.optional-dependencies]
+orchestration = [
+    "dspy-ai>=3.0.3",
+    "anthropic>=0.72.0",
+    "claude-agent-sdk>=0.1.0",
+    "rich>=13.0.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
 ]
+
+[project.scripts]
+mnemosyne = "mnemosyne.cli:main"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mnemosyne*", "lib*"]
+exclude = ["tests*", "benchmark*", "docs*"]
 
 [tool.pytest.ini_options]
 markers = [

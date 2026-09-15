@@ -131,38 +131,24 @@ class MnemosyneRustProvider:
         if name == "mnemosyne_memory_search" or name == "mnemosyne_memory_remember":
             query = arguments.get("query", "")
             namespace = arguments.get("namespace", self.config.resolved_namespace())
-            # Direct search against local store file
+            # M1: replace JSONL fallback with direct SQLite access (PythonMemoryStorage)
             try:
-                store_path = self._get_store_path()
-                results = []
-                if os.path.isfile(store_path):
-                    with open(store_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                record = json.loads(line)
-                            except Exception:
-                                continue
-                            user_text = record.get("user_text", "")
-                            if query and query.lower() in user_text.lower():
-                                results.append(record)
+                from lib.storage import PythonMemoryStorage
+                # Resolve DB path from config or environment, falling back to adapter contract path
+                db_path = self.config.db_path or os.getenv("MNEMOSYNE_DB_PATH", "")
+                if not db_path:
+                    db_path = os.path.expanduser(os.path.join(getattr(self.config, 'hermes_home', '~/.hermes'), 'mnemosyne/mnemosyne.db'))
+                storage = PythonMemoryStorage(db_path)
                 if name == "mnemosyne_memory_remember":
-                    # For remember, store in local file (simple persistence)
-                    try:
-                        store_path = self._get_store_path()
-                        store_dir = os.path.dirname(store_path)
-                        if store_dir and store_dir != "." and not os.path.isdir(store_dir):
-                            try:
-                                os.makedirs(store_dir, exist_ok=True)
-                            except Exception:
-                                pass
-                        with open(store_path, "a", encoding="utf-8") as f:
-                            f.write(json.dumps({"user_text": arguments.get("content", query), "context": "primary", "namespace": namespace}) + "\n")
-                    except Exception as exc:
-                        return {"ok": False, "error": str(exc)}
-                return {"ok": True, "results": results, "count": len(results), "namespace": namespace}
+                    content = arguments.get("content", query)
+                    importance = arguments.get("importance", 5)
+                    # Preserve keyless operation: no external LLM required for basic storage
+                    storage.remember(content, namespace, importance, context=arguments.get("context"))
+                    return {"ok": True, "results": [{"content": content[:200], "namespace": namespace}], "count": 1, "namespace": namespace}
+                else:
+                    # Search: use direct storage recall; falls back to namespace filter
+                    results = storage.recall(query, namespace=namespace, max_results=10, min_importance=0)
+                    return {"ok": True, "results": results, "count": len(results), "namespace": namespace}
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}
         # Delegate other tool calls to MCP client
