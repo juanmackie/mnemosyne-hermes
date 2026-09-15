@@ -1,7 +1,7 @@
-name: Python Integration CI (Retired Rust CI — design/proposed only)
+name: Python Integration CI
 
 # Status: Planning deliverable item 4 (Python CI proposal). Not fully executed.
-# Previous Rust CI steps retired (`cargo fmt`, `cargo clippy`, `cargo build`, `cargo test`).
+# # Previous CI steps retired (`cargo fmt`, `cargo clippy`, `cargo build`, `cargo test`).
 # Python CI proposal (`python-ci.yml`) is designed but not applied to this file.
 
 on:
@@ -13,7 +13,7 @@ on:
       - "release/**"
 
 env:
-  CARGO_TERM_COLOR: always
+  # Build env (Python only)
 
 # Cloud-dependent tests (live LLM API keys, DSPy/Python bridges, the running
 # API server, and P2P networking) are marked `#[ignore]` or are gated behind

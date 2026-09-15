@@ -37,7 +37,7 @@ check:
 
 # Health check
 doctor:
-	python -c "from mnemosyne_rust_hermes.config import default_config; cfg=default_config(); print('Contracts:', cfg.provider_id, cfg.namespace, cfg.resolved_db_path())" 2>/dev/null || echo "Health check requires installed package."
+	python -c "from mnemosyne_orchestration.config import default_config; cfg=default_config(); print('Contracts:', cfg.provider_id, cfg.namespace, 'DB resolved')" 2>/dev/null || echo "Health check requires installed package."
 
 # Lint (placeholder)
 lint:
