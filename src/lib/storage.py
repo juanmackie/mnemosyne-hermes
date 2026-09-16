@@ -102,14 +102,14 @@ class PythonMemoryStorage:
         "CREATE INDEX IF NOT EXISTS idx_memories_lower_null ON memories(content_lower) WHERE content_lower IS NULL",
     ]
 
-    # Superseded by idx_memories_recall (same leading columns, plus content).
-    # Dropped rather than reused because IF NOT EXISTS matches on the name
-    # only, so an existing index would keep the old column list.
+    # Obsolete indexes, dropped by name on open. Indexes whose *columns* change
+    # are handled in _init_schema instead (it compares the stored DDL and
+    # rebuilds), because IF NOT EXISTS matches on the name only.
     DROPPED_INDEXES = ["DROP INDEX IF EXISTS idx_memories_ns_rank",
                        # idx_memories_importance lured the planner into walking
                        # the importance index in random row order for unfiltered
-                       # recall (bound LIKE hides the leading wildcard, so the
-                       # planner assumes LIKE-opt may apply). A sequential scan
+                       # recall (a bound LIKE hid the leading wildcard, so the
+                       # planner assumed LIKE-opt may apply). A sequential scan
                        # + temp b-tree sort is ~4x faster; list(sort=importance)
                        # sorts cheaply without it at this scale.
                        "DROP INDEX IF EXISTS idx_memories_importance"]
