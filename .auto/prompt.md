@@ -37,6 +37,16 @@ recall correctness assertions fail (planted-term counts changed).
 - **WAL checkpoint every 10th write** (c1c590a): remember p99 12% better.
 - Old workload (100 near-identical rows) made search noise-dominated; this
   session uses a 3000-row deterministic corpus for headroom.
+- **Drop idx_memories_importance** (a811d5b, run 2): bound LIKE hides the
+  leading wildcard from the planner, which walked the importance index in
+  random row order + temp b-tree sort. Sequential scan + sort is ~2x faster
+  (A/B: p50 1.7→0.75ms, p99 3.7→1.4-1.7ms). Self-applies to existing DBs via
+  DROPPED_INDEXES. MCP hot path (namespaced, limit 10) unaffected at ~0.05ms.
+- **Discarded**: FTS5 token-prefilter (unsound — misses infix LIKE matches,
+  e.g. query "emory" vs content "Memory"); FTS5-trigram LIKE (measured
+  slower, no acceleration materializes); two-step narrow-sort fetch (p99
+  -10% but p50 worse + complexity); temp_store=MEMORY + 64MB cache
+  (neutral-to-worse over 3 runs).
 
 ## Ideas Backlog
 - FTS5 virtual table for recall (replace LIKE '%query%' with MATCH) —
