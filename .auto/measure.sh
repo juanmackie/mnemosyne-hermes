@@ -3,23 +3,39 @@ set -euo pipefail
 
 # Search-speed benchmark — recall() latency on a deterministic 3000-row corpus.
 # Outputs METRIC name=value lines. Exits nonzero if recall semantics break.
+# Uses a PERSISTENT corpus DB (rebuilt only when missing/version-stale) so
+# runs are comparable and insert-phase I/O jitter doesn't pollute timings.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(dirname "$SCRIPT_DIR")"
-DB_TEMP="$ROOT/.auto/data/bench_search_$$"
+SELF="${0//\\//}"
+SCRIPT_DIR="${SELF%/*}"
+case "$SCRIPT_DIR" in
+    /*) : ;;
+    *) SCRIPT_DIR="$PWD/$SCRIPT_DIR" ;;
+esac
+ROOT="${SCRIPT_DIR%/*}"
+CORPUS_DB="$ROOT/.auto/data/bench_corpus.db"
 
-cleanup() {
-    rm -f "$DB_TEMP" "$DB_TEMP-journal" "$DB_TEMP-wal" "$DB_TEMP-shm" 2>/dev/null || true
-}
-trap cleanup EXIT
+# NOTE: builtins only (+ python) — must run under a minimal-PATH bash.
+# MEASURE_PYTHON may override; default pins ~/.local/bin/python3.exe (3.11,
+# present in both interactive and tool-spawned envs) for reproducibility.
+if [ -n "${MEASURE_PYTHON:-}" ]; then
+    PYBIN="$MEASURE_PYTHON"
+elif [ -x "$HOME/.local/bin/python3.exe" ]; then
+    PYBIN="$HOME/.local/bin/python3.exe"
+else
+    PYBIN="$(command -v python3 || command -v python || true)"
+fi
+[ -n "$PYBIN" ] || { echo "no python on PATH"; exit 1; }
 
-python3 - "$DB_TEMP" "$ROOT" <<'PYEOF'
+"$PYBIN" - "$CORPUS_DB" "$ROOT" <<'PYEOF'
 import sys, os, time, random
 sys.path.insert(0, os.path.join(sys.argv[2], "src"))
 
 from lib.storage import PythonMemoryStorage
 
 db_path = sys.argv[1]
+CORPUS_VERSION = "v1"
+os.makedirs(os.path.dirname(db_path), exist_ok=True)
 random.seed(42)
 
 WORDS = ("project alpha milestone review deploy staging cache index query router "
@@ -40,17 +56,44 @@ WORDS = ("project alpha milestone review deploy staging cache index query router
 def sentence():
     return " ".join(random.choice(WORDS) for _ in range(random.randint(8, 14))).capitalize() + "."
 
-# --- Populate fresh DB ---
+def build_corpus(s):
+    planted_xyl = set(random.sample(range(3000), 7))
+    planted_phrase = set(random.sample(range(3000), 2))
+    for i in range(3000):
+        text = f"Memory {i}: " + sentence() + " " + sentence()
+        if i in planted_xyl:
+            text += " xylophone"
+        if i in planted_phrase:
+            text += " midnight lantern protocol"
+        ns = "agent:hermes" if random.random() < 0.8 else random.choice(["session:x", "agent:other"])
+        s.remember(text, namespace=ns, importance=random.randint(1, 10))
+
+def corpus_valid(s):
+    try:
+        with open(db_path + ".version") as f:
+            if f.read().strip() != CORPUS_VERSION:
+                return False
+    except OSError:
+        return False
+    try:
+        return s.count() == 3000
+    except Exception:
+        return False
+
+# --- Open corpus, rebuild only when missing/stale ---
 s = PythonMemoryStorage(db_path)
-planted_xyl, planted_phrase = set(random.sample(range(3000), 7)), set(random.sample(range(3000), 2)) - set()
-for i in range(3000):
-    text = f"Memory {i}: " + sentence() + " " + sentence()
-    if i in planted_xyl:
-        text += " xylophone"
-    if i in planted_phrase:
-        text += " midnight lantern protocol"
-    ns = "agent:hermes" if random.random() < 0.8 else random.choice(["session:x", "agent:other"])
-    s.remember(text, namespace=ns, importance=random.randint(1, 10))
+if not corpus_valid(s):
+    s.close()
+    for suffix in ("", "-journal", "-wal", "-shm", ".version"):
+        try:
+            os.remove(db_path + suffix)
+        except OSError:
+            pass
+    random.seed(42)
+    s = PythonMemoryStorage(db_path)
+    build_corpus(s)
+    with open(db_path + ".version", "w") as f:
+        f.write(CORPUS_VERSION + "\n")
 
 # --- Correctness assertions (recall semantics must not change) ---
 checks = [
@@ -73,7 +116,7 @@ QUERIES = [
     ("project", "agent:hermes", 10, 5),                   # common + importance floor
     ("memory", None, 50, None),                           # wide, large limit
 ]
-REPS = 30
+REPS = 40
 all_times, per_query = [], {}
 for qi, (q, ns, lim, imp) in enumerate(QUERIES):
     for _ in range(5):  # warmup
