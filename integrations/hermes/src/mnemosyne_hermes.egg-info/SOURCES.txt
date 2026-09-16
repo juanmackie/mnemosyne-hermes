@@ -1,0 +1,10 @@
+pyproject.toml
+src/mnemosyne_hermes/__init__.py
+src/mnemosyne_hermes/config.py
+src/mnemosyne_hermes/provider.py
+src/mnemosyne_hermes.egg-info/PKG-INFO
+src/mnemosyne_hermes.egg-info/SOURCES.txt
+src/mnemosyne_hermes.egg-info/dependency_links.txt
+src/mnemosyne_hermes.egg-info/entry_points.txt
+src/mnemosyne_hermes.egg-info/requires.txt
+src/mnemosyne_hermes.egg-info/top_level.txt

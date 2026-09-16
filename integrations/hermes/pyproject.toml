@@ -1,0 +1,26 @@
+[project]
+name = "mnemosyne-hermes"
+version = "0.1.0"
+description = "Pure Python Hermes memory provider — MnemosyneMemoryProvider using PythonMemoryStorage directly (no binary needed)."
+requires-python = ">=3.11"
+dependencies = [
+    "mnemosyne-memory[embeddings]>=3.15.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.scripts]
+mnemosyne-hermes = "mnemosyne_hermes.cli:main"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mnemosyne_hermes*"]
+exclude = ["tests*", "benchmark*"]
