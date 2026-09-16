@@ -41,6 +41,65 @@ def test_recall_treats_wildcards_literally():
         s.close()
 
 
+def test_recall_matches_like_semantics_on_the_lowercase_copy():
+    """recall() searches content_lower with instr(), not content with LIKE.
+
+    The two must agree: LIKE folds ASCII case only, and instr() needs the
+    query folded the same way. Non-ASCII must stay case-sensitive (LIKE does
+    not fold it), and '%'/'_'/'\\' must stay literal.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        s = PythonMemoryStorage(os.path.join(d, "m.db"))
+        rows = ["Caf\u00e9 M\u00dcNCHEN project", "100% cotton", "under_score",
+                "back\\slash", "MixedCASE Alpha", "xylophone"]
+        # Distinct importance per row: recall orders by (importance, created_at)
+        # and rows written in the same clock tick would otherwise tie, making
+        # the ID order plan-dependent rather than comparable.
+        for i, text in enumerate(rows):
+            s.remember(text, "ns", 5 + i)
+
+        def like_ids(query):
+            esc = (query.replace("\\", "\\\\")
+                        .replace("%", "\\%").replace("_", "\\_"))
+            return [r[0] for r in s._conn().execute(
+                "SELECT id FROM memories WHERE content LIKE ? ESCAPE '\\' "
+                "ORDER BY importance DESC, created_at DESC LIMIT 50",
+                (f"%{esc}%",))]
+
+        for query in ["project", "PROJECT", "m\u00fcnchen", "M\u00dcNCHEN", "caf\u00e9",
+                      "%", "100%", "_", "snake_case", "back\\slash", "alpha",
+                      "ALPHA", "x", "zzz", "xylophone", "XYLOPHONE"]:
+            want = like_ids(query)
+            got = [m["id"] for m in s.recall(query, namespace="ns", max_results=50)]
+            assert got == want, f"query {query!r}: {got} != {want}"
+        s.close()
+
+
+def test_recall_backfills_rows_missing_the_lowercase_copy():
+    """A row written by a pre-migration version has content_lower NULL; instr()
+    would return NULL for it and silently hide it, so opening the DB backfills.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "m.db")
+        s = PythonMemoryStorage(path)
+        s.remember("xylophone keeper", "ns", 5)
+        # Same INSERT a pre-content_lower version would have written.
+        s._conn().execute(
+            "INSERT INTO memories (id, content, namespace, importance, created_at) "
+            "VALUES ('stale', 'stale xylophone row', 'ns', 9, 1.0)"
+        )
+        s._conn().commit()
+        s.close()
+
+        reopened = PythonMemoryStorage(path)
+        assert reopened._conn().execute(
+            "SELECT COUNT(*) FROM memories WHERE content_lower IS NULL"
+        ).fetchone()[0] == 0
+        ids = [m["id"] for m in reopened.recall("xylophone", namespace="ns")]
+        assert "stale" in ids, ids
+        reopened.close()
+
+
 def test_storage_reuses_one_connection_per_thread():
     import threading
     with tempfile.TemporaryDirectory() as d:

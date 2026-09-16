@@ -62,33 +62,44 @@ class PythonMemoryStorage:
             keywords TEXT,
             created_at REAL DEFAULT 0,
             access_count INTEGER DEFAULT 0,
-            last_accessed REAL
+            last_accessed REAL,
+            -- ASCII-lowered copy of content, written by remember() and
+            -- backfilled by _ensure_content_lower(). Trailing position so the
+            -- column order of SELECT * matches a migrated database.
+            content_lower TEXT
         )
     """
+
+    # Case folding for the content_lower column and for recall queries.
+    # Both SQLite's lower() (used by the backfill and by remember's INSERT) and
+    # LIKE's case-insensitivity are ASCII-only, so this table is the exact
+    # match. Python's str.lower() must not be used: it folds non-ASCII too,
+    # which would make a search match where LIKE would not.
+    ASCII_LOWER = str.maketrans(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
     INDEXES = [
         "CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)",
         "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_memories_ns_created ON memories(namespace, created_at)",
         # Matches the recall query shape (namespace filter + ORDER BY importance
-        # DESC, created_at DESC) *and* carries content, so the scan can filter
-        # on the LIKE and walk rows in output order without touching the table.
-        # Without content here, every scanned row cost a table fetch (~0.4ms of
-        # the ~0.8ms tail for selective queries); with it, only the returned
-        # rows are fetched. Costs one content-sized index (see README notes).
-        "CREATE INDEX IF NOT EXISTS idx_memories_recall ON memories(namespace, importance, created_at, content)",
-        # Rank-ordered COVERING index for UNFILTERED recall (no namespace):
-        # the ORDER BY importance DESC, created_at DESC streams straight from
-        # this index with no temp b-tree sort, and LIMIT stops the scan as soon
-        # as enough LIKE matches are found (common-term queries match early:
-        # ~0.8ms -> ~0.1ms). Carries content+namespace so full scans never
-        # touch the table (a narrow rank-only variant was tried: the planner
-        # used it, q5 won, but rare/phrase/miss queries paid ~1.5x from per-row
-        # table fetches). Costs a second content-sized index; writes pay two
-        # content-index inserts per remember (measured separately, ~us each).
-        # ponytail: if the planner ever stops picking it, prefer dropping it
-        # over INDEXED BY heroics.
-        "CREATE INDEX IF NOT EXISTS idx_memories_rank ON memories(importance DESC, created_at DESC, content, namespace)",
+        # DESC, created_at DESC) *and* carries the searched column, so the scan
+        # can filter and walk rows in output order without touching the table.
+        # Without it, every scanned row cost a table fetch (~0.4ms of the
+        # ~0.8ms tail for selective queries); with it, only the returned rows
+        # are fetched. Costs one content-sized index (see README notes).
+        "CREATE INDEX IF NOT EXISTS idx_memories_recall ON memories(namespace, importance, created_at, content_lower)",
+        # Same trick for UNFILTERED recall (no namespace): the ORDER BY streams
+        # straight from this index with no temp b-tree sort, the LIKE/instr
+        # filter is evaluated from the index columns, and LIMIT stops the scan
+        # as soon as enough matches are found (common terms match early:
+        # ~0.8ms -> ~0.1ms). ponytail: if the planner ever stops picking it,
+        # prefer dropping it over INDEXED BY heroics.
+        "CREATE INDEX IF NOT EXISTS idx_memories_rank ON memories(importance DESC, created_at DESC, content_lower, namespace)",
+        # Partial index over only the rows _ensure_content_lower() has to fix.
+        # Normally empty, which makes the "is a backfill needed?" probe an O(1)
+        # covering-index seek instead of a full table scan on every open.
+        "CREATE INDEX IF NOT EXISTS idx_memories_lower_null ON memories(content_lower) WHERE content_lower IS NULL",
     ]
 
     # Superseded by idx_memories_recall (same leading columns, plus content).
@@ -238,16 +249,57 @@ class PythonMemoryStorage:
         init_conn = self._new_conn()
         try:
             init_conn.execute(self.SCHEMA)
+            self._ensure_content_lower(init_conn)
             for drop_sql in self.DROPPED_INDEXES:
                 init_conn.execute(drop_sql)
-            for idx_sql in self.INDEXES:
-                init_conn.execute(idx_sql)
+            for ddl in self.INDEXES:
+                name = ddl.split("IF NOT EXISTS", 1)[1].split()[0]
+                row = init_conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    (name,)
+                ).fetchone()
+                # IF NOT EXISTS matches on the name only, so an index created
+                # by an older version keeps its old column list. Compare the
+                # stored DDL (SQLite drops the IF NOT EXISTS phrase) and
+                # rebuild when the columns changed.
+                desired = " ".join(ddl.replace("IF NOT EXISTS ", "").split())
+                if row and " ".join((row[0] or "").split()) != desired:
+                    init_conn.execute(f"DROP INDEX {name}")
+                init_conn.execute(ddl)
             init_conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Schema initialization failed: {e}")
             raise
         finally:
             init_conn.close()
+
+    def _ensure_content_lower(self, conn: sqlite3.Connection) -> None:
+        """Create and backfill the ASCII-lowered copy of content.
+
+        recall() searches `content_lower` with instr() rather than `content`
+        with LIKE: LIKE's case-insensitive pattern matcher costs ~1.3-1.6x a
+        plain substring search per row, and for the full-scan shapes (rare
+        term, phrase, no match) that per-row cost *is* the whole query once the
+        ordered index removes the sort. Results are unchanged -- SQLite's
+        lower() folds exactly the ASCII range LIKE folds.
+
+        Rows written by a pre-migration version leave the column NULL, and
+        instr(NULL, ...) is NULL, which would silently drop those rows from
+        results, so any NULL row triggers a backfill.
+        """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+        if "content_lower" not in columns:
+            conn.execute("ALTER TABLE memories ADD COLUMN content_lower TEXT")
+        # Fast probe: served by the partial index on content_lower IS NULL once
+        # it exists, and returns on the first row right after the ALTER above.
+        if conn.execute(
+            "SELECT 1 FROM memories WHERE content_lower IS NULL LIMIT 1"
+        ).fetchone():
+            conn.execute(
+                "UPDATE memories SET content_lower = lower(content) "
+                "WHERE content_lower IS NULL"
+            )
+        conn.commit()
 
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """Convert a database row to a memory dict."""
@@ -302,9 +354,9 @@ class PythonMemoryStorage:
         try:
             conn.execute(
                 """INSERT INTO memories
-                   (id, content, namespace, importance, context, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (mem_id, content[:100000], namespace, importance, context, time.time())
+                   (id, content, content_lower, namespace, importance, context, created_at)
+                   VALUES (?, ?, lower(?), ?, ?, ?, ?)""",
+                (mem_id, content[:100000], content[:100000], namespace, importance, context, time.time())
             )
             conn.commit()
         except sqlite3.IntegrityError:
@@ -314,9 +366,9 @@ class PythonMemoryStorage:
             ).hexdigest()[:16]
             conn.execute(
                 """INSERT INTO memories
-                   (id, content, namespace, importance, context, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (mem_id, content[:100000], namespace, importance, context, time.time())
+                   (id, content, content_lower, namespace, importance, context, created_at)
+                   VALUES (?, ?, lower(?), ?, ?, ?, ?)""",
+                (mem_id, content[:100000], content[:100000], namespace, importance, context, time.time())
             )
             conn.commit()
         except sqlite3.Error:
@@ -363,13 +415,11 @@ class PythonMemoryStorage:
 
         conn = self._conn()
         try:
-            sql = "SELECT * FROM memories WHERE content LIKE ? ESCAPE '\\'"
-            # Escape LIKE metacharacters so a literal '%' or '_' in the query
-            # does not turn into a wildcard (which would match everything).
-            escaped = (query.replace("\\", "\\\\")
-                            .replace("%", "\\%")
-                            .replace("_", "\\_"))
-            params = [f"%{escaped}%"]
+            sql = "SELECT * FROM memories WHERE instr(content_lower, ?) > 0"
+            # instr() is case-sensitive, so fold the query the same way the
+            # stored column was folded (ASCII-only, like LIKE). instr also
+            # takes the query literally, so '%' and '_' no longer need escaping.
+            params = [query.translate(self.ASCII_LOWER)]
 
             if namespace:
                 sql += " AND namespace = ?"
