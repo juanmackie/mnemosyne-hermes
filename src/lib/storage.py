@@ -77,6 +77,18 @@ class PythonMemoryStorage:
         # the ~0.8ms tail for selective queries); with it, only the returned
         # rows are fetched. Costs one content-sized index (see README notes).
         "CREATE INDEX IF NOT EXISTS idx_memories_recall ON memories(namespace, importance, created_at, content)",
+        # Rank-ordered COVERING index for UNFILTERED recall (no namespace):
+        # the ORDER BY importance DESC, created_at DESC streams straight from
+        # this index with no temp b-tree sort, and LIMIT stops the scan as soon
+        # as enough LIKE matches are found (common-term queries match early:
+        # ~0.8ms -> ~0.1ms). Carries content+namespace so full scans never
+        # touch the table (a narrow rank-only variant was tried: the planner
+        # used it, q5 won, but rare/phrase/miss queries paid ~1.5x from per-row
+        # table fetches). Costs a second content-sized index; writes pay two
+        # content-index inserts per remember (measured separately, ~us each).
+        # ponytail: if the planner ever stops picking it, prefer dropping it
+        # over INDEXED BY heroics.
+        "CREATE INDEX IF NOT EXISTS idx_memories_rank ON memories(importance DESC, created_at DESC, content, namespace)",
     ]
 
     # Superseded by idx_memories_recall (same leading columns, plus content).

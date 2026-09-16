@@ -28,7 +28,7 @@ fi
 [ -n "$PYBIN" ] || { echo "no python on PATH"; exit 1; }
 
 "$PYBIN" - "$CORPUS_DB" "$ROOT" <<'PYEOF'
-import sys, os, time, random, gc
+import sys, os, time, random, gc, re
 sys.path.insert(0, os.path.join(sys.argv[2], "src"))
 
 from lib.storage import PythonMemoryStorage
@@ -76,7 +76,23 @@ def corpus_valid(s):
     except OSError:
         return False
     try:
-        return s.count() == 3000
+        if s.count() != 3000:
+            return False
+    except Exception:
+        return False
+    # Plan-shape guard: the benchmark must run against exactly the index set
+    # the code under test creates. An index-adding/discarding experiment would
+    # otherwise leave a stale index behind (or lack one) and silently skew
+    # every later run. Mismatch -> rebuild from scratch.
+    try:
+        have = {r[0] for r in s._conn().execute(
+            "SELECT name FROM sqlite_master WHERE type='index'")}
+        have = {h for h in have if not h.startswith("sqlite_autoindex")}
+        want = set(re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)",
+                              " ".join(PythonMemoryStorage.INDEXES)))
+        gone = set(re.findall(r"DROP INDEX IF EXISTS (\w+)",
+                              " ".join(PythonMemoryStorage.DROPPED_INDEXES)))
+        return have == want and not (have & gone)
     except Exception:
         return False
 
