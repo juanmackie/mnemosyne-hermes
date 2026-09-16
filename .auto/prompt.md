@@ -1,40 +1,49 @@
-# Autoresearch: latency — all 4 pipelines
+# Autoresearch: memory search speed
 
 ## Objective
-Reduce latency across all four memory pipelines: search/recall, remember/ingest, MCP server roundtrip, and embedding generation. Primary metric is p99 latency (ms), lower is better. Workload: ~100 memories in the test DB.
+Reduce `recall()` (memory search) latency in `src/lib/storage.py`.
+Workload: ~3000-memory deterministic corpus, mixed query selectivity
+(common term, rare term, exact phrase, no-match, namespace-filtered,
+importance-filtered). Primary metric is search p99 (ms), lower is better.
 
 ## Metrics
-- **Primary**: `p99_latency_ms` (ms, lower is better) — worst-case latency across all pipelines
-- **Secondary**: `search_latency_ms`, `remember_latency_ms`, `mcp_roundtrip_ms`, `embed_latency_ms`
+- **Primary**: `search_p99_ms` (ms, lower is better) — p99 over all timed recall calls
+- **Secondary**: `search_p50_ms`, per-query p50/p99, `assert_ok` (1 = corpus assertions held)
 
 ## How to Run
-`./.auto/measure.sh` — outputs `METRIC name=value` lines.
+`./.auto/measure.sh` — outputs `METRIC name=value` lines. Exits nonzero if
+recall correctness assertions fail (planted-term counts changed).
 
 ## Files in Scope
-- `src/lib/storage.py` — PythonMemoryStorage (recall, remember, list, consolidate)
-- `src/mnemosyne/cli.py` — CLI entry point (recall, remember commands)
-- `integrations/hermes-memory-provider/mnemosyne_rust_hermes/provider.py` — MCP provider
-- `src/orchestration/` — orchestration agents (executor, orchestrator)
+- `src/lib/storage.py` — PythonMemoryStorage.recall (the search path);
+  read-only: remember/list/consolidate unless a change provably helps recall.
+- `src/lib/mnemosyne_client.py` — thin async wrapper (only if it adds overhead).
 
 ## Off Limits
-- No new dependencies
+- No new dependencies (stdlib only)
 - No Rust source changes
-- No DB migration scripts
+- No `migrations/` changes; in-code schema additions must auto-apply to
+  existing DBs and keep `remember`/`list` behavior identical
+- Do not change recall result semantics: same rows, same order, same dicts
+  (measure.sh asserts planted counts; checks.sh runs the test suites)
 
 ## Constraints
-- Tests must pass (`python -m unittest discover -s tests -t . -v`)
-- No new external packages
-- Pure Python / stdlib only
+- `.auto/checks.sh` must pass before any keep
+- No new external packages; pure Python / stdlib only
 
-## What's Been Tried
-- **synchronous=FULL → NORMAL** (c53ed41): Removed fsync on every commit. remember p99 dropped 2.1× (1.847→0.884ms), overall p99 2× (0.977→0.476ms). Search unchanged.
-- **mmap_size=256MB** (in-place): Marginal improvement (~5% faster reads).
-- **WAL checkpoint every 10th write** (c1c590a): Reduced Windows stat overhead. remember p99 12% better (1.169→0.904ms).
+## What's Been Tried (prior latency session, segment 0)
+- **synchronous=FULL → NORMAL** (c53ed41): remember p99 2.1× down. Search unchanged (~0.07ms on 100 rows).
+- **mmap_size=256MB**: ~5% faster reads.
+- **WAL checkpoint every 10th write** (c1c590a): remember p99 12% better.
+- Old workload (100 near-identical rows) made search noise-dominated; this
+  session uses a 3000-row deterministic corpus for headroom.
 
 ## Ideas Backlog
-- FTS5 virtual table for recall (replace LIKE '%query%' with MATCH)
-- Drop idx_memories_recall (covering index slowed writes)
-- Batch remember operations
-- Pre-allocate connection pool
-- Use sha1 instead of sha256 for memory IDs
-- Optimize _row_to_dict with dataclasses.asdict
+- FTS5 virtual table for recall (replace LIKE '%query%' with MATCH) —
+  needs care: LIKE is substring/phrase semantics, FTS5 is token semantics
+- Covering index already exists (idx_memories_recall); verify it is used
+  (EXPLAIN QUERY PLAN) before adding more indexes
+- SELECT only needed columns instead of SELECT *
+- PRAGMA cache_size / temp_store=MEMORY tuning for read-heavy workload
+- `instr(content,?)>0` instead of LIKE to dodge ESCAPE/casefold overhead
+- Cache compiled query plan via persistent connection (measure per-call conn cost)
