@@ -68,7 +68,6 @@ class PythonMemoryStorage:
 
     INDEXES = [
         "CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance)",
         "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_memories_ns_created ON memories(namespace, created_at)",
         # Matches the recall query shape (namespace filter + ORDER BY importance
@@ -83,7 +82,14 @@ class PythonMemoryStorage:
     # Superseded by idx_memories_recall (same leading columns, plus content).
     # Dropped rather than reused because IF NOT EXISTS matches on the name
     # only, so an existing index would keep the old column list.
-    DROPPED_INDEXES = ["DROP INDEX IF EXISTS idx_memories_ns_rank"]
+    DROPPED_INDEXES = ["DROP INDEX IF EXISTS idx_memories_ns_rank",
+                       # idx_memories_importance lured the planner into walking
+                       # the importance index in random row order for unfiltered
+                       # recall (bound LIKE hides the leading wildcard, so the
+                       # planner assumes LIKE-opt may apply). A sequential scan
+                       # + temp b-tree sort is ~4x faster; list(sort=importance)
+                       # sorts cheaply without it at this scale.
+                       "DROP INDEX IF EXISTS idx_memories_importance"]
 
     def __init__(self, db_path: str):
         """
