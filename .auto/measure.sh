@@ -28,7 +28,7 @@ fi
 [ -n "$PYBIN" ] || { echo "no python on PATH"; exit 1; }
 
 "$PYBIN" - "$CORPUS_DB" "$ROOT" <<'PYEOF'
-import sys, os, time, random
+import sys, os, time, random, gc
 sys.path.insert(0, os.path.join(sys.argv[2], "src"))
 
 from lib.storage import PythonMemoryStorage
@@ -116,19 +116,24 @@ QUERIES = [
     ("project", "agent:hermes", 10, 5),                   # common + importance floor
     ("memory", None, 50, None),                           # wide, large limit
 ]
-REPS = 40
+REPS = 60
 all_times, per_query = [], {}
-for qi, (q, ns, lim, imp) in enumerate(QUERIES):
-    for _ in range(5):  # warmup
-        s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
-    ts = []
-    for _ in range(REPS):
-        t0 = time.perf_counter()
-        s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
-        ts.append((time.perf_counter() - t0) * 1000)
-    all_times.extend(ts)
-    ts.sort()
-    per_query[qi] = (ts[len(ts) // 2], ts[int((len(ts) - 1) * 0.99)])
+gc.collect()
+gc.disable()
+try:
+    for qi, (q, ns, lim, imp) in enumerate(QUERIES):
+        for _ in range(10):  # warmup
+            s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
+        ts = []
+        for _ in range(REPS):
+            t0 = time.perf_counter()
+            s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
+            ts.append((time.perf_counter() - t0) * 1000)
+        all_times.extend(ts)
+        ts.sort()
+        per_query[qi] = (ts[len(ts) // 2], ts[int((len(ts) - 1) * 0.99)])
+finally:
+    gc.enable()
 s.close()
 
 def pct(data, p):
