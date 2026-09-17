@@ -40,6 +40,32 @@ A source checkout remains available when developing the project:
 # equivalent: ./scripts/install/install.sh --skip-api-key --no-mcp
 ```
 
+## Python provider path (zero-config setup)
+
+For a Python-native memory provider (no Rust binary required), run the Python provider install script. It creates the plugin symlink, writes the Hermes config, verifies the binary/link, and prepares the DB:
+
+```bash
+./install.sh --repo-url https://github.com/juanmackie/mnemosyne-hermes
+# or for a quick setup with a given repo:
+./install.sh --setup "https://github.com/juanmackie/mnemosyne-hermes"
+```
+
+The script creates `~/.hermes/plugins/mnemosyne` as a symlink to the repository source and writes `~/.hermes/config.yaml` with `memory.provider: mnemosyne` and the default DB path (`~/.mnemosyne/mnemosyne.db`). It does not perform destructive operations (no DB migration, no binary release, no publish).
+
+After setup, initialize the database explicitly:
+
+```bash
+mnemosyne init
+```
+
+Verify the provider is registered and the link is healthy:
+
+```bash
+ls -l ~/.hermes/plugins/mnemosyne
+cat ~/.hermes/config.yaml
+mnemosyne diagnostics
+```
+
 ## 2. Connect Hermes
 
 Two integrations are supported. They are independent, and you can enable both:

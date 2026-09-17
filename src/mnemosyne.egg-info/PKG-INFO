@@ -155,23 +155,21 @@ verifies SHA-256 checksums, and leaves MCP configuration to the agent runtime.
 
 **Manual Source Build**:
 ```bash
-# Prerequisites: Rust 1.75+
-cargo build --release
+# Prerequisites: Python 3.11+
+pip install -e .
 
-# Copy binary to PATH
-cp target/release/mnemosyne ~/.local/bin/
+# The `mnemosyne` CLI is available in your venv/Scripts directory.
+# Verify:
+mnemosyne --help
 
 # Initialize database
 mnemosyne init
 
-# (Optional) Enable model-backed embeddings for higher retrieval quality
-cargo build --release --features local-embeddings
-cp target/release/mnemosyne ~/.local/bin/
-mnemosyne embed --all
+# (Optional) Embedding rebuilds require upstream mnemosyne-memory 3.15.1 source
+mnemosyne embed --all  # blocked: upstream source MISSING
 ```
 
-A source build is pure Rust; no Python or uv toolchain is required unless you
-opt in to the `python` (PyO3) feature.
+A source build is pure Python; no Rust toolchain, cargo, or PyO3 required.
 
 **Migration**:
 ```bash
@@ -684,18 +682,20 @@ For more troubleshooting help, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
   history (O(all traces): 5 ms at 10k rows, 27 ms at 50k) plus golden evaluation runs
   once every 64 traces, so it never lands on the recall critical path.
 
-**Storage Operations** (PyO3 vs subprocess):
-- Store: 2.25ms avg (was 20-50ms) - **10-20x faster**
-- List: 0.88ms avg (<1ms target) - **22-56x faster**
-- Search: 1.61ms avg (was 30-60ms) - **18-37x faster**
+**Storage Operations** (Python-native SQLite):
+- Store: direct SQLite INSERT (no subprocess overhead)
+- List: direct SQLite SELECT with namespace filter
+- Search: direct SQLite SELECT with LIKE/keyword match
 
 **Memory**:
-- Rust memory management (no GC pauses)
-- Zero-copy data passing for agent messages
-- Efficient vector storage with LibSQL
+- Python SQLite storage (WAL mode, synchronous=NORMAL)
+- Thread-local connections, bounded access-count flushing
+- Efficient vector storage with LibSQL embeddings
 
 **Scalability**:
-- Sub-agent spawning for parallel work
+- Thread-local connections for concurrent access
+- WAL mode with manual checkpoint
+- Database-backed job leases for coordination
 - Deadlock prevention via dependency-aware scheduling
 - Context preservation at 75% utilization threshold
 
@@ -712,27 +712,21 @@ For more troubleshooting help, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 **Development Workflow**:
 ```bash
 # Setup
-git checkout -b feature/my-feature
-bd import -i .beads/issues.jsonl
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
 
 # Development cycle
-cargo build --lib
-cargo test --lib
-cargo clippy
+python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v
 
 # E2E testing
-bash tests/e2e/relevant_test.sh
+bash test-all.sh --skip-llm
 
 # Commit
 git add . && git commit -m "Descriptive message"
 
 # Before PR
-cargo fmt
-cargo clippy --all-targets
-cargo test --all
-
-# Export Beads state
-bd export -o .beads/issues.jsonl
+python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v
 ```
 
 ---
