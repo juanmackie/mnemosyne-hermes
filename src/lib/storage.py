@@ -172,6 +172,7 @@ class PythonMemoryStorage:
         if conn is None:
             conn = self._new_conn()
             self._local.conn = conn
+            self._local.search_cache = None
         return conn
 
     def close(self) -> None:
@@ -386,6 +387,47 @@ class PythonMemoryStorage:
             "success": True
         }
 
+    @staticmethod
+    def _search_version(conn):
+        # data_version detects other connections; total_changes detects this one.
+        return (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
+
+    # ponytail: linear native substring scans avoid building a posting index;
+    # consider a persistent substring index only for much larger corpora.
+    # Per-query candidate lists are cached too: they are a pure function of
+    # (snapshot, folded query), and any local or concurrent write changes the
+    # version and forces a fresh scan. Cap keeps long-running threads bounded.
+    SEARCH_QUERY_CACHE_MAX = 64
+    _SEARCH_MISS = object()
+
+    def _search_candidates(self, conn, query):
+        """Cache the normalized snapshot and per-query candidate id lists.
+
+        SQLite remains authoritative: candidates only narrow the fetch, and
+        every returned row is still read through SQL.
+        """
+        version = self._search_version(conn)
+        cache = getattr(self._local, "search_cache", None)
+        if cache is None or cache[0] != version:
+            # (version, {query: candidates}, snapshot)
+            cache = (version, {}, conn.execute("SELECT id, content_lower FROM memories").fetchall())
+            self._local.search_cache = cache
+        else:
+            cached = cache[1].get(query, self._SEARCH_MISS)
+            if cached is not self._SEARCH_MISS:
+                return cached, version
+        candidates = []
+        for mem_id, content in cache[2]:
+            if content and query in content:
+                candidates.append(mem_id)
+                if len(candidates) > 128:
+                    candidates = None
+                    break
+        if len(cache[1]) >= self.SEARCH_QUERY_CACHE_MAX:
+            cache[1].clear()
+        cache[1][query] = candidates
+        return candidates, version
+
     def recall(
         self,
         query: str,
@@ -432,7 +474,27 @@ class PythonMemoryStorage:
             sql += " ORDER BY importance DESC, created_at DESC LIMIT ?"
             params.append(max_results)
 
-            rows = conn.execute(sql, params).fetchall()
+            # Keep the original query for short/common queries and concurrent writes.
+            candidates = None
+            query_lower = params[0]
+            if not namespace and len(query_lower) >= 3 and not conn.in_transaction:
+                candidates, version = self._search_candidates(conn, query_lower)
+            if candidates is not None and len(candidates) <= 128:
+                rows = []
+                if candidates:
+                    predicate = " AND id IN (" + ",".join("?" for _ in candidates) + ")"
+                    narrowed = sql.replace(" ORDER BY", predicate + " ORDER BY", 1)
+                    narrowed = narrowed.removesuffix(" LIMIT ?")
+                    rows = conn.execute(narrowed, params[:-1] + list(candidates)).fetchall()
+                ranks = {(row[3], row[7]) for row in rows}
+                # Preserve the original plan's tie ordering, including LIMIT ties.
+                # A writer may also commit during index building/filtering/fetching.
+                if len(ranks) != len(rows) or self._search_version(conn) != version:
+                    rows = conn.execute(sql, params).fetchall()
+                else:
+                    rows = rows[:max_results]
+            else:
+                rows = conn.execute(sql, params).fetchall()
         except sqlite3.Error:
             logger.exception("Recall query failed")
             return []
