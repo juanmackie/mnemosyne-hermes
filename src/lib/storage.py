@@ -236,11 +236,17 @@ class PythonMemoryStorage:
         self._local.pending_hits = 0
         try:
             now = time.time()
-            self._conn().executemany(
+            conn = self._conn()
+            before = conn.total_changes
+            conn.executemany(
                 "UPDATE memories SET access_count = access_count + ?, last_accessed = ? WHERE id = ?",
                 [(hits, now, mem_id) for mem_id, hits in batch.items()]
             )
-            self._conn().commit()
+            conn.commit()
+            # Record how many rows this flush touched so _search_version can
+            # ignore them: access-count writes do not change searchable content.
+            ignored = getattr(self._local, "ignored_changes", 0)
+            self._local.ignored_changes = ignored + (conn.total_changes - before)
         except sqlite3.Error:
             logger.warning("Failed to apply buffered access counts", exc_info=True)
         self._maybe_checkpoint()
@@ -387,10 +393,13 @@ class PythonMemoryStorage:
             "success": True
         }
 
-    @staticmethod
-    def _search_version(conn):
-        # data_version detects other connections; total_changes detects this one.
-        return (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
+    def _search_version(self, conn):
+        # data_version detects other connections; total_changes detects this
+        # one, minus changes already attributed to access-count flushes (see
+        # _flush_accesses): UPDATEs of access_count/last_accessed never touch
+        # content_lower, so they must not invalidate the content snapshot.
+        return (conn.execute("PRAGMA data_version").fetchone()[0],
+                conn.total_changes - getattr(self._local, "ignored_changes", 0))
 
     # ponytail: linear native substring scans avoid building a posting index;
     # consider a persistent substring index only for much larger corpora.
