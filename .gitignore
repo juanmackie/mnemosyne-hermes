@@ -52,3 +52,6 @@ docs/VALIDATION_RESULTS.md
 
 # autoresearch fixture databases
 .auto/data/
+
+# Dream-RSI run state (self-ignores its bulky work/ + trace_pool/; this entry hides everything)
+.dream-rsi/

@@ -212,22 +212,3 @@ def create_agent(
 
     else:
         raise ValueError(f"Unknown agent role: {role}. Must be one of: orchestrator, optimizer, reviewer, executor")
-
-
-async def create_agent_async(role: str, config: Optional[Dict[str, Any]] = None) -> Any:
-    """
-    Create an agent instance asynchronously and start session.
-
-    Args:
-        role: Agent role ("orchestrator", "optimizer", "reviewer", "executor")
-        config: Optional configuration dict
-
-    Returns:
-        Agent instance with active Claude SDK session
-
-    Raises:
-        ValueError: If role is unknown
-    """
-    agent = create_agent(role, config)
-    await agent.start_session()
-    return agent

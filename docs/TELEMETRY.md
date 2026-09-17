@@ -86,16 +86,10 @@ uv run python3 data_collection/telemetry_aggregator.py \
 
 ### 3. Monthly Optimization Pipeline
 
-**Location**: `src/orchestration/dspy_modules/data_collection/optimization_orchestrator.py`
-
-**Purpose**: Orchestrate monthly optimization cycles
-
-**Telemetry Integration** (Lines 253-307):
-- Reads `monitoring_config.json` for log file path
-- Invokes `telemetry_aggregator.py` with quality thresholds
-- Collects versioned datasets from `training_data/<signature>/`
-- Verifies provenance to identify telemetry-sourced data
-- Comprehensive error handling for subprocess operations
+The monthly loop is not implemented: `ab_testing_framework.py`,
+`optimization_orchestrator.py` and the `bootstrap_*_tier3.py` copies were deleted
+because nothing imported them. Scheduling is worth building again only when the
+aggregator and dataset managers actually feed a recurring optimization cycle.
 
 ## Configuration
 
@@ -290,14 +284,8 @@ Track data lineage to understand training data composition and enable reproducib
 
 ### Automation
 
-**Cron Job** (Day 1 of month at 2 AM):
-```bash
-0 2 1 * * cd /path/to/mnemosyne && \
-  uv run python3 src/orchestration/dspy_modules/data_collection/optimization_orchestrator.py \
-    --config src/orchestration/monitoring_config.json \
-    --output-dir /tmp/optimization_$(date +\%Y\%m) \
-    2>&1 | tee logs/optimization_$(date +\%Y\%m).log
-```
+No scheduler entry ships today: the monthly loop above is a process description,
+not a script. Re-create the cron entry when an orchestrator exists again.
 
 ## Testing
 
