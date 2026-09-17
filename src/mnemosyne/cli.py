@@ -6,18 +6,15 @@ No external LLM required for core memory operations; no subprocess overhead.
 import argparse
 import sys
 import os
-import shutil
 import time
-import hashlib
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from storage import PythonMemoryStorage
+from lib.storage import PythonMemoryStorage
 
 DEFAULT_DB = os.path.expanduser("~/.mnemosyne/mnemosyne.db")
 
 
 def _storage(args):
-    return PythonMemoryStorage(args.db_path)
+    return PythonMemoryStorage(os.path.expanduser(args.db_path))
 
 
 def cmd_init(args):
@@ -162,10 +159,19 @@ def cmd_diagnostics(args):
     return 0
 
 
+def cmd_mcp(args):
+    from .mcp import serve
+    return serve(os.path.expanduser(args.db_path))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="mnemosyne", description="Mnemosyne memory CLI (production-ready for Hermes testing)")
+    parser.add_argument("--version", action="version", version="mnemosyne 2.4.0")
     parser.add_argument("--db-path", default=os.getenv("MNEMOSYNE_DB_PATH", DEFAULT_DB))
     sub = parser.add_subparsers(dest="command")
+
+    p_mcp = sub.add_parser("mcp", aliases=["serve"], help="Run the MCP stdio server")
+    p_mcp.set_defaults(func=cmd_mcp)
 
     p_init = sub.add_parser("init", help="Initialize database schema")
     p_init.set_defaults(func=cmd_init)
@@ -175,6 +181,7 @@ def main(argv=None):
     p_rem.add_argument("--namespace", default="agent:hermes")
     p_rem.add_argument("--importance", type=int, default=5)
     p_rem.add_argument("--context", default=None)
+    p_rem.add_argument("--no-enrich", action="store_true", help="Compatibility flag; core memory never calls an LLM")
     p_rem.set_defaults(func=cmd_remember)
 
     p_rec = sub.add_parser("recall", help="Search memories")
