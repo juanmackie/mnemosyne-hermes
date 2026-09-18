@@ -424,6 +424,44 @@ def test_cli_refuses_missing_store_and_accepts_trailing_db_path():
             s.close()
 
 
+def test_recall_cache_invalidates_on_writes_and_flushes():
+    """The recall candidate cache must never serve stale results.
+
+    Pins the interaction between the search cache and the storage safety work:
+    a local write, an access-count flush (which UPDATEs rows but changes no
+    searchable content), and a concurrent writer must each be handled correctly.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "cache.db")
+        s = PythonMemoryStorage(db)
+        for i in range(5):
+            s.remember(f"note about widgets number {i}", "ns", 5 + i)
+
+        first = [r["id"] for r in s.recall("widgets", max_results=10)]
+        assert first == [r["id"] for r in s.recall("widgets", max_results=10)], "cache changed a stable result"
+
+        s.remember("another widgets note", "ns", 9)
+        assert len(s.recall("widgets", max_results=10)) == 6, "local write not seen"
+
+        for _ in range(3):
+            s.recall("widgets", max_results=10)
+        s.list_memories(sort_by="access")            # applies the buffered access counts
+        after_flush = [r["id"] for r in s.recall("widgets", max_results=10)]
+        assert len(after_flush) == 6, "access-count flush changed the result set"
+
+        other = sqlite3.connect(db)
+        other.execute(
+            "INSERT INTO memories (id, content, content_lower, namespace, importance, created_at) "
+            "VALUES ('zz', 'another widgets row', 'another widgets row', 'ns', 1, 1.0)")
+        other.commit()
+        other.close()
+        assert len(s.recall("widgets", max_results=10)) == 7, "concurrent write not seen"
+
+        # The cache must not become a separate source of truth for content.
+        assert len(s.recall("widgets number 3", max_results=10)) == 1
+        s.close()
+
+
 def test_refusal_corpus_if_available():
     """Opt-in: run the foreign-schema guard against a real engine-bank corpus.
 

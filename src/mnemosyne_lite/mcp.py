@@ -1,13 +1,26 @@
 """Newline-delimited MCP stdio server for the implemented memory tools."""
 import json
+import os
 import sys
 
-from lib.storage import PythonMemoryStorage
+from lib.storage import PythonMemoryStorage, StorageError
 from .tools import call_tool, tool_schemas
 
 
 def serve(db_path, stdin=None, stdout=None):
+    """Serve MCP over stdin/stdout against an EXISTING store.
+
+    The store is opened once, before the request loop, so a misconfigured path
+    fails loudly at startup instead of answering every request with an error.
+    A missing or foreign database is refused (never fabricated and never
+    mutated); run `mnemosyne-lite init` to create a new store deliberately.
+    """
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
+    if not os.path.exists(db_path):
+        raise StorageError(
+            f"no Mnemosyne database at {db_path} (nothing was created). "
+            "Run 'mnemosyne-lite init' first, or point --db-path at an existing store."
+        )
     storage = PythonMemoryStorage(db_path)
     try:
         for line in stdin:

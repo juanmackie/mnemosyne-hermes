@@ -32,15 +32,26 @@ def _default_db_path():
 
 
 def _storage(args):
-    db_path = resolve_db_path(getattr(args, "db_path", None))
-    if args.command not in CREATING_COMMANDS and not os.path.exists(db_path):
+    db_path = _resolve_existing_db(args)
+    return PythonMemoryStorage(db_path)
+
+
+def _resolve_existing_db(args):
+    """Resolve --db-path (env/DATABASE_URL aware) and expand ~.
+
+    Refuses to invent a store for any command that is not allowed to create one,
+    so a mistyped path cannot produce a fresh empty database that then reports
+    "0 memories". Returns the resolved path and records it on args so later
+    reporting (init, diagnostics) shows what was actually used.
+    """
+    db_path = os.path.expanduser(resolve_db_path(getattr(args, "db_path", None)))
+    if getattr(args, "command", None) not in CREATING_COMMANDS and not os.path.exists(db_path):
         raise StorageError(
             f"no Mnemosyne database at {db_path} (nothing was created). "
-            "Run 'mnemosyne init' first, or point --db-path at an existing store."
+            "Run 'mnemosyne-lite init' first, or point --db-path at an existing store."
         )
-    # Later handlers (init, diagnostics) report the path that was actually used.
     args.db_path = db_path
-    return PythonMemoryStorage(db_path)
+    return db_path
 
 
 def cmd_init(args):
@@ -132,11 +143,25 @@ def cmd_backup(args):
 
 def _package_version():
     """Version from package metadata, so diagnostics never prints a stale literal."""
+    from importlib.metadata import version
+    for dist in ("mnemosyne-lite", "mnemosyne"):
+        try:
+            return version(dist)
+        except Exception:
+            continue
+    return "unknown"
+
+
+def cmd_mcp(args):
+    """Run the newline-delimited MCP stdio server against an existing store."""
+    # Resolve first: an MCP client must not be handed a freshly fabricated empty
+    # store because the configured path was wrong.
+    db_path = _resolve_existing_db(args)
     try:
-        from importlib.metadata import version
-        return version("mnemosyne")
-    except Exception:
-        return "unknown"
+        from mnemosyne_lite.mcp import serve
+    except ImportError:  # imported as part of the installed package
+        from .mcp import serve
+    return serve(db_path)
 
 
 # PRAGMA synchronous returns an int.
@@ -264,6 +289,7 @@ def cmd_diagnostics(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="mnemosyne-lite", description="Mnemosyne lite CLI (standalone store; not a Hermes provider)")
+    parser.add_argument("--version", action="version", version=f"mnemosyne-lite {_package_version()}")
     parser.add_argument("--db-path", default=_default_db_path(),
                         help=f"SQLite database path (default: {DEFAULT_DB})")
     # Subcommands accept --db-path too, so `mnemosyne recall --db-path X`
@@ -274,6 +300,10 @@ def main(argv=None):
                         help="SQLite database path")
     sub = parser.add_subparsers(dest="command")
 
+    p_mcp = sub.add_parser("mcp", parents=[common], aliases=["serve"],
+                           help="Run the MCP stdio server")
+    p_mcp.set_defaults(func=cmd_mcp)
+
     p_init = sub.add_parser("init", parents=[common], help="Initialize database schema")
     p_init.set_defaults(func=cmd_init)
 
@@ -282,6 +312,8 @@ def main(argv=None):
     p_rem.add_argument("--namespace", default="agent:hermes")
     p_rem.add_argument("--importance", type=int, default=5)
     p_rem.add_argument("--context", default=None)
+    p_rem.add_argument("--no-enrich", action="store_true",
+                       help="Compatibility flag; core memory never calls an LLM")
     p_rem.set_defaults(func=cmd_remember)
 
     p_rec = sub.add_parser("recall", parents=[common], help="Search memories")

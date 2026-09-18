@@ -152,9 +152,11 @@ A source build is pure Python; no Rust toolchain, cargo, or PyO3 required.
 #### Standalone Python surface (not a Hermes provider)
 
 `src/lib` + `src/mnemosyne_lite` (distribution and console script
-**`mnemosyne-lite`**) are a **standalone** SQLite store with keyword-only recall
-and a CLI, for scripts and non-Hermes clients. It is **not** the Hermes memory
-provider — the Hermes provider is the engine-backed one (see
+**`mnemosyne-lite`**) are a **standalone** SQLite store with keyword-only recall,
+a CLI (`init`, `remember`, `recall`, `list`, `bootstrap`, `backup`, `restore`,
+`maintenance`, `diagnostics`) and a newline-delimited **MCP stdio server**
+(`mnemosyne-lite mcp`) for scripts and non-Hermes clients. It is **not** the
+Hermes memory provider — the Hermes provider is the engine-backed one (see
 [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md)) and this surface must
 never be advertised as it.
 
