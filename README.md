@@ -210,124 +210,41 @@ smoke test → MCP wiring, and reports back.
 
 ### Basic Usage
 
-**Store memories**:
-```bash
-# Store with automatic namespace detection
-mnemosyne remember --content "User prefers concise code reviews" --importance 8
+Three surfaces exist; only the first is the Hermes memory provider.
 
-# Store with explicit namespace
-mnemosyne remember "Database uses LibSQL with vector search" \
-  --namespace "project:mnemosyne" \
-  --type architecture \
-  --importance 9
+**Hermes memory provider** (installed by `./install.sh` into the Hermes venv):
+```bash
+hermes mnemosyne doctor --no-fix    # health; exits non-zero on a critical failure
+hermes mnemosyne stats              # counts from the live store
+hermes mnemosyne inspect "query"    # search the live store
+hermes mnemosyne sleep              # run consolidation
 ```
 
-**Build bounded project context**:
+**Standalone lite surface** (`pip install -e .`, in its own venv — this is
+**not** the Hermes provider):
 ```bash
-mnemosyne bootstrap \
-  --project . \
-  --task "review the authentication changes" \
-  --agent hermes \
-  --capability security-review \
-  --budget-tokens 3500
+mnemosyne-lite init
+mnemosyne-lite remember --content "User prefers concise code reviews" --importance 8
+mnemosyne-lite recall --query "code review preferences"
+mnemosyne-lite bootstrap --limit 100
+mnemosyne-lite maintenance          # dedup and near-duplicate proposals
+mnemosyne-lite diagnostics
+mnemosyne-lite mcp                  # MCP stdio server for any MCP client
 ```
 
-The structured `bootstrap.v1` response keeps approved constraints, factual
-memories, failure guardrails, interaction policies, and relevant project-local
-skills in separate channels. It is also available as `mnemosyne.bootstrap`
-(and the Hermes alias `mnemosyne_bootstrap`).
-
-**Search memories**:
+**Engine CLI** (installed into the Hermes venv by `./install.sh`; the engine
+owns the `mnemosyne` command):
 ```bash
-# Semantic search
-mnemosyne recall --query "code review preferences"
-
-# Search with namespace filter
-mnemosyne recall "database" --namespace "project:mnemosyne"
-
-# Limit results
-mnemosyne recall "architecture decisions" --limit 5
+mnemosyne store "Database uses LibSQL with vector search" user 9
+mnemosyne recall "database" 5
+mnemosyne stats
+mnemosyne doctor
 ```
 
-**Evolution operations**:
-```bash
-# Consolidate duplicate memories
-mnemosyne evolve consolidate
-
-# Recalibrate importance scores
-mnemosyne evolve importance
-
-# Archive old/low-value memories
-mnemosyne evolve archive
-```
-
-**Interactive Collaborative Space (Standalone)**:
-```bash
-# Launch standalone ICS context editor
-mnemosyne-ics
-
-# Create from template
-mnemosyne-ics --template feature
-
-# Open existing file
-mnemosyne-ics path/to/context.md
-
-# Read-only mode (view memory dumps)
-mnemosyne-ics --read-only path/to/dump.md
-
-# Features:
-# - Full terminal ownership (no conflicts)
-# - Template system (api, architecture, bugfix, feature, refactor)
-# - Storage backend integration
-# - Semantic highlighting (3-tier system)
-# - Vim mode with modal editing
-```
-
-**Real-time Monitoring Dashboard**:
-```bash
-# API server starts automatically with first MCP instance (owner mode)
-# Launch monitoring dashboard (connects to http://localhost:3000 by default)
-mnemosyne-dash
-
-# Custom configuration
-mnemosyne-dash --api http://localhost:3000 --refresh 500
-
-# Features:
-# - Clean 4-panel layout (System Overview, Activity Stream, Agent Details, Operations)
-# - Smart event filtering (heartbeats hidden by default, 8 categories)
-# - Event correlation (links start→complete with durations)
-# - Real-time SSE updates with zero latency
-# - Full keyboard control (0-3 panel toggles, c to clear, q to quit)
-# - Automatic slow operation and failure detection
-# - 124+ tests, production-ready monitoring
-
-# See docs/DASHBOARD.md for keyboard shortcuts and advanced usage
-```
-
-**TUI Wrapper Mode** (Deprecated in v2.1.0):
-```bash
-⚠️ Deprecated: Use mnemosyne-ics + mnemosyne-dash instead
-See docs/guides/migration.md for migration guide
-
-# Launch TUI with command palette, ICS editor, and agent dashboard
-mnemosyne tui
-
-# Start with ICS panel visible
-mnemosyne tui --with-ics
-
-# Features:
-# - Helix-style command palette (Ctrl+P)
-# - ICS editor with markdown highlighting (Ctrl+E)
-# - Real-time agent dashboard (Ctrl+D)
-# - Context-aware help overlay (?)
-# - Pattern highlighting: #file.rs @symbol ?hole
-```
-
-**Orchestration** (Python agents):
-```bash
-# Run orchestration workflow
-mnemosyne orchestrate --session-id dev-001 --work-items plan.json
-```
+The retired Rust-era `mnemosyne-ics`, `mnemosyne-dash`, `mnemosyne tui`, and
+`mnemosyne orchestrate` commands are not part of this runtime, and there is no
+standalone binary to download — everything above is pure Python. The ICS work
+lives under `src/` and `docs/features/ICS_*.md`.
 
 ---
 
@@ -338,7 +255,7 @@ mnemosyne orchestrate --session-id dev-001 --work-items plan.json
 - **Embeddings**:
   - Default release: deterministic local hash embeddings (keyless, no model download)
   - Large stores (>1,000 active memories) report when fallback embeddings may reduce semantic recall
-  - Optional source-build feature: fastembed/ONNX (`--features local-embeddings`)
+  - Optional model-backed embeddings: `pip install 'mnemosyne-memory[embeddings]'`
   - Remote: Voyage AI (voyage-3-large, 1536d)
 - **Search Config**: Hybrid scoring (semantic 70%, FTS 20%, graph 10%)
 - **Performance**: 2.25ms avg operations, 0.88ms list, 1.61ms search
@@ -382,155 +299,52 @@ mnemosyne orchestrate --session-id dev-001 --work-items plan.json
 
 ## CLI Reference
 
-### Memory Operations
+### Hermes provider (`hermes mnemosyne ...`)
 ```bash
-# Store memory
-mnemosyne remember [OPTIONS] <CONTENT>
-  --namespace <NS>      Namespace (auto-detected from git/CLAUDE.md)
-  --importance <1-10>   Importance score (default: 5)
-  --type <TYPE>         Memory type (insight|architecture|decision|task|reference)
-  --tags <TAGS>         Comma-separated tags
-  --links <IDS>         Link to existing memory IDs
-
-# Search memories
-mnemosyne recall [OPTIONS] <QUERY>
-  --namespace <NS>      Filter by namespace
-  --limit <N>           Max results (default: 10)
-  --min-importance <N>  Minimum importance score
-
-# Generate embeddings
-mnemosyne embed <TEXT>
-  --model <MODEL>       Embedding model (local|remote)
+hermes mnemosyne stats [--global]
+hermes mnemosyne sleep [--all-sessions] [--dry-run]
+hermes mnemosyne inspect [QUERY] [--limit N]
+hermes mnemosyne clear
+hermes mnemosyne doctor [--dry-run] [--no-fix]
+hermes mnemosyne version
+hermes mnemosyne export --output FILE
+hermes mnemosyne import [--input FILE | --from PROVIDER]
 ```
 
-### Evolution
+### Standalone lite surface (`mnemosyne-lite ...`)
 ```bash
-# Run evolution jobs
-mnemosyne evolve <OPERATION>
-  consolidate           Detect and merge duplicate memories
-  importance            Recalibrate importance scores
-  archive               Archive low-value memories
-  links                 Update link decay scores
+mnemosyne-lite init
+mnemosyne-lite remember --content TEXT [--namespace NS] [--importance 1-10]
+mnemosyne-lite recall --query TEXT [--namespace NS] [--max-results N]
+mnemosyne-lite list [--namespace NS] [--limit N]
+mnemosyne-lite bootstrap [--namespace NS] [--limit N]
+mnemosyne-lite maintenance [--namespace NS] [--auto-apply --yes]
+mnemosyne-lite diagnostics
+mnemosyne-lite backup [--output DIR]
+mnemosyne-lite restore --backup FILE
+mnemosyne-lite mcp            # alias: serve
+```
+`embed` and `migrate` exist but are blocked pending the upstream
+`mnemosyne-memory` source.
+
+### Engine CLI (`mnemosyne ...`)
+```bash
+mnemosyne store <content> [source] [importance]
+mnemosyne recall <query> [top_k]
+mnemosyne stats | sleep | diagnose | doctor | verify
+mnemosyne export | import | backup | restore | bank | reindex
+mnemosyne mcp [--transport sse] [--port 8080]
+mnemosyne config reload|get|set|migrate
 ```
 
-### Orchestration
-```bash
-# Run orchestration workflow
-mnemosyne orchestrate [OPTIONS]
-  --session-id <ID>     Session identifier
-  --work-items <FILE>   Work items JSON file
-```
-
-### ICS (Integrated Context Studio) - Standalone Binary
-```bash
-# Launch standalone ICS context editor
-mnemosyne-ics [OPTIONS] [FILE]
-  --template <TEMPLATE>  Use template (api|architecture|bugfix|feature|refactor)
-  --read-only            Open in read-only mode
-  --vim-mode             Enable vim keybindings (default: on)
-  --theme <THEME>        Color theme (dark|light)
-
-# Features:
-# • Full terminal ownership (no conflicts with Claude Code)
-# • Template system for common contexts
-# • 3-tier semantic highlighting (<5ms→<200ms→2s+)
-# • Storage backend integration
-# • Vim modal editing
-# • Pattern syntax: #file.rs @symbol ?hole
-```
-
-### Monitoring Dashboard - Standalone Binary
-```bash
-# Launch real-time monitoring dashboard
-mnemosyne-dash [OPTIONS]
-  --api-url <URL>       API server URL (default: http://localhost:3000)
-  --refresh-rate <MS>   Update interval (default: 100ms)
-
-# API server starts automatically with first MCP instance
-# No manual startup required
-
-# Features:
-# • Live agent activity via SSE across all MCP instances
-# • Color-coded agent states
-# • System statistics (memory, CPU, context)
-# • Event log with scrollback
-# • Auto-reconnect on disconnect
-```
-
-### API Server (Automatic)
-```bash
-# MCP server automatically starts HTTP API on first instance (owner mode)
-# Subsequent instances connect as clients and forward events via HTTP
-mnemosyne serve
-
-# Owner mode (first instance):
-# • Binds port 3000 (or 3001-3010 if 3000 unavailable)
-# • Starts API server with SSE event streaming
-# • Broadcasts events locally
-
-# Client mode (subsequent instances):
-# • Detects existing API server via health check
-# • Forwards events via POST /events/emit
-# • No port conflicts - seamless multi-instance support
-
-# Endpoints:
-# GET  /health                Health check (used for auto-detection)
-# GET  /events                SSE event stream (real-time)
-# POST /events/emit           Event forwarding (client mode)
-# GET  /state/agents          List agent states
-# GET  /state/context-files   Context files across instances
-
-# Features:
-# • Automatic owner/client mode detection
-# • Zero-configuration multi-instance support
-# • Event forwarding via HTTP POST (100ms timeout, fire-and-forget)
-# • REST API with Axum + Server-Sent Events (SSE)
-# • CORS support for web clients
-```
-
-### TUI (Terminal User Interface) - Deprecated
-```bash
-⚠️ Deprecated in v2.1.0: Use mnemosyne-ics + mnemosyne-dash instead
-See docs/guides/migration.md for migration guide
-
-# Launch enhanced TUI wrapper mode
-mnemosyne tui [OPTIONS]
-  --with-ics            Start with ICS panel visible
-  --no-dashboard        Disable agent dashboard
-
-# TUI Features:
-# • Command Palette (Ctrl+P): Helix-style fuzzy command selector
-# • ICS Editor (Ctrl+E): Integrated Context Studio with highlighting
-# • Agent Dashboard (Ctrl+D): Real-time agent status and work queue
-# • Help Overlay (?): Context-aware keyboard shortcuts
-# • Status Bar: Dynamic action hints based on current mode
-
-# Keyboard Shortcuts:
-# General Navigation:
-#   Ctrl+P          Open command palette
-#   Ctrl+E          Toggle ICS panel
-#   Ctrl+D          Toggle dashboard
-#   Ctrl+Q          Quit application
-#   ?               Show help overlay
-
-# ICS Mode:
-#   Ctrl+Enter      Submit refined context to Claude
-#   Ctrl+S          Save edited document
-#   Pattern syntax:
-#     #file.rs      File reference (blue, bold)
-#     @symbol       Symbol reference (green, bold)
-#     ?interface    Typed hole (yellow, bold)
-```
-
-### Configuration
-```bash
-# Provider CLI (installed into the Hermes venv by ./install.sh)
-hermes mnemosyne doctor --no-fix    # diagnostics; exits non-zero on critical failure
-hermes mnemosyne stats              # memory counts
-hermes mnemosyne inspect "<query>"  # search the live store
-
-# Standalone lite surface (`pip install -e .`) — NOT the Hermes provider:
-mnemosyne-lite --help
+### MCP clients
+Any MCP client drives the same local store:
+```yaml
+mcp:
+  servers:
+    mnemosyne:
+      command: mnemosyne-lite   # or the engine's `mnemosyne`
+      args: ["mcp"]
 ```
 
 ---
@@ -539,33 +353,23 @@ mnemosyne-lite --help
 
 ### Environment Variables
 ```bash
-# Database
-export DATABASE_URL="sqlite:///path/to/mnemosyne.db"
+# Database location (full precedence chain: integrations/hermes-provider/README.md)
+export MNEMOSYNE_DB_PATH="$HOME/.hermes/mnemosyne/data/mnemosyne.db"
+export MNEMOSYNE_DATA_DIR="$HOME/.hermes"   # moves the engine default
 
-# API Keys (for LLM enrichment)
+# Optional LLM enrichment (core memory is keyless without these)
 export ANTHROPIC_API_KEY="sk-ant-..."
-export VOYAGE_API_KEY="pa-..."   # For remote embeddings
+export VOYAGE_API_KEY="pa-..."              # remote embeddings
 
-# Logging
-export RUST_LOG="info"           # debug|info|warn|error
+# Provider runtime
+export MNEMOSYNE_SKIP_CONTEXTS="cron,flush,subagent,background,skill_loop"
+export MNEMOSYNE_SYNC_ROLES="user"
 ```
 
-### Search Configuration
-```rust
-SearchConfig {
-    semantic_weight: 0.7,  // 70% semantic similarity
-    fts_weight: 0.2,       // 20% keyword match
-    graph_weight: 0.1,     // 10% link connectivity
-}
-```
-
-### Connection Modes
-```rust
-ConnectionMode::Local(path)              // Local SQLite file
-ConnectionMode::LocalReadOnly(path)      // Read-only database
-ConnectionMode::Remote { url, token }    // Remote LibSQL/Turso
-ConnectionMode::EmbeddedReplica { ... }  // Local replica with sync
-```
+### Retrieval configuration
+Retrieval weights are engine config keys (`mnemosyne config set <key> <value>`):
+`vec_weight` (vector similarity), `fts_weight` (keyword match), and graph link
+decay. The Hermes provider inherits them automatically.
 
 ---
 
@@ -618,51 +422,47 @@ ConnectionMode::EmbeddedReplica { ... }  // Local replica with sync
 ## Testing
 
 ```bash
-# Unit tests
-cargo test --lib
+# Full suite (no LLM/API keys needed)
+./test-all.sh --skip-llm
 
-# Integration tests
-cargo test --test ics_integration_test
+# Focused provider gates
+python tests/test_vendored_provider.py   # vendored snapshot drift
+python tests/test_provider_loader.py     # loader contract
+python tests/test_provider_db_path.py    # DB path precedence
 
-# E2E tests
-bash tests/e2e/human_workflow_1_new_project.sh
-bash tests/e2e/agentic_workflow_1_orchestrator.sh
-bash tests/e2e/recovery_1_graceful_degradation.sh
+# Repo gates (notes ledger + version drift)
+bash scripts/checks.sh
 
-# All E2E tests
-find tests/e2e -name '*.sh' -executable -exec {} \;
-
-# With coverage
-cargo tarpaulin --lib --out Html
+# Clean-user Hermes onboarding (requires a real Hermes; Linux/macOS)
+bash scripts/smoke-hermes-onboarding.sh
 ```
 
 ---
 
 ## Troubleshooting
 
-### macOS "killed" Error
+### `hermes mnemosyne` is not a command
 
-If you see `zsh: killed  mnemosyne` when trying to run the binary:
+The provider's CLI exists only after `./install.sh` **and** a gateway restart
+(Hermes caches plugin modules per process):
 
-**Quick Fix**:
 ```bash
-xattr -d com.apple.provenance ~/.cargo/bin/mnemosyne
-codesign --force --sign - ~/.cargo/bin/mnemosyne
+hermes memory status
+ls -l "$HERMES_HOME/plugins/mnemosyne"
+hermes mnemosyne doctor --no-fix
 ```
 
-**Root Cause**: macOS Gatekeeper invalidates code signatures when binaries are relocated (e.g., by `cargo install`). The binary in `target/release/` works fine, but the installed copy in `~/.cargo/bin/` gets killed by taskgated.
+`doctor` exits non-zero and names the failing critical check. If it flags
+`canonical provider deployed`, the symlink points away from
+`integrations/hermes-provider/hermes_memory_provider` — re-run `./install.sh`.
 
-**Permanent Fix**: Always use the install script, which handles re-signing automatically:
-```bash
-./scripts/install/install.sh
-```
+### Memory is empty after a restart
 
-**Quick rebuild during development**:
-```bash
-./scripts/build-and-install.sh
-```
+`doctor` prints the resolved DB path. A DB outside `$HERMES_HOME` usually means
+`MNEMOSYNE_DATA_DIR` or `MNEMOSYNE_DB_PATH` moved the store; see the precedence
+chain in [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md).
 
-For more troubleshooting help, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+For more, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
 
@@ -708,7 +508,7 @@ For more troubleshooting help, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 2. Use Beads for task tracking: `bd import -i .beads/issues.jsonl`
 3. Quality gates: Tests pass, no anti-patterns, constraints maintained
 4. Commit before testing (never test uncommitted code)
-5. Run `cargo clippy` and `cargo fmt` before PRs
+5. Run `bash scripts/checks.sh` (notes ledger + version drift) and `bash -n install.sh scripts/*.sh` before PRs
 
 **Development Workflow**:
 ```bash
@@ -727,7 +527,7 @@ bash test-all.sh --skip-llm
 git add . && git commit -m "Descriptive message"
 
 # Before PR
-python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v
+./test-all.sh --skip-llm
 ```
 
 ---
