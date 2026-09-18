@@ -21,6 +21,12 @@ from dataclasses import dataclass, asdict
 logger = logging.getLogger(__name__)
 
 
+def _is_lock_error(exc: Exception) -> bool:
+    """True for SQLITE_BUSY / SQLITE_LOCKED, which are worth retrying."""
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
 @dataclass
 class MemoryRecord:
     id: str
@@ -39,6 +45,18 @@ class MemoryRecord:
         return d
 
 
+class StorageError(RuntimeError):
+    """Raised when the store cannot be opened at all (locked, unreadable)."""
+
+
+class StorageSchemaError(StorageError):
+    """Raised when a database file is not a Mnemosyne lite store.
+
+    The file is left byte-identical: this is raised by a read-only
+    classification that runs before any DDL, DML or persistent pragma.
+    """
+
+
 class PythonMemoryStorage:
     """
     Python-native memory storage using SQLite.
@@ -50,6 +68,24 @@ class PythonMemoryStorage:
     Thread safety: Each operation opens its own connection.
     For concurrent writes, enable WAL mode (default).
     """
+
+    # Schema generation recorded in PRAGMA user_version. A store carrying a
+    # HIGHER version was written by a newer release: refuse it rather than
+    # downgrade-migrate it.
+    SCHEMA_VERSION = 1
+
+    # The exact column set this store writes to `memories` (pre- and
+    # post-content_lower). Anything else is not ours and is refused untouched.
+    #
+    # This is an allowlist, not a "required columns" check, on purpose: the
+    # mnemosyne-memory engine's own `memories` table has 24 columns *including*
+    # namespace, so a namespace check adopts a live engine bank and rewrites
+    # every row (measured: 137 engine DBs in ~/.mnemosyne, all silently mutated).
+    MEMORY_COLUMNS = (
+        "id", "content", "namespace", "importance", "context",
+        "summary", "keywords", "created_at", "access_count", "last_accessed",
+    )
+    MIGRATED_MEMORY_COLUMNS = MEMORY_COLUMNS + ("content_lower",)
 
     SCHEMA = """
         CREATE TABLE IF NOT EXISTS memories (
@@ -130,7 +166,37 @@ class PythonMemoryStorage:
         self.db_path = db_path
         self._ensure_db_dir()
         self._local = threading.local()
-        self._init_schema()
+        self._init_schema_resilient()
+
+    # Cold start used to die here: 9/16 simultaneous opens crashed on the review
+    # host (journal_mode=WAL returns SQLITE_BUSY when another connection holds an
+    # incompatible mode, and a long-lived server constructs storage outside its
+    # request loop, so the whole process failed at startup). Retry the whole
+    # schema/migration step, then fail with a message that names the cause.
+    # ponytail: each attempt can wait the 5s busy timeout, so a sustained
+    # exclusive lock takes ~15s to fail — fine for a cold start; lower
+    # WAL/classification busy timeouts if a server must start faster under
+    # contention.
+    OPEN_ATTEMPTS = 2
+    OPEN_DELAY = 0.1
+
+    def _init_schema_resilient(self):
+        """Run _init_schema, retrying while another process holds the file."""
+        last: Optional[Exception] = None
+        for attempt in range(self.OPEN_ATTEMPTS):
+            try:
+                self._init_schema()
+                return
+            except sqlite3.OperationalError as e:
+                if not _is_lock_error(e):
+                    raise
+                last = e
+                time.sleep(self.OPEN_DELAY * (attempt + 1))
+        raise StorageError(
+            f"could not open {self.db_path}: the database stayed locked after "
+            f"{self.OPEN_ATTEMPTS} attempts (last error: {last}). Another Mnemosyne "
+            "process may be mid-migration; retry, or remove a stale -wal/-shm pair."
+        ) from last
 
     def _ensure_db_dir(self):
         """Ensure the database directory exists."""
@@ -138,10 +204,57 @@ class PythonMemoryStorage:
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
 
-    def _new_conn(self) -> sqlite3.Connection:
-        """Open a fresh connection with WAL mode and safe settings."""
+    def _connect(self, busy_timeout_ms: Optional[int] = None) -> sqlite3.Connection:
+        """Open a connection WITHOUT changing any persistent database state.
+
+        Only per-connection settings are applied, so this is safe to run
+        against a file we may end up refusing (the journal mode is persistent
+        and therefore deliberately left untouched here: see _configure).
+        """
         conn = sqlite3.connect(self.db_path, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL")
+        # Named access for _row_to_dict; Row still supports row[0] indexing, so
+        # the index-based callers keep working.
+        conn.row_factory = sqlite3.Row
+        # Set the busy timeout before anything that can take a lock. SQLite's
+        # connect() timeout covers it, but making it explicit keeps the retry
+        # path in _configure honest.
+        conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms or self.BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    BUSY_TIMEOUT_MS = 5000
+    # Classification is a cheap read that must not stall a cold start, so it
+    # waits less than a real query would.
+    CLASSIFY_BUSY_TIMEOUT_MS = 1000
+    # How long to keep retrying the one-off journal_mode=WAL switch. A
+    # concurrent connection holding an incompatible mode makes it return
+    # SQLITE_BUSY, and 16 simultaneous cold opens were measured crashing on the
+    # review host. The switch is persistent and only needed once, so a bounded
+    # retry (then tolerance if the file is already WAL) is enough. Each attempt
+    # uses a SHORT busy timeout, or the retry loop would multiply the 5s wait.
+    WAL_SWITCH_ATTEMPTS = 10
+    WAL_SWITCH_DELAY = 0.05
+    WAL_SWITCH_BUSY_TIMEOUT_MS = 500
+
+    def _configure(self, conn: sqlite3.Connection) -> None:
+        """Apply the persistent + per-connection settings of a live store."""
+        mode = None
+        conn.execute(f"PRAGMA busy_timeout={self.WAL_SWITCH_BUSY_TIMEOUT_MS}")
+        for attempt in range(self.WAL_SWITCH_ATTEMPTS):
+            try:
+                mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                break
+            except sqlite3.Error:
+                if conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
+                    # Another connection already converted the file; nothing to do.
+                    mode = "wal"
+                    break
+                if attempt == self.WAL_SWITCH_ATTEMPTS - 1:
+                    raise
+                time.sleep(self.WAL_SWITCH_DELAY)
+        if mode is not None and mode.lower() != "wal":
+            logger.warning("Could not enable WAL on %s (mode=%s)", self.db_path, mode)
+        conn.execute(f"PRAGMA busy_timeout={self.BUSY_TIMEOUT_MS}")
         # WAL + NORMAL skips an fsync per commit (only at checkpoint). Still
         # crash-safe for this store, and commits were the bulk of warm recall
         # cost once connection setup was cached.
@@ -156,8 +269,11 @@ class PythonMemoryStorage:
         # 481ms over 300 recalls). Checking in on the write path instead keeps
         # the WAL bounded without ever paying that cost on a read.
         conn.execute("PRAGMA wal_autocheckpoint=0")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
+
+    def _new_conn(self) -> sqlite3.Connection:
+        """Open a fresh connection with WAL mode and safe settings."""
+        conn = self._connect()
+        self._configure(conn)
         return conn
 
     def _conn(self) -> sqlite3.Connection:
@@ -200,8 +316,14 @@ class PythonMemoryStorage:
         and the next write retries.
         """
         try:
-            self._checkpoint_counter = getattr(self._local, "_checkpoint_counter", 0) + 1
-            if self._checkpoint_counter % self.WAL_CHECKPOINT_INTERVAL != 0:
+            # The counter lives on the thread-local (one per connection), NOT on
+            # self: reading `self._checkpoint_counter` cross-thread never matched
+            # the value just written, so with wal_autocheckpoint=0 nothing was
+            # ever checkpointed until close() and the WAL grew unbounded
+            # (281MB WAL next to a 36KB database, measured).
+            counter = getattr(self._local, "_checkpoint_counter", 0) + 1
+            self._local._checkpoint_counter = counter
+            if counter % self.WAL_CHECKPOINT_INTERVAL != 0:
                 return
             wal = self.db_path + "-wal"
             if os.path.exists(wal) and os.path.getsize(wal) >= self.WAL_CHECKPOINT_BYTES:
@@ -251,31 +373,105 @@ class PythonMemoryStorage:
             logger.warning("Failed to apply buffered access counts", exc_info=True)
         self._maybe_checkpoint()
 
-    def _init_schema(self):
-        """Initialize database schema if not exists."""
-        init_conn = self._new_conn()
+    def _classify_schema(self, conn: sqlite3.Connection) -> str:
+        """Return 'fresh' or 'ours' for this file, or raise StorageSchemaError.
+
+        Reads only — no DDL, no DML, no persistent pragma — so a refusal leaves
+        the file byte-identical. Runs BEFORE the WAL switch in _init_schema,
+        because changing the journal mode is itself a write.
+        """
         try:
-            init_conn.execute(self.SCHEMA)
-            self._ensure_content_lower(init_conn)
-            for drop_sql in self.DROPPED_INDEXES:
-                init_conn.execute(drop_sql)
-            for ddl in self.INDEXES:
-                name = ddl.split("IF NOT EXISTS", 1)[1].split()[0]
-                row = init_conn.execute(
-                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
-                    (name,)
-                ).fetchone()
-                # IF NOT EXISTS matches on the name only, so an index created
-                # by an older version keeps its old column list. Compare the
-                # stored DDL (SQLite drops the IF NOT EXISTS phrase) and
-                # rebuild when the columns changed.
-                desired = " ".join(ddl.replace("IF NOT EXISTS ", "").split())
-                if row and " ".join((row[0] or "").split()) != desired:
-                    init_conn.execute(f"DROP INDEX {name}")
-                init_conn.execute(ddl)
-            init_conn.commit()
-        except sqlite3.Error as e:
-            logger.error(f"Schema initialization failed: {e}")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            tables = {
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+        except sqlite3.DatabaseError as e:
+            # A lock is transient, not a schema verdict: re-raise it as
+            # OperationalError so _init_schema_resilient retries instead of
+            # telling the user their file is not SQLite.
+            if _is_lock_error(e):
+                raise sqlite3.OperationalError(str(e)) from e
+            raise StorageSchemaError(
+                f"{self.db_path} is not a SQLite database ({e}). Nothing was modified."
+            ) from e
+        # The sentinel is checked before the table scan so a file stamped by
+        # another tool is refused whatever its tables look like.
+        if version > self.SCHEMA_VERSION:
+            raise StorageSchemaError(
+                f"{self.db_path} was written by a newer Mnemosyne "
+                f"(user_version={version} > {self.SCHEMA_VERSION}). "
+                "Refusing to downgrade it; nothing was modified."
+            )
+        if version not in (0, self.SCHEMA_VERSION):
+            raise StorageSchemaError(
+                f"{self.db_path} carries an unrecognised user_version={version}. "
+                "Nothing was modified."
+            )
+        if not tables:
+            return "fresh"
+        if "memories" not in tables:
+            raise StorageSchemaError(
+                f"{self.db_path} is not a Mnemosyne store: it has tables "
+                f"{sorted(tables)[:5]} but no 'memories' table. "
+                "Nothing was modified."
+            )
+        columns = tuple(
+            row[1] for row in conn.execute("PRAGMA table_info(memories)")
+        )
+        if columns not in (self.MEMORY_COLUMNS, self.MIGRATED_MEMORY_COLUMNS):
+            extra = sorted(set(columns) - set(self.MIGRATED_MEMORY_COLUMNS))
+            missing = sorted(set(self.MEMORY_COLUMNS) - set(columns))
+            detail = (f"unexpected columns {extra}" if extra
+                      else f"missing columns {missing}")
+            raise StorageSchemaError(
+                f"{self.db_path} is not a Mnemosyne store: 'memories' has "
+                f"{len(columns)} columns ({detail}). Nothing was modified."
+            )
+        return "ours"
+
+    def _init_schema(self):
+        """Create or migrate the store in ONE transaction, or change nothing.
+
+        Ordering matters. The classification reads first (so a foreign file is
+        refused before the persistent WAL switch), and the DDL + backfill + the
+        user_version bump commit together. Python's sqlite3 autocommits DDL not
+        DML, so without the explicit BEGIN IMMEDIATE an ALTER TABLE survives a
+        later failure — the bug that permanently rewrote foreign databases.
+        """
+        init_conn = self._connect(self.CLASSIFY_BUSY_TIMEOUT_MS)
+        try:
+            self._classify_schema(init_conn)
+            self._configure(init_conn)
+            init_conn.execute("BEGIN IMMEDIATE")
+            try:
+                init_conn.execute(self.SCHEMA)
+                self._ensure_content_lower(init_conn)
+                for drop_sql in self.DROPPED_INDEXES:
+                    init_conn.execute(drop_sql)
+                for ddl in self.INDEXES:
+                    name = ddl.split("IF NOT EXISTS", 1)[1].split()[0]
+                    row = init_conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+                        (name,)
+                    ).fetchone()
+                    # IF NOT EXISTS matches on the name only, so an index created
+                    # by an older version keeps its old column list. Compare the
+                    # stored DDL (SQLite drops the IF NOT EXISTS phrase) and
+                    # rebuild when the columns changed.
+                    desired = " ".join(ddl.replace("IF NOT EXISTS ", "").split())
+                    if row and " ".join((row[0] or "").split()) != desired:
+                        init_conn.execute(f"DROP INDEX {name}")
+                    init_conn.execute(ddl)
+                init_conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+                init_conn.commit()
+            except Exception:
+                init_conn.rollback()
+                raise
+        except (sqlite3.Error, StorageError):
+            # Not logged here: the exception message is the report, and callers
+            # (CLI, provider) surface it. Logging it again printed the same
+            # refusal twice.
             raise
         finally:
             init_conn.close()
@@ -306,22 +502,18 @@ class PythonMemoryStorage:
                 "UPDATE memories SET content_lower = lower(content) "
                 "WHERE content_lower IS NULL"
             )
-        conn.commit()
+        # No commit here: the caller owns the transaction so the ALTER and the
+        # backfill land with the schema version bump or not at all.
 
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
-        """Convert a database row to a memory dict."""
-        return {
-            "id": row[0],
-            "content": row[1],
-            "namespace": row[2],
-            "importance": row[3],
-            "context": row[4],
-            "summary": row[5],
-            "keywords": row[6],
-            "created_at": row[7],
-            "access_count": row[8],
-            "last_accessed": row[9],
-        }
+        """Convert a database row to a memory dict, by column NAME.
+
+        This used to map row[0]..row[9] positionally, so any migration that
+        reordered or inserted a column would silently shift every field into
+        the wrong key. sqlite3.Row addresses columns by name; the classification
+        in _classify_schema guarantees these columns are present.
+        """
+        return {key: row[key] for key in self.MEMORY_COLUMNS}
 
     def remember(
         self,
@@ -585,10 +777,20 @@ class PythonMemoryStorage:
 
         Returns:
             Consolidation results
+
+        Two different rules, deliberately kept apart:
+
+        * ``duplicate_groups`` is a HEURISTIC proposal — rows sharing a
+          namespace and the first 50 lowercased characters. Useful to review,
+          never a delete criterion.
+        * ``exact_duplicate_groups`` is the DELETE rule — rows whose FULL
+          content is byte-identical within one namespace. The prefix rule used
+          to drive deletion, which removed real memories that merely started
+          alike ("Q3 revenue was 12%" vs "Q3 revenue was 13%").
         """
         conn = self._conn()
         try:
-            sql = "SELECT id, content, namespace FROM memories"
+            sql = "SELECT id, content, namespace, importance, created_at FROM memories"
             params = []
             if namespace:
                 sql += " WHERE namespace = ?"
@@ -597,33 +799,49 @@ class PythonMemoryStorage:
             rows = conn.execute(sql, params).fetchall()
         except sqlite3.Error:
             logger.exception("Consolidate read failed")
-            return {"total": 0, "duplicate_groups": 0, "removed": 0, "auto_applied": auto_apply}
+            return {"total": 0, "duplicate_groups": 0, "exact_duplicate_groups": 0,
+                    "removed": 0, "auto_applied": auto_apply}
 
-        # Simple dedup: group by namespace + first 50 chars of content
-        groups: Dict[str, List[str]] = {}
+        proposals: Dict[str, List[str]] = {}
+        exact: Dict[str, List[sqlite3.Row]] = {}
         for row in rows:
-            key = f"{row[2]}:{row[1][:50].lower()}"
-            groups.setdefault(key, []).append(row[0])
+            proposals.setdefault(f"{row[2]}:{row[1][:50].lower()}", []).append(row[0])
+            exact.setdefault(f"{row[2]}:{row[1]}", []).append(row)
 
-        duplicates = {k: v for k, v in groups.items() if len(v) > 1}
+        proposal_groups = {k: v for k, v in proposals.items() if len(v) > 1}
+        exact_groups = {k: v for k, v in exact.items() if len(v) > 1}
         removed = 0
 
-        if auto_apply and duplicates:
-            conn = self._conn()
+        if auto_apply and exact_groups:
             try:
-                for dup_ids in duplicates.values():
-                    for dup_id in dup_ids[1:]:
-                        conn.execute("DELETE FROM memories WHERE id = ?", (dup_id,))
+                conn.execute("BEGIN IMMEDIATE")
+                for group in exact_groups.values():
+                    # Keep the most important row, ties broken by the earliest
+                    # write so repeated runs are deterministic.
+                    best = max(group, key=lambda r: (r[3] or 0, -(r[4] or 0)))
+                    for row in group:
+                        if row[0] == best[0]:
+                            continue
+                        conn.execute("DELETE FROM memories WHERE id = ?", (row[0],))
                         removed += 1
                 conn.commit()
             except sqlite3.Error:
+                conn.rollback()
                 logger.exception("Consolidate delete failed")
+                removed = 0
             self._flush_accesses()
             self._maybe_checkpoint()
 
         return {
             "total": len(rows),
-            "duplicate_groups": len(duplicates),
+            "duplicate_groups": len(proposal_groups),
+            "exact_duplicate_groups": len(exact_groups),
+            # Bounded preview so a caller can show what --auto-apply would
+            # remove before confirming.
+            "candidates": [] if auto_apply else [
+                {"id": row[0], "namespace": row[2], "preview": row[1][:80]}
+                for group in exact_groups.values() for row in group
+            ][:50],
             "removed": removed,
             "auto_applied": auto_apply
         }

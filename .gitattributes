@@ -1,0 +1,10 @@
+# Vendored snapshot: these bytes are hash-gated against the upstream wheel
+# (VENDORED_FROM.json + tests/test_vendored_provider.py), so git must not
+# translate line endings on checkout. Without this, a fresh clone on a machine
+# with core.autocrlf=true gets CRLF and the drift gate fails for no real reason.
+integrations/hermes-provider/hermes_memory_provider/** -text
+integrations/hermes-provider/LICENSE.upstream -text
+integrations/hermes-provider/UPSTREAM_METADATA.txt -text
+
+# Shell scripts should stay LF everywhere (they are executed, not compiled).
+*.sh text eol=lf

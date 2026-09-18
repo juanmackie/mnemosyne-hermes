@@ -1,0 +1,19 @@
+Mnemosyne Hermes
+================
+
+Vendored third-party code
+-------------------------
+
+integrations/hermes-provider/hermes_memory_provider/
+    Portions vendored from mnemosyne-memory 3.15.1,
+    Copyright (c) 2026 Abdias J (AxDSan), MIT License.
+    Upstream: https://github.com/AxDSan/mnemosyne
+    Full upstream license text: integrations/hermes-provider/LICENSE.upstream
+
+    Recorded provenance and per-file sha256:
+      integrations/hermes-provider/VENDORED_FROM.json
+    Local modifications (if any) and the upstream sync policy:
+      integrations/hermes-provider/PATCHES.md
+
+    Local modifications are licensed under the MIT License, the same terms as
+    the rest of this repository (see LICENSE).

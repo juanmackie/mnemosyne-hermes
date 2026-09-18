@@ -1,5 +1,11 @@
 [project]
-name = "mnemosyne"
+# NAMED mnemosyne-lite, NOT mnemosyne: the engine (mnemosyne-memory) owns the
+# `mnemosyne` distribution name, the `mnemosyne` import package and the
+# `mnemosyne` console script. Installing this project under that name merged two
+# different `mnemosyne/__init__.py`/`cli.py` files into one package (breaking
+# `from mnemosyne import Mnemosyne`) and replaced the engine's script. See
+# integrations/hermes-provider/README.md.
+name = "mnemosyne-lite"
 version = "2.4.0"
 description = "Self-hostable Python memory system with SQLite storage, MCP/CLI surface, and optional multi-agent orchestration."
 readme = "README.md"
@@ -22,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-mnemosyne = "mnemosyne.cli:main"
+mnemosyne-lite = "mnemosyne_lite.cli:main"
 
 [build-system]
 requires = ["setuptools>=61", "wheel"]
@@ -30,7 +36,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["mnemosyne*", "lib*"]
+include = ["mnemosyne_lite*", "lib*"]
 exclude = ["tests*", "benchmark*", "docs*"]
 
 [tool.pytest.ini_options]

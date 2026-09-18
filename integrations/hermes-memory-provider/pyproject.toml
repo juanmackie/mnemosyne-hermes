@@ -19,8 +19,10 @@ classifiers = [
 ]
 dependencies = []
 
-[project.entry-points."hermes_agent.memory_providers"]
-mnemosyne-rust = "mnemosyne_rust_hermes:register"
+# The 'hermes_agent.memory_providers' entry point was removed: the Hermes plugin
+# loader does not read it (it scans $HERMES_HOME/plugins/<name>/ instead), so it
+# advertised a registration path that never ran. Retired with the Rust-era
+# provider; the canonical provider is integrations/hermes-provider/.
 
 [tool.setuptools]
 packages = ["mnemosyne_rust_hermes"]

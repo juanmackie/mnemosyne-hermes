@@ -2,7 +2,7 @@
 
 > **Archive reference**: Previous Rust implementation preserved at `feat/hermes-native-provider` (`09a697398672e5a74928bd47ccea6028e563cfc3`) / previous stable main (`ba6fe984`). Archive doc: `docs/archive/RUST_ARCHIVE_REF.md`.
 > **Planning deliverable status**: All 8 ordered items completed (design only; repo-level changes applied; no deployed changes; no DB rebuild/redeploy executed per authorization: `Repo-only`; backup/auth: `Document only`; Rust retirement: `Full retirement`).
-> Contracts preserved: `memory.provider` (`mnemosyne-rust` / future `mnemosyne`), namespace (`agent:hermes`), DB path (`MNEMOSYNE_DB_PATH`), tool names (`mnemosyne_memory_search`, `mnemosyne_memory_remember`), persisted identifiers.
+> Contracts preserved: `memory.provider` (`mnemosyne`), namespace (`agent:hermes`), DB path (`MNEMOSYNE_DB_PATH`), tool names (`mnemosyne_memory_search`, `mnemosyne_memory_remember`), persisted identifiers. The canonical Hermes provider is the vendored, engine-backed one in [`integrations/hermes-provider/`](integrations/hermes-provider/README.md); the Rust-era `mnemosyne-rust` adapter is retired as a provider.
 
 # Mnemosyne
 
@@ -23,24 +23,20 @@ Windsurf, and custom agents.
 ## Hermes-first quickstart
 
 ```bash
-# No Rust or Python required: downloads and verifies a native release binary.
-curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
-export PATH="$HOME/.local/bin:$PATH"
-hermes config set memory.provider mnemosyne
+# Installs the Hermes memory provider (vendored, engine-backed) into the Hermes
+# venv with uv, links the plugin dir and selects the provider. Nothing is
+# written until you confirm; --dry-run prints the plan (venv, symlink, DB path).
+./install.sh --dry-run
+./install.sh
 
-# Optional: preserve an existing Python mnemosyne-memory store.
-mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
-  --namespace agent:hermes --dry-run --format json
-mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
-  --namespace agent:hermes --format json
-
-# Verify the local path without a cloud key.
-unset ANTHROPIC_API_KEY OPENAI_API_KEY
-mnemosyne remember --content "The user prefers local-only storage" \
-  --namespace agent:hermes --no-enrich --format json
+# Prove it before trusting it.
+hermes mnemosyne doctor --no-fix     # must exit 0
 ```
 
-> **Python-only quickstart (pivot)**: `python -m pip install .` (pure Python; no `maturin`/PyO3 if `mnemosyne_core` retired). Contracts (`agent:hermes`, `mnemosyne-rust` provider, DB at `MNEMOSYNE_DB_PATH`) preserved. See `docs/plans/item_02_python_baseline.md` and `scripts/baseline/verify_baseline_install.sh`. Python binary retired; archive reference: `feat/hermes-native-provider` (`09a6973`).
+Full provider documentation: [`integrations/hermes-provider/README.md`](integrations/hermes-provider/README.md)
+(install, DB paths, fail-loud behaviour, upstream sync policy).
+
+> **Python-only quickstart (pivot)**: `python -m pip install .` (pure Python; no `maturin`/PyO3 if `mnemosyne_core` retired). The Hermes provider contract is `memory.provider: mnemosyne` (DB at `MNEMOSYNE_DB_PATH`); the `mnemosyne-rust` id is retired. See [`integrations/hermes-provider/README.md`](integrations/hermes-provider/README.md). Note this repo's own `mnemosyne` package must **not** be installed into the same venv as the engine — it shadows `mnemosyne/core/*`.
 
 Then register `mnemosyne` in Hermes' `~/.hermes/config.yaml` under `mcp.servers`
 with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configure
@@ -152,6 +148,43 @@ mnemosyne embed --all  # blocked: upstream source MISSING
 ```
 
 A source build is pure Python; no Rust toolchain, cargo, or PyO3 required.
+
+#### Standalone Python surface (not a Hermes provider)
+
+`src/lib` + `src/mnemosyne_lite` (distribution and console script
+**`mnemosyne-lite`**) are a **standalone** SQLite store with keyword-only recall
+and a CLI, for scripts and non-Hermes clients. It is **not** the Hermes memory
+provider — the Hermes provider is the engine-backed one (see
+[docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md)) and this surface must
+never be advertised as it.
+
+The distribution is deliberately *not* named `mnemosyne`: that name belongs to
+the engine (`mnemosyne-memory`), which owns the `mnemosyne` import package and
+the `mnemosyne` console script. Installing both under one name merged two
+`mnemosyne/__init__.py`/`cli.py` files into one package and replaced the
+engine's CLI — see
+[integrations/hermes-provider/README.md](integrations/hermes-provider/README.md).
+Do not install this surface into the engine's virtualenv.
+
+Storage safety contract (see `tests/test_python_hardening.py` for the checks):
+
+- A database that is not a Mnemosyne lite store is **refused byte-identically**,
+  including `mnemosyne-memory` engine banks (their `memories` table also has a
+  `namespace` column, but 24 columns overall). Nothing is ALTERed before the
+  shape is validated, and the migration commits in one transaction. `PRAGMA
+  user_version` records the generation; a newer generation is refused rather
+  than downgraded.
+- Read-only commands (`recall`, `list`, `bootstrap`, `maintenance`, `diagnostics`)
+  refuse to run against a missing path instead of creating an empty database.
+  Only `init` and `remember` create one.
+- `maintenance --auto-apply` deletes only byte-identical duplicates inside one
+  namespace and asks for confirmation (`--yes` skips the prompt).
+  Prefix-similar memories are reported as proposals and are never deleted.
+
+**Migration size growth**: the first open of a pre-`content_lower` store adds
+that column, backfills it, and creates a covering index in one transaction.
+Expect the file to grow roughly **3–4×** on a content-heavy store. It is
+one-off; the WAL stays bounded at ~4 MB.
 
 **Migration**:
 ```bash

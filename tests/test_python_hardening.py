@@ -12,13 +12,17 @@ Covers the bugs that were fixed, each of which used to silently misbehave:
   * the parallel executor hanging forever on unmet dependencies
 """
 import asyncio
+import hashlib
+import importlib.util
 import os
+import sqlite3
 import sys
 import tempfile
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-from lib.storage import PythonMemoryStorage
+from lib.storage import PythonMemoryStorage, StorageError, StorageSchemaError
 from lib.mnemosyne_client import resolve_db_path
 from orchestration.coordinator import MockCoordinator
 from orchestration.context_monitor import (
@@ -27,6 +31,24 @@ from orchestration.context_monitor import (
 from orchestration.parallel_executor import (
     ExecutionPlan, ParallelExecutor, SubTask, TaskStatus,
 )
+
+# The lite store's exact column list, including the migrated content_lower
+# column. Anything else is a foreign database (notably the mnemosyne-memory
+# engine's 24-column `memories`).
+LEGACY_MEMORIES_DDL = (
+    "CREATE TABLE memories ("
+    "id TEXT PRIMARY KEY, content TEXT NOT NULL, namespace TEXT NOT NULL, "
+    "importance INTEGER DEFAULT 5, context TEXT, summary TEXT, keywords TEXT, "
+    "created_at REAL DEFAULT 0, access_count INTEGER DEFAULT 0, last_accessed REAL)"
+)
+
+
+def _sha(path):
+    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
+def _columns(path):
+    return [row[1] for row in sqlite3.connect(path).execute("PRAGMA table_info(memories)")]
 
 
 def test_recall_treats_wildcards_literally():
@@ -182,6 +204,266 @@ def test_resolve_db_path_rejects_non_sqlite():
             os.environ.pop("DATABASE_URL", None)
         else:
             os.environ["DATABASE_URL"] = old
+
+
+def test_foreign_schemas_are_refused_without_writing():
+    """A database that is not a lite store is refused byte-identically.
+
+    This is the regression for the worst bug found: `_ensure_content_lower`
+    ALTERed and rewrote EVERY row before validating the file, and because
+    Python's sqlite3 autocommits DDL the damage survived the failure. On a live
+    engine bank (24-column `memories`) it did not even fail — it adopted the
+    bank silently and added a column to it.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        cases = {}
+
+        p = os.path.join(d, "no_namespace.db")
+        c = sqlite3.connect(p)
+        c.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT, created_at REAL)")
+        c.execute("INSERT INTO memories VALUES ('a', 'row', 1.0)")
+        c.commit(); c.close()
+        cases["memories without namespace"] = p
+
+        p = os.path.join(d, "engine_shaped.db")
+        c = sqlite3.connect(p)
+        c.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT, namespace TEXT, "
+                  "importance REAL, memory_type TEXT, tags TEXT, embedding BLOB, updated_at REAL)")
+        c.execute("INSERT INTO memories (id, content, namespace) VALUES ('b', 'live', 'agent:hermes')")
+        c.commit(); c.close()
+        cases["engine-shaped with namespace"] = p
+
+        p = os.path.join(d, "newer.db")
+        c = sqlite3.connect(p); c.execute("PRAGMA user_version = 99"); c.commit(); c.close()
+        cases["newer sentinel"] = p
+
+        p = os.path.join(d, "not_sqlite.db")
+        with open(p, "wb") as fh:
+            fh.write(b"this file is not a sqlite database, not even close")
+        cases["not a sqlite file"] = p
+
+        for label, path in cases.items():
+            before, wal_before = _sha(path), os.path.exists(path + "-wal")
+            try:
+                PythonMemoryStorage(path)
+            except StorageSchemaError:
+                pass
+            else:
+                raise AssertionError(f"{label}: foreign database was accepted")
+            assert _sha(path) == before, f"{label}: file was modified"
+            assert os.path.exists(path + "-wal") == wal_before, f"{label}: WAL sidecar appeared"
+
+
+def test_migration_rolls_back_atomically():
+    """A migration that fails part-way leaves the store exactly as it was."""
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "legacy.db")
+        c = sqlite3.connect(db)
+        c.execute(LEGACY_MEMORIES_DDL)
+        c.execute("INSERT INTO memories (id, content, namespace) VALUES ('x', 'Hello World', 'ns')")
+        c.commit(); c.close()
+
+        # Fail AFTER the ALTER + backfill by making the index step invalid.
+        with mock.patch.object(PythonMemoryStorage, "INDEXES",
+                               ["CREATE INDEX IF NOT EXISTS bogus ON memories(no_such_column)"]):
+            try:
+                PythonMemoryStorage(db)
+            except sqlite3.Error:
+                pass
+            else:
+                raise AssertionError("a failing index migration must raise")
+
+        c = sqlite3.connect(db)
+        try:
+            columns = [row[1] for row in c.execute("PRAGMA table_info(memories)")]
+            assert "content_lower" not in columns, f"ALTER survived the rollback: {columns}"
+            assert c.execute("PRAGMA user_version").fetchone()[0] == 0, "sentinel survived the rollback"
+            assert c.execute("SELECT count(*) FROM memories").fetchone()[0] == 1
+            assert c.execute("SELECT content FROM memories").fetchone()[0] == "Hello World"
+        finally:
+            c.close()
+
+
+def test_legacy_store_migrates_and_stamps_schema_version():
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "legacy.db")
+        c = sqlite3.connect(db)
+        c.execute(LEGACY_MEMORIES_DDL)
+        c.execute("INSERT INTO memories (id, content, namespace) VALUES ('x', 'Hello World', 'ns')")
+        c.commit(); c.close()
+
+        s = PythonMemoryStorage(db)
+        assert s.recall("hello", namespace="ns")[0]["id"] == "x"
+        s.close()
+        c = sqlite3.connect(db)
+        try:
+            assert c.execute("PRAGMA user_version").fetchone()[0] == PythonMemoryStorage.SCHEMA_VERSION
+            assert c.execute("SELECT content_lower FROM memories").fetchone()[0] == "hello world"
+        finally:
+            c.close()
+        # Re-opening a migrated store must stay a no-op, not a re-migration.
+        s = PythonMemoryStorage(db); s.close()
+
+
+def test_wal_stays_bounded_under_sustained_writes():
+    """wal_autocheckpoint=0 must not mean an unbounded WAL.
+
+    The counter was stored on self but read from self._local, so the modulo
+    never matched and nothing checkpointed until close() (a 281MB WAL next to a
+    36KB database was measured).
+    """
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "wal.db")
+        s = PythonMemoryStorage(db)
+        blob = "x" * 4000
+        sizes = []
+        for i in range(400):
+            s.remember(f"{blob}-{i}", "ns", 5)
+            if i % 100 == 99:
+                wal = db + "-wal"
+                sizes.append(os.path.getsize(wal) if os.path.exists(wal) else 0)
+        s.close()
+        bound = PythonMemoryStorage.WAL_CHECKPOINT_BYTES * 2
+        assert max(sizes) <= bound, f"WAL grew to {max(sizes)} bytes (bound {bound})"
+        assert len(sizes) == 4, "expected four size samples"
+        s2 = PythonMemoryStorage(db)
+        try:
+            assert s2.count() == 400
+        finally:
+            s2.close()
+
+
+def test_concurrent_cold_opens_succeed():
+    """16 simultaneous cold opens used to crash at construction (9/16)."""
+    import threading
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "race.db")
+        barrier = threading.Barrier(16)
+        errors, opened = [], []
+
+        def worker(i):
+            barrier.wait()
+            try:
+                s = PythonMemoryStorage(db)
+                s.remember(f"memory {i}", "ns", 5)
+                s.close()
+                opened.append(i)
+            except Exception as e:  # noqa: BLE001 - reported below
+                errors.append(f"{type(e).__name__}: {e}")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"cold-start contention failed: {errors[:3]}"
+        assert len(opened) == 16
+        s = PythonMemoryStorage(db)
+        try:
+            assert s.count() == 16
+        finally:
+            s.close()
+
+
+def test_dedup_removes_only_exact_duplicates():
+    """Maintenance must not delete memories that merely share a 50-char prefix."""
+    with tempfile.TemporaryDirectory() as d:
+        s = PythonMemoryStorage(os.path.join(d, "dedup.db"))
+        prefix = "Q3 revenue was 12% and the pipeline looked healthy across every region in EMEA "
+        s.remember(prefix + "north", "ns", 5)
+        s.remember(prefix + "south", "ns", 7)
+        s.remember("identical text", "ns", 3)
+        s.remember("identical text", "ns", 9)
+        s.remember("identical text", "other", 5)
+
+        preview = s.consolidate()
+        assert preview["duplicate_groups"] >= 1, "prefix twins should be proposed"
+        assert preview["exact_duplicate_groups"] == 1
+        assert preview["removed"] == 0, "a dry run must not delete"
+        assert preview["candidates"], "a dry run must show what would go"
+
+        result = s.consolidate(auto_apply=True)
+        assert result["removed"] == 1, result
+        rows = s.list_memories(limit=50)
+        kept = {(m["content"], m["namespace"]) for m in rows}
+        assert (prefix + "north", "ns") in kept and (prefix + "south", "ns") in kept
+        assert ("identical text", "other") in kept, "other namespace must be untouched"
+        survivor = [m for m in rows if m["content"] == "identical text" and m["namespace"] == "ns"]
+        assert len(survivor) == 1 and survivor[0]["importance"] == 9, "keep the most important row"
+        s.close()
+
+
+def test_cli_refuses_missing_store_and_accepts_trailing_db_path():
+    """Read commands must not fabricate a database at a mistyped path.
+
+    `mnemosyne-lite list --db-path /typo/x.db` used to create the directory and
+    empty store, then report "0 memories".
+    """
+    spec = importlib.util.spec_from_file_location(
+        "mnemosyne_lite_cli_under_test",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "mnemosyne_lite", "cli.py"),
+    )
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    with tempfile.TemporaryDirectory() as d:
+        missing = os.path.join(d, "sub", "missing.db")
+        assert cli.main(["--db-path", missing, "list"]) == 1
+        assert not os.path.exists(missing), "a read command created a database"
+
+        db = os.path.join(d, "cli.db")
+        assert cli.main(["--db-path", db, "init"]) == 0
+        # --db-path AFTER the subcommand must work too (argparse used to reject it).
+        assert cli.main(["remember", "--db-path", db, "--content", "hello", "--namespace", "ns"]) == 0
+        assert cli.main(["recall", "--db-path", db, "--query", "hello"]) == 0
+        s = PythonMemoryStorage(db)
+        try:
+            assert s.count() == 1
+        finally:
+            s.close()
+
+
+def test_refusal_corpus_if_available():
+    """Opt-in: run the foreign-schema guard against a real engine-bank corpus.
+
+    CI has no such corpus, so this skips unless the directory exists. On a host
+    that has one it is the check that matters: every bank must be refused
+    byte-identically. Point it somewhere else with MNEMOSYNE_BANK_CORPUS.
+
+    Measured on the dev host (AFS_166): 137 banks, all 24-column with a
+    namespace column, 137/137 refused, 0 bytes changed, 0 WAL sidecars.
+    """
+    import glob
+    import shutil
+    base = os.environ.get("MNEMOSYNE_BANK_CORPUS") or os.path.expanduser("~/.mnemosyne")
+    if not os.path.isdir(base):
+        print(f"skip: no bank corpus at {base} (set MNEMOSYNE_BANK_CORPUS)")
+        return
+    banks = sorted(glob.glob(os.path.join(base, "*.db")))
+    if not banks:
+        print(f"skip: {base} contains no *.db files")
+        return
+    lite_shapes = (
+        list(PythonMemoryStorage.MEMORY_COLUMNS),
+        list(PythonMemoryStorage.MIGRATED_MEMORY_COLUMNS),
+    )
+    refused = 0
+    with tempfile.TemporaryDirectory() as d:
+        for i, src in enumerate(banks):
+            dst = os.path.join(d, f"{i:04d}.db")
+            shutil.copy2(src, dst)          # never open the original
+            before = _sha(dst)
+            try:
+                PythonMemoryStorage(dst)
+            except StorageSchemaError:
+                refused += 1
+                assert _sha(dst) == before, f"{src} was modified by a refusal"
+                assert not os.path.exists(dst + "-wal"), f"{src} left a WAL sidecar"
+                continue
+            # An accepted file must really be a lite store (a fresh/legacy one).
+            assert _columns(dst) in lite_shapes, f"{src} was accepted but is not a lite store"
+    print(f"corpus check: {refused}/{len(banks)} banks refused byte-identically")
 
 
 def test_context_monitor_edge_triggers():

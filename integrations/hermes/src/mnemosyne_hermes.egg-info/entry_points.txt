@@ -1,2 +1,0 @@
-[console_scripts]
-mnemosyne-hermes = mnemosyne_hermes.cli:main

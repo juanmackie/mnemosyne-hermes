@@ -1,98 +1,232 @@
 #!/usr/bin/env bash
-# Install into Hermes' Python environment so entry-point discovery can find us.
+# Install the canonical Hermes memory provider (vendored, engineer-backed).
+#
+#   ./install.sh [--dry-run] [--yes] [--venv DIR | --python PATH] [--hermes-home DIR] [--db-path PATH]
+#
+# What it does, in order:
+#   1. resolve the Hermes venv (works for pip-less and root-owned venvs)
+#   2. install the vendored provider + the pinned engine with uv
+#   3. point $HERMES_HOME/plugins/mnemosyne at the vendored package directory
+#   4. set memory.provider=mnemosyne via `hermes config set` (never a blind
+#      rewrite of config.yaml)
+#   5. verify: engine importable, provider importable, exactly one registration
+#
+# Nothing here creates or opens the memory database. The resolved DB path is
+# printed up front so you can check it before anything is written.
 set -euo pipefail
-REPO_URL="${MNEMOSYNE_REPO_URL:-https://github.com/juanmackie/mnemosyne-hermes}"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROVIDER_SRC="$ROOT/integrations/hermes-provider"
+PROVIDER_PKG="$PROVIDER_SRC/hermes_memory_provider"
+ENGINE_PIN='mnemosyne-memory[embeddings]>=3.15.1,<3.16'
+
+DRY_RUN=false
+ASSUME_YES=false
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-PYTHON_BIN="${PYTHON_BIN:-}"
+VENV="${HERMES_VENV:-}"
+PY_OVERRIDE=""
+DB_PATH="${MNEMOSYNE_DB_PATH:-}"
+
+usage() {
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    cat <<'EOF'
+
+Options:
+  --dry-run            print the plan; write nothing
+  --yes                skip the confirmation prompt (required when not a TTY)
+  --venv DIR           Hermes virtualenv (default: autodetect)
+  --python PATH        the Hermes venv's python, when you know it exactly
+  --hermes-home DIR    Hermes home (default: $HERMES_HOME or ~/.hermes)
+  --db-path PATH       memory database path to report (default: env/MNEMOSYNE)
+EOF
+}
+
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --repo-url|--setup|--python)
-      [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
-      if [[ "$1" == --python ]]; then PYTHON_BIN="$2"; else REPO_URL="$2"; fi
-      shift 2 ;;
-    --help|-h)
-      echo 'Usage: install.sh [--repo-url URL | --setup URL] [--python /path/to/hermes/venv/bin/python]'
-      exit 0 ;;
-    *) echo "Unknown option: $1" >&2; exit 2 ;;
-  esac
+    case "$1" in
+        --dry-run)     DRY_RUN=true; shift ;;
+        --yes|-y)      ASSUME_YES=true; shift ;;
+        --venv)        VENV="$2"; shift 2 ;;
+        --python)      PY_OVERRIDE="$2"; shift 2 ;;
+        --hermes-home) HERMES_HOME="$2"; shift 2 ;;
+        --db-path)     DB_PATH="$2"; shift 2 ;;
+        --help|-h)     usage; exit 0 ;;
+        *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
 done
 
-if [[ -z "$PYTHON_BIN" ]]; then
-  for candidate in "${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}/venv/bin/python" \
-      /usr/local/lib/hermes-agent/venv/bin/python "${VIRTUAL_ENV:-/nonexistent}/bin/python"; do
-    if [[ -x "$candidate" ]]; then PYTHON_BIN="$candidate"; break; fi
-  done
-fi
-if [[ -z "$PYTHON_BIN" ]]; then
-  echo 'Select the Python environment used by Hermes with --python /path/to/venv/bin/python.' >&2
-  echo 'For standalone CLI/MCP use: python3 -m venv .venv; then pass --python .venv/bin/python.' >&2
-  exit 1
-fi
-# Resolve before changing directories; do not install into an unrelated Python.
-PYTHON_BIN="$($PYTHON_BIN -c 'import sys; print(sys.executable)')"
-"$PYTHON_BIN" -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required"; import pip'
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+note() { printf '  %s\n' "$*"; }
 
-SOURCE=""
-if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
-  SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
-TMP=""
-trap '[[ -z "$TMP" ]] || rm -rf "$TMP"' EXIT
-if [[ ! -f "$SOURCE/integrations/hermes/pyproject.toml" ]]; then
-  TMP="$(mktemp -d)"
-  git clone --depth 1 "$REPO_URL" "$TMP/repo"
-  SOURCE="$TMP/repo"
-fi
-# YAML is an install-time dependency (already present in Hermes), not a core
-# memory dependency. Never edit arbitrary YAML with regex/string replacement.
-"$PYTHON_BIN" -m pip install "$SOURCE" "$SOURCE/integrations/hermes" 'PyYAML>=6'
-"$PYTHON_BIN" - "$HERMES_HOME" <<'PY'
-import json
-import os
-from pathlib import Path
-import shutil
-import sys
-import tempfile
-import yaml
-from mnemosyne.cli import main
-from mnemosyne_hermes import MnemosyneMemoryProvider, ProviderConfig
+venv_python() {
+    if [[ -x "$1/bin/python" ]]; then printf '%s' "$1/bin/python"
+    elif [[ -x "$1/Scripts/python.exe" ]]; then printf '%s' "$1/Scripts/python.exe"
+    else printf '%s' ""
+    fi
+}
 
-home = Path(sys.argv[1]).expanduser()
-home.mkdir(parents=True, exist_ok=True)
-path = home / "config.yaml"
-config = yaml.safe_load(path.read_text()) if path.exists() else {}
-if config is None:
-    config = {}
-if not isinstance(config, dict):
-    raise ValueError("Hermes config must be a mapping")
-memory = config.setdefault("memory", {})
-if not isinstance(memory, dict):
-    raise ValueError("memory config must be a mapping")
-db_path = os.path.expanduser(os.environ.get("MNEMOSYNE_DB_PATH") or memory.get("db_path") or str(home / "mnemosyne/mnemosyne.db"))
-namespace = os.environ.get("MNEMOSYNE_NAMESPACE") or memory.get("namespace", "agent:hermes")
-provider = MnemosyneMemoryProvider(ProviderConfig(hermes_home=str(home), db_path=db_path, namespace=namespace))
-provider._get_storage()  # fail before enabling a provider with an unusable DB
-provider.shutdown()
-# Preserve explicit paths for the entry-point provider, not just config.yaml.
-provider.save_config({"db_path": db_path, "namespace": namespace}, hermes_home=str(home))
-memory.update(provider="mnemosyne", db_path=db_path)
-if path.exists():
-    # Never overwrite a prior backup during a repeated install.
-    fd, backup = tempfile.mkstemp(prefix="config.yaml.backup-", dir=home)
-    os.close(fd)
-    shutil.copyfile(path, backup)
-    print(f"Config backup: {backup}")
-with tempfile.NamedTemporaryFile(mode="w", dir=home, delete=False, encoding="utf-8") as handle:
-    temporary = handle.name
-    try:
-        yaml.safe_dump(config, handle, sort_keys=False)
-        handle.flush()
-        os.fsync(handle.fileno())
-    except BaseException:
-        os.unlink(temporary)
-        raise
-os.replace(temporary, path)
-main(["--version"])
+# --- 1. resolve the Hermes venv ---------------------------------------------
+# --python wins: that is how a Hermes install knows its own interpreter, and it
+# is unambiguous when several venvs exist on the machine.
+if [[ -n "$PY_OVERRIDE" ]]; then
+    [[ -x "$PY_OVERRIDE" ]] || fail "--python must point at an executable python: $PY_OVERRIDE"
+    VENV_PY="$PY_OVERRIDE"
+    VENV="$(cd "$(dirname "$PY_OVERRIDE")/.." && pwd)"
+else
+    if [[ -z "$VENV" ]]; then
+        for candidate in \
+            "${HERMES_VENV:-}" \
+            "/opt/hermes/.venv" \
+            "$HERMES_HOME/venv" \
+            "${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}/venv" \
+            "/usr/local/lib/hermes-agent/venv" \
+            "$(dirname "$(dirname "$(command -v hermes 2>/dev/null || true)")" 2>/dev/null || true)"
+        do
+            [[ -n "$candidate" && -n "$(venv_python "$candidate")" ]] || continue
+            VENV="$candidate"
+            break
+        done
+    fi
+fi
+[[ -n "$VENV" ]] || fail "could not find the Hermes venv; pass --venv DIR or --python PATH"
+if [[ -z "${VENV_PY:-}" ]]; then
+    VENV_PY="$(venv_python "$VENV")"
+fi
+[[ -n "$VENV_PY" ]] || fail "$VENV has no python (looked for bin/python and Scripts/python.exe)"
+[[ -d "$PROVIDER_PKG" ]] || fail "vendored provider missing at $PROVIDER_PKG"
+
+# --- 2. work out the resolved DB path BEFORE writing anything ---------------
+if [[ -z "$DB_PATH" ]]; then
+    DB_PATH="$("$VENV_PY" -c '
+from mnemosyne.core.beam import _default_db_path
+print(_default_db_path())' 2>/dev/null || true)"
+fi
+[[ -n "$DB_PATH" ]] || DB_PATH="$HERMES_HOME/mnemosyne/data/mnemosyne.db"
+
+PLUGIN_LINK="$HERMES_HOME/plugins/mnemosyne"
+CONFIG_FILE="$HERMES_HOME/config.yaml"
+
+cat <<EOF
+Hermes provider install plan
+  repo             : $ROOT
+  provider source  : $PROVIDER_PKG
+  venv             : $VENV
+  plugin symlink   : $PLUGIN_LINK -> $PROVIDER_PKG
+  config           : $CONFIG_FILE   (memory.provider=mnemosyne)
+  memory DB path   : $DB_PATH
+                     (nothing is created or opened by this script)
+  engine pin       : $ENGINE_PIN
+EOF
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo
+    echo "--dry-run: no changes made."
+    exit 0
+fi
+
+if [[ "$ASSUME_YES" != true ]]; then
+    if [[ -t 0 ]]; then
+        read -r -p "Proceed? [y/N]: " reply
+        [[ "$reply" =~ ^[Yy] ]] || { echo "Cancelled; nothing changed."; exit 1; }
+    else
+        fail "refusing to install without confirmation (pass --yes, or --dry-run to inspect)"
+    fi
+fi
+
+if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]]; then
+    fail "$PLUGIN_LINK exists and is not a symlink; remove it first"
+fi
+
+# --- 3. install provider + engine -------------------------------------------
+if command -v uv >/dev/null 2>&1; then
+    INSTALL=(uv pip install --python "$VENV_PY")
+elif "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+    # Kept as a fallback; uv is preferred because it also works in the
+    # pip-less/root-owned venvs used by the Docker installs.
+    INSTALL=("$VENV_PY" -m pip install)
+else
+    fail "neither uv nor pip is usable for $VENV; install uv (https://docs.astral.sh/uv/)"
+fi
+
+echo "== Installing the vendored provider and the pinned engine"
+"${INSTALL[@]}" "$PROVIDER_SRC"
+"${INSTALL[@]}" "$ENGINE_PIN"
+
+# --- 3b. engine must stay the engine ----------------------------------------
+# The engine owns the `mnemosyne` package. Two things can still break it here:
+# this repo's lite distribution was once named `mnemosyne` too (it is
+# `mnemosyne-lite`/`mnemosyne_lite` now, so a fresh install cannot collide), and
+# any other `mnemosyne` distribution would shadow the engine's package. Check
+# rather than assume.
+if ! "$VENV_PY" -c 'import mnemosyne.core.beam' >/dev/null 2>&1; then
+    fail "the engine is not importable in $VENV after install (need $ENGINE_PIN).
+       Check for a shadowing 'mnemosyne' package in this venv:
+         $VENV_PY -m pip list | grep -i mnemosyne"
+fi
+ENGINE_FILE="$("$VENV_PY" -c 'import mnemosyne, os; print(os.path.realpath(mnemosyne.__file__))')"
+case "$ENGINE_FILE" in
+    "$ROOT"/src/*) fail "the engine import resolved to this repo ($ENGINE_FILE) instead of the
+       installed engine; uninstall whatever put src/ ahead of site-packages in $VENV" ;;
+esac
+
+# --- 4. plugin discovery ----------------------------------------------------
+echo "== Linking the plugin directory"
+mkdir -p "$(dirname "$PLUGIN_LINK")"
+rm -f "$PLUGIN_LINK"
+ln -sfn "$PROVIDER_PKG" "$PLUGIN_LINK"
+[[ -f "$PLUGIN_LINK/__init__.py" ]] || fail "the symlink target has no __init__.py; the Hermes memory
+       provider loader would skip it (it requires __init__.py with register_memory_provider)"
+
+# --- 5. config --------------------------------------------------------------
+echo "== Selecting the provider"
+if command -v hermes >/dev/null 2>&1; then
+    hermes config set memory.provider mnemosyne
+elif [[ ! -f "$CONFIG_FILE" ]]; then
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    printf 'memory:\n  provider: mnemosyne\n' > "$CONFIG_FILE"
+    note "created $CONFIG_FILE with memory.provider=mnemosyne"
+else
+    note "NOTE: 'hermes' is not on PATH and $CONFIG_FILE already exists — this script"
+    note "      does not rewrite config files. Add under the existing memory: block:"
+    note "          provider: mnemosyne"
+fi
+
+# --- 6. verify --------------------------------------------------------------
+echo "== Verifying"
+"$VENV_PY" - "$PLUGIN_LINK" <<'PY'
+import importlib.util, os, sys
+provider_dir = os.path.realpath(sys.argv[1])
+box = []
+spec = importlib.util.spec_from_file_location(
+    "_hermes_user_memory.mnemosyne", os.path.join(provider_dir, "__init__.py"),
+    submodule_search_locations=[provider_dir])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["_hermes_user_memory.mnemosyne"] = mod
+spec.loader.exec_module(mod)
+
+class Ctx:
+    def register_memory_provider(self, p): box.append(p)
+    def register_cli_command(self, **kw): pass
+    def register_tool(self, *a, **k): pass
+    def register_hook(self, *a, **k): pass
+
+mod.register(Ctx())
+assert len(box) == 1, f"expected exactly one provider, got {len(box)}"
+p = box[0]
+assert p.name == "mnemosyne", p.name
+if not p.is_available():
+    print(f"unavailable: {p.unavailable_reason()}", file=sys.stderr)
+    sys.exit(1)
+print(f"provider registered: {p.name} (available)")
 PY
-echo "Installed into $PYTHON_BIN; Hermes configuration: $HERMES_HOME/config.yaml"
-echo 'Restart Hermes to discover the mnemosyne provider. CLI: use this environment’s bin directory.'
+
+cat <<EOF
+
+Installed.
+
+Next:
+  hermes mnemosyne doctor --no-fix     # must exit 0
+  hermes mnemosyne stats
+  # restart the gateway: provider code is cached per process, so a running
+  # gateway keeps executing the old module until it is restarted.
+Database (created on first write, not by this script): $DB_PATH
+EOF

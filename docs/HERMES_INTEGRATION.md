@@ -6,24 +6,30 @@ memory, then shows how to migrate an existing Python `mnemosyne-memory` store.
 
 ## Adapter Status (Updated)
 
-The Python adapter (`mnemosyne_rust_hermes`) has been reconstructed from the preserved contracts (`mnemosyne-rust` provider id, `agent:hermes` namespace, DB path `MNEMOSYNE_DB_PATH`, fail-closed checkpoint, skill_loop/cron/subagent/background context gating). It is pure Python (std lib only) — no Rust reintroduced. Install with:
+The Python adapter (`mnemosyne_rust_hermes`) is **retired as a provider**: it drove a
+Rust binary over MCP stdio and its registration path was never read by the Hermes
+plugin loader. It is preserved for reference and its tests still run. The canonical
+provider is `mnemosyne` — see [section 3a](#3a-native-provider-mode-automatic-memory).
 
 ```bash
-python -m pip install integrations/hermes-memory-provider/
+# Retired — kept only so old links resolve. Do not install it as a provider:
+#   python -m pip install integrations/hermes-memory-provider/
 ```
 
-The adapter communicates with the `mnemosyne` binary over a persistent stdio JSON-RPC session (`MNEMOSYNE_BIN`, default `mnemosyne`). If the binary is unavailable, `is_available()` returns False gracefully rather than spawning a broken process.
+Historically it communicated with a `mnemosyne` binary over a persistent stdio
+JSON-RPC session (`MNEMOSYNE_BIN`). No current install path registers it.
 
-## 1. Install a release
+## 1. Install the provider and the engine
 
-The release installer does not require Rust, Cargo, Python, or a cloud API key.
-It detects Linux x86_64/aarch64 and macOS x86_64/arm64, verifies the SHA-256
-checksum, and installs to `~/.local/bin`:
+`./install.sh` installs the vendored provider plus its pinned engine with `uv`,
+links `$HERMES_HOME/plugins/mnemosyne`, and selects `memory.provider: mnemosyne`.
+The release-binary installer described in older revisions of this file no longer
+exists in this repository.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
-export PATH="$HOME/.local/bin:$PATH"
-mnemosyne --version
+./install.sh --dry-run     # plan only: venv, symlink target, resolved DB path
+./install.sh               # writes nothing until you confirm
+hermes mnemosyne doctor --no-fix
 ```
 
 For a pinned release:
@@ -104,37 +110,40 @@ instance or proxy is configured, local memory still works and standalone
 
 ### 3a. Native provider mode (automatic memory)
 
-The adapter ships in this repository at
-[`integrations/hermes-memory-provider/`](../integrations/hermes-memory-provider/).
-It is a pure-standard-library Python package that drives the `mnemosyne` binary
-over a persistent MCP stdio session, and it registers the provider id
-`mnemosyne-rust`:
+**The canonical provider in this repository is the vendored, engine-backed one
+at [`integrations/hermes-provider/`](../integrations/hermes-provider/README.md).**
+It is a byte-identical snapshot of `mnemosyne-memory 3.15.1`'s
+`hermes_memory_provider` plus a small, declared local patch layer, it registers
+the provider id **`mnemosyne`**, and it is what `./install.sh` installs:
 
 ```bash
-pip install -e integrations/hermes-memory-provider
-hermes config set memory.provider mnemosyne-rust
-hermes memory status
+./install.sh --dry-run     # show venv, symlink target and DB path; write nothing
+./install.sh               # uv install + plugin symlink + memory.provider=mnemosyne
+hermes mnemosyne doctor --no-fix
 ```
 
-It implements the Hermes `MemoryProvider` contract: `initialize`, `prefetch` before each
-call, non-blocking capture of every completed turn, `on_session_end` flush, a
-fail-closed `on_pre_compress` checkpoint, and an idempotent `shutdown`. Prefetch returns
+It implements the Hermes `MemoryProvider` contract: `initialize`, prefetch before each
+call, non-blocking capture of every completed turn, `on_session_end` flush, and an
+idempotent `shutdown`. Tool results are JSON strings, and a failed engine import
+reports `unavailable_reason()` instead of pretending to be healthy — see
+`integrations/hermes-provider/CONTRACT_AUDIT.md` for the line-by-line audit
+(including the hooks it deliberately does **not** override). Prefetch returns
 **unfenced** text: Hermes applies its own `<memory-context>` wrapper and streaming
 scrubber, so the provider must not add those tags itself.
-
-Optional environment variables: `MNEMOSYNE_BIN` (binary path),
-`MNEMOSYNE_MCP_ARGS` (default `mcp`), `MNEMOSYNE_DB_PATH`, `MNEMOSYNE_NAMESPACE` (default
-`agent:hermes`), `MNEMOSYNE_POLICY_OWNER` (default `mnemosyne-rust`),
-`MNEMOSYNE_PREFETCH_TIMEOUT`, and `MNEMOSYNE_REQUEST_TIMEOUT`.
 
 Automatic capture applies to **user-originated turns only**, and only while this
 provider owns capture. Exactly one component owns automatic capture at a time, so
 a run never double-writes. Cron, flush, subagent, background, and skill-loop
 executions are skipped for both capture and injection.
 
-> `memory.provider: mnemosyne` names a *different*, separately installed Python
-> provider. This repository does not package it. The provider documented here is
-> `mnemosyne-rust`.
+> The Rust-era `mnemosyne-rust` adapter in
+> [`integrations/hermes-memory-provider/`](../integrations/hermes-memory-provider/)
+> is **retired as a provider**: it drove a binary over MCP stdio and its
+> `hermes_agent.memory_providers` entry point was never read by the Hermes plugin
+> loader. Its tests still run; nothing registers it.
+>
+> The slim `mnemosyne_hermes` provider that used to live in
+> `integrations/hermes/` is also retired — see that directory's README.
 
 ### 3b. MCP-only mode (explicit tool calls)
 
