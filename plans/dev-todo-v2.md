@@ -332,7 +332,7 @@ this host; anything host-dependent is labelled as such.
 
 | Decision | Taken | Implemented as |
 |---|---|---|
-| V0 | commit + push to a feature branch, no PR | this branch |
+| V0 | commit + push to a feature branch, no PR | `fix/storage-safety-and-canonical-provider` @ `28ccf8f` (pushed to origin) |
 | D2 | keep the lite surface | `src/mnemosyne_lite`, still standalone-only |
 | D5 | rename the lite distribution/package | `mnemosyne-lite` / `mnemosyne_lite` in `pyproject.toml` + script `mnemosyne-lite`; no longer collides with the engine's `mnemosyne` package or script |
 | D6 | accept for now, re-check at the swap | `scripts/engine-parity-check.sh` (81/81 parity here; stray/modified file → exit 1) + LIVE_VERIFICATION step 0 |
@@ -360,3 +360,20 @@ green.
   damage), but a lite-only default would be less confusing.
 - Release-prep (out of scope): CI replacement, docs overhaul, version
   single-source, dead-weight deletion, PyPI naming.
+
+### V1 re-run on the pushed branch (fresh clone, hermetic)
+
+Cloned the pushed ref into an empty directory (so no dirty-tree or cross-test
+contamination) with `core.autocrlf=true`, which is why `.gitattributes` pins the
+vendored files as `-text`: without it a Windows clone gets CRLF and the hash gate
+fails for no real reason. In the clone:
+
+```
+python tests/test_python_hardening.py      -> 17 checks passed
+python tests/test_vendored_provider.py     -> 3 checks passed (bytes survived the clone)
+python tests/test_provider_loader.py       -> 3 checks passed
+python -m pytest tests -m 'not integration'-> 73 passed, 45 skipped
+python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -> 21 OK
+./test-all.sh --skip-llm                   -> completed, green
+bash -n install.sh scripts/*.sh            -> OK
+```
