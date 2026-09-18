@@ -21,55 +21,34 @@ JSON-RPC session (`MNEMOSYNE_BIN`). No current install path registers it.
 
 ## 1. Install the provider and the engine
 
-`./install.sh` installs the vendored provider plus its pinned engine with `uv`,
-links `$HERMES_HOME/plugins/mnemosyne`, and selects `memory.provider: mnemosyne`.
-The release-binary installer described in older revisions of this file no longer
-exists in this repository.
+There is no curl one-liner and no release binary: the installer needs a
+checkout.
 
 ```bash
+git clone https://github.com/juanmackie/mnemosyne-hermes.git
+cd mnemosyne-hermes
 ./install.sh --dry-run     # plan only: venv, symlink target, resolved DB path
 ./install.sh               # writes nothing until you confirm
+hermes mnemosyne doctor --no-fix   # must exit 0
+```
+
+`./install.sh` installs the vendored provider plus its pinned engine with `uv`,
+links `$HERMES_HOME/plugins/mnemosyne` at the canonical
+`integrations/hermes-provider/hermes_memory_provider`, and selects
+`memory.provider: mnemosyne`.
+
+The provider resolves its DB in this order: `memory.mnemosyne.db_path` >
+`MNEMOSYNE_DB_PATH` > engine default (`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` >
+`~/.hermes`), then `mnemosyne/data/mnemosyne.db`. `doctor` prints the resolved
+path and warns when it sits outside `$HERMES_HOME`. (The standalone lite surface
+uses `~/.mnemosyne/mnemosyne.db`; that is **not** the provider's store.)
+
+Verify the provider is registered and the link is canonical:
+
+```bash
+hermes memory status               # mnemosyne installed / available / active
+ls -l "$HERMES_HOME/plugins/mnemosyne"
 hermes mnemosyne doctor --no-fix
-```
-
-For a pinned release:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh \
-  | bash -s -- --version 2.3.3
-```
-
-A source checkout remains available when developing the project:
-
-```bash
-./install.sh --from-source
-# equivalent: ./scripts/install/install.sh --skip-api-key --no-mcp
-```
-
-## Python provider path (zero-config setup)
-
-For a Python-native memory provider (no Rust binary required), run the Python provider install script. It creates the plugin symlink, writes the Hermes config, verifies the binary/link, and prepares the DB:
-
-```bash
-./install.sh --repo-url https://github.com/juanmackie/mnemosyne-hermes
-# or for a quick setup with a given repo:
-./install.sh --setup "https://github.com/juanmackie/mnemosyne-hermes"
-```
-
-The script creates `~/.hermes/plugins/mnemosyne` as a symlink to the repository source and writes `~/.hermes/config.yaml` with `memory.provider: mnemosyne` and the default DB path (`~/.mnemosyne/mnemosyne.db`). It does not perform destructive operations (no DB migration, no binary release, no publish).
-
-After setup, initialize the database explicitly:
-
-```bash
-mnemosyne init
-```
-
-Verify the provider is registered and the link is healthy:
-
-```bash
-ls -l ~/.hermes/plugins/mnemosyne
-cat ~/.hermes/config.yaml
-mnemosyne diagnostics
 ```
 
 ## 2. Connect Hermes

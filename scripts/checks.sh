@@ -19,6 +19,7 @@ run() {
 
 # rustfmt removed with rust source
 run bash scripts/check_notes.sh
+run bash scripts/check_version_drift.sh
 
 if [ "$failed" -gt 0 ]; then
     echo "FAILED: $failed gate(s)"

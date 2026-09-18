@@ -25,7 +25,7 @@ All examples assume you have:
 - API key configured (`mnemosyne config show-key` succeeds)
 - Database initialized
 
-If not, see [INSTALL.md](../INSTALL.md).
+If not, see [integrations/hermes-provider/README.md](../integrations/hermes-provider/README.md).
 
 ## Running Examples
 

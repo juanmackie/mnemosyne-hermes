@@ -75,17 +75,23 @@ leaving a broken venv.
 
 ## Database paths
 
-Three different paths have been in play, so be explicit:
+The provider resolves its DB path in this order (first match wins):
 
-| Path | What it is |
-|---|---|
-| `$MNEMOSYNE_DB_PATH` | Explicit override. Wins when set. |
-| `~/.hermes/mnemosyne/…` | The Hermes-side store (what the live provider used). |
-| `~/.mnemosyne/mnemosyne.db` | Default of the standalone lite CLI (`src/mnemosyne`), **not** the provider's store. |
+| Order | Source | Notes |
+|---|---|---|
+| 1 | `memory.mnemosyne.db_path` (Hermes `config.yaml`) | Per-install override |
+| 2 | `MNEMOSYNE_DB_PATH` env var | Preserved contract; read by the provider and the CLI |
+| 3 | engine default `_default_db_path()` | `MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes`, then `mnemosyne/data/mnemosyne.db` |
 
-The provider resolves its own path from Hermes config/`MNEMOSYNE_DB_PATH`; the
-lite CLI refuses to run against a missing path rather than creating one. Check
-`hermes mnemosyne inspect` / doctor output to confirm which store is live.
+There is no separate `$MNEMOSYNE_DATA_DIR` fallback *after* the env var — it
+only moves the engine default. If the resolved DB sits outside `$HERMES_HOME`,
+the provider logs a warning at init and `hermes mnemosyne doctor` reports it,
+because logs and memory are then split across two roots.
+
+`db_path` wins over `profile_isolation` (per-profile banks); the provider warns
+when both are set. The standalone lite surface uses `~/.mnemosyne/mnemosyne.db`
+— that is **not** the provider's store. Check `hermes mnemosyne inspect` or
+`doctor` to confirm which store is live.
 
 ## Fail loud, never hollow
 
@@ -106,6 +112,27 @@ the process. After changing provider code you must **restart the gateway**;
 a fresh one-shot CLI probe will look healthy while the running gateway is still
 executing the old module. Symptom of a stale process: a fix "works in the CLI"
 but not in the live session.
+
+## Supported Hermes range
+
+`hermes mnemosyne` depends on Hermes' plugin CLI discovery internals, so the
+supported range is a contract: **`>=0.18,<0.22`** (tested 0.18.2, 0.19.0,
+0.21.2). The provider logs a warning — it does not refuse to start — when the
+detected `hermes-agent` version is outside that range, and `doctor` prints the
+detected version beside the range. The CI smoke lane pins `hermes-agent==0.19.0`
+(the newest PyPI release; 0.21.2 is not published to PyPI).
+
+## Uninstall
+
+```bash
+rm -f "$HERMES_HOME/plugins/mnemosyne"       # the provider symlink only
+uv pip uninstall --python "$HERMES_VENV/bin/python" mnemosyne-hermes-provider
+# Optional: remove the engine too, then the DB directory.
+#   uv pip uninstall --python "$HERMES_VENV/bin/python" mnemosyne-memory
+#   rm -rf "$HERMES_HOME/mnemosyne"
+```
+This never touches the memory DB unless you remove `$HERMES_HOME/mnemosyne`
+yourself. Restart the gateway afterwards.
 
 ## Sync policy
 

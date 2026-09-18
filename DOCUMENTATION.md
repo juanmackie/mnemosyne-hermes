@@ -14,7 +14,7 @@ Welcome to the Mnemosyne documentation! This page organizes all documentation by
   Get running in 5 minutes. Store and retrieve your first memory.
   **Time**: 5 minutes | **Audience**: Everyone
 
-- **[Installation Guide](INSTALL.md)** 📦
+- **[Installation Guide](integrations/hermes-provider/README.md)** 📦
   Detailed installation instructions, configuration options, and verification steps.
   **Time**: 15 minutes | **Audience**: Everyone
 
@@ -138,7 +138,7 @@ Welcome to the Mnemosyne documentation! This page organizes all documentation by
 2. [Slash Commands](docs/guides/workflows.md#using-slash-commands) (2 min)
 
 #### ...install for my team
-1. [Installation Guide](INSTALL.md) (15 min)
+1. [Installation Guide](integrations/hermes-provider/README.md) (15 min)
 2. [Secrets Management](SECRETS_MANAGEMENT.md) (10 min)
 3. [Team Knowledge Sharing](docs/guides/workflows.md#team-knowledge-sharing) (15 min)
 
@@ -179,7 +179,7 @@ Welcome to the Mnemosyne documentation! This page organizes all documentation by
 
 ### Tutorials (Step-by-Step)
 - [Quick Start Guide](QUICK_START.md) - First memory in 5 minutes
-- [Installation Guide](INSTALL.md) - Complete setup
+- [Installation Guide](integrations/hermes-provider/README.md) - Complete setup
 - [Common Workflows](docs/guides/workflows.md) - Real-world patterns
 
 ### How-To Guides (Task-Oriented)
@@ -320,7 +320,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 |----------|-------------|-------------|--------|
 | README.md | 2025-10-27 | v1.2 | ✅ Current |
 | QUICK_START.md | 2025-10-27 | v1.2 | ✅ Current |
-| INSTALL.md | 2025-10-27 | v1.2 | ✅ Current |
+| integrations/hermes-provider/README.md | 2026-09-18 | v2.4 | ✅ Current |
 | TROUBLESHOOTING.md | 2025-10-27 | v1.2 | ✅ Current |
 | ARCHITECTURE.md | 2025-10-27 | v2.0 | ✅ Current |
 | All others | 2025-10-27 | As needed | ✅ Current |

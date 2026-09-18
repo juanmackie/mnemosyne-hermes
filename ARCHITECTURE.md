@@ -1389,7 +1389,7 @@ mnemosyne/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── README.md
-├── INSTALL.md
+├── integrations/hermes-provider/README.md   # installation
 ├── MCP_SERVER.md
 ├── ARCHITECTURE.md          # This file
 ├── CONTRIBUTING.md

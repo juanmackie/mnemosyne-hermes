@@ -135,6 +135,16 @@ fi
 if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]]; then
     fail "$PLUGIN_LINK exists and is not a symlink; remove it first"
 fi
+# T7: flag a pre-existing link into the retired provider tree before replacing it.
+if [[ -L "$PLUGIN_LINK" ]]; then
+    existing_target="$(readlink -f "$PLUGIN_LINK" 2>/dev/null || true)"
+    case "$existing_target" in
+        "$ROOT"/integrations/hermes/*)
+            fail "$PLUGIN_LINK points at the RETIRED provider tree ($existing_target).
+       That provider exposes no register_cli, so 'hermes mnemosyne' would not exist.
+       Remove the link and re-run this script to point at the canonical provider." ;;
+    esac
+fi
 
 # --- 3. install provider + engine -------------------------------------------
 if command -v uv >/dev/null 2>&1; then
@@ -175,6 +185,11 @@ rm -f "$PLUGIN_LINK"
 ln -sfn "$PROVIDER_PKG" "$PLUGIN_LINK"
 [[ -f "$PLUGIN_LINK/__init__.py" ]] || fail "the symlink target has no __init__.py; the Hermes memory
        provider loader would skip it (it requires __init__.py with register_memory_provider)"
+RESOLVED_LINK="$(readlink -f "$PLUGIN_LINK" 2>/dev/null || true)"
+case "$RESOLVED_LINK" in
+    "$PROVIDER_PKG"*) : ;;
+    *) fail "$PLUGIN_LINK resolved to '$RESOLVED_LINK', not the canonical provider $PROVIDER_PKG" ;;
+esac
 
 # --- 5. config --------------------------------------------------------------
 echo "== Selecting the provider"
@@ -193,9 +208,10 @@ fi
 # --- 6. verify --------------------------------------------------------------
 echo "== Verifying"
 "$VENV_PY" - "$PLUGIN_LINK" <<'PY'
-import importlib.util, os, sys
+import importlib, importlib.util, os, sys
 provider_dir = os.path.realpath(sys.argv[1])
 box = []
+cli = []
 spec = importlib.util.spec_from_file_location(
     "_hermes_user_memory.mnemosyne", os.path.join(provider_dir, "__init__.py"),
     submodule_search_locations=[provider_dir])
@@ -203,20 +219,31 @@ mod = importlib.util.module_from_spec(spec)
 sys.modules["_hermes_user_memory.mnemosyne"] = mod
 spec.loader.exec_module(mod)
 
+# T7: the retired provider (integrations/hermes) had no register_cli and a
+# keyword-only recall; Hermes' CLI discovery needs both handler names.
+cli_path = os.path.join(provider_dir, "cli.py")
+cli_src = open(cli_path, encoding="utf-8", errors="replace").read() if os.path.exists(cli_path) else ""
+for fn in ("register_cli", "mnemosyne_command"):
+    assert f"def {fn}" in cli_src, f"cli.py is missing {fn} (Hermes CLI handler contract)"
+
 class Ctx:
     def register_memory_provider(self, p): box.append(p)
-    def register_cli_command(self, **kw): pass
+    def register_cli_command(self, **kw): cli.append(kw)
     def register_tool(self, *a, **k): pass
     def register_hook(self, *a, **k): pass
 
 mod.register(Ctx())
 assert len(box) == 1, f"expected exactly one provider, got {len(box)}"
+names = [c.get("name") for c in cli]
+assert names == ["mnemosyne"], f"expected exactly one 'mnemosyne' CLI command, got {names}"
+assert callable(cli[0].get("setup_fn")) and callable(cli[0].get("handler_fn")), \
+    "mnemosyne CLI command must declare setup_fn and handler_fn"
 p = box[0]
 assert p.name == "mnemosyne", p.name
 if not p.is_available():
     print(f"unavailable: {p.unavailable_reason()}", file=sys.stderr)
     sys.exit(1)
-print(f"provider registered: {p.name} (available)")
+print(f"provider registered: {p.name} (available); CLI handler contract OK")
 PY
 
 cat <<EOF

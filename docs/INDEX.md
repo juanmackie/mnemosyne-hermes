@@ -11,7 +11,7 @@ Navigate the Mnemosyne documentation efficiently with this comprehensive index.
 ### For Users
 - [**README**](../README.md) - Project overview, features, installation
 - [**QUICK_START**](../QUICK_START.md) - Get up and running in 5 minutes
-- [**INSTALL**](../INSTALL.md) - Detailed installation guide with troubleshooting
+- [**INSTALL**](../integrations/hermes-provider/README.md) - Canonical Hermes provider installation and verification
 
 ### For Developers
 - [**AGENT_GUIDE**](../AGENT_GUIDE.md) - **START HERE** - Comprehensive guide for agents working in the project
@@ -220,7 +220,7 @@ Located in [`historical/`](historical/) directory:
 ### By Role
 
 **New to Mnemosyne?**
-→ [README](../README.md) → [QUICK_START](../QUICK_START.md) → [INSTALL](../INSTALL.md)
+→ [README](../README.md) → [QUICK_START](../QUICK_START.md) → [INSTALL](../integrations/hermes-provider/README.md)
 
 **Agent/Developer?**
 → [AGENT_GUIDE](../AGENT_GUIDE.md) → [ARCHITECTURE](../ARCHITECTURE.md) → [CLAUDE](../CLAUDE.md)
@@ -238,14 +238,14 @@ Located in [`historical/`](historical/) directory:
 
 | Topic | Documents |
 |-------|-----------|
-| **Getting Started** | README, QUICK_START, INSTALL |
+| **Getting Started** | README, QUICK_START, integrations/hermes-provider/README |
 | **Development** | AGENT_GUIDE, CLAUDE, CONTRIBUTING |
 | **Architecture** | ARCHITECTURE, ORCHESTRATION, MCP_SERVER |
 | **Types & Schema** | TYPES_REFERENCE, STORAGE_SCHEMA |
 | **Features** | features/ directory |
 | **RPC Server** | features/RPC.md, guides/RPC_GETTING_STARTED.md, src/rpc/README.md |
 | **Testing** | tests/e2e/README, specs/test-plan.md |
-| **Build & Deploy** | BUILD_OPTIMIZATION, INSTALL |
+| **Build & Deploy** | BUILD_OPTIMIZATION, integrations/hermes-provider/README |
 | **Troubleshooting** | TROUBLESHOOTING, STORAGE_SCHEMA |
 | **History** | CHANGELOG, ROADMAP, historical/ |
 

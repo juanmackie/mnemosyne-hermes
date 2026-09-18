@@ -6,12 +6,202 @@ Available via: hermes mnemosyne <subcommand>
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
+# T7: see the matching guard in __init__.py. Only add the repo sibling dir when
+# it really holds the package; a copied install must not shadow the engine.
 _mnemosyne_root = Path(__file__).resolve().parent.parent
-if str(_mnemosyne_root) not in sys.path:
+if (_mnemosyne_root / "hermes_memory_provider").is_dir() and str(_mnemosyne_root) not in sys.path:
     sys.path.insert(0, str(_mnemosyne_root))
+
+# Supported Hermes range (T8): `hermes mnemosyne ...` depends on Hermes' plugin
+# CLI discovery internals, so the range is a contract, not a preference.
+SUPPORTED_HERMES_RANGE = ">=0.18,<0.22"
+TESTED_HERMES_VERSIONS = ("0.18.2", "0.19.0", "0.21.2")
+
+
+def detect_hermes_version():
+    """Best-effort Hermes version; None when undetectable."""
+    try:
+        import importlib.metadata as _md
+        return _md.version("hermes-agent")
+    except Exception:
+        pass
+    try:
+        import agent
+        return getattr(agent, "__version__", None)
+    except Exception:
+        return None
+
+
+def check_hermes_version(version):
+    """Return (ok, message) for a detected Hermes version (T8)."""
+    tested = ", ".join(TESTED_HERMES_VERSIONS)
+    if not version:
+        return False, (
+            f"could not detect Hermes version; supported range is {SUPPORTED_HERMES_RANGE} "
+            f"(tested {tested})"
+        )
+    try:
+        parts = tuple(int(x) for x in str(version).split(".")[:2])
+    except (TypeError, ValueError):
+        parts = ()
+    if len(parts) == 2 and (0, 18) <= parts < (0, 22):
+        return True, f"Hermes {version} is within the supported range {SUPPORTED_HERMES_RANGE}"
+    return False, (
+        f"Hermes {version} is outside the supported range {SUPPORTED_HERMES_RANGE} "
+        f"(tested {tested})"
+    )
+
+
+def engine_version():
+    try:
+        import mnemosyne
+        return getattr(mnemosyne, "__version__", "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _read_configured_db_path(hermes_home):
+    try:
+        from mnemosyne.hermes_config import read_hermes_config_key
+        val = read_hermes_config_key(hermes_home, "db_path")
+        if val:
+            return str(Path(str(val)).expanduser())
+    except Exception:
+        pass
+    env = os.environ.get("MNEMOSYNE_DB_PATH")
+    if env:
+        return str(Path(env).expanduser())
+    return None
+
+
+def resolve_effective_db_path(hermes_home=None):
+    """Resolve the DB path the provider will use (T3 + T6).
+
+    Precedence: memory.mnemosyne.db_path > MNEMOSYNE_DB_PATH > engine default
+    (MNEMOSYNE_DATA_DIR > $HERMES_HOME > ~/.hermes).
+    """
+    home = hermes_home or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    explicit = _read_configured_db_path(home)
+    if explicit:
+        return explicit
+    try:
+        from mnemosyne.core.beam import _default_db_path
+        return str(_default_db_path())
+    except Exception:
+        return None
+
+
+def describe_memory_location(db_path, hermes_home):
+    """Return header lines naming where memory actually lives (T6)."""
+    home = hermes_home or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    lines = [
+        f"memory DB: {db_path or 'unresolved'}",
+        f"provider package: {Path(__file__).resolve().parent}",
+        f"engine version: {engine_version()}",
+        f"HERMES_HOME: {home}",
+    ]
+    if db_path:
+        try:
+            db = Path(str(db_path)).expanduser().resolve()
+            home_path = Path(str(home)).expanduser().resolve()
+            if home_path not in db.parents:
+                lines.append(
+                    "WARNING: memory DB is OUTSIDE $HERMES_HOME; logs and memory are split. "
+                    "Unset MNEMOSYNE_DATA_DIR/MNEMOSYNE_DB_PATH or set memory.mnemosyne.db_path "
+                    "under $HERMES_HOME."
+                )
+        except Exception:
+            pass
+    return lines
+
+
+def check_provider_provenance(plugin_path):
+    """Return (ok, message) for a $HERMES_HOME/plugins/mnemosyne target (T7)."""
+    resolved = Path(os.path.realpath(str(plugin_path)))
+    parts = resolved.parts
+    if "integrations" in parts:
+        idx = parts.index("integrations")
+        if idx + 1 < len(parts) and parts[idx + 1] == "hermes":
+            return False, (
+                f"plugin target {resolved} is the RETIRED provider tree (integrations/hermes)"
+            )
+    if not (
+        resolved.name == "hermes_memory_provider"
+        and resolved.parent.name == "hermes-provider"
+        and resolved.parent.parent.name == "integrations"
+    ):
+        return False, (
+            f"plugin target {resolved} is not the canonical provider "
+            "(expected .../integrations/hermes-provider/hermes_memory_provider)"
+        )
+    init_py = resolved / "__init__.py"
+    cli_py = resolved / "cli.py"
+    if not init_py.is_file():
+        return False, f"canonical provider {resolved} has no __init__.py"
+    init_text = init_py.read_text(encoding="utf-8", errors="replace")
+    if "def register_memory_provider" not in init_text or "def register(" not in init_text:
+        return False, f"provider {resolved} is missing register()/register_memory_provider()"
+    cli_text = cli_py.read_text(encoding="utf-8", errors="replace") if cli_py.is_file() else ""
+    for fn in ("register_cli", "mnemosyne_command"):
+        if f"def {fn}" not in cli_text:
+            return False, f"provider cli.py is missing {fn} (Hermes CLI handler contract)"
+    return True, f"plugin target {resolved} is the canonical provider"
+
+
+def _provider_registration_count():
+    """Count providers a single register call yields; (count, detail)."""
+    try:
+        try:
+            from . import register_memory_provider
+        except ImportError:
+            from hermes_memory_provider import register_memory_provider
+    except Exception as e:
+        return None, f"could not import provider registration: {e}"
+    box = []
+
+    class _Ctx:
+        def register_memory_provider(self, p):
+            box.append(p)
+
+    try:
+        register_memory_provider(_Ctx())
+    except Exception as e:
+        return None, f"register_memory_provider raised: {e}"
+    return len(box), ""
+
+
+def _db_writable(db_path):
+    if not db_path:
+        return False, "DB path could not be resolved"
+    p = Path(str(db_path)).expanduser()
+    if p.exists():
+        return os.access(p, os.W_OK), f"{p} (file)"
+    if p.parent.exists():
+        return os.access(p.parent, os.W_OK), f"{p} (parent {p.parent}, not created yet)"
+    return False, f"{p} (parent {p.parent} does not exist)"
+
+
+def _db_integrity(db_path):
+    if not db_path:
+        return False, "DB path could not be resolved"
+    p = Path(str(db_path)).expanduser()
+    if not p.exists():
+        return True, "not created yet"
+    try:
+        import sqlite3
+        con = sqlite3.connect(str(p))
+        try:
+            row = con.execute("PRAGMA integrity_check").fetchone()
+            val = row[0] if row else "no result"
+            return bool(val == "ok"), str(val)
+        finally:
+            con.close()
+    except Exception as e:
+        return False, str(e)
 
 
 def register_cli(subparser):
@@ -84,12 +274,23 @@ def mnemosyne_command(args):
     except Exception:
         pass
 
-    try:
-        from mnemosyne.core.beam import BeamMemory
-        beam = BeamMemory(session_id="hermes_default")
-    except Exception as e:
-        print(f"Error: Mnemosyne not available: {e}")
-        return 1
+    # T4: doctor reports on its own and must not fail early when the engine is
+    # missing -- the Hermes CLI ignores a handler's return value, so an early
+    # `return 1` would exit 0. version/list-providers also need no beam.
+    needs_beam = cmd in ("stats", "sleep", "inspect", "clear")
+    beam = None
+    if needs_beam:
+        try:
+            from mnemosyne.core.beam import BeamMemory
+            _resolved_db_path = resolve_effective_db_path()
+            _beam_kwargs = {"session_id": "hermes_default"}
+            if _resolved_db_path:
+                _beam_kwargs["db_path"] = _resolved_db_path
+            beam = BeamMemory(**_beam_kwargs)
+        except Exception as e:
+            print(f"Error: Mnemosyne not available: {e}")
+            # The CLI ignores return values; raise so the process fails loud.
+            raise SystemExit(1)
 
     if cmd == "stats":
         if getattr(args, "global", False):
@@ -135,12 +336,65 @@ def mnemosyne_command(args):
     elif cmd == "doctor":
         dry_run = bool(getattr(args, "dry_run", False))
         no_fix = bool(getattr(args, "no_fix", False))
+        hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        db_path = resolve_effective_db_path(hermes_home)
+
+        # T4: explicit critical checks gate the exit code. The engine's own
+        # diagnostics stay informational so a partial report can never be read
+        # as a pass ("Checks passed: 16/43" used to exit 0).
+        critical = []  # (label, ok, detail)
+        try:
+            import mnemosyne.core.beam  # noqa: F401
+            critical.append(("engine importable", True, f"v{engine_version()}"))
+        except Exception as e:
+            critical.append(("engine importable", False, str(e)))
+        count, detail = _provider_registration_count()
+        if count is None:
+            critical.append(("provider registered exactly once", False, detail))
+        else:
+            critical.append((
+                "provider registered exactly once", count == 1,
+                f"{count} provider(s) registered",
+            ))
+        ok_db, db_detail = _db_writable(db_path)
+        critical.append(("DB resolved + writable", ok_db, db_detail))
+        ok_int, int_detail = _db_integrity(db_path)
+        critical.append(("DB integrity", ok_int, int_detail))
+        plugin_link = Path(hermes_home) / "plugins" / "mnemosyne"
+        if plugin_link.exists():
+            ok_prov, prov_msg = check_provider_provenance(plugin_link)
+            critical.append(("canonical provider deployed", ok_prov, prov_msg))
+        else:
+            critical.append((
+                "canonical provider deployed", False,
+                f"{plugin_link} does not exist; run ./install.sh",
+            ))
+        critical_ok = all(ok for _, ok, _ in critical)
+
+        print("\nMnemosyne Diagnostics")
+        print("=" * 40)
+        for line in describe_memory_location(db_path, hermes_home):
+            print(f"  {line}")
+        _hv = detect_hermes_version()
+        _ok_hv, _hv_msg = check_hermes_version(_hv)
+        print(f"  Hermes version: {_hv or 'unknown'} [{'ok' if _ok_hv else 'WARN'}]")
+        if not _ok_hv:
+            print(f"    {_hv_msg}")
+        print("  Critical checks:")
+        for label, ok, item_detail in critical:
+            mark = "PASS" if ok else "FAIL"
+            suffix = f" — {item_detail}" if item_detail else ""
+            print(f"    [{mark}] {label}{suffix}")
+
+        if not critical_ok:
+            # T4: the Hermes CLI ignores a handler's return value; only a raised
+            # SystemExit makes `hermes mnemosyne doctor` exit non-zero.
+            raise SystemExit(1)
+
         try:
             from mnemosyne.diagnose import run_diagnostics, auto_fix
             result = run_diagnostics()
-            print("\nMnemosyne Diagnostics")
-            print("=" * 40)
-            print(f"  Checks passed: {result.get('checks_passed', 0)}/{result.get('checks_total', 0)}")
+            print(f"\n  Engine checks passed: {result.get('checks_passed', 0)}/{result.get('checks_total', 0)}")
             if result.get("key_findings"):
                 print("\n  Key findings:")
                 for finding in result["key_findings"]:
@@ -164,13 +418,15 @@ def mnemosyne_command(args):
             # LOCAL PATCH: say what to install. Upstream printed only the raw
             # exception, leaving a public user with "No module named 'mnemosyne'"
             # and no next step.
-            print(f"Diagnostic failed: {e}")
+            print(f"\nDiagnostic failed: {e}")
             print(
                 "The mnemosyne-memory engine is required by this provider "
                 "(pinned >=3.15.1,<3.16). Install it into the Hermes venv, e.g.\n"
                 "  uv pip install 'mnemosyne-memory[embeddings]>=3.15.1,<3.16'"
             )
-            return 1
+            raise SystemExit(1)
+
+        return 0
 
     elif cmd == "export":
         output_path = getattr(args, "output", None)
@@ -179,7 +435,8 @@ def mnemosyne_command(args):
             return 1
         try:
             from mnemosyne.core.memory import Mnemosyne
-            mem = Mnemosyne(session_id="hermes_default")
+            _db = resolve_effective_db_path()
+            mem = Mnemosyne(session_id="hermes_default", **({"db_path": _db} if _db else {}))
             result = mem.export_to_file(output_path)
             print(f"Exported {result['working_memory_count']} working, {result['episodic_memory_count']} episodic, {result['legacy_memories_count']} legacy, {result['triples_count']} triples to {output_path}")
         except Exception as e:
@@ -238,8 +495,10 @@ def mnemosyne_command(args):
 
         try:
             from mnemosyne.core.memory import Mnemosyne
+            _db = resolve_effective_db_path()
             mem = Mnemosyne(session_id=session_id or "import_session",
-                            channel_id=channel_id)
+                            channel_id=channel_id,
+                            **({"db_path": _db} if _db else {}))
         except Exception as e:
             print(f"Error: Mnemosyne not available: {e}")
             return 1
@@ -329,7 +588,8 @@ def mnemosyne_command(args):
                     return 1
 
             # Try env var fallback
-            import os
+            # (module-level `import os` covers this; a local re-import here
+            # made `os` function-local and broke earlier os.environ reads.)
             if not api_key:
                 info = __import__("mnemosyne.core.importers", fromlist=["PROVIDERS"]).PROVIDERS
                 pk = info.get(cross_provider, {}).get("env_key", "")

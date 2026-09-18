@@ -111,43 +111,29 @@ See [docs/guides/ICS_INTEGRATION.md](docs/guides/ICS_INTEGRATION.md) for complet
 
 ### Installation
 
-**Release Installation** (Recommended):
+**Hermes memory provider (the tested contract)**:
 ```bash
-# Downloads a checksum-verified native binary; no Rust toolchain required.
-curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
-export PATH="$HOME/.local/bin:$PATH"
-mnemosyne --version
-```
-
-**Source Installation** (development fallback):
-```bash
+# There is no curl one-liner: the installer needs a checkout.
 git clone https://github.com/juanmackie/mnemosyne-hermes.git
 cd mnemosyne-hermes
-./install.sh --from-source
+./install.sh
+hermes mnemosyne doctor --no-fix   # must exit 0
 ```
 
-The release installer supports Linux x86_64/aarch64 and macOS x86_64/arm64,
-verifies SHA-256 checksums, and leaves MCP configuration to the agent runtime.
+`./install.sh` installs the vendored provider and the pinned engine into the
+Hermes venv, links `$HERMES_HOME/plugins/mnemosyne`, and sets
+`memory.provider=mnemosyne`. Full provider docs:
+[integrations/hermes-provider/README.md](integrations/hermes-provider/README.md).
 
-**Icon System**: Mnemosyne uses Nerd Font icons (Font Awesome) for a polished CLI experience with automatic fallback to ASCII. For best results, install [JetBrainsMono Nerd Font](https://www.nerdfonts.com/). See [docs/ICONS.md](docs/ICONS.md) for details.
-
-**Manual Source Build**:
+**Standalone lite surface (not a Hermes provider)**:
 ```bash
-# Prerequisites: Python 3.11+
+# Installs the `mnemosyne-lite` package and its `mnemosyne-lite` console
+# script. It is NOT the Hermes memory provider and must not be installed into
+# the Hermes venv (the engine owns the `mnemosyne` package name). Use its own venv.
 pip install -e .
-
-# The `mnemosyne` CLI is available in your venv/Scripts directory.
-# Verify:
-mnemosyne --help
-
-# Initialize database
-mnemosyne init
-
-# (Optional) Embedding rebuilds require upstream mnemosyne-memory 3.15.1 source
-mnemosyne embed --all  # blocked: upstream source MISSING
+mnemosyne-lite --help
 ```
 
-A source build is pure Python; no Rust toolchain, cargo, or PyO3 required.
 
 #### Standalone Python surface (not a Hermes provider)
 
@@ -538,15 +524,13 @@ mnemosyne tui [OPTIONS]
 
 ### Configuration
 ```bash
-# Initialize database
-mnemosyne init [PATH]
+# Provider CLI (installed into the Hermes venv by ./install.sh)
+hermes mnemosyne doctor --no-fix    # diagnostics; exits non-zero on critical failure
+hermes mnemosyne stats              # memory counts
+hermes mnemosyne inspect "<query>"  # search the live store
 
-# Manage secrets
-mnemosyne secrets set --provider <PROVIDER> --key <KEY>
-mnemosyne secrets list
-
-# Database info
-mnemosyne info
+# Standalone lite surface (`pip install -e .`) — NOT the Hermes provider:
+mnemosyne-lite --help
 ```
 
 ---
@@ -590,7 +574,7 @@ ConnectionMode::EmbeddedReplica { ... }  // Local replica with sync
 ### Getting Started
 - [README.md](README.md) - Project overview and quick start (this file)
 - [QUICK_START.md](QUICK_START.md) - Get up and running in 5 minutes
-- [INSTALL.md](INSTALL.md) - Detailed installation guide
+- [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md) - Installation, DB paths, verification
 
 ### For Agents/Developers
 - **[AGENT_GUIDE.md](AGENT_GUIDE.md)** - **START HERE** - Comprehensive development guide
@@ -756,24 +740,23 @@ See LICENSE file for details.
 
 ## Status
 
-**Current Version**: 2.3.3
+**Current Version**: 2.4.0
 
-Hermes is the primary target runtime. The native release is keyless and
-local-first by default; distributed Iroh networking and model-backed
-embeddings are opt-in `cargo` features.
+Hermes is the primary target runtime. The memory provider is keyless and
+local-first by default: no cloud API key, no OS keyring, and no network access
+required for core memory. Model-backed embeddings are optional.
 
 ### Support matrix
 
 | Aspect | Supported | Notes |
 |---|---|---|
-| Primary runtime | Hermes MCP stdio | `command: mnemosyne`, `args: ["mcp"]` |
+| Primary runtime | Hermes memory provider + MCP stdio | `memory.provider: mnemosyne`; `command: mnemosyne`, `args: ["mcp"]` |
 | Other MCP clients | Claude Code, Cursor, Codex, Windsurf | standard `mcpServers` config |
-| Platforms | Linux x86_64/aarch64, macOS x86_64/arm64 | checksum-verified release binaries |
+| Hermes versions | `>=0.18,<0.22` (tested 0.18.2, 0.19.0, 0.21.2) | see [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md) |
+| Platforms | Linux, macOS, Windows | pure-Python runtime |
 | Storage | Local SQLite/LibSQL | no cloud service required |
-| Vector search | LibSQL native vector ops | deterministic fallback in default release |
-| Default release | local-only, keyless | no ONNX runtime, no network access |
-| Opt-in features | `local-embeddings`, `full`, `rpc`, `distributed` | see [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) |
-| Python | optional `python` (PyO3) feature only | not needed for the Hermes memory provider |
+| Embeddings | optional `mnemosyne-memory[embeddings]` | keyless keyword/FTS fallback |
+| Python | 3.11–3.14 | provider runs in the Hermes venv |
 
 Full historical release notes (previously listed here) are superseded by
 [CHANGELOG.md](CHANGELOG.md), the single source of truth for release history.

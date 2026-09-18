@@ -1,7 +1,7 @@
 # Mnemosyne setup runbook (agent-executed)
 
-You are an AI agent installing Mnemosyne — a local-first memory system — for
-your user. Execute steps in order.
+You are an AI agent installing Mnemosyne — a local-first memory system — as the
+Hermes memory provider. Execute steps in order.
 
 **Contract**
 - Run pre-checks and verification gates; proceed only when they pass.
@@ -14,81 +14,64 @@ your user. Execute steps in order.
 
 ## 0. Pre-check
 ```bash
-command -v mnemosyne && mnemosyne --version
-ls ~/.local/share/mnemosyne/mnemosyne.db 2>/dev/null
+hermes --version            # supported range: >=0.18,<0.22
+hermes memory status        # note the current provider before changing it
 ```
-Installed → keep; DB exists → keep. Report findings.
+If a memory DB already exists, keep it — do not delete or re-initialize.
 
-## 1. Install release binary
+## 1. Clone and install the provider
 ```bash
-curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/install.sh | bash
-export PATH="$HOME/.local/bin:$PATH"
+git clone https://github.com/juanmackie/mnemosyne-hermes.git
+cd mnemosyne-hermes
+./install.sh                # installs provider + pinned engine into the Hermes venv
 ```
-Checksum failure → stop and show output. Skip nothing unless user asks.
+There is **no curl one-liner** — the installer needs a checkout — and there is
+no native release binary to download. `./install.sh --dry-run` prints the
+resolved venv, DB path and symlink target without writing anything.
 
-**Verify:** `mnemosyne --version`  
-Not found → append `export PATH="$HOME/.local/bin:$PATH"` to shell rc, re-source, retry.  
-macOS `killed` error → `xattr -d com.apple.provenance ~/.local/bin/mnemosyne`; `codesign --force --sign - ~/.local/bin/mnemosyne`
+**Verify:** `./install.sh` ends with `provider registered: mnemosyne (available)`.
 
-## 2. Pin the DB location
+## 2. Verify
 ```bash
-mkdir -p ~/.local/share/mnemosyne
-echo 'export MNEMOSYNE_DB_PATH=~/.local/share/mnemosyne/mnemosyne.db' >> ~/.bashrc
-export MNEMOSYNE_DB_PATH=~/.local/share/mnemosyne/mnemosyne.db
+hermes mnemosyne doctor --no-fix   # must exit 0
+hermes memory status               # mnemosyne installed / available / active
 ```
-Keep existing DB. Use user's actual shell rc (`~/.zshrc`/etc. as needed).
+`doctor` prints where memory actually lives (resolved DB path, provider package,
+engine version) and warns if the DB sits outside `$HERMES_HOME`.
 
-**Verify:** `echo $MNEMOSYNE_DB_PATH` is set; directory exists.
+## 3. Database location
+The provider resolves its DB in this order:
+`memory.mnemosyne.db_path` > `MNEMOSYNE_DB_PATH` > engine default
+(`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes`).
 
-## 3. Health check
-```bash
-mnemosyne doctor --json     # add --fix for auto-fixable
-```
-**Verify:** doctor reports no blocking issues. "No embedding backend" is acceptable — search degrades gracefully to keyword + graph. Note it.
+Prefer the default (`$HERMES_HOME/mnemosyne/data/mnemosyne.db`). If you set
+`MNEMOSYNE_DATA_DIR` or `MNEMOSYNE_DB_PATH` outside `$HERMES_HOME`, `doctor`
+will warn that logs and memory are split. Do not set both `db_path` and
+`profile_isolation`.
 
 ## 4. Smoke test (keyless — keyword recall works)
 ```bash
-mnemosyne remember "The staging deploy target is host kraken-01" --importance 8
-mnemosyne recall --query "kraken-01" --limit 5
+hermes mnemosyne stats                 # counts from the live store
+hermes mnemosyne inspect "test"        # search the live store
 ```
-**Verify:** recall result contains the stored memory.  
-Then test the always-on profile slice (independent of matching):
-```bash
-mnemosyne remember "User prefers terse answers with copy-pasteable code" \
-  --namespace "profile:identity" --importance 9
-mnemosyne recall --query "kraken-01" --limit 5
-```
-**Verify:** response carries profile / profile-dynamic block beside results — Mnemosyne's standing context, independent of the keyword hit.
+For a full write/read round-trip, ask the agent to remember a fact and recall
+it, or run the CI smoke test: `bash scripts/smoke-hermes-onboarding.sh`.
 
-## 5. Connect agent runtime (MCP stdio)
-Merge into runtime's MCP config (Hermes: `~/.hermes/config.yaml`; Claude Code / Cursor / Codex: client's own `mcpServers`). Preserve existing entries:
+## 5. MCP stdio surface (optional, independent)
+Hermes `~/.hermes/config.yaml`:
 ```yaml
 mcp:
   servers:
     mnemosyne:
       command: mnemosyne
       args: ["mcp"]
-      env:
-        MNEMOSYNE_DB_PATH: "~/.local/share/mnemosyne/mnemosyne.db"
-        MNEMOSYNE_NAMESPACE: "agent:hermes"   # pin scope; omit for auto-detect
 ```
-Hermes users: `hermes config set memory.provider mnemosyne`; `hermes memory status`.
+`install.sh` already ran `hermes config set memory.provider mnemosyne`.
 
-**Verify:** restart runtime; store + recall through mnemosyne tools. (`mnemosyne mcp` stdout is pure JSON-RPC; diagnostics go to stderr — safe for stdio clients.)
-
-## 6. Optional — migrate old Python store
-Only if previous `mnemosyne-memory` DB exists (e.g. `~/.hermes/mnemosyne/data/mnemosyne.db`). Dry-run first; show user before importing:
-```bash
-mnemosyne import --from <path> --dry-run --format json
-mnemosyne import --from <path> --namespace "agent:hermes" --format json   # after OK
-```
-
-## 7. Optional — prove typed graph edges
-Requires embedding-capable build (`cargo build --release --features local-embeddings`). If doctor reports no embeddings, skip; say so.  
-Store the same sentence twice: second write reports duplicate and creates no new row — Mnemosyne writes an `extends` edge from newer memory to reaffirmed fact instead.
-
-**Verify:** recall returns the fact exactly once.
+**Verify:** restart the runtime; store + recall through the mnemosyne tools.
+(`mnemosyne mcp` stdout is pure JSON-RPC; diagnostics go to stderr.)
 
 ---
-References: `docs/HERMES_INTEGRATION.md` (canonical), `docs/BOOTSTRAP.md`, `README.md`.  
+References: `integrations/hermes-provider/README.md`,
+`docs/HERMES_INTEGRATION.md`, `README.md`.
 Source: `https://github.com/juanmackie/mnemosyne-hermes`

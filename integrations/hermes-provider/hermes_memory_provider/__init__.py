@@ -66,8 +66,15 @@ def _stage_pending_write(payload: Dict[str, Any]) -> str:
     }
     (pending_dir / f"{pid}.json").write_text(json.dumps(record, indent=2))
     return pid
+# LOCAL PATCH (T7): only expose the repo sibling directory on sys.path when it
+# actually holds the sibling package. When this provider is COPIED (not
+# symlinked) into $HERMES_HOME/plugins/mnemosyne, `.parent.parent` is the
+# plugins directory, which contains a `mnemosyne/` entry -- inserting it would
+# shadow the engine's `mnemosyne` package and make every engine import fail
+# ("No module named 'mnemosyne.core'"). The guard keeps repo checkouts working
+# and removes the shadowing trap for copied installs.
 _mnemosyne_root = Path(__file__).resolve().parent.parent
-if str(_mnemosyne_root) not in sys.path:
+if (_mnemosyne_root / "hermes_memory_provider").is_dir() and str(_mnemosyne_root) not in sys.path:
     sys.path.insert(0, str(_mnemosyne_root))
 
 # LOCAL PATCH: the engine is imported TOLERANTLY. Upstream imported it
@@ -1443,6 +1450,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # Default scope for remember() calls when not explicitly specified.
         # "session" (default) scopes to current session; "global" persists across sessions.
         self._default_scope = "session"
+        # T3: explicit SQLite path. Precedence (resolved in
+        # _apply_provider_config): kwargs > memory.mnemosyne.db_path >
+        # MNEMOSYNE_DB_PATH env > engine default (MNEMOSYNE_DATA_DIR >
+        # $HERMES_HOME > ~/.hermes). None means "let the engine decide".
+        self._db_path: Optional[str] = None
         # Tracked so shutdown() can wait briefly for in-flight consolidation
         # before clearing the host LLM backend, preventing the post-timeout
         # daemon thread from racing with unregister and falling through to
@@ -1704,6 +1716,33 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             else:
                 logger.warning("Mnemosyne: invalid default_scope=%r, must be 'session' or 'global'", default_scope)
 
+        # db_path (T3): explicit SQLite path for this provider. Precedence:
+        # kwargs > memory.mnemosyne.db_path > MNEMOSYNE_DB_PATH > engine default
+        # (MNEMOSYNE_DATA_DIR > $HERMES_HOME > ~/.hermes). Without this the
+        # advertised MNEMOSYNE_DB_PATH contract was ignored: the provider always
+        # used the engine default, so a set env var silently pointed nowhere.
+        # Only the Hermes config surface is consulted here (not the engine's own
+        # config singleton) so the chain above is the whole story.
+        db_path = kwargs.get("db_path")
+        if db_path is None:
+            try:
+                from mnemosyne.hermes_config import read_hermes_config_key
+                db_path = read_hermes_config_key(self._hermes_home, "db_path")
+            except Exception:
+                db_path = None
+        if db_path is None:
+            db_path = os.environ.get("MNEMOSYNE_DB_PATH") or None
+        if db_path:
+            self._db_path = str(Path(str(db_path)).expanduser())
+            if self._profile_isolation_enabled:
+                logger.warning(
+                    "Mnemosyne: both db_path=%s and profile_isolation are set; "
+                    "db_path wins and profile banks are ignored for this provider.",
+                    self._db_path,
+                )
+        else:
+            self._db_path = None
+
 
     def _should_filter(self, content: str) -> bool:
         """Check if content matches any ignore pattern. Returns True if it should be skipped."""
@@ -1727,17 +1766,26 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         This bridges the two config systems so that ``mnemosyne config set``
         and ``mnemosyne config reload`` actually affect the running provider.
         """
-        from mnemosyne.core.config import get_config
-
+        # LOCAL PATCH (T3): the engine may be absent (bare venv). Guard both
+        # config reads; this used to raise ModuleNotFoundError out of initialize()
+        # instead of letting is_available() report the reason.
         # 1. Hermes config (memory.mnemosyne.<key>)
-        val = read_hermes_config_key(getattr(self, "_hermes_home", None), key)
-        if val is not None:
-            return val
+        try:
+            if read_hermes_config_key is not None:
+                val = read_hermes_config_key(getattr(self, "_hermes_home", None), key)
+                if val is not None:
+                    return val
+        except Exception:
+            pass
 
         # 2. Mnemosyne config singleton (auto-reloads on file change)
-        val = get_config().get(key)
-        if val is not None:
-            return val
+        try:
+            from mnemosyne.core.config import get_config
+            val = get_config().get(key)
+            if val is not None:
+                return val
+        except Exception:
+            pass
 
         return None
 
@@ -1803,6 +1851,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return [
             {"key": "auto_sleep", "description": "Auto-run sleep() when working memory exceeds threshold. Set false to disable. Backward-compatible with MNEMOSYNE_AUTO_SLEEP_ENABLED env var.", "default": True},
             {"key": "sleep_threshold", "description": "Working memory count before auto-sleep triggers", "default": 50},
+            {"key": "db_path", "description": "Explicit SQLite DB path for this provider. Precedence: memory.mnemosyne.db_path > MNEMOSYNE_DB_PATH env > engine default (MNEMOSYNE_DATA_DIR > $HERMES_HOME > ~/.hermes). Set only when the DB must live outside $HERMES_HOME; the provider warns and doctor flags that case.", "default": None},
             {"key": "reflect", "description": "Reflection/sleep guardrails. Supports disabled_for_cron (default true) and max_calls_per_session (default 3; negative disables cap). Env: MNEMOSYNE_REFLECT_DISABLED_FOR_CRON, MNEMOSYNE_REFLECT_MAX_CALLS_PER_SESSION.", "default": {"disabled_for_cron": True, "max_calls_per_session": 3}},
             {"key": "vector_type", "description": "Vector storage type (note: not yet wired to BeamMemory at runtime; reserved for future use)", "choices": ["float32", "int8", "bit"], "default": "int8"},
             {"key": "ignore_patterns", "description": "Regex patterns to filter from memory storage (one per line in config, or comma-separated). Memories matching any pattern are skipped.", "default": []},
@@ -1925,6 +1974,21 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # Apply provider-specific config from kwargs (Hermes-passed) or config.yaml fallback
         self._apply_provider_config(kwargs)
 
+        # T8: state the supported Hermes range and warn (never refuse) outside it.
+        try:
+            try:
+                from .cli import detect_hermes_version, check_hermes_version
+            except ImportError:
+                from hermes_memory_provider.cli import detect_hermes_version, check_hermes_version
+            _hv = detect_hermes_version()
+            _ok, _msg = check_hermes_version(_hv)
+            if _ok:
+                logger.info("Mnemosyne: %s", _msg)
+            else:
+                logger.warning("Mnemosyne: %s", _msg)
+        except Exception:
+            pass
+
         # C25: Register the Hermes auxiliary LLM backend BEFORE the skip-context
         # early return. The backend is process-global and needed by sleep even in
         # skip-context sessions (subagent/cron/flush can still run memory tools).
@@ -1957,7 +2021,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._session_id = f"hermes_{stable_scope}"
 
         try:
-            if self._profile_isolation_enabled:
+            if self._profile_isolation_enabled and not self._db_path:
                 # Route through Mnemosyne(bank=...) so BankManager handles
                 # directory creation, canonical path resolution, and isolates
                 # memories per Hermes profile.
@@ -1976,8 +2040,23 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 )
             else:
                 BeamMemory = _get_beam_class()
-                self._beam = BeamMemory(session_id=self._session_id)
-                logger.info("Mnemosyne initialized: session=%s", self._session_id)
+                beam_kwargs: Dict[str, Any] = {"session_id": self._session_id}
+                if self._db_path:
+                    beam_kwargs["db_path"] = self._db_path
+                self._beam = BeamMemory(**beam_kwargs)
+                # T6: name where memory actually lives, once, at init.
+                try:
+                    try:
+                        from .cli import describe_memory_location
+                    except ImportError:
+                        from hermes_memory_provider.cli import describe_memory_location
+                    for _line in describe_memory_location(self._db_path, self._hermes_home):
+                        if _line.strip().startswith("WARNING"):
+                            logger.warning("Mnemosyne: %s", _line.strip())
+                        else:
+                            logger.info("Mnemosyne: %s", _line.strip())
+                except Exception:
+                    logger.info("Mnemosyne initialized: session=%s", self._session_id)
 
         except Exception as e:
             # C27: capture the exception so system_prompt_block() can render a
@@ -3888,9 +3967,13 @@ def register(ctx):
     # This way a single symlink to hermes_memory_provider/ gives us the
     # full Mnemosyne experience: CLI + tools + hooks.
     try:
-        _repo_root = str(Path(__file__).resolve().parent.parent)
-        if _repo_root not in sys.path:
-            sys.path.insert(0, _repo_root)
+        # T7: only add the repo sibling dir when it really holds hermes_plugin.
+        # A copied install has no such sibling; inserting the plugins dir would
+        # also shadow the engine (see the module-top guard). The import below
+        # still works when hermes_plugin is installed as a package.
+        _repo_root = Path(__file__).resolve().parent.parent
+        if (_repo_root / "hermes_plugin").is_dir() and str(_repo_root) not in sys.path:
+            sys.path.insert(0, str(_repo_root))
         from hermes_plugin import register as _plugin_register
         _plugin_register(ctx)
     except Exception:

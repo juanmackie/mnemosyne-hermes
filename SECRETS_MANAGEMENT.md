@@ -468,7 +468,7 @@ A: Yes! File locations differ (`%APPDATA%\mnemosyne\mnemosyne\config\`), but the
 ## Related Documentation
 
 - [README.md](README.md) - Project overview and quick start
-- [INSTALL.md](INSTALL.md) - Installation guide
+- [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md) - Installation guide
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Development and testing guide
 
 ---

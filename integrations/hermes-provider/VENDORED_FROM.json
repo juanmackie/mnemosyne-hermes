@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "IFQpp_jOwZXAdS5buaS7gMP3xuQJ8RwNRLOuNxVhkQs",
-      "bytes": 181374,
-      "lines": 3796
+      "sha256": "QDYPEAOo7ZQdjoZCbVlQdKEeLXJvn-UQV1n04sYtDfY",
+      "bytes": 186210,
+      "lines": 3980
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "XeICgiLqwwywBK5h03zPG5g4_uG-TwagKex3UJzn_Sk",
@@ -27,9 +27,9 @@
       "lines": 139
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "2PMnObA6rP29RoMGDYOMaZrFCcVuv4dH0R9JohRxGM0",
-      "bytes": 17912,
-      "lines": 384
+      "sha256": "dalVbQHo1t_9uTgCguxHg79cGtesv9Rm7a6IbwMHGzg",
+      "bytes": 28299,
+      "lines": 651
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -64,10 +64,15 @@
       "P2 engine imports are guarded (_ENGINE_IMPORT_ERROR) so the module imports in a bare venv",
       "P3 is_available() records why; unavailable_reason() exposes it",
       "P5 sync_turn accepts messages; tool turns stored when sync_roles includes 'tool'",
-      "P6 on_memory_write accepts metadata and passes it to the engine's remember(metadata=...)"
+      "P6 on_memory_write accepts metadata and passes it to the engine's remember(metadata=...)",
+      "P7 sys.path guard (T7): only add the repo sibling dir when it really holds hermes_memory_provider/hermes_plugin; a copied install must not shadow the engine",
+      "P8 db_path (T3): read memory.mnemosyne.db_path/MNEMOSYNE_DB_PATH and pass into BeamMemory; db_path wins over profile isolation",
+      "P9 startup location + Hermes range logging (T6/T8): describe_memory_location() and check_hermes_version()"
     ],
     "hermes_memory_provider/cli.py": [
-      "P4 doctor names the required engine and the install command on failure"
+      "P4 doctor names the required engine and the install command on failure",
+      "P10 doctor critical checks gate the exit code and print resolved DB/provider/engine + Hermes range (T4/T6/T8)",
+      "P11 db_path wired into the CLI BeamMemory/Mnemosyne and canonical-provider provenance check (T3/T7)"
     ]
   }
 }

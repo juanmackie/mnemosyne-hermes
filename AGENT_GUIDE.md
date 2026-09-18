@@ -1169,7 +1169,7 @@ Mnemosyne maintains comprehensive documentation across three tiers:
 | ROADMAP.md | Future plans and milestones | Users, contributors |
 | MCP_SERVER.md | MCP integration details | MCP developers |
 | ORCHESTRATION.md | Multi-agent coordination | Orchestration developers |
-| INSTALL.md | Detailed installation guide | New users |
+| `integrations/hermes-provider/README.md` | Installation, DB paths, verification | New users |
 | TROUBLESHOOTING.md | Common issues and solutions | All users |
 | CONTRIBUTING.md | Contribution guidelines | Contributors |
 | QUICK_START.md | 5-minute getting started | New users |
@@ -1209,7 +1209,7 @@ Mnemosyne maintains comprehensive documentation across three tiers:
 | **Architecture Change** | ARCHITECTURE.md, AGENT_GUIDE.md | README.md | Update diagrams, code examples |
 | **API Modification** | docs/TYPES_REFERENCE.md, MCP_SERVER.md | AGENT_GUIDE.md | Update type signatures, examples |
 | **Workflow Change** | CLAUDE.md, docs/guides/workflows.md | AGENT_GUIDE.md | Update command sequences |
-| **Dependency Addition** | README.md, INSTALL.md | CONTRIBUTING.md | Update installation steps |
+| **Dependency Addition** | README.md, integrations/hermes-provider/README.md | CONTRIBUTING.md | Update installation steps |
 | **Release** | CHANGELOG.md, ROADMAP.md | README.md (version) | Follow release management protocol |
 | **File Move/Rename** | docs/INDEX.md, all cross-references | - | Critical for navigation |
 | **Configuration Change** | Relevant docs, TROUBLESHOOTING.md | - | Update examples, add troubleshooting |
@@ -2317,7 +2317,7 @@ rust-lldb target/debug/mnemosyne
 **User-Facing**:
 - [README.md](README.md) - Project overview and features
 - [QUICK_START.md](QUICK_START.md) - Get started quickly
-- [INSTALL.md](INSTALL.md) - Installation guide
+- [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md) - Installation guide
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Common issues and solutions
 
 **Developer**:

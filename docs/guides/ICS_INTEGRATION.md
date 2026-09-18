@@ -679,7 +679,7 @@ ICS uses CRDT for undo/redo, but save to persist:
 
 ### Benchmarks
 
-From `TEST_RESULTS.md`:
+From historical benchmark records:
 
 | Operation | Throughput | Latency |
 |-----------|------------|---------|
@@ -752,7 +752,6 @@ mnemosyne ics context.md
 
 ## Further Reading
 
-- [TEST_RESULTS.md](/TEST_RESULTS.md) - Comprehensive test results
 - [.claude/commands/ics.md](/.claude/commands/ics.md) - Slash command implementation
 - [src/coordination/handoff.rs](/src/coordination/handoff.rs) - Coordination API
 - [tests/manual/README.md](/tests/manual/README.md) - Manual test scenarios

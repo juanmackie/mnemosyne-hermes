@@ -108,11 +108,16 @@ assert p.is_available() is False, "must not claim availability without the engin
 reason = p.unavailable_reason()
 assert "mnemosyne-memory" in reason and "3.15" in reason, reason
 
-# `hermes mnemosyne doctor` must FAIL, not print a smiling report.
+# `hermes mnemosyne doctor` must FAIL, not print a smiling report. The Hermes
+# CLI ignores a handler's return value, so doctor signals failure by raising
+# SystemExit (T4).
 import types
 from hermes_memory_provider import cli
-rc = cli.mnemosyne_command(types.SimpleNamespace(
-    mnemosyne_cmd="doctor", no_fix=True, dry_run=True))
+try:
+    rc = cli.mnemosyne_command(types.SimpleNamespace(
+        mnemosyne_cmd="doctor", no_fix=True, dry_run=True))
+except SystemExit as exc:
+    rc = exc.code
 assert rc == 1, f"doctor must fail without the engine, got {{rc}}"
 print("OK", reason)
 '''

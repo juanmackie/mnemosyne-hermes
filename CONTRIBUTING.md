@@ -593,7 +593,7 @@ pub fn function(param: Type) -> Result<ReturnType> {
 Update these files for user-facing changes:
 
 - `README.md`: Overview and quick start
-- `INSTALL.md`: Installation instructions
+- `integrations/hermes-provider/README.md`: Installation instructions
 - `MCP_SERVER.md`: API documentation
 - `ARCHITECTURE.md`: System design
 
@@ -794,7 +794,7 @@ Mnemosyne is developed in 10 phases. Check [README.md](README.md) for current st
 
 - **Documentation**: [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md)
 - **MCP API**: [MCP_SERVER.md](MCP_SERVER.md)
-- **Installation**: [INSTALL.md](INSTALL.md)
+- **Installation**: [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md)
 
 ### Communication
 

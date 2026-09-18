@@ -32,10 +32,13 @@
 
 ## Verification
 
-- Fast unit tests: `python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v` (Python adapter); `python -m pytest` (optional)
-- Python CI proposal: `.github/workflows/ci.yml` (retired Python steps); `.github/workflows/python-ci.yml` (proposed — see item 4 deliverable)
-- Health check after install (Python): verify adapter contracts (`provider.name == 'mnemosyne-python'`, namespace == 'agent:hermes', DB resolves, checkpoint dir writable); see `scripts/verify_backup_auth.sh` (design) and `scripts/baseline/verify_baseline_install.sh`.
-- Build: `pip install -e .` (pure Python, no maturin/PyO3 needed); Makefile targets updated.
+- Fast unit tests: `python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v` (Python adapter); `python -m pytest` (optional); `python tests/test_vendored_provider.py` and `python tests/test_provider_loader.py` (provider drift/loader contract).
+- Hermes-first CI: `.github/workflows/python-ci.yml` runs the unit/contract suite plus the clean-user onboarding smoke lane (`scripts/smoke-hermes-onboarding.sh`, pinned real `hermes-agent`). `.github/workflows/ci.yml` (cargo) is retired.
+- Clean-user acceptance: `bash scripts/smoke-hermes-onboarding.sh` asserts doctor exit 0, `hermes memory status` installed/available/active, a `sync_turn` round-trip, and exactly one registered provider.
+- Supported Hermes range: `>=0.18,<0.22` (tested 0.18.2, 0.19.0, 0.21.2); the CI lane pins the newest PyPI release (0.19.0). The provider warns outside the range.
+- Health check after install (Python): `hermes mnemosyne doctor --no-fix` (exits non-zero on a critical failure) and `hermes memory status`; see also `scripts/baseline/verify_baseline_install.sh`.
+- DB path precedence (T3): `memory.mnemosyne.db_path` > `MNEMOSYNE_DB_PATH` > engine default (`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes`). `doctor` prints the resolved path.
+- Build (lite surface only): `pip install -e .` installs `mnemosyne-lite` — it is **not** the Hermes provider. Install the provider with `./install.sh` (pure Python, no maturin/PyO3 needed).
 - Python archive reference: `feat/hermes-native-provider` (`09a6973`) / `main` (`ba6fe984`); `docs/archive/RUST_ARCHIVE_REF.md`.
 - No deployed operations executed in this planning deliverable (Repo-only authorization for items 4-7; Document-only for item 1; No DB rebuild/redeploy/smoke/rollback executed).
 - All commands above are evidenced in `Makefile`, `scripts/`, and `tests/`. There is no browser/UI harness for the TUI/ICS — exercise `mnemosyne edit` / `mnemosyne ics` interactively and report what was actually exercised.
@@ -43,11 +46,11 @@
 
 ## Documentation index
 
-- Entry points: `README.md` (features, quickstart), `ARCHITECTURE.md`, `AGENT_GUIDE.md`, `SECRETS_MANAGEMENT.md`, `MCP_SERVER.md`, `QUICK_START.md`, `INSTALL.md`.
+- Entry points: `README.md` (features, quickstart), `ARCHITECTURE.md`, `AGENT_GUIDE.md`, `SECRETS_MANAGEMENT.md`, `MCP_SERVER.md`, `QUICK_START.md`, and `integrations/hermes-provider/README.md` (installation).
 - Deep dives in `docs/`: `HERMES_INTEGRATION.md`, `HIERARCHICAL_MEMORY.md`, `REASONING_MEMORY.md`, `BOOTSTRAP.md`, plus `guides/ICS_INTEGRATION.md`; `docs/architecture/`, `docs/features/`, `docs/operations/`, `docs/security/` own their topics.
 - Process docs: `CONTRIBUTING.md`, `TROUBLESHOOTING.md`, `MANUAL_TESTING.md`, `LLM_TESTING.md`, `HOOKS_TESTING.md`.
 - `plans/` and `docs/plans/` hold working plans; treat them as historical context, not current contracts.
 
 ## Known gaps
 
-- The repo carries many stale top-level status/plan documents (e.g. `PHASE_1_2_PLAN.md`, `TEST_RESULTS.md`, `REFACTORING_*.md`, `EVENT_BROADCASTING_STATUS.md`); treat them as snapshots, not living contracts, and do not update them unless a task explicitly targets them.
+- The repo carries stale top-level plan/status snapshots in `docs/historical/` and `docs/plans/`; treat them as historical context, not living contracts, and do not update them unless a task explicitly targets them. The root-level `*_AUDIT_TASK_*.md`/`TEST_RESULTS.md`/`EVENT_BROADCASTING_STATUS.md` snapshots were removed (T9).
