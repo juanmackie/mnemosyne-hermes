@@ -1,0 +1,15 @@
+{
+  "date": "2026-09-19T09:40:00+10:00",
+  "commit_rev": "d8d0dae",
+  "engine_version": "lazy-adapter-v1",
+  "dataset_rev": ".auto/eval_dev.jsonl (27 queries, relevant array format)",
+  "db_path": ".auto/data/bench_corpus.db",
+  "config": "adapter binary: task/mnemosyne; harness: .auto/evaluate.py; PYTHONPATH: $ROOT/src; fetch-depth: 0",
+  "provenance_contract": "benchmark/retrieval/README.md §Reporting results (commit rev, engine version, dataset rev, host, config)",
+  "hit1": 0.0,
+  "hit5": 0.0,
+  "mrr": 0.0,
+  "fail_class": "execution_error",
+  "notes": "Adapter binary works; harness runs; dataset/DB mapping gap (0 hits) remains open — not a performance claim, documented gap.",
+  "status": "baseline_after_fix (honest label per DEV_EVAL.md)"
+}
