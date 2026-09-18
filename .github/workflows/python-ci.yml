@@ -19,6 +19,8 @@ jobs:
       PYTHON_BIN: .venv/bin/python
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
       - name: Create venv and install test deps
         run: |
@@ -42,6 +44,8 @@ jobs:
       HERMES_AGENT_VERSION: "0.19.0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
       - name: Smoke test (fresh venv + fresh HERMES_HOME + real Hermes)
         run: bash scripts/smoke-hermes-onboarding.sh

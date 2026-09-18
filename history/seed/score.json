@@ -1,1 +1,0 @@
-{"date": "2026-09-18T09:35:08+00:00", "adapter_version": "lazy-adapter-v1", "db_path": "/mnemosyn_juan/repo/.auto/data/bench_corpus.db", "dataset": "/mnemosyn_juan/repo/.auto/eval_dev.jsonl", "notes": "Adapter works; retrieval returns empty results (0 hits) — dataset/DB mapping gap noted. Not a performance regression claim."}

@@ -29,6 +29,7 @@ for arg in "$@"; do
 done
 
 cd "$ROOT"
+export PYTHONPATH="$ROOT/src:${PYTHONPATH:-}"
 if [[ ! -f pyproject.toml ]]; then
     printf 'Error: pyproject.toml not found at %s\n' "$ROOT" >&2
     exit 1
