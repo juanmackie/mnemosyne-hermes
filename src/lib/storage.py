@@ -166,6 +166,11 @@ class PythonMemoryStorage:
         self.db_path = db_path
         self._ensure_db_dir()
         self._local = threading.local()
+        # Result memo for recall(): key -> (version, rows, ids), validated
+        # against _search_version so any local write or another connection's
+        # commit invalidates it. _flush_accesses clears it (cached rows carry
+        # access_count, which a flush changes).
+        self._recall_cache = {}
         self._init_schema_resilient()
 
     # Cold start used to die here: 9/16 simultaneous opens crashed on the review
@@ -337,6 +342,9 @@ class PythonMemoryStorage:
     ACCESS_FLUSH_DISTINCT = 256
     ACCESS_FLUSH_HITS = 1024
 
+    # Bound on the recall result memo (entries, not bytes).
+    RECALL_CACHE_MAX = 256
+
     def _pending(self) -> Dict[str, int]:
         """This thread's not-yet-written access counts, as {memory id: hits}."""
         pending = getattr(self._local, "pending", None)
@@ -371,6 +379,8 @@ class PythonMemoryStorage:
             self._local.ignored_changes = ignored + (conn.total_changes - before)
         except sqlite3.Error:
             logger.warning("Failed to apply buffered access counts", exc_info=True)
+        # Access counts just changed: memoized rows carry the old values.
+        self._recall_cache.clear()
         self._maybe_checkpoint()
 
     def _classify_schema(self, conn: sqlite3.Connection) -> str:
@@ -657,6 +667,20 @@ class PythonMemoryStorage:
         max_results = max(1, min(100, max_results))
 
         conn = self._conn()
+        memo_version = self._search_version(conn)
+        key = (query, namespace, max_results, min_importance)
+        entry = self._recall_cache.get(key)
+        if entry is not None and entry[0] == memo_version:
+            cached, ids = entry[1], entry[2]
+            if cached:
+                pending = self._pending()
+                for r in cached:
+                    pending[r["id"]] = pending.get(r["id"], 0) + 1
+                hits = getattr(self._local, "pending_hits", 0) + len(ids)
+                self._local.pending_hits = hits
+                if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
+                    self._flush_accesses()
+            return [dict(r) for r in cached]
         try:
             sql = "SELECT * FROM memories WHERE instr(content_lower, ?) > 0"
             # instr() is case-sensitive, so fold the query the same way the
@@ -701,6 +725,14 @@ class PythonMemoryStorage:
             return []
 
         results = [self._row_to_dict(row) for row in rows]
+        ids = tuple(r["id"] for r in results)
+        cache = self._recall_cache
+        if len(cache) >= self.RECALL_CACHE_MAX:
+            try:
+                cache.pop(next(iter(cache)))
+            except (StopIteration, KeyError):
+                pass
+        cache[key] = (memo_version, results, ids)
 
         # Record the access in memory instead of writing it here: the UPDATE +
         # commit was 60% of a median recall (p50 0.310 -> 0.119ms) and it was
@@ -714,7 +746,8 @@ class PythonMemoryStorage:
             if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
                 self._flush_accesses()
 
-        return results
+        # Fresh copies: the memo must keep pristine rows.
+        return [dict(r) for r in results]
 
     def list_memories(
         self,
