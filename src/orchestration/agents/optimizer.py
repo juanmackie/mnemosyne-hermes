@@ -497,33 +497,17 @@ Provide structured analysis."""
 
     async def _extract_task_metadata(self, task_description: str) -> Dict[str, Any]:
         """
-        Extract task metadata using Claude for contextual evaluation.
+        Extract task metadata heuristically (keyword matching; no LLM call).
 
-        Asks Claude to classify:
+        Classifies:
         - task_type: feature/bugfix/refactor/test/documentation/optimization/exploration
         - work_phase: planning/implementation/debugging/review/testing/documentation
         - error_context: compilation/runtime/test_failure/lint/none
         - file_types: List of relevant file extensions
         - technologies: List of technologies involved
         """
-        metadata_prompt = f"""Analyze this task and classify it for contextual understanding:
-
-**Task**: {task_description}
-
-Please provide:
-1. **Task Type**: feature, bugfix, refactor, test, documentation, optimization, or exploration
-2. **Work Phase**: planning, implementation, debugging, review, testing, or documentation
-3. **Error Context** (if applicable): compilation, runtime, test_failure, lint, or none
-4. **File Types**: Relevant file extensions (e.g., , .py, .md)
-5. **Technologies**: Key technologies involved (e.g., rust, tokio, postgres)
-
-Keep your response concise and structured."""
-
-        # Call API for task classification
-        classification_response = await self._call_api(metadata_prompt)
-
-        # Parse Claude's response to extract metadata
-        # For now, use simple heuristics (in production, parse Claude's structured response)
+        # Extract metadata heuristically (no LLM call: the classification below is
+        # keyword-based, so a model round-trip would only pollute conversation history)
         task_lower = task_description.lower()
 
         # Infer task type
