@@ -19,6 +19,10 @@ segment-2 best 0.0100ms** — open threads below, updated as the loop goes.
   −49%): flush patches memoized rows in place instead of clearing
   `_recall_cache`. Biggest win of the whole loop; q5 (50-row) is now the
   lone slow shape.
+- **`list(map(dict.copy, rows))` at return sites** — discarded at run 12
+  under noise (q0/q1 +56% shape-selective explosion) BUT q5 improved
+  −31% exactly as the microbench predicted (−30% @10 rows, −21% @50).
+  **RETRY on a quiet machine** (same disposition as the run-8 bundle).
 
 ## Open — from .auto/ideas.md
 

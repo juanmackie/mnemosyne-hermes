@@ -112,6 +112,13 @@ Open ideas: `autoresearch.ideas.md` (seeded from `.auto/ideas.md`).
 - Next up: q5 (50-row wide query) is the lone outlier at 0.0126 vs
   ~0.004–0.006 elsewhere — attack its 50× `r.copy()` + 50-id pending
   cost, and/or `SELECT *` → explicit columns on the miss path.
+- **Run 12 discard** 0.0073 (+43%): `list(map(dict.copy))` return-site
+  swap — q5 honored the microbench (−31%) but q0/q1 exploded +56%
+  (shape-selective = machine noise, run-8 signature). Reverted; retry on
+  a quiet machine. NOTE: with the memo warm (run 11), the timed phase
+  has ZERO misses — miss-path ideas (trigram, SELECT-columns, namespaced
+  candidate cache, SQL-string cache) no longer move p50; they are
+  p99/cold-start levers only and will not keep under this primary.
 
 ### Segment 1 results (2026-09-23/24, median-of-3 runner + 8% tiebreak)
 

@@ -185,6 +185,23 @@ run-8 micro-trim bundle first, in a quiet machine.
   `SELECT *` → explicit columns (miss-path per-row work) now that the
   memo rarely misses.
 
+### Run 12: list(map(dict.copy)) at return sites — search_p50_ms=0.0073 (discard)
+- Timestamp: 2026-09-24
+- What changed: both recall return sites switched from
+  `[r.copy() for r in rows]` to `list(map(dict.copy, rows))` — microbench
+  showed −30% @10 rows and −21% @50 rows (the q0/q4 median band and q5).
+- Result: p50 0.0073 vs 0.0051 best (+43%). BUT the shape split is
+  structural tells: q5 0.0126→0.0087 (−31%, exactly the predicted map
+  win) while q0 0.0063→0.0098 (+56%) and q1 0.0051→0.0080 (+57%);
+  q2/q3/q4 only +6-10%.
+- Insight: no micro-edit can cause shape-selective +56% explosions —
+  same signature as run 8 (q5 2.4x swing). Machine noise during q0/q1's
+  window, likely transient load at the start of the invocations. Protocol
+  is king: worse → discard + revert. The q5 prediction coming true
+  corroborates the microbench; retry the map form on a quiet machine
+  (recorded in ideas).
+- Next: probe machine state before burning another micro-experiment.
+
 ## Final summary (session close, 2026-09-24)
 
 **8 runs · 4 kept · 3 discarded · 0 crashed** (segment 0: runs 1–3;
