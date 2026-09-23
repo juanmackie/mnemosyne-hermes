@@ -15,6 +15,7 @@ import threading
 import hashlib
 import time
 import logging
+from collections import Counter
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, asdict
 
@@ -346,10 +347,15 @@ class PythonMemoryStorage:
     RECALL_CACHE_MAX = 256
 
     def _pending(self) -> Dict[str, int]:
-        """This thread's not-yet-written access counts, as {memory id: hits}."""
+        """This thread's not-yet-written access counts, as {memory id: hits}.
+
+        A Counter: recall batches whole id tuples through update(), which
+        counts at C speed — the per-row dict get/set loop was measurable on
+        the memo-hit path that dominates warm recall p50.
+        """
         pending = getattr(self._local, "pending", None)
         if pending is None:
-            pending = self._local.pending = {}
+            pending = self._local.pending = Counter()
         return pending
 
     def _flush_accesses(self) -> None:
@@ -362,7 +368,7 @@ class PythonMemoryStorage:
         pending = self._pending()
         if not pending:
             return
-        batch, self._local.pending = pending, {}
+        batch, self._local.pending = pending, Counter()
         self._local.pending_hits = 0
         try:
             now = time.time()
@@ -674,8 +680,7 @@ class PythonMemoryStorage:
             cached, ids = entry[1], entry[2]
             if cached:
                 pending = self._pending()
-                for r in cached:
-                    pending[r["id"]] = pending.get(r["id"], 0) + 1
+                pending.update(ids)
                 hits = getattr(self._local, "pending_hits", 0) + len(ids)
                 self._local.pending_hits = hits
                 if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
@@ -739,8 +744,7 @@ class PythonMemoryStorage:
         # the write that let a WAL checkpoint stall a read. See _flush_accesses().
         if results:
             pending = self._pending()
-            for r in results:
-                pending[r["id"]] = pending.get(r["id"], 0) + 1
+            pending.update(ids)
             hits = getattr(self._local, "pending_hits", 0) + len(results)
             self._local.pending_hits = hits
             if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
