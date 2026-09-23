@@ -1,0 +1,1 @@
+{"type":"config","name":"memory search speed (p50)","metricName":"search_p50_ms","metricUnit":"ms","bestDirection":"lower"}
