@@ -289,11 +289,25 @@ class PythonMemoryStorage:
         SQLite connections are not shareable across threads, so cache one per
         thread. Use close() to release it.
         """
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = self._new_conn()
-            self._local.conn = conn
-            self._local.search_cache = None
+        # try/except beats getattr-with-default on the every-recall path
+        # (CPython 3.11+: zero cost until the attribute is actually missing).
+        try:
+            conn = self._local.conn
+            if conn is not None:
+                return conn
+        except AttributeError:
+            pass
+        conn = self._new_conn()
+        self._local.conn = conn
+        self._local.search_cache = None
+        # First connection for this thread: seed the counters so the recall
+        # hot path can read them directly (no getattr-with-default per call).
+        # close() leaves them in place — ignored_changes must outlive a
+        # reconnect within the same thread.
+        if not hasattr(self._local, "pending_hits"):
+            self._local.pending_hits = 0
+        if not hasattr(self._local, "ignored_changes"):
+            self._local.ignored_changes = 0
         return conn
 
     def close(self) -> None:
@@ -357,10 +371,13 @@ class PythonMemoryStorage:
         is ~0.1us on the memo-hit path where a per-id Counter.update cost
         ~0.9us — and warm recall p50 lives entirely on that path.
         """
-        pending = getattr(self._local, "pending", None)
-        if pending is None:
+        # pending is never set to None (flush swaps in a fresh list), so
+        # AttributeError is the only miss case — try/except is the cheap path.
+        try:
+            return self._local.pending
+        except AttributeError:
             pending = self._local.pending = []
-        return pending
+            return pending
 
     def _flush_accesses(self) -> None:
         """Write out buffered recall access counts. Best effort by design.
@@ -391,8 +408,8 @@ class PythonMemoryStorage:
             conn.commit()
             # Record how many rows this flush touched so _search_version can
             # ignore them: access-count writes do not change searchable content.
-            ignored = getattr(self._local, "ignored_changes", 0)
-            self._local.ignored_changes = ignored + (conn.total_changes - before)
+            # _conn() ran above on this thread, so ignored_changes exists.
+            self._local.ignored_changes += conn.total_changes - before
         except sqlite3.Error:
             logger.warning("Failed to apply buffered access counts", exc_info=True)
         # Access counts just changed: memoized rows carry the old values.
@@ -616,8 +633,10 @@ class PythonMemoryStorage:
         # one, minus changes already attributed to access-count flushes (see
         # _flush_accesses): UPDATEs of access_count/last_accessed never touch
         # content_lower, so they must not invalidate the content snapshot.
+        # Callers all hold a connection from _conn() on this thread, which
+        # seeds ignored_changes — direct read, no getattr.
         return (conn.execute("PRAGMA data_version").fetchone()[0],
-                conn.total_changes - getattr(self._local, "ignored_changes", 0))
+                conn.total_changes - self._local.ignored_changes)
 
     # ponytail: linear native substring scans avoid building a posting index;
     # consider a persistent substring index only for much larger corpora.
@@ -677,10 +696,16 @@ class PythonMemoryStorage:
         Raises:
             ValueError: If query is empty
         """
-        if not query or not query.strip():
+        # isspace() answers the same emptiness question as strip() without
+        # allocating a copy of the query on every recall.
+        if not query or query.isspace():
             raise ValueError("query cannot be empty")
 
-        max_results = max(1, min(100, max_results))
+        # Two compares instead of two builtin calls; same clamp semantics.
+        if max_results < 1:
+            max_results = 1
+        elif max_results > 100:
+            max_results = 100
 
         conn = self._conn()
         memo_version = self._search_version(conn)
@@ -691,7 +716,7 @@ class PythonMemoryStorage:
             if cached:
                 pending = self._pending()
                 pending.append(ids)
-                hits = getattr(self._local, "pending_hits", 0) + len(ids)
+                hits = self._local.pending_hits + len(ids)
                 self._local.pending_hits = hits
                 if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
                     self._flush_accesses()
@@ -757,7 +782,7 @@ class PythonMemoryStorage:
         if results:
             pending = self._pending()
             pending.append(ids)
-            hits = getattr(self._local, "pending_hits", 0) + len(results)
+            hits = self._local.pending_hits + len(results)
             self._local.pending_hits = hits
             if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
                 self._flush_accesses()
