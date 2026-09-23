@@ -1,11 +1,13 @@
 # Autoresearch Dashboard: memory search speed (p50)
 
-**Runs:** 2 | **Kept:** 1 | **Discarded:** 1 | **Crashed:** 0
-**Baseline:** search_p50_ms: 0.0102ms (#1)
-**Best:** search_p50_ms: 0.0102ms (#1, (+0.0%))
+**Runs:** 1 | **Kept:** 1 | **Discarded:** 0 | **Crashed:** 0
+**Baseline:** search_p50_ms: 0.0114ms (#1)
+**Best:** search_p50_ms: 0.0114ms (#4, (+0.0%))
+
+
+>  **DATA INCONSISTENCY DETECTED** — worklog documents 4 experiments, JSONL segment 1 contains 1 runs (diff 3). Check backups before continuing.
 
 | # | commit | search_p50_ms | status | description |
 |---|--------|---------------|--------|-------------|
-| 1 | 986e062 | 0.0102ms (+0.0%) | keep | baseline: recall result memo + candidate cache already in tree; asserts pass |
-| 2 | 45fadba | 0.0119ms (+16.7%) | discard | Counter.update(ids) for pending access counts (batched, C-speed) — slower than baseline (0.0119 vs 0.0102); p99 also doubled, suspect machine noise; reverted |
+| 4 | 8c8da91 | 0.0114ms (+0.0%) | keep | segment-1 baseline: median-of-3 runner (AR_RUNS=3), unchanged code |
 

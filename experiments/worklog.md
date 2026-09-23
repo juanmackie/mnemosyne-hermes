@@ -53,6 +53,16 @@
   Re-baseline as segment 1 run 4; discard runs 2-3 stay segment 0 history.
   Retry the Counter idea once under the stabilized harness.
 
+### Run 4: segment-1 baseline (median-of-3) — search_p50_ms=0.0114 (keep)
+- Timestamp: 2026-09-23 18:14
+- What changed: nothing in src; harness now reports per-metric medians of
+  3 `measure.sh` invocations (commit `8c8da91` starts segment 1).
+- Result: p50 0.0114ms, p99 0.8487ms; assert_ok=1. q5 remains the worst
+  shape (p50 0.0239, p99 0.925 — flushes every ~5 calls at 50-row results).
+- Insight: the machine sits ~12% slower than run 1's fresh state; the
+  segment restart keeps comparisons honest. Segment-1 reference = 0.0114.
+- Next: retry the Counter pending batching under N=3 aggregation.
+
 ## Key Insights
 - The loop optimizes a two-regime workload: memo hits (p50) vs
   flush-invalidated re-queries (p99). Both are fair game for p50, since
