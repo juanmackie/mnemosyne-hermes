@@ -63,6 +63,20 @@
   segment restart keeps comparisons honest. Segment-1 reference = 0.0114.
 - Next: retry the Counter pending batching under N=3 aggregation.
 
+### Run 5: Counter.update(ids) pending batching — search_p50_ms=0.0108 (keep)
+- Timestamp: 2026-09-23 18:19
+- What changed: `_pending` is a `Counter`; memo + fresh recall paths batch
+  `pending.update(ids)` instead of a per-row Python get/set loop; flush
+  resets to a fresh Counter. (Commit `4bf3204`.)
+- Result: p50 0.0108ms (-5.3% vs 0.0114), p99 0.5592 (-34%). Shapes:
+  q0 -12%, q1 -13%, q2 -3%, q3 +4%, q4 -5%, q5 -20% (0.0239→0.0191).
+- Insight: the same change that "lost" run 2 wins under aggregation —
+  run 2 was noise. Biggest beneficiary is q5 (50-row results): its
+  frequent flushes made it the most pending-update-heavy shape.
+- Next: shave the remaining memo-hit overhead — `getattr(..., "pending_hits",
+  0)` + attribute round-trips per call; or attack q5's flush-amplified
+  re-queries (p99 still 0.74ms).
+
 ## Key Insights
 - The loop optimizes a two-regime workload: memo hits (p50) vs
   flush-invalidated re-queries (p99). Both are fair game for p50, since
