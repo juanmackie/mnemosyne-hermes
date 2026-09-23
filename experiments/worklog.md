@@ -110,6 +110,68 @@
   reconsider what remains: PRAGMA data_version (~1.25µs) is the largest
   single cost but is contract-bound (external-commit invalidation).
 
+### Run 8: memo-hit micro-trims (isspace, try/except, eager attrs) — search_p50_ms=0.0096 (discard)
+- Timestamp: 2026-09-24
+- What changed: `query.isspace()` (no strip() allocation), two-compare
+  clamp instead of max()/min(), `try/except` in `_conn`/`_pending`,
+  eager-init `ignored_changes`/`pending_hits` for direct reads.
+- Result: p50 0.0096 vs 0.0081 best (+18.5%), p99 0.7629. q5 p50 swung
+  0.0093 → 0.0226 (2.4x) — far beyond what these micro-edits could cause.
+- Insight: second episode of machine-state noise (day rollover/idle
+  shift). Protocol: worse → discard. The bundle is theoretically sound
+  (~0.3-0.4µs of fixed overhead) and should be retried when the machine
+  is quiet — recorded in `autoresearch.ideas.md`.
+- Next: FINALIZE (user request) — close the loop at run 7 / best 0.0081.
+
+## Final summary (session close, 2026-09-24)
+
+**8 runs · 4 kept · 3 discarded · 0 crashed** (segment 0: runs 1–3;
+segment 1: runs 4–8).
+
+| | segment 0 (N=1 era) | segment 1 (aggregated) |
+|---|---|---|
+| baseline | 0.0102ms (#1) | 0.0114ms (#4) |
+| **final best** | — | **0.0081ms (#7)** |
+| path | noise-burned | −5.3% → −24.6% → −5.8% |
+
+**Final tree state**: branch `autoresearch/search-speed-2026-09-23`,
+best commit `af2d969` (run 7 keep; checks.sh green). p50 improved
+**−28.1% vs segment-1 baseline** (−20.6% vs the original run-1 baseline);
+p99 0.341 → 0.426 vs run 1… (run-1 p99 itself was lucky-noise; vs
+segment-1 baseline p99 0.849 → 0.426, −49.8%).
+
+**Kept changes** (all in `src/lib/storage.py`):
+1. `Counter.update(ids)` pending batching (run 5) — superseded in form by
+   run 7, kept in spirit (batch over per-id Python loops).
+2. `r.copy()` returns instead of `dict(r)` (run 6).
+3. id-tuple batch pending, expand-at-flush (run 7) — the structural win;
+   also collapsed q5's flush interruptions.
+
+**Discards**: run 2 (Counter under N=1 noise), run 3 (noise probe),
+run 8 (micro-trims under machine-state drift — retry candidate).
+
+**How to resume**: `/autoresearch` with no args — state in
+`autoresearch.jsonl` (segment 1, best 0.0081), backlog in
+`autoresearch.ideas.md`, methodology in `autoresearch.md` → How to Run.
+
+## Key Insights
+- The loop optimizes a two-regime workload: memo hits (p50) vs
+  flush-invalidated re-queries (p99). Both are fair game for p50, since
+  shapes that flush mid-run (q0, q4, q5) drag the overall median.
+- **Measurement methodology was the real first deliverable**: ±8% single-
+  run noise made N=1 discards meaningless (run 2 vs run 5: same change,
+  opposite verdicts). Median-of-3 + 8% band → median-of-5 is now part of
+  the command contract (`AR_BASELINE`).
+- Profile-driven targeting beat guessing: the copy microbench correctly
+  predicted run 6's direction; its magnitude was amplified by baseline
+  luck, so direction yes / size no.
+- p50 at this scale is entirely memo-hit cost (misses+flushes stay <50%
+  of samples). Remaining fixed costs: PRAGMA data_version ~1.25µs
+  (contract-bound), fixed overhead ~0.3µs (run-8 retry), copies/pending
+  already harvested.
+- Machine state matters as much as code at microsecond scale: identical
+  code measured 0.0102 → 0.0110 → 0.0114 across a day.
+
 ## Key Insights
 - The loop optimizes a two-regime workload: memo hits (p50) vs
   flush-invalidated re-queries (p99). Both are fair game for p50, since

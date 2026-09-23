@@ -93,3 +93,31 @@ Dead ends / do not repeat:
   1.17–1.25x slower; the backfill guarantees non-NULL.
 
 Open ideas: `autoresearch.ideas.md` (seeded from `.auto/ideas.md`).
+
+### Segment 1 results (2026-09-23/24, median-of-3 runner + 8% tiebreak)
+
+Baseline run 4 = 0.0114ms → best run 7 = **0.0081ms (−28.1% keeps)**:
+
+- **Run 5 keep** `Counter.update(ids)` pending batching (−5.3%; later
+  superseded — under N=1 in run 2 the same idea *lost*, proving single-run
+  noise ≥8%).
+- **Run 6 keep** `r.copy()` instead of `dict(r)` at both recall return
+  sites (−24.6% p50, −45% p99). Profile + microbench picked the target.
+- **Run 7 keep** pending as a list of id-tuples, per-id expansion only at
+  flush (−5.8% via N=5 tiebreak; q5 p50 −44% from rarer flush→memo-clear
+  cycles). `ACCESS_FLUSH_DISTINCT` now bounds batches; hits cap (1024)
+  usually binds first. checks.sh green (21 unit + 97 pytest).
+- Discards: run 8 micro-trim bundle (isspace/try-except/eager attrs,
+  +18.5% under suspected machine-state noise — worth a retry); segment-0
+  runs 2–3 (noise-probe era).
+
+Methodology learnings that outlive this session:
+- Never trust N=1 at microsecond scale (±8% observed); median-of-3 with a
+  near-threshold median-of-5 tiebreak is the floor for keep/discard calls.
+- The p50 target is **memo-hit-only territory**: misses and flushes live
+  in p99 because they stay a minority of samples. Hit-path items ranked:
+  PRAGMA data_version ~1.25µs (irreducible — external-commit invalidation
+  contract), fresh-row copies (done, run 6), pending bookkeeping (done,
+  run 7), fixed overhead ~0.3µs (attempted, run 8 — retry).
+- Shape-level per-query medians are themselves noisy (q2 > q0 oddities);
+  read them for structure, decide on the aggregate.
