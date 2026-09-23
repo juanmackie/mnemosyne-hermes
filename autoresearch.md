@@ -123,6 +123,11 @@ Open ideas: `autoresearch.ideas.md` (seeded from `.auto/ideas.md`).
   confirmed AND diagnosed — stale foreign processes (hung unittest
   spinning since 6:57AM, duplicate ai_sprink services, ~28% CPU), not
   code, not DB. Resolve the noise source before the next experiment.
+- **Run 14 discard** 0.0065 (+27%, probe after kill): runaway
+  `frozen_gate.sh` recursion eliminated (user-approved; orphaned
+  self-nesting gates+unittests). Recovery proven — 5/6 shapes back to
+  run-11 quiet values; only intermittent single-window bursts remain.
+  Do NOT re-baseline: quiet 0.0051 is reachable; use N=5 tiebreaks.
 
 ### Segment 1 results (2026-09-23/24, median-of-3 runner + 8% tiebreak)
 

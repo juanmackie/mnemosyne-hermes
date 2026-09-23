@@ -218,6 +218,24 @@ run-8 micro-trim bundle first, in a quiet machine.
 - Next: resolve the noise source (kill stale processes with user
   consent), re-probe, then continue experiments.
 
+### Run 14: post-kill probe (unchanged code) — search_p50_ms=0.0065 (discard)
+- Timestamp: 2026-09-24
+- What changed: nothing in src. Environment: killed the runaway
+  `frozen_gate.sh` tree after user approval — root bash 6004
+  (self-nesting since 8:01AM, parent already dead = orphaned) plus both
+  gate layers and both unittest children (6 processes).
+- Result: p50 0.0065 vs 0.0051 (+27%) → discard. BUT shape detail shows
+  the kill worked: q3 0.0040 / q1 0.0052 / q4 0.0052 / q0 0.0067 /
+  q5 0.0118 all match run-11's quiet values — only q2 got hit by a
+  transient burst mid-window (0.0044→0.0066) and dragged the aggregate.
+- Insight: sustained noise (runaway gate recursion) is gone; what
+  remains is ordinary desktop interleaving (Chrome/webview/Telegram —
+  untouchable) hitting ~1 shape window per run. N=5 tiebreaks + retry
+  discipline are the right posture; do not re-baseline (the quiet
+  baseline 0.0051 is still reachable — 5/6 shapes proved it).
+- Next: run-12 retry — `list(map(dict.copy))` return swap (ideas-file
+  priority) on the now-mostly-quiet machine.
+
 ## Final summary (session close, 2026-09-24)
 
 **8 runs · 4 kept · 3 discarded · 0 crashed** (segment 0: runs 1–3;
