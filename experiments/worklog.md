@@ -123,6 +123,42 @@
   is quiet — recorded in `autoresearch.ideas.md`.
 - Next: FINALIZE (user request) — close the loop at run 7 / best 0.0081.
 
+## Session 2 (resumed 2026-09-24, `/autoresearch create`)
+
+Resumed from run 8 / best 0.0081ms (#7). Ideas backlog said: retry the
+run-8 micro-trim bundle first, in a quiet machine.
+
+### Run 9: segment-2 baseline (quiet-machine probe, unchanged code) — search_p50_ms=0.0108 (keep)
+- Timestamp: 2026-09-24
+- What changed: nothing (HEAD `d1e20d0`, tree clean) — probe only.
+- Result: p50 0.0108ms vs segment-1 best 0.0081 (+33%), p99 0.6535;
+  assert_ok=1. Same signature as run 8 (which read 0.0096): the machine,
+  not the code, had drifted.
+- Insight: comparing anything to 0.0081 in this machine state would
+  false-discard every experiment. Following the run-4 precedent (a +12%
+  shift opened segment 1), segment 2 re-baselines here at 0.0108.
+- Next: retry the run-8 memo-hit micro-trim bundle against 0.0108.
+
+### Run 10: memo-hit micro-trims retry (isspace, two-compare clamp, try/except, eager counters) — search_p50_ms=0.0100 (keep)
+- Timestamp: 2026-09-24
+- What changed: `query.isspace()` replaces the allocating `strip()` empty
+  check; two-compare clamp replaces `max(1, min(100, …))`; `_conn`/
+  `_pending` use try/except instead of getattr-with-default; `ignored_changes`
+  and `pending_hits` are seeded on first connection per thread so the recall
+  hot path reads them directly. (Commit `b0f7c3a`.)
+- Result: p50 0.0100ms (-7.4% vs 0.0108 baseline, within the 8% band →
+  N=5 tiebreak applied), p99 0.5895 (-9.8%); every shape ≤ +1% (q0 -28%,
+  q1 -19%, q2 -26%, q3 -8%, q5 -19% vs run 9). assert_ok=1;
+  checks.sh green (21 unit + 97 pytest).
+- Insight: the run-8 bundle was sound after all — its +18.5% was machine
+  drift, exactly as suspected. Lesson reinforced: when a theoretically
+  pure win "loses", probe the machine before burying the idea.
+- Next: biggest remaining p50 lever is flush-cycle cost — `_flush_accesses`
+  clears the ENTIRE `_recall_cache` (stale access_count), forcing full
+  re-queries on the next recall per shape; those misses are why q0/q4/q5
+  medians sit 1.5-2x above q2. Patch memoized rows in place at flush
+  (counts are known) instead of clearing → memo stays warm.
+
 ## Final summary (session close, 2026-09-24)
 
 **8 runs · 4 kept · 3 discarded · 0 crashed** (segment 0: runs 1–3;

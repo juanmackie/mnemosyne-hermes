@@ -94,6 +94,21 @@ Dead ends / do not repeat:
 
 Open ideas: `autoresearch.ideas.md` (seeded from `.auto/ideas.md`).
 
+### Segment 2 (2026-09-24 →, opened after +33% machine drift)
+
+- **Run 9 keep** baseline 0.0108ms (unchanged-code probe at `d1e20d0`;
+  drift vs segment-1 best 0.0081 matched run 8's signature — machine,
+  not code).
+- **Run 10 keep** 0.0100ms (−7.4%, N=5 tiebreak): run-8 micro-trim
+  bundle retried and kept — `isspace()` empty check, two-compare clamp,
+  try/except `_conn`/`_pending`, eager-seeded `ignored_changes`/
+  `pending_hits` direct reads (`b0f7c3a`). checks.sh green.
+- Next up: stop `_flush_accesses` from clearing the whole
+  `_recall_cache` — patch memoized rows' `access_count`/`last_accessed`
+  in place (flush knows the counts), keeping the memo warm across
+  flushes; those post-flush misses are why q0/q4/q5 p50 sits 1.5–2x
+  above q2.
+
 ### Segment 1 results (2026-09-23/24, median-of-3 runner + 8% tiebreak)
 
 Baseline run 4 = 0.0114ms → best run 7 = **0.0081ms (−28.1% keeps)**:

@@ -1,8 +1,8 @@
 # Ideas backlog — memory search speed (p50)
 
 Seeded from `.auto/ideas.md` (memory-search section) plus fresh reads of
-`src/lib/storage.py`. **Loop finalized 2026-09-24 at run 7 / best
-0.0081ms** — these are the open threads for a future session.
+`src/lib/storage.py`. **Session 2 resumed 2026-09-24: run 10 keep /
+segment-2 best 0.0100ms** — open threads below, updated as the loop goes.
 
 ## Tried this session (see worklog)
 
@@ -12,12 +12,9 @@ Seeded from `.auto/ideas.md` (memory-search section) plus fresh reads of
 - ~~id-tuple batch pending, expand-at-flush~~ — **kept, run 7**
   (`af2d969`): the structural win; `ACCESS_FLUSH_DISTINCT` now bounds
   batches, hits cap binds first.
-- **Memo-hit micro-trim bundle** (isspace-clamp, two-compare clamp,
-  try/except `_conn`/`_pending`, eager `ignored_changes`/`pending_hits`
-  for direct reads) — **discarded at run 8 under suspected machine-state
-  noise** (+18.5%, q5 swung 2.4x). Theoretically sound (~0.3–0.4µs of
-  fixed per-call overhead). **RETRY FIRST in a quiet machine**; the diff
-  is fully described in the run-8 worklog entry.
+- ~~Memo-hit micro-trim bundle~~ — **kept at run 10** (`b0f7c3a`, −7.4%
+  vs segment-2 baseline). Proves run 8's discard was machine drift: probe
+  the machine before burying a theoretically sound idea.
 
 ## Open — from .auto/ideas.md
 
