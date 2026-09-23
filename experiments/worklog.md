@@ -27,6 +27,19 @@
 - Next: shave the memo-hit path itself (batched pending updates, cheaper
   per-row fresh copies) — run 2.
 
+### Run 2: Counter.update(ids) for pending access counts — search_p50_ms=0.0119 (discard)
+- Timestamp: 2026-09-23 18:05
+- What changed: `_pending` now a `Counter`; memo + fresh paths batch
+  `pending.update(ids)` (C-speed) instead of a per-row Python get/set loop.
+- Result: p50 0.0119ms (+16.7% vs baseline 0.0102), p99 0.7114 (2.1x
+  worse); every shape's p50 rose. assert_ok=1.
+- Insight: Counter.update is strictly less work than the Python loop, so
+  the regression is almost certainly machine noise (p99 doubling across
+  ALL shapes supports this) — but protocol is king: worse → discard.
+  Noise floor at this scale is now a first-order concern.
+- Next: revert + immediate baseline re-run (run 3) to measure the noise
+  floor before trusting sub-20% deltas.
+
 ## Key Insights
 - The loop optimizes a two-regime workload: memo hits (p50) vs
   flush-invalidated re-queries (p99). Both are fair game for p50, since
