@@ -123,11 +123,15 @@ Open ideas: `autoresearch.ideas.md` (seeded from `.auto/ideas.md`).
   confirmed AND diagnosed — stale foreign processes (hung unittest
   spinning since 6:57AM, duplicate ai_sprink services, ~28% CPU), not
   code, not DB. Resolve the noise source before the next experiment.
-- **Run 14 discard** 0.0065 (+27%, probe after kill): runaway
-  `frozen_gate.sh` recursion eliminated (user-approved; orphaned
-  self-nesting gates+unittests). Recovery proven — 5/6 shapes back to
-  run-11 quiet values; only intermittent single-window bursts remain.
-  Do NOT re-baseline: quiet 0.0051 is reachable; use N=5 tiebreaks.
+- **Run 15 discard** 0.0057 (+11.8%): map retry on the recovered
+  machine — q5 −32% again (real, but above median), q4 burst-hit
+  against prediction. **Map PARKED** (two discards; median-band signal
+  below noise). Only remaining honest hit-path micro: PRAGMA
+  cursor-reuse (microbench first). Miss-path ideas stay p99-only.
+- **Run 16 discard** 0.0086 (+69%): cursor-reuse microbench was real
+  (−0.25µs) but frozen_gate respawned under a live node supervisor —
+  CPU 96%, uniform elevation. **One retry owed** when the machine is
+  usable; do not re-litigate after that.
 
 ### Segment 1 results (2026-09-23/24, median-of-3 runner + 8% tiebreak)
 

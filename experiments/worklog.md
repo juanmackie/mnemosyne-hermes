@@ -236,6 +236,43 @@ run-8 micro-trim bundle first, in a quiet machine.
 - Next: run-12 retry — `list(map(dict.copy))` return swap (ideas-file
   priority) on the now-mostly-quiet machine.
 
+### Run 15: map(dict.copy) retry — search_p50_ms=0.0057 (discard)
+- Timestamp: 2026-09-24
+- What changed: identical to run 12 — `list(map(dict.copy, rows))` at
+  both recall return sites.
+- Result: p50 0.0057 vs 0.0051 best (+11.8%) — clear of the 8% band,
+  so N=3 stood, no tiebreak. Shape split vs run 11: q5 0.0126→0.0086
+  (−32%, second corroboration of the microbench), q0 −0.2µs ≈
+  predicted, q3 +0.5µs ≈ predicted real regression, q1/q2 slightly up
+  (noise-sized), **q4 +0.7µs contradicting its −0.37µs prediction** —
+  a single-window burst, same failure mode as run 12.
+- Insight: PARK the map idea. Its genuine wins (q5) sit ABOVE the
+  aggregate median; its median-band effect (q0/q4) is smaller than the
+  burst noise, so it cannot keep under N=3. Not thrashing further —
+  structurally different ideas only from here.
+- Next: last honest hit-path micro is PRAGMA data_version cursor reuse
+  (cached cursor avoids Connection.execute's per-call cursor alloc);
+  microbench first, burn a run only if the saving is real.
+
+### Run 16: PRAGMA cursor reuse — search_p50_ms=0.0086 (discard)
+- Timestamp: 2026-09-24
+- What changed: `_conn` creates a dedicated `version_cursor` alongside
+  the connection; `_search_version` reuses it instead of
+  `conn.execute(...)` (which allocates a cursor per call). Microbench
+  showed −0.25µs/invocation (−8.1% of the PRAGMA path).
+- Result: p50 0.0086 vs 0.0051 (+69%) — uniformly elevated q0–q4
+  (+56–73%), q5 relatively flat: sustained-noise signature, not the
+  code (removing an allocation cannot regress 69%). Diagnosis: the
+  frozen_gate tree had RESPAWNED (fresh temp dir `FK05R2`) under a
+  live node supervisor (PID 24108, the other session), CPU 96% —
+  machine effectively saturated mid-run. Reverted per protocol.
+- Insight: an idea's first loss can be 100% environmental — the
+  microbench delta (−0.25µs) is still credible. One retry is owed when
+  the machine is usable; this is a run-8-class discard, not run-15-class.
+- Next: machine is saturated by the user's parallel work (other agent
+  session + android build + browser) — ask the user how to proceed
+  before burning more runs.
+
 ## Final summary (session close, 2026-09-24)
 
 **8 runs · 4 kept · 3 discarded · 0 crashed** (segment 0: runs 1–3;
