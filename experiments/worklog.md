@@ -159,6 +159,32 @@ run-8 micro-trim bundle first, in a quiet machine.
   medians sit 1.5-2x above q2. Patch memoized rows in place at flush
   (counts are known) instead of clearing → memo stays warm.
 
+### Run 11: flush patches memo in place instead of clearing — search_p50_ms=0.0051 (keep)
+- Timestamp: 2026-09-24
+- What changed: `_flush_accesses` applies its known per-id increments to
+  memoized rows (`access_count += n`, `last_accessed = now`) instead of
+  `_recall_cache.clear()`. Sound because a local flush does not bump
+  `_search_version`: `ignored_changes` cancels `total_changes`, and
+  `PRAGMA data_version` only moves on OTHER connections' commits — so
+  version-valid rows stay valid. Failure path keeps the old conservative
+  clear. (Commit `4dbf2dc`.)
+- Result: p50 0.0051ms (-49% vs 0.0100 best, clear of the 8% band — no
+  tiebreak needed), p99 0.3762 (-36%); q0 -47%, q1 -43%, q2 -41%,
+  q3 -51%, q4 -52%, q5 -14% vs run 10. assert_ok=1; checks.sh green
+  (21 unit + 97 pytest, including the two cache/buffer contract tests).
+- Insight: the win is broader than flush-heavy shapes because pending
+  counts are thread-global — ANY shape's flush used to clear EVERY
+  shape's memo entry. Warm-memo-across-flush also removed the
+  post-flush full re-query that inflated q0/q4/q5. Segment-2 best now
+  0.0051 (-52.8% vs segment-2 baseline; vs the original run-1 baseline
+  0.0102 this is -50% even WITH the machine reading slow today).
+- Next: q5 (50-row results) is now the lone outlier at 0.0126 vs
+  ~0.004-0.006 elsewhere — its per-recall work is 50 r.copy()s + a
+  50-id pending tuple. Investigate copy cost (slots? prebuilt column
+  order?) or narrowing so q5 returns fewer rows earlier; also revisit
+  `SELECT *` → explicit columns (miss-path per-row work) now that the
+  memo rarely misses.
+
 ## Final summary (session close, 2026-09-24)
 
 **8 runs · 4 kept · 3 discarded · 0 crashed** (segment 0: runs 1–3;

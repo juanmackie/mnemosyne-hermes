@@ -103,11 +103,15 @@ Open ideas: `autoresearch.ideas.md` (seeded from `.auto/ideas.md`).
   bundle retried and kept — `isspace()` empty check, two-compare clamp,
   try/except `_conn`/`_pending`, eager-seeded `ignored_changes`/
   `pending_hits` direct reads (`b0f7c3a`). checks.sh green.
-- Next up: stop `_flush_accesses` from clearing the whole
-  `_recall_cache` — patch memoized rows' `access_count`/`last_accessed`
-  in place (flush knows the counts), keeping the memo warm across
-  flushes; those post-flush misses are why q0/q4/q5 p50 sits 1.5–2x
-  above q2.
+- **Run 11 keep** 0.0051ms (−49%, clear of band): flush patches
+  memoized rows in place instead of clearing `_recall_cache`
+  (`4dbf2dc`). Local flushes don't bump `_search_version`
+  (`ignored_changes` cancels `total_changes`), so warm entries stay
+  valid; one shape's flush also used to nuke every other shape's memo.
+  checks.sh green. **Segment-2 best: 0.0051ms (-52.8% vs baseline).**
+- Next up: q5 (50-row wide query) is the lone outlier at 0.0126 vs
+  ~0.004–0.006 elsewhere — attack its 50× `r.copy()` + 50-id pending
+  cost, and/or `SELECT *` → explicit columns on the miss path.
 
 ### Segment 1 results (2026-09-23/24, median-of-3 runner + 8% tiebreak)
 

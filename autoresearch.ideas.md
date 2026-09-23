@@ -15,6 +15,10 @@ segment-2 best 0.0100ms** — open threads below, updated as the loop goes.
 - ~~Memo-hit micro-trim bundle~~ — **kept at run 10** (`b0f7c3a`, −7.4%
   vs segment-2 baseline). Proves run 8's discard was machine drift: probe
   the machine before burying a theoretically sound idea.
+- ~~Keep the memo warm across flushes~~ — **kept at run 11** (`4dbf2dc`,
+  −49%): flush patches memoized rows in place instead of clearing
+  `_recall_cache`. Biggest win of the whole loop; q5 (50-row) is now the
+  lone slow shape.
 
 ## Open — from .auto/ideas.md
 
