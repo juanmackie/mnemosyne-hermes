@@ -410,10 +410,36 @@ class PythonMemoryStorage:
             # ignore them: access-count writes do not change searchable content.
             # _conn() ran above on this thread, so ignored_changes exists.
             self._local.ignored_changes += conn.total_changes - before
+            committed = True
         except sqlite3.Error:
             logger.warning("Failed to apply buffered access counts", exc_info=True)
-        # Access counts just changed: memoized rows carry the old values.
-        self._recall_cache.clear()
+            committed = False
+        if committed:
+            # Patch memoized rows in place instead of clearing the memo.
+            # The flush knows exactly which ids changed and by how much, and
+            # a version-valid row was read from this same DB state: a local
+            # flush does not bump _search_version (ignored_changes cancels
+            # total_changes, and PRAGMA data_version only moves on OTHER
+            # connections' commits). Clearing forced a full re-query on the
+            # next recall per shape — those post-flush misses are what kept
+            # the flush-heavy shapes' p50 1.5-2x above the pure-memo shapes.
+            # Entries already stale for other reasons stay stale (their
+            # entry[0] no longer matches) and are discarded on next read.
+            try:
+                for entry in self._recall_cache.values():
+                    for r in entry[1]:
+                        inc = counts.get(r["id"])
+                        if inc is not None:
+                            r["access_count"] = r["access_count"] + inc
+                            r["last_accessed"] = now
+            except Exception:
+                # Best effort: never risk serving stale rows if patching
+                # fails — fall back to the old invalidation.
+                self._recall_cache.clear()
+        else:
+            # Failed UPDATE: the DB may hold partial work — old conservative
+            # invalidation applies.
+            self._recall_cache.clear()
         self._maybe_checkpoint()
 
     def _classify_schema(self, conn: sqlite3.Connection) -> str:
