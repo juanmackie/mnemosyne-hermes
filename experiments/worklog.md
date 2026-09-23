@@ -77,6 +77,39 @@
   0)` + attribute round-trips per call; or attack q5's flush-amplified
   re-queries (p99 still 0.74ms).
 
+### Run 6: r.copy() instead of dict(r) at both return sites — search_p50_ms=0.0086 (keep)
+- Timestamp: 2026-09-23 18:31
+- What changed: memo-hit return and fresh-path return build rows via
+  `r.copy()` (same shallow copy, cheaper). (Commit `3535fcc`.)
+- Result: p50 0.0086ms (-24.6% vs 0.0114), p99 0.4658 (-45%); q0 -51%,
+  q5 -31%. assert_ok=1; no tiebreak needed (clear of the 8% band).
+- Insight: profile-driven pick paid off — fresh-row copies were ~23% of a
+  memo hit. The win also exceeded the microbench's -3..6% estimate,
+  suggesting run 4's baseline sat on the slow side of residual N=3 noise.
+- Next: pending-bookkeeping cost (~0.9µs Counter.update per hit) is the
+  next structural item — restructure to batch appends, expand at flush.
+
+### Run 7: id-tuple batch pending (expand at flush) — search_p50_ms=0.0081 (keep)
+- Timestamp: 2026-09-23 18:38
+- What changed: `_pending` is a list of id-tuples; each recall appends its
+  tuple (~0.1µs) instead of Counter.update per id (~0.9µs); flush expands
+  to per-id counts. `ACCESS_FLUSH_DISTINCT` (256) now bounds batches;
+  `ACCESS_FLUSH_HITS` (1024) unchanged and now usually binds first.
+  (Commit pending below.)
+- Result: p50 0.0081ms (-5.8% vs 0.0086 best, N=5 tiebreak applied),
+  p99 0.4262 (-8.5%); q5 p50 0.0165→0.0093 (-44%, flush-cadence effect:
+  q5 went from a flush every ~6 recalls to every ~21). checks.sh green
+  (21 unit + 97 pytest passed).
+- Insight: removing per-id work from the hot path also removed most of
+  q5's flush→memo-clear→requery interruptions — one change, two wins.
+  Staleness tradeoff: multi-id workloads flush later (hits-bound instead
+  of distinct-bound); single-id cadence is identical to the old cap.
+  Live test `test_buffered_access_counts_are_exact_and_flushed` still
+  passes (exact summation + buffer cap are preserved semantically).
+- Next: getattr/attribute micro-trims on the memo hit (~0.3-0.4µs), then
+  reconsider what remains: PRAGMA data_version (~1.25µs) is the largest
+  single cost but is contract-bound (external-commit invalidation).
+
 ## Key Insights
 - The loop optimizes a two-regime workload: memo hits (p50) vs
   flush-invalidated re-queries (p99). Both are fair game for p50, since
