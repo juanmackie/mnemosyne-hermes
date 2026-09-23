@@ -16,3 +16,8 @@
 | 14 | 7cc4993 | 0.0065ms (-32.4%) | discard | post-kill probe, unchanged code — runaway frozen_gate tree eliminated (self-nesting gates+unittests, orphaned); recovery: q3/q1/q4/q0/q5 back to run-11 quiet numbers, only q2 burst-hit dragging aggregate (+27%) |
 | 15 | 1bd961e | 0.0057ms (-47.2%) | discard | map(dict.copy) retry on recovered machine — +11.8% (N=3 clear, no tiebreak); q5 -32% corroborated twice (above median), q4 contradicted prediction (burst); PARKED; reverted |
 | 16 | 1bd961e | 0.0086ms (-20.4%) | discard | PRAGMA cursor reuse (-0.25us microbench) — +69% uniform elevation: frozen_gate RESPAWNED (live node supervisor, CPU 96%), not the code; reverted; one retry owed when machine usable |
+
+---
+
+**LOOP CLOSED 2026-09-24 (user request)** — all segments: **16 runs · 8 kept · 8 discarded · 0 crashed**.
+**All-time best: search_p50_ms 0.0051ms (#11, `4dbf2dc`) — −50.0% vs original run-1 baseline.**

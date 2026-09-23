@@ -58,3 +58,8 @@ docs/VALIDATION_RESULTS.md
 
 # Dream-RSI run state (self-ignores its bulky work/ + trace_pool/; this entry hides everything)
 .dream-rsi/
+
+# Autoresearch loop state (local)
+autoresearch.jsonl.backup.*
+.autoresearch-off
+autoresearch.jsonl.tmp.*

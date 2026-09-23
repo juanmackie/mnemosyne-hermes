@@ -273,7 +273,52 @@ run-8 micro-trim bundle first, in a quiet machine.
   session + android build + browser) — ask the user how to proceed
   before burning more runs.
 
-## Final summary (session close, 2026-09-24)
+## Session 2 final summary (loop closed by user request, 2026-09-24)
+
+**16 runs total · 8 kept · 8 discarded · 0 crashed**
+(segment 0: runs 1–3 · segment 1: runs 4–8 · segment 2: runs 9–16).
+
+| | segment 0 | segment 1 | segment 2 |
+|---|---|---|---|
+| baseline | 0.0102ms (#1) | 0.0114ms (#4) | 0.0108ms (#9) |
+| **best in segment** | 0.0102ms | 0.0081ms (#7) | **0.0051ms (#11)** |
+| kept | 1 | 4 | 3 |
+
+**Final best: search_p50_ms = 0.0051ms at commit `4dbf2dc` (run 11)**
+— −52.8% vs segment-2 baseline, −55.3% vs segment-1 baseline,
+**−50.0% vs the original run-1 baseline (0.0102ms)**; p99 0.6535 →
+0.3762 (−42.4% vs segment-2 baseline). Final tree = HEAD (all kept
+changes present, all discards reverted); checks.sh green (21 unit +
+97 pytest) as of run 11.
+
+**Kept changes** (all in `src/lib/storage.py`):
+1. Run 5 — `Counter.update(ids)` pending batching (form superseded by
+   run 7, kept in spirit).
+2. Run 6 — `r.copy()` returns instead of `dict(r)` (−24.6%).
+3. Run 7 — id-tuple batch pending, expand-at-flush (−5.8%, q5 −44%).
+4. Run 10 — memo-hit micro-trims: `isspace()` empty check, two-compare
+   clamp, try/except `_conn`/`_pending`, eager-seeded thread-local
+   counters (−7.4%; the run-8 idea, vindicated).
+5. Run 11 — **flush patches memoized rows in place instead of clearing
+   `_recall_cache`** (−49%): the structural win of the whole loop;
+   one shape's flush used to nuke every shape's memo.
+
+**Environment lessons (runs 9–16)**: sustained machine drift (+33%)
+triggered the segment-2 re-baseline; run-12/15/16 losses traced to
+(a) single-window desktop bursts and (b) a runaway `frozen_gate.sh`
+self-recursion (killed with user consent; respawned under a live
+supervisor → CPU 96%). Microbench-corroborated-but-noise-lost ideas:
+map(dict.copy) **parked** (q5 −32% real, above the median); PRAGMA
+cursor-reuse **one retry owed** (−0.25µs, lost run 16 purely to CPU
+saturation). Miss-path ideas (trigram, SELECT-columns, namespaced
+candidate cache) no longer move p50 — the warm memo means the timed
+phase has zero misses; they are p99/cold-start levers only.
+
+**Finalized at run 16 / best 0.0051ms (#11) per user request.**
+Resume: `/autoresearch` (state in `autoresearch.jsonl`, backlog in
+`autoresearch.ideas.md`).
+
+## Key Insights
 
 **8 runs · 4 kept · 3 discarded · 0 crashed** (segment 0: runs 1–3;
 segment 1: runs 4–8).

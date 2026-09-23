@@ -1,8 +1,9 @@
 # Ideas backlog — memory search speed (p50)
 
 Seeded from `.auto/ideas.md` (memory-search section) plus fresh reads of
-`src/lib/storage.py`. **Session 2 resumed 2026-09-24: run 10 keep /
-segment-2 best 0.0100ms** — open threads below, updated as the loop goes.
+`src/lib/storage.py`. **LOOP CLOSED 2026-09-24 at run 16 / best
+0.0051ms (run 11, `4dbf2dc`)** — open threads below are what a future
+session picks up (top item: the owed cursor-reuse retry).
 
 ## Tried this session (see worklog)
 
@@ -24,6 +25,12 @@ segment-2 best 0.0100ms** — open threads below, updated as the loop goes.
   corroborated) but above the aggregate median; the median-band effect
   (q0/q4) is smaller than single-window burst noise under N=3. Do not
   retry a third time unless sampling methodology improves.
+
+- **PRAGMA cursor reuse** (cached `version_cursor`; `conn.execute`
+  allocates a cursor per call) — microbench proved −0.25µs/invocation
+  (−8.1% of the PRAGMA path ≈ −5% of p50). **Run 16 lost to CPU
+  saturation (frozen_gate respawn), not the idea — ONE RETRY OWED**,
+  then decide; do not re-litigate beyond that.
 
 ## Open — from .auto/ideas.md
 

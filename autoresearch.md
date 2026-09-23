@@ -133,6 +133,16 @@ Open ideas: `autoresearch.ideas.md` (seeded from `.auto/ideas.md`).
   CPU 96%, uniform elevation. **One retry owed** when the machine is
   usable; do not re-litigate after that.
 
+## Loop closed (2026-09-24, user request)
+
+Final state: **16 runs · 8 kept · 8 discarded · 0 crashed**; best
+`search_p50_ms = 0.0051ms` (run 11, `4dbf2dc`) — −50.0% vs the
+original run-1 baseline. All kept changes are in `src/lib/storage.py`
+(runs 5/6/7/10/11); all discards reverted. Outstanding backlog lives
+in `autoresearch.ideas.md` — cursor-reuse retry (owed, −0.25µs
+microbenched), map(dict.copy) parked, miss-path ideas are p99-only.
+Resume with `/autoresearch`.
+
 ### Segment 1 results (2026-09-23/24, median-of-3 runner + 8% tiebreak)
 
 Baseline run 4 = 0.0114ms → best run 7 = **0.0081ms (−28.1% keeps)**:
