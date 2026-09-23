@@ -119,6 +119,10 @@ Open ideas: `autoresearch.ideas.md` (seeded from `.auto/ideas.md`).
   has ZERO misses — miss-path ideas (trigram, SELECT-columns, namespaced
   candidate cache, SQL-string cache) no longer move p50; they are
   p99/cold-start levers only and will not keep under this primary.
+- **Run 13 discard** 0.0087 (+71%, probe, unchanged code): noise
+  confirmed AND diagnosed — stale foreign processes (hung unittest
+  spinning since 6:57AM, duplicate ai_sprink services, ~28% CPU), not
+  code, not DB. Resolve the noise source before the next experiment.
 
 ### Segment 1 results (2026-09-23/24, median-of-3 runner + 8% tiebreak)
 

@@ -202,6 +202,22 @@ run-8 micro-trim bundle first, in a quiet machine.
   (recorded in ideas).
 - Next: probe machine state before burning another micro-experiment.
 
+### Run 13: quiet-machine probe (unchanged code) — search_p50_ms=0.0087 (discard)
+- Timestamp: 2026-09-24
+- What changed: nothing (HEAD `0af5ea4` = run-12 log commit).
+- Result: p50 0.0087 vs 0.0051 best (+71%); q0 0.0099 / q1 0.0088 —
+  identical to run 12's "exploded" shapes, confirming the drift started
+  mid-run-12 and persisted. p99 0.6637.
+- Insight: ROOT CAUSE FOUND — stale processes from other sessions:
+  `python -m unittest discover` PID 32516 spinning since 6:57AM (~47%
+  of a core for 1.5h = hung test loop), a second spinning unittest in
+  `Temp\ai-sprink-gate.*`, and duplicate `ai_sprink.service`/`gate`
+  pairs; total load ~28%. Run 11's 0.0051 on the same corpus DB 30min
+  earlier proves neither code nor DB caused this. Machine-state noise
+  was never "atmosphere" — it was attributable, observable load.
+- Next: resolve the noise source (kill stale processes with user
+  consent), re-probe, then continue experiments.
+
 ## Final summary (session close, 2026-09-24)
 
 **8 runs · 4 kept · 3 discarded · 0 crashed** (segment 0: runs 1–3;

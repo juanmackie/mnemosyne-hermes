@@ -1,6 +1,6 @@
 # Autoresearch Dashboard: memory search speed (p50)
 
-**Runs:** 4 | **Kept:** 3 | **Discarded:** 1 | **Crashed:** 0
+**Runs:** 5 | **Kept:** 3 | **Discarded:** 2 | **Crashed:** 0
 **Baseline:** search_p50_ms: 0.0108ms (#9)
 **Best:** search_p50_ms: 0.0051ms (#11, -52.8%)
 
@@ -12,3 +12,4 @@
 | 10 | b0f7c3a | 0.0100ms (-7.4%) | keep | retry of run-8 memo-hit micro-trims (isspace no-alloc check, two-compare clamp, try/except _conn/_pending, eager-seeded counters) — N=5 tiebreak, every shape <= +1%, p99 -9.8%; checks.sh green (21+97) |
 | 11 | 4dbf2dc | 0.0051ms (-52.8%) | keep | flush patches memoized rows in place instead of clearing _recall_cache — memo stays warm across flushes, one shape's flush no longer nukes other shapes' entries; -49% vs best (clear of band), p99 -36%, every shape improved; checks.sh green (21+97) |
 | 12 | b46c882 | 0.0073ms (-32.4%) | discard | list(map(dict.copy)) at return sites — 0.0073 vs 0.0051 best (+43%); q5 -31% as predicted but q0/q1 +56% (shape-selective noise signature); reverted; q5 win corroborated, retry on quiet machine |
+| 13 | 0af5ea4 | 0.0087ms (-19.4%) | discard | quiet-machine probe, unchanged code — 0.0087 vs 0.0051 (+71%): noise confirmed; root cause = stale foreign processes (spinning unittests since 6:57AM + duplicate ai_sprink services, ~28% CPU); no code change |
