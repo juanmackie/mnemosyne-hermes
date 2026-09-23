@@ -11,10 +11,26 @@
   are historical context only; run 1 re-baselines here.
 
 ## Baseline
-Pending (run 1).
+- **Run 1** (commit `986e062`): search_p50_ms=**0.0102ms** ·
+  search_p99_ms=0.3406ms · assert_ok=1 · per-shape p50:
+  q0 0.0130 / q1 0.0059 / q2 0.0047 / q3 0.0061 / q4 0.0105 / q5 0.0132
+
+### Run 1: baseline — search_p50_ms=0.0102 (keep)
+- Timestamp: 2026-09-23 (session start)
+- What changed: no code change; setup commit `986e062` measured as-is.
+- Result: p50 0.0102ms, p99 0.3406ms; assert_ok=1; all six shapes ≤0.0132ms p50.
+- Insight: p50 is already memo-dominated (~5–13µs) — the `_recall_cache`
+  result memo (d0b00bc) absorbs most of the 60 timed reps; p99 0.34ms is
+  the periodic flush→clear-memo→re-query tail. q5 (50-row results) hits
+  the 256-distinct-id flush cap every ~5 calls so its p50 sits highest;
+  q2 (2-row results) never flushes in-run → cheapest pure-memo shape.
+- Next: shave the memo-hit path itself (batched pending updates, cheaper
+  per-row fresh copies) — run 2.
 
 ## Key Insights
-(experiment by experiment)
+- The loop optimizes a two-regime workload: memo hits (p50) vs
+  flush-invalidated re-queries (p99). Both are fair game for p50, since
+  shapes that flush mid-run (q0, q4, q5) drag the overall median.
 
 ## Next Ideas
 See `../autoresearch.ideas.md`.
