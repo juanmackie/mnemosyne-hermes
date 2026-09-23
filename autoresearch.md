@@ -19,6 +19,13 @@ unfiltered (limit=50).
 `.auto/measure.sh`; prints `METRIC name=number` lines. Under plain
 PowerShell invoke it as `bash ./autoresearch.sh`.
 
+Sampling: each run is the **median of AR_RUNS (default 3) invocations**
+(single-run noise measured ±8% — never trust N=1 at this scale). When
+`AR_BASELINE=<current best primary>` is set and the median lands within
+8% of it, two extra samples are taken (median-of-5) so noise cannot flip
+the keep/discard decision. Experiments pass `AR_BASELINE` at invocation;
+re-baselines do not.
+
 ## Files in Scope
 - `src/lib/storage.py` — the whole recall path: the `instr(content_lower)`
   SQL, covering indexes (`idx_memories_recall`, `idx_memories_rank`),

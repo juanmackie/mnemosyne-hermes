@@ -51,6 +51,32 @@ while [ "$i" -le "$RUNS" ]; do
 done
 export AR_OUT
 
+# Adaptive tiebreak: near-threshold results get 2 more samples (median-of-5)
+# so ±noise cannot flip a keep/discard. AR_BASELINE = current best primary.
+if [ -n "${AR_BASELINE:-}" ] && [ "$RUNS" -eq 3 ]; then
+    MED="$("$PYBIN" -c '
+import os, statistics
+xs = [float(l.split("=", 1)[1]) for l in os.environ["AR_OUT"].splitlines()
+      if l.startswith("METRIC search_p50_ms=")]
+print(f"{statistics.median(xs):g}")')"
+    DEC="$("$PYBIN" -c '
+import os, sys
+med, base = float(sys.argv[1]), float(sys.argv[2])
+rel = abs(med - base) / base if base else 0.0
+print("tie" if rel < 0.08 else "clear")' "$MED" "$AR_BASELINE")"
+    if [ "$DEC" = "tie" ]; then
+        i=1
+        while [ "$i" -le 2 ]; do
+            out="$(bash "$ROOT/.auto/measure.sh")"
+            AR_OUT="${AR_OUT}${out}
+"
+            i=$((i + 1))
+        done
+        export AR_OUT
+        RUNS=5
+    fi
+fi
+
 "$PYBIN" - <<'PYEOF'
 import os, statistics, sys
 
