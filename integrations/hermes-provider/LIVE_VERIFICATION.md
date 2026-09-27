@@ -15,6 +15,7 @@ is given, plus the evidence already gathered without touching live state.
 | One registration, correct id | `python tests/test_provider_loader.py` | exactly 1 provider, `name == "mnemosyne"` |
 | Bare venv (no engine) | same test, engine import blocked | module imports, `is_available() is False`, reason names the pin, `doctor` exits 1 |
 | Engine present | same test, engine importable | `is_available() is True` |
+| Compression hook (provider boundary) | `python tests/test_provider_db_path.py` | 22 checks passed, including bounded `on_pre_compress` context/checkpoint creation and required-checkpoint failure handling; does not prove live gateway invocation |
 | Engine/installer never diverges silently | `scripts/engine-parity-check.sh <venv>` | 81/81 engine files match the wheel RECORD; stray file → exit 1; modified file → exit 1 |
 | Installer never writes first | `./install.sh --dry-run --hermes-home "$(mktemp -d)"` | plan printed; `HERMES_HOME` left empty (no symlink, no config) |
 | Installer refuses blind runs | `./install.sh --venv … </dev/null` | exit 1, "refusing to install without confirmation" |
@@ -83,11 +84,17 @@ Run in order; stop at the first failure and record it rather than continuing.
    engine's bank. This is the storage-safety contract; verify it on the live
    bank rather than trusting the unit tests.
 
-8. **Compression checkpoint exercised.** Trigger a context compression in a long
-   session and confirm it completes. Note the audit finding F3: this provider
-   does **not** override `on_pre_compress`, so it contributes nothing to the
-   summary prompt by design — the check is that nothing breaks, not that text is
-   contributed.
+8. **Compression hook exercised.** Trigger a context compression in a long
+   session and confirm it completes and the provider's bounded `on_pre_compress`
+   excerpts appear in the compression input. If
+   `memory.mnemosyne.require_checkpoint` is enabled for this test, confirm a
+   bounded atomic v1 checkpoint is written under
+   `$HERMES_HOME/mnemosyne/checkpoints`; otherwise, no checkpoint is expected.
+   This is a live-only check: the engine-free test above covers provider-boundary
+   behavior, not invocation by the live gateway. Note F3: when a required
+   checkpoint fails, the provider raises `CheckpointError`, but Hermes 0.18.2/
+   0.19.0 catches provider-hook exceptions and continues compression. This is not
+   an end-to-end fail-closed guarantee.
 
 9. **Tool count and tool calls.** Log the tool schemas the manager exposes
    (`get_tool_schemas()` length) and make one real tool call
