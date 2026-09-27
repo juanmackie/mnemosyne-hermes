@@ -105,8 +105,8 @@ cargo test --features python --lib orchestration::actors::reviewer::tests
 
 **Step 3: Run Python tests**
 ```bash
-uv run pytest tests/orchestration/test_reviewer_agent.py -v
-# All tests should pass (requires compatible Python version)
+uv run pytest tests/orchestration/test_agent_coordination.py -k reviewer -v
+# Exercises the production ReviewerAgent quality-gate path (requires compatible Python version)
 ```
 
 **Step 4: Verify Python-Rust integration**
@@ -306,7 +306,7 @@ RUST_LOG=mnemosyne_core::orchestration::actors::reviewer=debug \
   orchestration::actors::reviewer::tests::test_pattern_matching_fallback
 
 # 3. Check Python side
-uv run pytest tests/orchestration/test_reviewer_agent.py -v -s
+uv run pytest tests/orchestration/test_agent_coordination.py -k reviewer -v -s
 ```
 
 ### Issue: Build Performance
