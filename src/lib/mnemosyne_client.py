@@ -4,14 +4,15 @@ Python client for Mnemosyne.
 Provides async interface for storing and retrieving memories from Python code.
 Uses Python-native SQLite storage — no subprocess overhead.
 """
+
 import os
-from typing import List, Optional, Dict, Any
+from typing import Any
 from urllib.parse import urlparse
 
 from .storage import PythonMemoryStorage
 
 
-def resolve_db_path(db_path: Optional[str] = None) -> str:
+def resolve_db_path(db_path: str | None = None) -> str:
     """Resolve a usable SQLite file path from an explicit path or DATABASE_URL.
 
     SQLite only understands filesystem paths (and the ``:memory:`` special
@@ -63,11 +64,7 @@ class MnemosyneClient:
     No subprocess overhead — all operations are in-process.
     """
 
-    def __init__(
-        self,
-        db_path: Optional[str] = None,
-        storage: Optional[PythonMemoryStorage] = None
-    ):
+    def __init__(self, db_path: str | None = None, storage: PythonMemoryStorage | None = None):
         """
         Initialize Mnemosyne client.
 
@@ -79,12 +76,8 @@ class MnemosyneClient:
         self.storage = storage or PythonMemoryStorage(self.db_path)
 
     async def remember(
-        self,
-        content: str,
-        namespace: str,
-        importance: int,
-        context: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, content: str, namespace: str, importance: int, context: str | None = None
+    ) -> dict[str, Any]:
         """Store a memory in Mnemosyne.
 
         Args:
@@ -101,10 +94,10 @@ class MnemosyneClient:
     async def recall(
         self,
         query: str,
-        namespace: Optional[str] = None,
+        namespace: str | None = None,
         max_results: int = 10,
-        min_importance: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        min_importance: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Search Mnemosyne memories.
 
         Args:
@@ -119,11 +112,8 @@ class MnemosyneClient:
         return self.storage.recall(query, namespace, max_results, min_importance)
 
     async def list_memories(
-        self,
-        namespace: Optional[str] = None,
-        limit: int = 20,
-        sort_by: str = "recent"
-    ) -> List[Dict[str, Any]]:
+        self, namespace: str | None = None, limit: int = 20, sort_by: str = "recent"
+    ) -> list[dict[str, Any]]:
         """List memories.
 
         Args:
@@ -137,10 +127,8 @@ class MnemosyneClient:
         return self.storage.list_memories(namespace, limit, sort_by)
 
     async def consolidate(
-        self,
-        namespace: Optional[str] = None,
-        auto_apply: bool = False
-    ) -> Dict[str, Any]:
+        self, namespace: str | None = None, auto_apply: bool = False
+    ) -> dict[str, Any]:
         """Consolidate similar memories.
 
         Args:
@@ -154,10 +142,10 @@ class MnemosyneClient:
 
     async def graph(
         self,
-        query: Optional[str] = None,
-        namespace: Optional[str] = None,
+        query: str | None = None,
+        namespace: str | None = None,
         depth: int = 1,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Get memory graph.
 
         Args:

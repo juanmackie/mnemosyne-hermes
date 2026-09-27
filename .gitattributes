@@ -8,3 +8,17 @@ integrations/hermes-provider/UPSTREAM_METADATA.txt -text
 
 # Shell scripts should stay LF everywhere (they are executed, not compiled).
 *.sh text eol=lf
+
+# Keep the other text formats LF in the worktree too. Without this, a clone on a
+# machine with core.autocrlf=true checks out CRLF, so a local lint/format run
+# disagrees with CI (shellcheck's SC1017, markdownlint's new-line rule) for no
+# real reason. The vendored snapshot above stays exempt.
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf

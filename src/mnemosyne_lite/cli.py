@@ -6,16 +6,15 @@ CLI (mnemosyne-memory ships `mnemosyne`).
 Provides: init, remember, recall, list, bootstrap, embed, migrate, backup, restore, maintenance, diagnostics.
 No external LLM required for core memory operations; no subprocess overhead.
 """
+
 import argparse
-import sys
 import os
-import shutil
+import sys
 import time
-import hashlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from lib.storage import PythonMemoryStorage, StorageError          # noqa: E402
-from lib.mnemosyne_client import resolve_db_path                    # noqa: E402
+from lib.mnemosyne_client import resolve_db_path  # noqa: E402
+from lib.storage import PythonMemoryStorage, StorageError  # noqa: E402
 
 DEFAULT_DB = os.path.expanduser("~/.mnemosyne/mnemosyne.db")
 
@@ -72,7 +71,12 @@ def cmd_remember(args):
 
 def cmd_recall(args):
     s = _storage(args)
-    results = s.recall(args.query, namespace=args.namespace, max_results=args.max_results, min_importance=args.min_importance)
+    results = s.recall(
+        args.query,
+        namespace=args.namespace,
+        max_results=args.max_results,
+        min_importance=args.min_importance,
+    )
     for r in results:
         print(r)
     s.close()
@@ -108,14 +112,19 @@ def cmd_bootstrap(args):
 
 def cmd_embed(args):
     """Placeholder for embedding rebuilds — requires upstream mnemosyne-memory 3.15.1 source."""
-    print(f"ERROR: embed requires upstream mnemosyne-memory 3.15.1 source (blocked).", file=sys.stderr)
+    print(
+        "ERROR: embed requires upstream mnemosyne-memory 3.15.1 source (blocked).", file=sys.stderr
+    )
     print(f"DB: {args.db_path}", file=sys.stderr)
     return 1
 
 
 def cmd_migrate(args):
     """Placeholder for migrations — requires upstream mnemosyne-memory 3.15.1 source."""
-    print(f"ERROR: migrate requires upstream mnemosyne-memory 3.15.1 source (blocked).", file=sys.stderr)
+    print(
+        "ERROR: migrate requires upstream mnemosyne-memory 3.15.1 source (blocked).",
+        file=sys.stderr,
+    )
     print(f"DB: {args.db_path}", file=sys.stderr)
     return 1
 
@@ -129,6 +138,7 @@ def cmd_backup(args):
     dest = args.output or (db_path + f".backup.{int(time.time())}")
     try:
         import sqlite3
+
         src = sqlite3.connect(db_path)
         dst = sqlite3.connect(dest)
         src.backup(dst)
@@ -144,6 +154,7 @@ def cmd_backup(args):
 def _package_version():
     """Version from package metadata, so diagnostics never prints a stale literal."""
     from importlib.metadata import version
+
     for dist in ("mnemosyne-lite", "mnemosyne"):
         try:
             return version(dist)
@@ -187,10 +198,12 @@ def cmd_restore(args):
     try:
         import gzip
         import sqlite3
+
         with open(backup_path, "rb") as fh:
             gzipped = fh.read(2) == b"\x1f\x8b"
         if gzipped or backup_path.endswith(".gz"):
-            sql = gzip.open(backup_path, "rt", encoding="utf-8", errors="replace").read()
+            with gzip.open(backup_path, "rt", encoding="utf-8", errors="replace") as fh:
+                sql = fh.read()
             conn = sqlite3.connect(dest)
             try:
                 # A `sqlite3 .dump` file carries BEGIN/COMMIT, so the script is
@@ -226,15 +239,15 @@ def cmd_maintenance(args):
             s.close()
             return 0
         for candidate in preview.get("candidates", []):
-            print(f"  duplicate group member {candidate['id']} "
-                  f"[{candidate['namespace']}]: {candidate['preview']}")
+            print(
+                f"  duplicate group member {candidate['id']} "
+                f"[{candidate['namespace']}]: {candidate['preview']}"
+            )
         if not args.yes:
             # A closed/piped stdin raises EOFError rather than answering "no",
             # and must not traceback: no confirmation means no deletion.
             try:
-                answer = input(
-                    f"Delete duplicates in {groups} exact-duplicate group(s)? [y/N]: "
-                )
+                answer = input(f"Delete duplicates in {groups} exact-duplicate group(s)? [y/N]: ")
             except (EOFError, KeyboardInterrupt):
                 answer = ""
             if answer.strip().lower() not in ("y", "yes"):
@@ -288,20 +301,28 @@ def cmd_diagnostics(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="mnemosyne-lite", description="Mnemosyne lite CLI (standalone store; not a Hermes provider)")
-    parser.add_argument("--version", action="version", version=f"mnemosyne-lite {_package_version()}")
-    parser.add_argument("--db-path", default=_default_db_path(),
-                        help=f"SQLite database path (default: {DEFAULT_DB})")
+    parser = argparse.ArgumentParser(
+        prog="mnemosyne-lite",
+        description="Mnemosyne lite CLI (standalone store; not a Hermes provider)",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"mnemosyne-lite {_package_version()}"
+    )
+    parser.add_argument(
+        "--db-path",
+        default=_default_db_path(),
+        help=f"SQLite database path (default: {DEFAULT_DB})",
+    )
     # Subcommands accept --db-path too, so `mnemosyne recall --db-path X`
     # works as well as the global form. SUPPRESS keeps the subparser default
     # from overwriting a path given before the command.
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--db-path", default=argparse.SUPPRESS,
-                        help="SQLite database path")
+    common.add_argument("--db-path", default=argparse.SUPPRESS, help="SQLite database path")
     sub = parser.add_subparsers(dest="command")
 
-    p_mcp = sub.add_parser("mcp", parents=[common], aliases=["serve"],
-                           help="Run the MCP stdio server")
+    p_mcp = sub.add_parser(
+        "mcp", parents=[common], aliases=["serve"], help="Run the MCP stdio server"
+    )
     p_mcp.set_defaults(func=cmd_mcp)
 
     p_init = sub.add_parser("init", parents=[common], help="Initialize database schema")
@@ -312,8 +333,11 @@ def main(argv=None):
     p_rem.add_argument("--namespace", default="agent:hermes")
     p_rem.add_argument("--importance", type=int, default=5)
     p_rem.add_argument("--context", default=None)
-    p_rem.add_argument("--no-enrich", action="store_true",
-                       help="Compatibility flag; core memory never calls an LLM")
+    p_rem.add_argument(
+        "--no-enrich",
+        action="store_true",
+        help="Compatibility flag; core memory never calls an LLM",
+    )
     p_rem.set_defaults(func=cmd_remember)
 
     p_rec = sub.add_parser("recall", parents=[common], help="Search memories")
@@ -329,15 +353,23 @@ def main(argv=None):
     p_lst.add_argument("--sort-by", default="recent")
     p_lst.set_defaults(func=cmd_list)
 
-    p_boot = sub.add_parser("bootstrap", parents=[common], help="Return bounded constraints, facts, policies, guardrails, skills, provenance, abstentions")
+    p_boot = sub.add_parser(
+        "bootstrap",
+        parents=[common],
+        help="Return bounded constraints, facts, policies, guardrails, skills, provenance, abstentions",
+    )
     p_boot.add_argument("--namespace", default=None)
     p_boot.add_argument("--limit", type=int, default=100)
     p_boot.set_defaults(func=cmd_bootstrap)
 
-    p_embed = sub.add_parser("embed", parents=[common], help="Rebuild embeddings (requires upstream source — blocked)")
+    p_embed = sub.add_parser(
+        "embed", parents=[common], help="Rebuild embeddings (requires upstream source — blocked)"
+    )
     p_embed.set_defaults(func=cmd_embed)
 
-    p_migrate = sub.add_parser("migrate", parents=[common], help="Run migrations (requires upstream source — blocked)")
+    p_migrate = sub.add_parser(
+        "migrate", parents=[common], help="Run migrations (requires upstream source — blocked)"
+    )
     p_migrate.set_defaults(func=cmd_migrate)
 
     p_backup = sub.add_parser("backup", parents=[common], help="Backup database")
@@ -348,12 +380,18 @@ def main(argv=None):
     p_restore.add_argument("--backup", required=True)
     p_restore.set_defaults(func=cmd_restore)
 
-    p_maint = sub.add_parser("maintenance", parents=[common], help="Run maintenance (dedup, near-dup proposals)")
+    p_maint = sub.add_parser(
+        "maintenance", parents=[common], help="Run maintenance (dedup, near-dup proposals)"
+    )
     p_maint.add_argument("--namespace", default=None)
-    p_maint.add_argument("--auto-apply", action="store_true",
-                         help="Delete exactly-identical duplicates (asks for confirmation)")
-    p_maint.add_argument("--yes", action="store_true",
-                         help="Skip the confirmation prompt for --auto-apply")
+    p_maint.add_argument(
+        "--auto-apply",
+        action="store_true",
+        help="Delete exactly-identical duplicates (asks for confirmation)",
+    )
+    p_maint.add_argument(
+        "--yes", action="store_true", help="Skip the confirmation prompt for --auto-apply"
+    )
     p_maint.set_defaults(func=cmd_maintenance)
 
     p_diag = sub.add_parser("diagnostics", parents=[common], help="Print diagnostics")

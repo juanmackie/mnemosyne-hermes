@@ -12,6 +12,7 @@ bare venv (which is exactly where the provider is otherwise hollow).
     python tests/test_vendored_provider.py
     pytest tests/test_vendored_provider.py
 """
+
 import base64
 import hashlib
 import json
@@ -26,9 +27,7 @@ MANIFEST = json.loads((VENDOR / "VENDORED_FROM.json").read_text(encoding="utf-8"
 
 def _digest(path: pathlib.Path) -> str:
     """sha256 as base64url without padding — the wheel RECORD format."""
-    return base64.urlsafe_b64encode(
-        hashlib.sha256(path.read_bytes()).digest()
-    ).decode().rstrip("=")
+    return base64.urlsafe_b64encode(hashlib.sha256(path.read_bytes()).digest()).decode().rstrip("=")
 
 
 def test_no_unmanifested_provider_files():
@@ -52,7 +51,8 @@ def test_vendored_files_match_manifest_hashes():
 
 def test_local_patches_are_declared():
     patched = {
-        rel for rel in MANIFEST["files"]
+        rel
+        for rel in MANIFEST["files"]
         if PATCH_MARKER in (VENDOR / rel).read_text(encoding="utf-8")
     }
     declared = set(MANIFEST.get("local_patches", {}))
@@ -68,9 +68,11 @@ def test_local_patches_are_declared():
 
 
 if __name__ == "__main__":
-    tests = [test_no_unmanifested_provider_files,
-             test_vendored_files_match_manifest_hashes,
-             test_local_patches_are_declared]
+    tests = [
+        test_no_unmanifested_provider_files,
+        test_vendored_files_match_manifest_hashes,
+        test_local_patches_are_declared,
+    ]
     for fn in tests:
         fn()
         print(f"ok  {fn.__name__}")

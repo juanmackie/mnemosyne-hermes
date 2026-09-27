@@ -9,6 +9,7 @@ Covers the bugs that were fixed, each of which used to silently misbehave:
   * recall() treating '%'/'_' in a query as LIKE wildcards
   * DATABASE_URL being used verbatim as a SQLite file path
 """
+
 import hashlib
 import importlib.util
 import os
@@ -62,8 +63,14 @@ def test_recall_matches_like_semantics_on_the_lowercase_copy():
     """
     with tempfile.TemporaryDirectory() as d:
         s = PythonMemoryStorage(os.path.join(d, "m.db"))
-        rows = ["Caf\u00e9 M\u00dcNCHEN project", "100% cotton", "under_score",
-                "back\\slash", "MixedCASE Alpha", "xylophone"]
+        rows = [
+            "Caf\u00e9 M\u00dcNCHEN project",
+            "100% cotton",
+            "under_score",
+            "back\\slash",
+            "MixedCASE Alpha",
+            "xylophone",
+        ]
         # Distinct importance per row: recall orders by (importance, created_at)
         # and rows written in the same clock tick would otherwise tie, making
         # the ID order plan-dependent rather than comparable.
@@ -71,16 +78,34 @@ def test_recall_matches_like_semantics_on_the_lowercase_copy():
             s.remember(text, "ns", 5 + i)
 
         def like_ids(query):
-            esc = (query.replace("\\", "\\\\")
-                        .replace("%", "\\%").replace("_", "\\_"))
-            return [r[0] for r in s._conn().execute(
-                "SELECT id FROM memories WHERE content LIKE ? ESCAPE '\\' "
-                "ORDER BY importance DESC, created_at DESC LIMIT 50",
-                (f"%{esc}%",))]
+            esc = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            return [
+                r[0]
+                for r in s._conn().execute(
+                    "SELECT id FROM memories WHERE content LIKE ? ESCAPE '\\' "
+                    "ORDER BY importance DESC, created_at DESC LIMIT 50",
+                    (f"%{esc}%",),
+                )
+            ]
 
-        for query in ["project", "PROJECT", "m\u00fcnchen", "M\u00dcNCHEN", "caf\u00e9",
-                      "%", "100%", "_", "snake_case", "back\\slash", "alpha",
-                      "ALPHA", "x", "zzz", "xylophone", "XYLOPHONE"]:
+        for query in [
+            "project",
+            "PROJECT",
+            "m\u00fcnchen",
+            "M\u00dcNCHEN",
+            "caf\u00e9",
+            "%",
+            "100%",
+            "_",
+            "snake_case",
+            "back\\slash",
+            "alpha",
+            "ALPHA",
+            "x",
+            "zzz",
+            "xylophone",
+            "XYLOPHONE",
+        ]:
             want = like_ids(query)
             got = [m["id"] for m in s.recall(query, namespace="ns", max_results=50)]
             assert got == want, f"query {query!r}: {got} != {want}"
@@ -104,9 +129,12 @@ def test_recall_backfills_rows_missing_the_lowercase_copy():
         s.close()
 
         reopened = PythonMemoryStorage(path)
-        assert reopened._conn().execute(
-            "SELECT COUNT(*) FROM memories WHERE content_lower IS NULL"
-        ).fetchone()[0] == 0
+        assert (
+            reopened._conn()
+            .execute("SELECT COUNT(*) FROM memories WHERE content_lower IS NULL")
+            .fetchone()[0]
+            == 0
+        )
         ids = [m["id"] for m in reopened.recall("xylophone", namespace="ns")]
         assert "stale" in ids, ids
         reopened.close()
@@ -114,6 +142,7 @@ def test_recall_backfills_rows_missing_the_lowercase_copy():
 
 def test_storage_reuses_one_connection_per_thread():
     import threading
+
     with tempfile.TemporaryDirectory() as d:
         s = PythonMemoryStorage(os.path.join(d, "m.db"))
         s.remember("alpha beta", "ns", 5)
@@ -212,19 +241,28 @@ def test_foreign_schemas_are_refused_without_writing():
         c = sqlite3.connect(p)
         c.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT, created_at REAL)")
         c.execute("INSERT INTO memories VALUES ('a', 'row', 1.0)")
-        c.commit(); c.close()
+        c.commit()
+        c.close()
         cases["memories without namespace"] = p
 
         p = os.path.join(d, "engine_shaped.db")
         c = sqlite3.connect(p)
-        c.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT, namespace TEXT, "
-                  "importance REAL, memory_type TEXT, tags TEXT, embedding BLOB, updated_at REAL)")
-        c.execute("INSERT INTO memories (id, content, namespace) VALUES ('b', 'live', 'agent:hermes')")
-        c.commit(); c.close()
+        c.execute(
+            "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT, namespace TEXT, "
+            "importance REAL, memory_type TEXT, tags TEXT, embedding BLOB, updated_at REAL)"
+        )
+        c.execute(
+            "INSERT INTO memories (id, content, namespace) VALUES ('b', 'live', 'agent:hermes')"
+        )
+        c.commit()
+        c.close()
         cases["engine-shaped with namespace"] = p
 
         p = os.path.join(d, "newer.db")
-        c = sqlite3.connect(p); c.execute("PRAGMA user_version = 99"); c.commit(); c.close()
+        c = sqlite3.connect(p)
+        c.execute("PRAGMA user_version = 99")
+        c.commit()
+        c.close()
         cases["newer sentinel"] = p
 
         p = os.path.join(d, "not_sqlite.db")
@@ -251,11 +289,15 @@ def test_migration_rolls_back_atomically():
         c = sqlite3.connect(db)
         c.execute(LEGACY_MEMORIES_DDL)
         c.execute("INSERT INTO memories (id, content, namespace) VALUES ('x', 'Hello World', 'ns')")
-        c.commit(); c.close()
+        c.commit()
+        c.close()
 
         # Fail AFTER the ALTER + backfill by making the index step invalid.
-        with mock.patch.object(PythonMemoryStorage, "INDEXES",
-                               ["CREATE INDEX IF NOT EXISTS bogus ON memories(no_such_column)"]):
+        with mock.patch.object(
+            PythonMemoryStorage,
+            "INDEXES",
+            ["CREATE INDEX IF NOT EXISTS bogus ON memories(no_such_column)"],
+        ):
             try:
                 PythonMemoryStorage(db)
             except sqlite3.Error:
@@ -267,7 +309,9 @@ def test_migration_rolls_back_atomically():
         try:
             columns = [row[1] for row in c.execute("PRAGMA table_info(memories)")]
             assert "content_lower" not in columns, f"ALTER survived the rollback: {columns}"
-            assert c.execute("PRAGMA user_version").fetchone()[0] == 0, "sentinel survived the rollback"
+            assert c.execute("PRAGMA user_version").fetchone()[0] == 0, (
+                "sentinel survived the rollback"
+            )
             assert c.execute("SELECT count(*) FROM memories").fetchone()[0] == 1
             assert c.execute("SELECT content FROM memories").fetchone()[0] == "Hello World"
         finally:
@@ -280,19 +324,23 @@ def test_legacy_store_migrates_and_stamps_schema_version():
         c = sqlite3.connect(db)
         c.execute(LEGACY_MEMORIES_DDL)
         c.execute("INSERT INTO memories (id, content, namespace) VALUES ('x', 'Hello World', 'ns')")
-        c.commit(); c.close()
+        c.commit()
+        c.close()
 
         s = PythonMemoryStorage(db)
         assert s.recall("hello", namespace="ns")[0]["id"] == "x"
         s.close()
         c = sqlite3.connect(db)
         try:
-            assert c.execute("PRAGMA user_version").fetchone()[0] == PythonMemoryStorage.SCHEMA_VERSION
+            assert (
+                c.execute("PRAGMA user_version").fetchone()[0] == PythonMemoryStorage.SCHEMA_VERSION
+            )
             assert c.execute("SELECT content_lower FROM memories").fetchone()[0] == "hello world"
         finally:
             c.close()
         # Re-opening a migrated store must stay a no-op, not a re-migration.
-        s = PythonMemoryStorage(db); s.close()
+        s = PythonMemoryStorage(db)
+        s.close()
 
 
 def test_wal_stays_bounded_under_sustained_writes():
@@ -326,6 +374,7 @@ def test_wal_stays_bounded_under_sustained_writes():
 def test_concurrent_cold_opens_succeed():
     """16 simultaneous cold opens used to crash at construction (9/16)."""
     import threading
+
     with tempfile.TemporaryDirectory() as d:
         db = os.path.join(d, "race.db")
         barrier = threading.Barrier(16)
@@ -392,7 +441,9 @@ def test_cli_refuses_missing_store_and_accepts_trailing_db_path():
     """
     spec = importlib.util.spec_from_file_location(
         "mnemosyne_lite_cli_under_test",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "mnemosyne_lite", "cli.py"),
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "src", "mnemosyne_lite", "cli.py"
+        ),
     )
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
@@ -405,7 +456,9 @@ def test_cli_refuses_missing_store_and_accepts_trailing_db_path():
         db = os.path.join(d, "cli.db")
         assert cli.main(["--db-path", db, "init"]) == 0
         # --db-path AFTER the subcommand must work too (argparse used to reject it).
-        assert cli.main(["remember", "--db-path", db, "--content", "hello", "--namespace", "ns"]) == 0
+        assert (
+            cli.main(["remember", "--db-path", db, "--content", "hello", "--namespace", "ns"]) == 0
+        )
         assert cli.main(["recall", "--db-path", db, "--query", "hello"]) == 0
         s = PythonMemoryStorage(db)
         try:
@@ -428,21 +481,24 @@ def test_recall_cache_invalidates_on_writes_and_flushes():
             s.remember(f"note about widgets number {i}", "ns", 5 + i)
 
         first = [r["id"] for r in s.recall("widgets", max_results=10)]
-        assert first == [r["id"] for r in s.recall("widgets", max_results=10)], "cache changed a stable result"
+        assert first == [r["id"] for r in s.recall("widgets", max_results=10)], (
+            "cache changed a stable result"
+        )
 
         s.remember("another widgets note", "ns", 9)
         assert len(s.recall("widgets", max_results=10)) == 6, "local write not seen"
 
         for _ in range(3):
             s.recall("widgets", max_results=10)
-        s.list_memories(sort_by="access")            # applies the buffered access counts
+        s.list_memories(sort_by="access")  # applies the buffered access counts
         after_flush = [r["id"] for r in s.recall("widgets", max_results=10)]
         assert len(after_flush) == 6, "access-count flush changed the result set"
 
         other = sqlite3.connect(db)
         other.execute(
             "INSERT INTO memories (id, content, content_lower, namespace, importance, created_at) "
-            "VALUES ('zz', 'another widgets row', 'another widgets row', 'ns', 1, 1.0)")
+            "VALUES ('zz', 'another widgets row', 'another widgets row', 'ns', 1, 1.0)"
+        )
         other.commit()
         other.close()
         assert len(s.recall("widgets", max_results=10)) == 7, "concurrent write not seen"
@@ -464,6 +520,7 @@ def test_refusal_corpus_if_available():
     """
     import glob
     import shutil
+
     base = os.environ.get("MNEMOSYNE_BANK_CORPUS") or os.path.expanduser("~/.mnemosyne")
     if not os.path.isdir(base):
         print(f"skip: no bank corpus at {base} (set MNEMOSYNE_BANK_CORPUS)")
@@ -480,7 +537,7 @@ def test_refusal_corpus_if_available():
     with tempfile.TemporaryDirectory() as d:
         for i, src in enumerate(banks):
             dst = os.path.join(d, f"{i:04d}.db")
-            shutil.copy2(src, dst)          # never open the original
+            shutil.copy2(src, dst)  # never open the original
             before = _sha(dst)
             try:
                 PythonMemoryStorage(dst)

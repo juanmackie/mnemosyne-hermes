@@ -6,6 +6,7 @@ by a fake, so this runs in a bare venv. Run with:
     python tests/test_provider_db_path.py
     pytest tests/test_provider_db_path.py
 """
+
 import os
 import pathlib
 import sys
@@ -155,9 +156,7 @@ def test_check_hermes_version_truth_table():
 
 
 def test_check_provider_provenance_canonical():
-    ok, msg = cli_mod.check_provider_provenance(
-        PROVIDER_ROOT / "hermes_memory_provider"
-    )
+    ok, msg = cli_mod.check_provider_provenance(PROVIDER_ROOT / "hermes_memory_provider")
     assert ok is True, msg
 
 

@@ -15,8 +15,9 @@ when the engine is not importable, so this file is safe in a bare CI venv.
     python tests/test_provider_loader.py
     pytest tests/test_provider_loader.py
 """
+
+import contextlib
 import importlib.util
-import os
 import pathlib
 import subprocess
 import sys
@@ -28,8 +29,10 @@ PROVIDER_DIR = ROOT / "integrations" / "hermes-provider" / "hermes_memory_provid
 def _load_as_loader_does(module_name):
     """Import the plugin the way hermes-agent/plugins/memory does."""
     spec = importlib.util.spec_from_file_location(
-        module_name, str(PROVIDER_DIR / "__init__.py"),
-        submodule_search_locations=[str(PROVIDER_DIR)])
+        module_name,
+        str(PROVIDER_DIR / "__init__.py"),
+        submodule_search_locations=[str(PROVIDER_DIR)],
+    )
     mod = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = mod
     for child in sorted(PROVIDER_DIR.glob("*.py")):
@@ -40,11 +43,9 @@ def _load_as_loader_does(module_name):
             sub = importlib.util.spec_from_file_location(sub_name, str(child))
             sub_mod = importlib.util.module_from_spec(sub)
             sys.modules[sub_name] = sub_mod
-            try:
+            # Optional extras (sync/persona schemas) degrade to [] upstream.
+            with contextlib.suppress(Exception):
                 sub.loader.exec_module(sub_mod)
-            except Exception:
-                # Optional extras (sync/persona schemas) degrade to [] upstream.
-                pass
     spec.loader.exec_module(mod)
     return mod
 
@@ -164,6 +165,7 @@ def test_patched_hook_signatures_and_accept_and_store():
     never sent and `metadata` was dropped.
     """
     import inspect
+
     mod = _load_as_loader_does("_hermes_user_memory.mnemosyne_hooks")
     provider = mod.MnemosyneMemoryProvider()
 
@@ -205,7 +207,7 @@ def test_patched_hook_signatures_and_accept_and_store():
     assert "conversation_tool" not in [c["source"] for c in provider._beam.calls]
 
     provider._beam = FakeBeam()
-    provider._sync_roles = {"tool"}          # isolates the patched branch
+    provider._sync_roles = {"tool"}  # isolates the patched branch
     provider.sync_turn("run the tests", "they passed", session_id="s", messages=turns)
     stored = provider._beam.calls
     assert [c["source"] for c in stored] == ["conversation_tool"], stored
@@ -214,9 +216,11 @@ def test_patched_hook_signatures_and_accept_and_store():
 
 
 if __name__ == "__main__":
-    tests = [test_module_imports_and_reports_unavailable_without_engine,
-             test_engine_present_registers_one_available_provider,
-             test_patched_hook_signatures_and_accept_and_store]
+    tests = [
+        test_module_imports_and_reports_unavailable_without_engine,
+        test_engine_present_registers_one_available_provider,
+        test_patched_hook_signatures_and_accept_and_store,
+    ]
     for fn in tests:
         fn()
         print(f"ok  {fn.__name__}")

@@ -1,0 +1,45 @@
+# The same checks the CI `lint` job runs, available before the commit.
+#
+# These hooks use tools on PATH (`language: system`) rather than pinned remote
+# hook repos, so the local and CI runs use the same executables and nothing is
+# fetched at hook time. Install them once:
+#
+#   uv tool install ruff==0.16.0
+#   uv tool install mypy
+#   uv tool install shellcheck-py
+#   uv tool install pre-commit
+#   pre-commit install
+#
+# Then: `pre-commit run --all-files`.
+#
+# The vendored snapshot (integrations/hermes-provider/hermes_memory_provider) is
+# excluded by the tools' own configuration, not here: see [tool.ruff]
+# force-exclude and [tool.mypy]/[tool.pyright] in pyproject.toml and in
+# integrations/hermes-provider/pyproject.toml.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check
+        language: system
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: ruff format --check
+        entry: ruff format --check
+        language: system
+        types_or: [python, pyi]
+
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        files: ^(src/(lib|mnemosyne_lite)|tests)/.*\.py$
+        pass_filenames: false
+
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck -S warning
+        language: system
+        types: [shell]

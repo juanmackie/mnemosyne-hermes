@@ -6,7 +6,7 @@
 # Environment: AUTO_MEASURE (harness path), AUTO_LOG (ledger path),
 # AUTO_PRIMARY (metric name), AUTO_DIRECTION ("lower" or "higher").
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 STATUS="${1:-}"
 DESC="${2:-}"

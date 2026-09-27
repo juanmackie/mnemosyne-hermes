@@ -35,7 +35,6 @@ while IFS= read -r line; do
         fail=1
         continue
     fi
-    key=$(printf '%s' "$line" | cut -f1)
     date=$(printf '%s' "$line" | cut -f2)
     sha=$(printf '%s' "$line" | cut -f4)
     if ! printf '%s' "$date" | grep -EqE '^[0-9]{4}-[0-9]{2}-[0-9]{2}'; then

@@ -9,14 +9,16 @@ Uses sqlite3 from stdlib — no external dependencies needed.
 Thread-safe: each operation opens its own connection (SQLite constraint).
 For concurrent access, use WAL mode and external locking.
 """
-import sqlite3
-import os
-import threading
+
+import contextlib
 import hashlib
-import time
 import logging
-from typing import List, Optional, Dict, Any, Tuple
-from dataclasses import dataclass, asdict
+import os
+import sqlite3
+import threading
+import time
+from dataclasses import asdict, dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +35,14 @@ class MemoryRecord:
     content: str
     namespace: str
     importance: int
-    context: Optional[str] = None
-    summary: Optional[str] = None
-    keywords: Optional[List[str]] = None
-    created_at: Optional[float] = None
+    context: str | None = None
+    summary: str | None = None
+    keywords: list[str] | None = None
+    created_at: float | None = None
     access_count: int = 0
-    last_accessed: Optional[float] = None
+    last_accessed: float | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         return d
 
@@ -82,8 +84,16 @@ class PythonMemoryStorage:
     # namespace, so a namespace check adopts a live engine bank and rewrites
     # every row (measured: 137 engine DBs in ~/.mnemosyne, all silently mutated).
     MEMORY_COLUMNS = (
-        "id", "content", "namespace", "importance", "context",
-        "summary", "keywords", "created_at", "access_count", "last_accessed",
+        "id",
+        "content",
+        "namespace",
+        "importance",
+        "context",
+        "summary",
+        "keywords",
+        "created_at",
+        "access_count",
+        "last_accessed",
     )
     MIGRATED_MEMORY_COLUMNS = MEMORY_COLUMNS + ("content_lower",)
 
@@ -111,10 +121,10 @@ class PythonMemoryStorage:
     # LIKE's case-insensitivity are ASCII-only, so this table is the exact
     # match. Python's str.lower() must not be used: it folds non-ASCII too,
     # which would make a search match where LIKE would not.
-    ASCII_LOWER = str.maketrans(
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+    ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
-    INDEXES = [
+    # Tuples, not lists: shared class-level constants must not be mutable.
+    INDEXES = (
         "CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)",
         "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_memories_ns_created ON memories(namespace, created_at)",
@@ -136,19 +146,21 @@ class PythonMemoryStorage:
         # Normally empty, which makes the "is a backfill needed?" probe an O(1)
         # covering-index seek instead of a full table scan on every open.
         "CREATE INDEX IF NOT EXISTS idx_memories_lower_null ON memories(content_lower) WHERE content_lower IS NULL",
-    ]
+    )
 
     # Obsolete indexes, dropped by name on open. Indexes whose *columns* change
     # are handled in _init_schema instead (it compares the stored DDL and
     # rebuilds), because IF NOT EXISTS matches on the name only.
-    DROPPED_INDEXES = ["DROP INDEX IF EXISTS idx_memories_ns_rank",
-                       # idx_memories_importance lured the planner into walking
-                       # the importance index in random row order for unfiltered
-                       # recall (a bound LIKE hid the leading wildcard, so the
-                       # planner assumed LIKE-opt may apply). A sequential scan
-                       # + temp b-tree sort is ~4x faster; list(sort=importance)
-                       # sorts cheaply without it at this scale.
-                       "DROP INDEX IF EXISTS idx_memories_importance"]
+    DROPPED_INDEXES = (
+        "DROP INDEX IF EXISTS idx_memories_ns_rank",
+        # idx_memories_importance lured the planner into walking
+        # the importance index in random row order for unfiltered
+        # recall (a bound LIKE hid the leading wildcard, so the
+        # planner assumed LIKE-opt may apply). A sequential scan
+        # + temp b-tree sort is ~4x faster; list(sort=importance)
+        # sorts cheaply without it at this scale.
+        "DROP INDEX IF EXISTS idx_memories_importance",
+    )
 
     def __init__(self, db_path: str):
         """
@@ -166,12 +178,28 @@ class PythonMemoryStorage:
         self.db_path = db_path
         self._ensure_db_dir()
         self._local = threading.local()
-        # Result memo for recall(): key -> (version, rows, ids), validated
-        # against _search_version so any local write or another connection's
-        # commit invalidates it. _flush_accesses clears it (cached rows carry
-        # access_count, which a flush changes).
-        self._recall_cache = {}
         self._init_schema_resilient()
+
+    @property
+    def _recall_cache(self):
+        """Result memo for recall(): key -> (version, rows, ids), per thread.
+
+        Validated against `_search_version`, so a local write or another
+        connection's commit invalidates it, and `_flush_accesses` patches the
+        rows whose access_count it changed.
+
+        Per thread, not shared: the version an entry is validated against is
+        built from the calling thread's own connection (`PRAGMA data_version`
+        plus that connection's `total_changes`), so an entry is only meaningful
+        beside the connection that wrote it. With one shared dict, two
+        connections whose version tuples happened to agree read each other's
+        rows, and a thread could serve a result from a DB state it had never
+        observed while `count()` already saw the write.
+        """
+        cache = getattr(self._local, "recall_cache", None)
+        if cache is None:
+            cache = self._local.recall_cache = {}
+        return cache
 
     # Cold start used to die here: 9/16 simultaneous opens crashed on the review
     # host (journal_mode=WAL returns SQLITE_BUSY when another connection holds an
@@ -187,7 +215,7 @@ class PythonMemoryStorage:
 
     def _init_schema_resilient(self):
         """Run _init_schema, retrying while another process holds the file."""
-        last: Optional[Exception] = None
+        last: Exception | None = None
         for attempt in range(self.OPEN_ATTEMPTS):
             try:
                 self._init_schema()
@@ -209,7 +237,7 @@ class PythonMemoryStorage:
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
 
-    def _connect(self, busy_timeout_ms: Optional[int] = None) -> sqlite3.Connection:
+    def _connect(self, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
         """Open a connection WITHOUT changing any persistent database state.
 
         Only per-connection settings are applied, so this is safe to run
@@ -300,6 +328,9 @@ class PythonMemoryStorage:
         conn = self._new_conn()
         self._local.conn = conn
         self._local.search_cache = None
+        # A reconnect resets both numbers a version is built from, so an entry
+        # left by the previous connection could otherwise match the new one.
+        self._local.recall_cache = None
         # First connection for this thread: seed the counters so the recall
         # hot path can read them directly (no getattr-with-default per call).
         # close() leaves them in place — ignored_changes must outlive a
@@ -363,7 +394,7 @@ class PythonMemoryStorage:
     # Bound on the recall result memo (entries, not bytes).
     RECALL_CACHE_MAX = 256
 
-    def _pending(self) -> List[Tuple[str, ...]]:
+    def _pending(self) -> list[tuple[str, ...]]:
         """This thread's not-yet-written access counts, as a list of id tuples.
 
         Each recall appends its result-id tuple (increment of +1 per id);
@@ -393,7 +424,7 @@ class PythonMemoryStorage:
         self._local.pending_hits = 0
         # Expand batches to per-id totals only here — flushes are rare
         # (hundreds of recalls apart), so the per-id work is amortized.
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         for ids in batch:
             for mem_id in ids:
                 counts[mem_id] = counts.get(mem_id, 0) + 1
@@ -403,7 +434,7 @@ class PythonMemoryStorage:
             before = conn.total_changes
             conn.executemany(
                 "UPDATE memories SET access_count = access_count + ?, last_accessed = ? WHERE id = ?",
-                [(hits, now, mem_id) for mem_id, hits in counts.items()]
+                [(hits, now, mem_id) for mem_id, hits in counts.items()],
             )
             conn.commit()
             # Record how many rows this flush touched so _search_version can
@@ -425,6 +456,9 @@ class PythonMemoryStorage:
             # the flush-heavy shapes' p50 1.5-2x above the pure-memo shapes.
             # Entries already stale for other reasons stay stale (their
             # entry[0] no longer matches) and are discarded on next read.
+            # Only this thread's memo is patched (it is per-thread); other
+            # threads' entries are discarded on their next read because this
+            # commit moves their PRAGMA data_version.
             try:
                 for entry in self._recall_cache.values():
                     for r in entry[1]:
@@ -452,8 +486,8 @@ class PythonMemoryStorage:
         try:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             tables = {
-                row[0] for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'")
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
             }
         except sqlite3.DatabaseError as e:
             # A lock is transient, not a schema verdict: re-raise it as
@@ -485,14 +519,11 @@ class PythonMemoryStorage:
                 f"{sorted(tables)[:5]} but no 'memories' table. "
                 "Nothing was modified."
             )
-        columns = tuple(
-            row[1] for row in conn.execute("PRAGMA table_info(memories)")
-        )
+        columns = tuple(row[1] for row in conn.execute("PRAGMA table_info(memories)"))
         if columns not in (self.MEMORY_COLUMNS, self.MIGRATED_MEMORY_COLUMNS):
             extra = sorted(set(columns) - set(self.MIGRATED_MEMORY_COLUMNS))
             missing = sorted(set(self.MEMORY_COLUMNS) - set(columns))
-            detail = (f"unexpected columns {extra}" if extra
-                      else f"missing columns {missing}")
+            detail = f"unexpected columns {extra}" if extra else f"missing columns {missing}"
             raise StorageSchemaError(
                 f"{self.db_path} is not a Mnemosyne store: 'memories' has "
                 f"{len(columns)} columns ({detail}). Nothing was modified."
@@ -521,8 +552,7 @@ class PythonMemoryStorage:
                 for ddl in self.INDEXES:
                     name = ddl.split("IF NOT EXISTS", 1)[1].split()[0]
                     row = init_conn.execute(
-                        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
-                        (name,)
+                        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)
                     ).fetchone()
                     # IF NOT EXISTS matches on the name only, so an index created
                     # by an older version keeps its old column list. Compare the
@@ -564,17 +594,14 @@ class PythonMemoryStorage:
             conn.execute("ALTER TABLE memories ADD COLUMN content_lower TEXT")
         # Fast probe: served by the partial index on content_lower IS NULL once
         # it exists, and returns on the first row right after the ALTER above.
-        if conn.execute(
-            "SELECT 1 FROM memories WHERE content_lower IS NULL LIMIT 1"
-        ).fetchone():
+        if conn.execute("SELECT 1 FROM memories WHERE content_lower IS NULL LIMIT 1").fetchone():
             conn.execute(
-                "UPDATE memories SET content_lower = lower(content) "
-                "WHERE content_lower IS NULL"
+                "UPDATE memories SET content_lower = lower(content) WHERE content_lower IS NULL"
             )
         # No commit here: the caller owns the transaction so the ALTER and the
         # backfill land with the schema version bump or not at all.
 
-    def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+    def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Convert a database row to a memory dict, by column NAME.
 
         This used to map row[0]..row[9] positionally, so any migration that
@@ -585,12 +612,8 @@ class PythonMemoryStorage:
         return {key: row[key] for key in self.MEMORY_COLUMNS}
 
     def remember(
-        self,
-        content: str,
-        namespace: str,
-        importance: int,
-        context: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, content: str, namespace: str, importance: int, context: str | None = None
+    ) -> dict[str, Any]:
         """
         Store a memory.
 
@@ -614,9 +637,7 @@ class PythonMemoryStorage:
         if not (0 <= importance <= 10):
             raise ValueError(f"importance must be 0-10, got {importance}")
 
-        mem_id = hashlib.sha256(
-            f"{content}:{namespace}:{time.time()}".encode()
-        ).hexdigest()[:16]
+        mem_id = hashlib.sha256(f"{content}:{namespace}:{time.time()}".encode()).hexdigest()[:16]
 
         conn = self._conn()
         try:
@@ -624,7 +645,15 @@ class PythonMemoryStorage:
                 """INSERT INTO memories
                    (id, content, content_lower, namespace, importance, context, created_at)
                    VALUES (?, ?, lower(?), ?, ?, ?, ?)""",
-                (mem_id, content[:100000], content[:100000], namespace, importance, context, time.time())
+                (
+                    mem_id,
+                    content[:100000],
+                    content[:100000],
+                    namespace,
+                    importance,
+                    context,
+                    time.time(),
+                ),
             )
             conn.commit()
         except sqlite3.IntegrityError:
@@ -636,7 +665,15 @@ class PythonMemoryStorage:
                 """INSERT INTO memories
                    (id, content, content_lower, namespace, importance, context, created_at)
                    VALUES (?, ?, lower(?), ?, ?, ?, ?)""",
-                (mem_id, content[:100000], content[:100000], namespace, importance, context, time.time())
+                (
+                    mem_id,
+                    content[:100000],
+                    content[:100000],
+                    namespace,
+                    importance,
+                    context,
+                    time.time(),
+                ),
             )
             conn.commit()
         except sqlite3.Error:
@@ -651,7 +688,7 @@ class PythonMemoryStorage:
             "content": content[:200],  # Truncate in response
             "namespace": namespace,
             "importance": importance,
-            "success": True
+            "success": True,
         }
 
     def _search_version(self, conn):
@@ -661,8 +698,10 @@ class PythonMemoryStorage:
         # content_lower, so they must not invalidate the content snapshot.
         # Callers all hold a connection from _conn() on this thread, which
         # seeds ignored_changes — direct read, no getattr.
-        return (conn.execute("PRAGMA data_version").fetchone()[0],
-                conn.total_changes - self._local.ignored_changes)
+        return (
+            conn.execute("PRAGMA data_version").fetchone()[0],
+            conn.total_changes - self._local.ignored_changes,
+        )
 
     # ponytail: linear native substring scans avoid building a posting index;
     # consider a persistent substring index only for much larger corpora.
@@ -703,10 +742,10 @@ class PythonMemoryStorage:
     def recall(
         self,
         query: str,
-        namespace: Optional[str] = None,
+        namespace: str | None = None,
         max_results: int = 10,
-        min_importance: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        min_importance: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Search memories by keyword match.
 
@@ -754,7 +793,7 @@ class PythonMemoryStorage:
             # instr() is case-sensitive, so fold the query the same way the
             # stored column was folded (ASCII-only, like LIKE). instr also
             # takes the query literally, so '%' and '_' no longer need escaping.
-            params = [query.translate(self.ASCII_LOWER)]
+            params: list[Any] = [query.translate(self.ASCII_LOWER)]
 
             if namespace:
                 sql += " AND namespace = ?"
@@ -796,10 +835,8 @@ class PythonMemoryStorage:
         ids = tuple(r["id"] for r in results)
         cache = self._recall_cache
         if len(cache) >= self.RECALL_CACHE_MAX:
-            try:
+            with contextlib.suppress(StopIteration, KeyError):
                 cache.pop(next(iter(cache)))
-            except (StopIteration, KeyError):
-                pass
         cache[key] = (memo_version, results, ids)
 
         # Record the access in memory instead of writing it here: the UPDATE +
@@ -819,11 +856,8 @@ class PythonMemoryStorage:
         return [r.copy() for r in results]
 
     def list_memories(
-        self,
-        namespace: Optional[str] = None,
-        limit: int = 20,
-        sort_by: str = "recent"
-    ) -> List[Dict[str, Any]]:
+        self, namespace: str | None = None, limit: int = 20, sort_by: str = "recent"
+    ) -> list[dict[str, Any]]:
         """
         List memories.
 
@@ -842,7 +876,7 @@ class PythonMemoryStorage:
         conn = self._conn()
         try:
             sql = "SELECT * FROM memories"
-            params = []
+            params: list[Any] = []
 
             if namespace:
                 sql += " WHERE namespace = ?"
@@ -865,11 +899,7 @@ class PythonMemoryStorage:
 
         return [self._row_to_dict(row) for row in rows]
 
-    def consolidate(
-        self,
-        namespace: Optional[str] = None,
-        auto_apply: bool = False
-    ) -> Dict[str, Any]:
+    def consolidate(self, namespace: str | None = None, auto_apply: bool = False) -> dict[str, Any]:
         """
         Consolidate similar memories (dedup by content prefix).
 
@@ -893,7 +923,7 @@ class PythonMemoryStorage:
         conn = self._conn()
         try:
             sql = "SELECT id, content, namespace, importance, created_at FROM memories"
-            params = []
+            params: list[Any] = []
             if namespace:
                 sql += " WHERE namespace = ?"
                 params.append(namespace)
@@ -901,11 +931,16 @@ class PythonMemoryStorage:
             rows = conn.execute(sql, params).fetchall()
         except sqlite3.Error:
             logger.exception("Consolidate read failed")
-            return {"total": 0, "duplicate_groups": 0, "exact_duplicate_groups": 0,
-                    "removed": 0, "auto_applied": auto_apply}
+            return {
+                "total": 0,
+                "duplicate_groups": 0,
+                "exact_duplicate_groups": 0,
+                "removed": 0,
+                "auto_applied": auto_apply,
+            }
 
-        proposals: Dict[str, List[str]] = {}
-        exact: Dict[str, List[sqlite3.Row]] = {}
+        proposals: dict[str, list[str]] = {}
+        exact: dict[str, list[sqlite3.Row]] = {}
         for row in rows:
             proposals.setdefault(f"{row[2]}:{row[1][:50].lower()}", []).append(row[0])
             exact.setdefault(f"{row[2]}:{row[1]}", []).append(row)
@@ -940,20 +975,20 @@ class PythonMemoryStorage:
             "exact_duplicate_groups": len(exact_groups),
             # Bounded preview so a caller can show what --auto-apply would
             # remove before confirming.
-            "candidates": [] if auto_apply else [
+            "candidates": []
+            if auto_apply
+            else [
                 {"id": row[0], "namespace": row[2], "preview": row[1][:80]}
-                for group in exact_groups.values() for row in group
+                for group in exact_groups.values()
+                for row in group
             ][:50],
             "removed": removed,
-            "auto_applied": auto_apply
+            "auto_applied": auto_apply,
         }
 
     def graph(
-        self,
-        query: Optional[str] = None,
-        namespace: Optional[str] = None,
-        depth: int = 1
-    ) -> Dict[str, Any]:
+        self, query: str | None = None, namespace: str | None = None, depth: int = 1
+    ) -> dict[str, Any]:
         """
         Get memory graph structure.
 
@@ -965,43 +1000,31 @@ class PythonMemoryStorage:
         Returns:
             Graph structure with nodes and edges
         """
-        memories = self.list_memories(
-            namespace=namespace,
-            limit=1000,
-            sort_by="recent"
-        )
+        memories = self.list_memories(namespace=namespace, limit=1000, sort_by="recent")
 
         nodes = [
             {
                 "id": m["id"],
                 "content": m["content"][:100],
                 "namespace": m["namespace"],
-                "importance": m["importance"]
+                "importance": m["importance"],
             }
             for m in memories
         ]
 
         edges = []
         if depth > 0:
-            by_namespace: Dict[str, List[str]] = {}
+            by_namespace: dict[str, list[str]] = {}
             for mem in memories:
                 by_namespace.setdefault(mem["namespace"], []).append(mem["id"])
 
-            for ns, ids in by_namespace.items():
+            for ids in by_namespace.values():
                 for i in range(len(ids) - 1):
-                    edges.append({
-                        "source": ids[i],
-                        "target": ids[i + 1],
-                        "type": "namespace"
-                    })
+                    edges.append({"source": ids[i], "target": ids[i + 1], "type": "namespace"})
 
-        return {
-            "nodes": nodes,
-            "edges": edges,
-            "total_memories": len(memories)
-        }
+        return {"nodes": nodes, "edges": edges, "total_memories": len(memories)}
 
-    def count(self, namespace: Optional[str] = None) -> int:
+    def count(self, namespace: str | None = None) -> int:
         """
         Count memories.
 
@@ -1015,8 +1038,7 @@ class PythonMemoryStorage:
         try:
             if namespace:
                 row = conn.execute(
-                    "SELECT COUNT(*) FROM memories WHERE namespace = ?",
-                    (namespace,)
+                    "SELECT COUNT(*) FROM memories WHERE namespace = ?", (namespace,)
                 ).fetchone()
             else:
                 row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()

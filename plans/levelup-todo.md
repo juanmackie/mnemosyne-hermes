@@ -73,10 +73,11 @@ Limits of this review:
 
 ## P1: code bugs
 
-- [ ] **P1-1 Recall can return stale results across threads (lite store).**
+- [x] **P1-1 Recall can return stale results across threads (lite store).**
   - **Cause:** the recall cache `_recall_cache` lives on the shared storage object (`src/lib/storage.py:173`). Its validity check `_search_version` (`storage.py:657-665`) uses `PRAGMA data_version` and `total_changes` from the calling thread's own connection, and those numbers cannot be compared across connections.
   - **Reproduced:** thread A recalls "alpha". Thread B stores "alpha two". A new thread C recalls "alpha" and gets only `['alpha one']`, while `count()` returns 2.
   - **Fix:** make the cache per-thread, the same way `search_cache` already is. Add a cross-thread case to `tests/test_recall_freshness.py`.
+  - **Done (2026-09-27):** `_recall_cache` is now a property backed by `self._local.recall_cache`, and `_conn()` clears it on reconnect (a new connection resets both numbers the version is built from, so an entry from the previous connection could otherwise match). `_flush_accesses` patches only its own thread's rows; other threads discard via `PRAGMA data_version`, which this commit moves. Regression test `test_recall_memo_is_per_thread`. Verified both ways against HEAD's `storage.py`: pre-fix a second thread's recall returned 1 stale row while `count()` returned 2; post-fix it returns 2.
 
 - [ ] **P1-2 `mnemosyne-lite backup` crashes with default settings.**
   - `cmd_backup` uses `args.db_path` directly (`src/mnemosyne_lite/cli.py:147`). Without `--db-path` or `MNEMOSYNE_DB_PATH` that value is `None`, so the command dies with `TypeError: stat: path should be string… not NoneType`.
@@ -292,11 +293,12 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
 
 ## P4: engineering baseline
 
-- [ ] **P4-1 Add linting and type checks.** Nothing is configured today; the old Makefile placeholders say "not configured".
+- [x] **P4-1 Add linting and type checks.** Nothing is configured today; the old Makefile placeholders say "not configured".
   - ruff for linting and formatting.
   - mypy or pyright on `src/lib`, `src/mnemosyne_lite` and `tests`. Exclude the vendored provider.
   - shellcheck on `install.sh` and `scripts/`.
   - pre-commit plus a CI job.
+  - **Done (2026-09-27):** ruff (`E`, `F`, `W`, `I`, `UP`, `B`, `SIM`; line-length 100; `force-exclude` on the vendored snapshot) with `ruff format` over `src` and `tests`; mypy over `src/lib`, `src/mnemosyne_lite` and `tests`; shellcheck `-S warning` over `install.sh`, `scripts/` and `bench/`. All green locally: `ruff check`, `ruff format --check`, `mypy` (13 files), shellcheck, and 4/4 pre-commit hooks. `.pre-commit-config.yaml` uses `language: system` hooks so local and CI run the same executables and fetch nothing; a new CI `lint` job runs the same four commands. Fixes it forced: `INDEXES`/`DROPPED_INDEXES` are tuples (shared mutable class constants), `params` lists are annotated `list[Any]`, `contextlib.suppress` in three places, `open()` in context managers, and `.gitattributes` now pins `eol=lf` for the text formats so a Windows checkout no longer disagrees with CI (the `install.sh` blob and the `.sh` worktrees were the live case).
 
 - [ ] **P4-2 Make the CI matrix match the support claims.**
   - The README claims Python 3.11–3.14 on Linux, macOS and Windows. CI runs only Python 3.11 on Ubuntu.

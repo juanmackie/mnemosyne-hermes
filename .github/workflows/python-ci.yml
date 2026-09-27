@@ -31,6 +31,26 @@ jobs:
       - name: Repo gates
         run: bash scripts/checks.sh
 
+  lint:
+    name: lint, types, shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install the linters (same commands as .pre-commit-config.yaml)
+        run: |
+          uv tool install ruff==0.16.0
+          uv tool install mypy
+          uv tool install shellcheck-py
+      - name: Ruff lint
+        run: ruff check src tests
+      - name: Ruff format
+        run: ruff format --check src tests
+      - name: Types (mypy)
+        run: mypy
+      - name: Shell (shellcheck)
+        run: shellcheck -S warning install.sh scripts/*.sh bench/*.sh
+
   hermes-onboarding:
     name: clean-user Hermes onboarding (pinned)
     runs-on: ubuntu-latest

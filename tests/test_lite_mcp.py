@@ -8,6 +8,7 @@ must fail loudly instead of being fabricated or mutated.
     python tests/test_lite_mcp.py
     pytest tests/test_lite_mcp.py
 """
+
 import hashlib
 import io
 import json
@@ -38,19 +39,40 @@ def _new_store(d):
 def test_round_trip_over_the_mcp_protocol():
     with tempfile.TemporaryDirectory() as d:
         db = _new_store(d)
-        responses = _serve(db, [
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-             "params": {"protocolVersion": "2025-06-18"}},
-            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
-            {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
-            {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-             "params": {"name": "mnemosyne_memory_remember",
-                        "arguments": {"content": "the user prefers local storage",
-                                      "namespace": "ns"}}},
-            {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
-             "params": {"name": "mnemosyne_memory_search",
-                        "arguments": {"query": "local storage", "namespace": "ns"}}},
-        ])
+        responses = _serve(
+            db,
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2025-06-18"},
+                },
+                {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+                {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mnemosyne_memory_remember",
+                        "arguments": {
+                            "content": "the user prefers local storage",
+                            "namespace": "ns",
+                        },
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mnemosyne_memory_search",
+                        "arguments": {"query": "local storage", "namespace": "ns"},
+                    },
+                },
+            ],
+        )
         assert [r["id"] for r in responses] == [1, 2, 3, 4, 5], responses
         assert responses[0]["result"]["serverInfo"]["name"] == "mnemosyne"
         names = [t["name"] for t in responses[2]["result"]["tools"]]
@@ -64,13 +86,20 @@ def test_round_trip_over_the_mcp_protocol():
 def test_notifications_and_unknown_methods():
     with tempfile.TemporaryDirectory() as d:
         db = _new_store(d)
-        responses = _serve(db, [
-            {"jsonrpc": "2.0", "method": "notifications/initialized"},   # no id -> no reply
-            {"jsonrpc": "2.0", "id": 7, "method": "does/not/exist"},
-            {"jsonrpc": "2.0", "id": 8, "method": "tools/call",
-             "params": {"name": "not_a_tool", "arguments": {}}},
-        ])
-        assert len(responses) == 2, responses          # the notification was silent
+        responses = _serve(
+            db,
+            [
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},  # no id -> no reply
+                {"jsonrpc": "2.0", "id": 7, "method": "does/not/exist"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 8,
+                    "method": "tools/call",
+                    "params": {"name": "not_a_tool", "arguments": {}},
+                },
+            ],
+        )
+        assert len(responses) == 2, responses  # the notification was silent
         assert responses[0]["error"]["code"] == -32601
         assert responses[1]["result"]["isError"] is True
         assert "Unknown tool" in responses[1]["result"]["content"][0]["text"]
@@ -96,21 +125,26 @@ def test_foreign_store_is_refused_byte_identically():
         conn.execute("INSERT INTO memories VALUES ('a', 'not ours', 1.0)")
         conn.commit()
         conn.close()
-        before = hashlib.sha256(open(db, "rb").read()).hexdigest()
+        with open(db, "rb") as fh:
+            before = hashlib.sha256(fh.read()).hexdigest()
         try:
             serve(db, stdin=io.StringIO(""), stdout=io.StringIO())
         except StorageSchemaError:
             pass
         else:
             raise AssertionError("the server accepted a foreign database")
-        assert hashlib.sha256(open(db, "rb").read()).hexdigest() == before, "file was modified"
+        with open(db, "rb") as fh:
+            after = hashlib.sha256(fh.read()).hexdigest()
+        assert after == before, "file was modified"
 
 
 if __name__ == "__main__":
-    tests = [test_round_trip_over_the_mcp_protocol,
-             test_notifications_and_unknown_methods,
-             test_missing_store_is_refused_not_fabricated,
-             test_foreign_store_is_refused_byte_identically]
+    tests = [
+        test_round_trip_over_the_mcp_protocol,
+        test_notifications_and_unknown_methods,
+        test_missing_store_is_refused_not_fabricated,
+        test_foreign_store_is_refused_byte_identically,
+    ]
     for fn in tests:
         fn()
         print(f"ok  {fn.__name__}")

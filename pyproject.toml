@@ -32,10 +32,36 @@ where = ["src"]
 include = ["mnemosyne_lite*", "lib*"]
 exclude = ["tests*", "docs*"]
 
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# `integrations/hermes-provider/` is a byte-hashed upstream snapshot
+# (VENDORED_FROM.json); its style is upstream's business, and every edit there
+# costs a PATCHES.md entry plus a manifest hash update. force-exclude keeps it
+# out even when a path is passed explicitly, which is how editors and LSP
+# runners invoke ruff.
+extend-exclude = ["integrations/hermes-provider/hermes_memory_provider"]
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",    # line length is `ruff format`'s job, not a lint rule here
+    "SIM108",  # a ternary is not always clearer than if/else
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # assert False is how a plain-assert suite reports a failure
+
+[tool.mypy]
+# Type-check the code this repo owns, in the same scope as pyright.
+files = ["src/lib", "src/mnemosyne_lite", "tests"]
+python_version = "3.11"
+ignore_missing_imports = true
+
 [tool.pyright]
-# Type-check the code this repo owns. `integrations/hermes-provider/` is a
-# byte-hashed upstream snapshot (VENDORED_FROM.json) whose optional engine
-# imports are absent in a bare venv; editing it costs a PATCHES.md entry plus a
-# manifest hash update, so its diagnostics are ignored rather than chased.
+# The vendored snapshot's optional engine imports are absent in a bare venv and
+# editing it costs a PATCHES.md entry plus a manifest hash update, so its
+# diagnostics are ignored rather than chased.
 include = ["src/lib", "src/mnemosyne_lite", "tests"]
 ignore = ["integrations/hermes-provider/hermes_memory_provider"]
