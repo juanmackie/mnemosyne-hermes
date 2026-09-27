@@ -1,0 +1,96 @@
+name: Upstream drift
+
+# Weekly check of the two upstreams this repo depends on.
+#
+# A new `mnemosyne-memory` release means the vendored provider snapshot needs
+# re-checking against the new wheel (scripts/vendor-provider-sync.sh does the
+# diff; PATCHES.md says what to do about it). A new `hermes-agent` release means
+# the supported range needs re-auditing, and the onboarding smoke lane should be
+# re-run against it.
+#
+# The check opens (or updates) an issue when there is something to do, so a
+# scheduled failure is not the only signal.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: PyPI drift check
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Compare PyPI against what this repo pins
+        id: drift
+        continue-on-error: true
+        run: |
+          set +e
+          # The runner's system python is enough: the script is stdlib-only.
+          python3 scripts/upstream-drift-check.py | tee drift-report.md
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update an issue
+        if: steps.drift.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Upstream drift: an upstream release needs triage"
+        run: |
+          set -euo pipefail
+          cat > issue-body.md <<EOF
+          The weekly upstream check found something to look at.
+
+          $(cat drift-report.md)
+
+          ---
+          Run: \`python scripts/upstream-drift-check.py\`
+
+          Triage per \`integrations/hermes-provider/PATCHES.md\`. The sync
+          procedure is \`scripts/vendor-provider-sync.sh\`, documented in
+          \`integrations/hermes-provider/README.md\`.
+          EOF
+
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$TITLE\"" \
+            --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
+              --body-file issue-body.md
+            echo "Commented on issue #$existing"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
+              --body-file issue-body.md
+          fi
+
+  smoke-latest-hermes:
+    name: smoke against the latest hermes-agent
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      # astral-sh/setup-uv v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+
+      - name: Resolve the newest hermes-agent on PyPI
+        id: latest
+        run: |
+          set -euo pipefail
+          version="$(python3 scripts/upstream-drift-check.py --latest-hermes)"
+          echo "Resolved hermes-agent $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Clean-user onboarding against ${{ steps.latest.outputs.version }}
+        env:
+          HERMES_AGENT_VERSION: ${{ steps.latest.outputs.version }}
+        run: bash scripts/smoke-hermes-onboarding.sh

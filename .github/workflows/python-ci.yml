@@ -1,7 +1,10 @@
 name: Python CI (Hermes-first)
 
-# The single tested contract: a clean-user Hermes install. Unit/contract tests
-# plus the real-Hermes onboarding smoke lane. Replaces the retired Rust ci.yml.
+# The tested contracts: the provider's unit/contract gates, the lite surface's
+# unit tests, lint/type/shell, and a clean-user Hermes install. The matrix
+# mirrors what the README claims: Python 3.11-3.14 on Linux, macOS and Windows
+# for the unit tests, and the onboarding smoke lane on Linux and macOS (it needs
+# real symlinks, so it cannot run on Windows).
 
 on:
   pull_request:
@@ -13,39 +16,60 @@ on:
 
 jobs:
   tests:
-    name: unit + contract tests
-    runs-on: ubuntu-latest
-    env:
-      PYTHON_BIN: .venv/bin/python
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # actions/checkout v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      # Pinned exactly, not `@v10`: setup-uv publishes no floating `vN` tag
-      # past v7, so the latest release is the only way to stay current.
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # astral-sh/setup-uv v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+
       - name: Create venv and install test deps
+        shell: bash
         run: |
-          uv venv --python 3.11 .venv
-          uv pip install --python .venv/bin/python pytest
+          set -euo pipefail
+          uv venv --python ${{ matrix.python }} .venv
+          if [[ -x .venv/bin/python ]]; then
+            py="$PWD/.venv/bin/python"
+          else
+            py="$PWD/.venv/Scripts/python.exe"
+          fi
+          echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
+          uv pip install --python "$py" pytest pytest-cov
+
       - name: Provider contract gates + Python unit tests
+        shell: bash
         run: ./test-all.sh
+
       - name: Repo gates
+        shell: bash
         run: bash scripts/checks.sh
 
   lint:
     name: lint, types, shell
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # actions/checkout v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # astral-sh/setup-uv v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+
       - name: Install the linters (same commands as .pre-commit-config.yaml)
         run: |
           uv tool install ruff==0.16.0
           uv tool install mypy
           uv tool install shellcheck-py
+
       - name: Build the wheel (proves the dynamic version resolves)
         run: uv build --wheel --out-dir /tmp/wheel && ls /tmp/wheel
+
       - name: Ruff lint
         run: ruff check src tests
       - name: Ruff format
@@ -56,16 +80,25 @@ jobs:
         run: shellcheck -S warning install.sh scripts/*.sh bench/*.sh
 
   hermes-onboarding:
-    name: clean-user Hermes onboarding (pinned)
-    runs-on: ubuntu-latest
+    name: onboarding (${{ matrix.os }}, hermes ${{ matrix.hermes }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # The currently published and audited Hermes releases in the support
+        # range; widen this only after CONTRACT_AUDIT.md and smoke coverage.
+        hermes: ["0.18.2", "0.19.0"]
     env:
-      # Pin is a contract: Hermes' plugin CLI discovery internals are what
-      # `hermes mnemosyne` depends on. Latest PyPI release at time of writing.
-      HERMES_AGENT_VERSION: "0.19.0"
+      # The pin is a contract: `hermes mnemosyne` depends on Hermes' plugin CLI
+      # discovery internals.
+      HERMES_AGENT_VERSION: ${{ matrix.hermes }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # actions/checkout v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # astral-sh/setup-uv v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
       - name: Smoke test (fresh venv + fresh HERMES_HOME + real Hermes)
         run: bash scripts/smoke-hermes-onboarding.sh

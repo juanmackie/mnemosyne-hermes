@@ -24,16 +24,17 @@ Abdias J / AxDSan (MIT); see the provider README for provenance and hashes.
 ```bash
 git clone https://github.com/juanmackie/mnemosyne-hermes.git
 cd mnemosyne-hermes
-./install.sh --dry-run     # plan only: resolved venv, symlink target, DB path
+./install.sh --dry-run     # plan only: resolved venv, plugin target, DB path
 ./install.sh               # asks before changing anything
 ```
 
 `./install.sh` does this, in order:
 
 1. installs the vendored provider plus its pinned engine into the Hermes venv;
-2. symlinks `$HERMES_HOME/plugins/mnemosyne` at
+2. installs `$HERMES_HOME/plugins/mnemosyne` as a symlink to
    `integrations/hermes-provider/hermes_memory_provider` (the directory that
-   contains `__init__.py`);
+   contains `__init__.py`), or as a digest-verified copy when symlinks are
+   unavailable. Use `./install.sh --copy` to force copy mode;
 3. selects `memory.provider: mnemosyne`.
 
 The memory database is created on first write, not by the installer.
@@ -81,7 +82,7 @@ mnemosyne-lite list --limit 10
 | --- | --- |
 | `mnemosyne-lite init` | Create the schema (idempotent) |
 | `mnemosyne-lite remember` | Store a memory (`--content`, `--namespace`, `--importance`) |
-| `mnemosyne-lite recall` | Search by literal substring (`--query`, `--max-results`) |
+| `mnemosyne-lite recall` | Search by token (`--query`, `--max-results`) |
 | `mnemosyne-lite list` | List memories (`--limit`, `--sort-by`) |
 | `mnemosyne-lite bootstrap` | Bounded constraints, provenance and abstentions |
 | `mnemosyne-lite backup` | Copy the store with SQLite's backup API |
@@ -96,7 +97,10 @@ Things worth knowing:
   `MNEMOSYNE_DB_PATH`. `DATABASE_URL` is honoured only for `sqlite`, `sqlite3`
   and `file` schemes; any other scheme is rejected with an error rather than
   used as a filename.
-- Output is Python dict reprs, one per line. There is no `--format json`.
+- Text mode preserves existing command-specific output. `--format json` is
+  accepted before or after the subcommand and prints one document per command:
+  an object for `init`, `remember`, `bootstrap`, `backup`, `restore`,
+  `maintenance`, and `diagnostics`; `recall` and `list` return arrays.
 - `remember --namespace` defaults to `default`. `agent:hermes` is still accepted
   — it is the Hermes provider's namespace, not this surface's default.
 - `--no-enrich` is accepted for compatibility and does nothing: core memory

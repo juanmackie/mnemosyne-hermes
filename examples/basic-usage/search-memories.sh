@@ -27,11 +27,11 @@ mnemosyne-lite recall --query "$QUERY" --min-importance 7 --max-results 3
 
 echo ""
 echo "=== Search tips ==="
-echo "  - Matching is literal: use words you actually wrote"
+echo "  - Matching is full text: whole words, not substrings"
 echo "  - --max-results caps the output (default 10)"
 echo "  - --namespace searches one namespace only"
 echo "  - 'mnemosyne-lite diagnostics' lists namespaces and counts"
-echo "  - output is one Python dict per memory; there is no --format json"
+echo "  - --format json prints one JSON array instead of one dict per line"
 echo ""
 echo "Examples:"
 echo "  mnemosyne-lite recall --query \"race condition\" --namespace project:myapp"

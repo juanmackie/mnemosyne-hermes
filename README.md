@@ -22,7 +22,7 @@ history keep it.
 
 ## What you need
 
-- A Hermes install (`hermes-agent >=0.18,<0.22`) and its virtualenv.
+- A Hermes install (`hermes-agent >=0.18,<0.20`) and its virtualenv.
 - [`uv`](https://docs.astral.sh/uv/) — it works in pip-less and root-owned
   venvs, which is how some Docker Hermes installs ship.
 - Python 3.11+ for the lite surface.
@@ -37,15 +37,20 @@ already configured with — this repo never asks for a second provider key.
 ```bash
 git clone https://github.com/juanmackie/mnemosyne-hermes.git
 cd mnemosyne-hermes
-./install.sh --dry-run     # prints the resolved venv, DB path and link target
+./install.sh --dry-run     # prints the resolved venv, DB path and plugin target
 ./install.sh               # provider + pinned engine, into the Hermes venv
 ```
 
 `install.sh` does four things and nothing else: installs
 `integrations/hermes-provider` plus the pinned engine into the Hermes venv,
-points `$HERMES_HOME/plugins/mnemosyne` at the vendored package directory, sets
+installs `$HERMES_HOME/plugins/mnemosyne` as a symlink (or verified copy when
+symlinks are unavailable), sets
 `memory.provider: mnemosyne` via `hermes config set`, and verifies that exactly
-one provider registers. It never creates or opens the memory database — the
+one provider registers. Use `./install.sh --copy` to force copy mode; its
+format-v1 `PROVENANCE.json` hashes the complete package inventory (excluding
+runtime bytecode caches). `doctor` rejects drift, and install/uninstall refuse
+to overwrite or remove an unverified directory; re-run the installer after
+editing a copy. The installer never creates or opens the memory database — the
 resolved DB path is printed up front so you can check it first.
 
 ## Verify
@@ -66,7 +71,9 @@ created.
 The full clean-user acceptance lane is `bash scripts/smoke-hermes-onboarding.sh`
 (fresh venv, fresh `HERMES_HOME`, real Hermes, then `doctor` + `memory status` +
 a `sync_turn` round trip + a single-registration check). It needs real symlinks,
-so it runs on Linux/macOS; on Windows it skips.
+so it runs on Linux/macOS; on Windows it skips. The provider's curated default
+and complete tool names are maintained in the
+[canonical Hermes tool table](docs/HERMES_INTEGRATION.md#canonical-tool-names-and-default-exposure).
 
 ### Uninstall
 
@@ -90,12 +97,15 @@ mnemosyne-lite diagnostics        # resolved DB path, counts, live PRAGMA state
 ```
 
 Commands: `init`, `remember`, `recall`, `list`, `bootstrap`, `backup`,
-`restore`, `maintenance`, `diagnostics`, `mcp`. Output is Python dict reprs.
+`restore`, `maintenance`, `diagnostics`, `mcp`. Text mode preserves the existing
+command-specific output; pass `--format json` before or after a subcommand for
+one parseable JSON document on stdout.
 
-The store is created only by `init` and `remember`. Every other command refuses
-to invent an empty database at a mistyped path, and a file that is not a lite
-store is refused byte-identically rather than adopted — that refusal is what
-keeps a mistyped `--db-path` away from an engine bank.
+`init`, `remember`, and an explicit `restore` from a backup can create the
+store. Read/maintenance commands refuse to invent an empty database at a mistyped
+path, and a file that is not a lite store is refused byte-identically rather
+than adopted — that refusal is what keeps a mistyped `--db-path` away from an
+engine bank.
 
 The default database is `~/.mnemosyne-lite/mnemosyne.db`. Override it with
 `--db-path` or `MNEMOSYNE_DB_PATH`; `DATABASE_URL` is honoured only for
@@ -169,7 +179,7 @@ plans/                           working plans, including the review this came f
 ## Contributing
 
 ```bash
-./test-all.sh                    # provider contract gates + unit tests
+./test-all.sh --skip-llm         # provider contract gates + local unit tests
 bash scripts/checks.sh           # repo gates (notes ledger, version drift)
 pre-commit run --all-files       # ruff, ruff format, mypy, shellcheck
 ```

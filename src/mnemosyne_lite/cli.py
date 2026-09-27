@@ -10,6 +10,7 @@ overhead.
 
 import argparse
 import contextlib
+import json
 import os
 import sys
 import time
@@ -52,18 +53,42 @@ def _resolve_existing_db(args):
     return db_path
 
 
+def _emit_value(args, value):
+    """Print one result: JSON when `--format json` was asked for, else its repr."""
+    if getattr(args, "format", "text") == "json":
+        print(json.dumps(value, default=str))
+    else:
+        print(value)
+
+
+def _emit_rows(args, rows):
+    """Print a row list: one JSON array, or one dict repr per line.
+
+    The shapes differ on purpose. A machine-readable caller wants a single
+    document it can parse; a human at a terminal wants one memory per line.
+    """
+    if getattr(args, "format", "text") == "json":
+        print(json.dumps(rows, default=str))
+    else:
+        for row in rows:
+            print(row)
+
+
 def cmd_init(args):
     """Initialize the database schema (idempotent)."""
     s = _storage(args)
     s.close()
-    print(f"Initialized: {args.db_path}")
+    if getattr(args, "format", "text") == "json":
+        _emit_value(args, {"ok": True, "initialized": args.db_path})
+    else:
+        print(f"Initialized: {args.db_path}")
     return 0
 
 
 def cmd_remember(args):
     s = _storage(args)
     result = s.remember(args.content, args.namespace, args.importance, context=args.context)
-    print(result)
+    _emit_value(args, result)
     s.close()
     return 0
 
@@ -76,8 +101,7 @@ def cmd_recall(args):
         max_results=args.max_results,
         min_importance=args.min_importance,
     )
-    for r in results:
-        print(r)
+    _emit_rows(args, results)
     s.close()
     return 0
 
@@ -85,8 +109,7 @@ def cmd_recall(args):
 def cmd_list(args):
     s = _storage(args)
     results = s.list_memories(namespace=args.namespace, limit=args.limit, sort_by=args.sort_by)
-    for r in results:
-        print(r)
+    _emit_rows(args, results)
     s.close()
     return 0
 
@@ -108,7 +131,7 @@ def cmd_bootstrap(args):
         "provenance": [{"id": m["id"], "namespace": m["namespace"]} for m in memories],
         "abstentions": [],
     }
-    print(bootstrap)
+    _emit_value(args, bootstrap)
     return 0
 
 
@@ -131,7 +154,7 @@ def cmd_backup(args):
         src.backup(dst)
         dst.close()
         src.close()
-        print(f"Backup: {dest}")
+        _emit_value(args, {"ok": True, "backup": dest, "source": db_path})
         return 0
     except Exception as e:
         print(f"ERROR: backup failed: {e}", file=sys.stderr)
@@ -201,31 +224,41 @@ def cmd_restore(args):
     if not getattr(args, "yes", False):
         # A closed/piped stdin raises EOFError rather than answering "no", and
         # must not traceback: no confirmation means no restore.
+        prompt = f"Replace {dest} with {backup_path}? [y/N]: "
         try:
-            answer = input(f"Replace {dest} with {backup_path}? [y/N]: ")
+            if getattr(args, "format", "text") == "json":
+                print(prompt, end="", file=sys.stderr)
+                answer = input()
+            else:
+                answer = input(prompt)
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer.strip().lower() not in ("y", "yes"):
-            print("Cancelled; nothing changed.")
+            if getattr(args, "format", "text") == "json":
+                _emit_value(args, {"ok": False, "cancelled": True, "destination": dest})
+            else:
+                print("Cancelled; nothing changed.")
             return 1
 
     import gzip
     import sqlite3
 
+    safety_backup = None
     if os.path.exists(dest):
-        safety = f"{dest}.pre-restore.{int(time.time())}"
+        safety_backup = f"{dest}.pre-restore.{int(time.time())}"
         try:
             src = sqlite3.connect(dest)
-            dst = sqlite3.connect(safety)
+            dst = sqlite3.connect(safety_backup)
             try:
                 src.backup(dst)
             finally:
                 dst.close()
                 src.close()
         except Exception as e:
-            print(f"ERROR: could not write the safety backup {safety}: {e}", file=sys.stderr)
+            print(f"ERROR: could not write the safety backup {safety_backup}: {e}", file=sys.stderr)
             return 1
-        print(f"Safety backup: {safety}")
+        if getattr(args, "format", "text") != "json":
+            print(f"Safety backup: {safety_backup}")
 
     staged = f"{dest}.restore-tmp.{os.getpid()}"
     try:
@@ -268,7 +301,18 @@ def cmd_restore(args):
         # exits (the name carries the pid).
         with contextlib.suppress(OSError):
             os.remove(staged)
-    print(f"Restored: {dest} from {backup_path}")
+    if getattr(args, "format", "text") == "json":
+        _emit_value(
+            args,
+            {
+                "ok": True,
+                "restored": dest,
+                "backup": backup_path,
+                "safety_backup": safety_backup,
+            },
+        )
+    else:
+        print(f"Restored: {dest} from {backup_path}")
     return 0
 
 
@@ -280,29 +324,39 @@ def cmd_maintenance(args):
         preview = s.consolidate(namespace=args.namespace)
         groups = preview.get("exact_duplicate_groups", 0)
         if not groups:
-            print(preview)
+            _emit_value(args, preview)
             s.close()
             return 0
+        output = sys.stderr if getattr(args, "format", "text") == "json" else sys.stdout
         for candidate in preview.get("candidates", []):
             print(
                 f"  duplicate group member {candidate['id']} "
-                f"[{candidate['namespace']}]: {candidate['preview']}"
+                f"[{candidate['namespace']}]: {candidate['preview']}",
+                file=output,
             )
         if not args.yes:
             # A closed/piped stdin raises EOFError rather than answering "no",
             # and must not traceback: no confirmation means no deletion.
+            prompt = f"Delete duplicates in {groups} exact-duplicate group(s)? [y/N]: "
             try:
-                answer = input(f"Delete duplicates in {groups} exact-duplicate group(s)? [y/N]: ")
+                if getattr(args, "format", "text") == "json":
+                    print(prompt, end="", file=sys.stderr)
+                    answer = input()
+                else:
+                    answer = input(prompt)
             except (EOFError, KeyboardInterrupt):
                 answer = ""
             if answer.strip().lower() not in ("y", "yes"):
-                print("Cancelled; nothing deleted.")
+                if getattr(args, "format", "text") == "json":
+                    _emit_value(args, {"ok": False, "cancelled": True, "preview": preview})
+                else:
+                    print("Cancelled; nothing deleted.")
                 s.close()
                 return 1
         result = s.consolidate(namespace=args.namespace, auto_apply=True)
     else:
         result = s.consolidate(namespace=args.namespace)
-    print(result)
+    _emit_value(args, result)
     s.close()
     return 0
 
@@ -339,7 +393,7 @@ def cmd_diagnostics(args):
         diag["schema_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
         diag["wal"] = str(diag["journal_mode"]).lower() == "wal"
         s.close()
-    print(diag)
+    _emit_value(args, diag)
     return 0
 
 
@@ -356,11 +410,24 @@ def main(argv=None):
         default=_default_db_path(),
         help=f"SQLite database path (default: {DEFAULT_DB})",
     )
-    # Subcommands accept --db-path too, so `mnemosyne recall --db-path X`
-    # works as well as the global form. SUPPRESS keeps the subparser default
-    # from overwriting a path given before the command.
+    parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output: text (one dict repr per line, default) or json",
+    )
+    # Subcommands accept --db-path and --format too, so
+    # `mnemosyne-lite recall --db-path X --format json` works as well as the
+    # global form. SUPPRESS keeps the subparser default from overwriting a value
+    # given before the command.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--db-path", default=argparse.SUPPRESS, help="SQLite database path")
+    common.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default=argparse.SUPPRESS,
+        help="Output: text (default) or json",
+    )
     sub = parser.add_subparsers(dest="command")
 
     p_mcp = sub.add_parser(

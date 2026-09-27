@@ -14,7 +14,7 @@ Hermes memory provider. Execute steps in order.
 
 ## 0. Pre-check
 ```bash
-hermes --version            # supported range: >=0.18,<0.22
+hermes --version            # supported range: >=0.18,<0.20
 hermes memory status        # note the current provider before changing it
 ```
 If a memory DB already exists, keep it — do not delete or re-initialize.

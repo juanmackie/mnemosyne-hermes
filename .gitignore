@@ -4,6 +4,8 @@
 # Python artifacts
 __pycache__/
 *.py[cod]
+/.auto/
+/dist/
 *$py.class
 .venv/
 *.so

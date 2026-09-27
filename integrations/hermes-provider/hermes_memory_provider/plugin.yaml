@@ -1,0 +1,9 @@
+name: mnemosyne
+version: 0.1.0
+description: >-
+  Local-first Mnemosyne memory with keyword recall, persistent facts, and
+  optional compression checkpoints.
+hooks:
+  - on_pre_compress
+  - on_session_switch
+  - on_delegation

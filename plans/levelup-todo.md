@@ -1,21 +1,21 @@
 # Level-up TODO — full project review
 
 - **Date:** 2026-09-27
-- **Reviewed at:** `main @ a951105` (clean tree)
+- **Baseline reviewed:** `main @ a951105` (clean tree; initial findings)
 - **Scope:** whole repository, CI history, and the local Hermes install that runs it
-- **Status:** open. Nothing in this file has been applied yet.
+- **Status:** findings implemented incrementally; final Linux smoke, final review, and authorized main push are pending. P0-5 remains with the live Hermes agent; P5-2 is explicitly skipped; release publication has not been triggered.
 
 ## Where the project stands
 
 What actually ships today:
 
 1. **The Hermes provider.** `integrations/hermes-provider/` is a vendored copy of the provider from `mnemosyne-memory` 3.15.1 (by AxDSan), plus local patches. `./install.sh` installs it with the pinned engine, and `hermes mnemosyne doctor` checks it.
-2. **`mnemosyne-lite`.** `src/lib` + `src/mnemosyne_lite` is a standalone SQLite keyword-search store with a CLI and an MCP stdio server. It is not a Hermes provider.
-3. **`src/orchestration/`.** About 24k lines. Nothing packages it, and it does not work (see P1-6 to P1-9).
+2. **`mnemosyne-lite`.** `src/mnemosyne_lite/` is the standalone SQLite keyword-search store with a CLI and an MCP stdio server. It is not a Hermes provider.
+3. **Rust/orchestration are retired.** No `src/orchestration/` implementation ships; archive tags and `docs/archive/` preserve historical material.
 
-Most of the rest of the repo describes the retired Rust product.
+Active docs describe the provider and lite surface; Rust-era material remains explicitly historical under `docs/archive/` and in the changelog.
 
-Evidence gathered during the review:
+Initial baseline evidence (captured at `a951105`, not current verification):
 
 - Python CI has failed on all 10 runs since it was added on 2026-09-18, and every Pages deploy has failed too.
 - `pytest tests -m 'not integration'`: 79 passed, 36 skipped, 6 deselected. The result is the same locally and in CI.
@@ -23,11 +23,11 @@ Evidence gathered during the review:
 - 223 of the 250 tracked markdown files mention Rust-era concepts. 32 files have 97 broken relative links between them.
 - The engine (`mnemosyne-memory` 3.15.1) and `hermes-agent` 0.19.0 are the newest releases on PyPI, so the pins are current.
 
-Limits of this review:
+Current verification limits:
 
-- `AGENTS.md` says to read `Vibe Coding Rules 10.md` first, but that file is outside the repo and the read was blocked. This review does not apply V10.
-- The onboarding smoke test skips itself on Windows. Its results below come from the CI log (run `36284065100`), not a local run.
-- No LLM or integration tests were run.
+- V10 was read before the resumed implementation work; the original baseline note that it was blocked is superseded.
+- The local Windows host skips the real-symlink collision lane (WSL is absent). The earlier CI log (`36284065100`) is historical; the extended Linux/macOS smoke remains a final gate.
+- No LLM-dependent lane was run; current tests are local/keyless and `test-all.sh --skip-llm` is the supported verification path.
 
 ---
 
@@ -39,7 +39,7 @@ Limits of this review:
   - **Fix:** make line 5 a `#` comment. Retire the three entries by adding resolution lines, as the file's own lifecycle rule requires. Sort the file (`LC_ALL=C sort`).
   - **Check:** `bash scripts/checks.sh` prints `ALL PASS`.
 
-- [ ] **P0-2 `doctor` fails on every fresh install.**
+- [x] **P0-2 `doctor` fails on every fresh install.**
   - **Problem:** `_db_writable` (`integrations/hermes-provider/hermes_memory_provider/cli.py:177-185`) fails when the database's parent folder does not exist. Right after `./install.sh` it never exists, because the installer deliberately creates nothing.
   - **CI evidence:** `[FAIL] DB resolved + writable — …/hermes-home/mnemosyne/data/mnemosyne.db (parent …/mnemosyne/data does not exist)`
   - **Impact:** README, `QUICK_START.md` and `docs/AGENT_SETUP.md` all say `doctor` "must exit 0". AGENT_SETUP also tells agents to stop when a check fails. So every new user and every agent-driven setup stops at this step.
@@ -47,17 +47,17 @@ Limits of this review:
   - **Bookkeeping:** this file is vendored, so record the change as an amendment to patch P10 in `integrations/hermes-provider/PATCHES.md`, with a `# LOCAL PATCH:` marker. Then update the hash in `VENDORED_FROM.json`.
   - **Test:** add a unit test for the case where the folder has not been created yet.
   - **Check:** `bash scripts/smoke-hermes-onboarding.sh` passes in CI.
-  - **Done (2026-09-27):** `_db_writable` walks up to the nearest existing ancestor; regression tests `test_db_writable_fresh_install_parents_missing`, `test_db_writable_existing_file_and_parent`, `test_db_writable_unresolved_path_is_failure`. Recorded as a P10 amendment in `PATCHES.md`, `VENDORED_FROM.json` hash/bytes/lines updated, `tests/test_vendored_provider.py` green. Local smoke run impossible (no WSL/Docker; the script self-skips on Windows) — the CI `hermes-onboarding` lane is the end-to-end check.
+  - **Done:** `_db_writable` walks up to the nearest existing ancestor; regression tests `test_db_writable_fresh_install_parents_missing`, `test_db_writable_existing_file_and_parent`, `test_db_writable_unresolved_path_is_failure`. Recorded as a P10 amendment in `PATCHES.md`; manifest hashes/size/lines and vendored drift tests are updated. The earlier `5de2465` CI run passed; the extended collision/latency smoke must pass on the final pushed revision before this is considered fully verified.
 
-- [ ] **P0-3 Pages deploy fails on every push.**
+- [x] **P0-3 Pages deploy fails on every push.**
   - **Problem:** Pages is not enabled on the repo (`deploy-pages` gets a 404). The site it would publish, `docs/index.html`, is upstream rand/mnemosyne's Rust marketing page, with 15 links to rand/mnemosyne.
   - **Fix:** delete `.github/workflows/pages.yml` until there is a real site. The alternative is to build a new site and enable Pages.
   - **Done (2026-09-27):** `.github/workflows/pages.yml` deleted. P3/P2-10 remove the stale `docs/index.html` site assets that it would have published.
 
-- [ ] **P0-4 `release.yml` builds a Rust binary.**
+- [x] **P0-4 `release.yml` builds a Rust binary.**
   - **Problem:** it runs `cargo build --release --bin mnemosyne` for four targets, so any `v*` tag push fails.
   - **Fix:** replace it with a Python release (see P5-6) or delete it.
-  - **Done (2026-09-27):** `.github/workflows/release.yml` deleted (the cargo-only matrix). P5-6 adds the Python wheel release pipeline that replaces it.
+  - **Done:** `.github/workflows/release.yml` was deleted when it still contained only the retired Rust/Cargo matrix. A new tag-only Python wheel pipeline now builds and install-tests both distributions before creating a GitHub Release; it does not publish a release on ordinary main pushes.
 
 - [ ] **P0-5 Your own Hermes is not using the provider.** (Local machine, not the repo.)
   - `HERMES_HOME=%LOCALAPPDATA%\hermes`. Its `config.yaml` has `memory.provider: ''`, and it has no `plugins/mnemosyne`.
@@ -68,8 +68,8 @@ Limits of this review:
     - `mnemosyne-orchestration`
     - `mnemosyne-rust-hermes`
   - The local `dist/` still holds a `mnemosyne-2.4.0` wheel under the old colliding name.
-  - **Fix:** uninstall those four packages, delete `dist/`, then run `integrations/hermes-provider/LIVE_VERIFICATION.md`. The plan still lists that check as "not executed". Also see P5-1 (Windows).
-  - **Status (2026-09-27): handed off.** The live Hermes agent pulls this repo and performs the machine cleanup after this work lands, so no local venv/`dist/` mutation was done here. The repo side is ready for it: `install.sh --uninstall` (P2-6) removes the plugin link and the provider package while keeping data, and `docs/AGENT_SETUP.md` stays the agent-facing runbook (P3).
+  - **Disposition:** this remains assigned to the user's live Hermes agent. That agent may remove the conflicting editable installs and run `integrations/hermes-provider/LIVE_VERIFICATION.md` after the repository changes land; retain the existing `dist/` wheel (deleting it is neither necessary for provider selection nor authorized here). Also see P5-1 (Windows).
+  - **Status: handed off, not executed here.** The live Hermes agent owns the machine cleanup after this work lands, so no local venv/`dist/` mutation was done. The repo side is ready: `install.sh --uninstall` removes a symlink or an intact format-v1 installer copy, keeps data by default, refuses unverified copies and unsafe purge roots, and fails visibly if package removal fails; `docs/AGENT_SETUP.md` remains the agent-facing runbook.
 
 ## P1: code bugs
 
@@ -185,7 +185,7 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
   - It deletes `~/.local/bin/mnemosyne` and calls `mnemosyne config delete-key`.
   - It never removes the plugin link or the provider package, yet the README points users at it.
   - **Fix:** implement the uninstall steps from `integrations/hermes-provider/README.md` (remove the plugin link, `uv pip uninstall mnemosyne-hermes-provider`, keep data by default). `install.sh --uninstall` is one option.
-  - **Done (2026-09-27):** the 493-line Rust-era script is deleted and `install.sh --uninstall [--purge] [--dry-run] [--yes]` implements the README's steps: removes the plugin entry only when it is a symlink, uninstalls `mnemosyne-hermes-provider`, and keeps memory unless `--purge` (which also removes `mnemosyne-memory` and `$HERMES_HOME/mnemosyne`, guarded against `/`, `.` and empty paths). It warns when `config.yaml` still selects `memory.provider=mnemosyne`, and it never removes a real directory where the plugin link should be. This is also the repo side of P0-5: the live Hermes agent can run it after pulling.
+  - **Done:** the 493-line Rust-era script is deleted and `install.sh --uninstall [--purge] [--dry-run] [--yes]` implements the README's steps: removes a plugin symlink or an intact installer-created copy (format-v1 full inventory and canonical source path), uninstalls `mnemosyne-hermes-provider`, and keeps memory unless `--purge` (which also removes `mnemosyne-memory` and `$HERMES_HOME/mnemosyne`, guarded against `/`, `.` and empty paths). It warns when `config.yaml` still selects `memory.provider=mnemosyne`, and refuses to remove unverified real directories. This is also the repo side of P0-5: the live Hermes agent can run it after pulling.
 
 - [x] **P2-7 Remove the "planning deliverable" stubs.**
   - `scripts/verify_backup_auth.sh` and `scripts/redeploy/*_proposed.sh` only print text ("NOT EXECUTED").
@@ -308,18 +308,20 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
 
 - [x] **P4-1 Add linting and type checks.** Nothing is configured today; the old Makefile placeholders say "not configured".
   - ruff for linting and formatting.
-  - mypy or pyright on `src/lib`, `src/mnemosyne_lite` and `tests`. Exclude the vendored provider.
+  - mypy or pyright on `src/mnemosyne_lite` and `tests`. Exclude the vendored provider.
   - shellcheck on `install.sh` and `scripts/`.
   - pre-commit plus a CI job.
-  - **Done (2026-09-27):** ruff (`E`, `F`, `W`, `I`, `UP`, `B`, `SIM`; line-length 100; `force-exclude` on the vendored snapshot) with `ruff format` over `src` and `tests`; mypy over `src/lib`, `src/mnemosyne_lite` and `tests`; shellcheck `-S warning` over `install.sh`, `scripts/` and `bench/`. All green locally: `ruff check`, `ruff format --check`, `mypy` (13 files), shellcheck, and 4/4 pre-commit hooks. `.pre-commit-config.yaml` uses `language: system` hooks so local and CI run the same executables and fetch nothing; a new CI `lint` job runs the same four commands. Fixes it forced: `INDEXES`/`DROPPED_INDEXES` are tuples (shared mutable class constants), `params` lists are annotated `list[Any]`, `contextlib.suppress` in three places, `open()` in context managers, and `.gitattributes` now pins `eol=lf` for the text formats so a Windows checkout no longer disagrees with CI (the `install.sh` blob and the `.sh` worktrees were the live case).
+  - **Done (2026-09-27):** ruff (`E`, `F`, `W`, `I`, `UP`, `B`, `SIM`; line-length 100; `force-exclude` on the vendored snapshot) with `ruff format` over `src` and `tests`; mypy over `src/mnemosyne_lite` and `tests`; shellcheck `-S warning` over `install.sh`, `scripts/` and `bench/`. The latest local verification reports `ruff check` clean, `ruff format --check` clean, `mypy` success (14 source files), shellcheck clean, and the pre-commit hooks run the same tools. `.pre-commit-config.yaml` uses `language: system` hooks so local and CI run the same executables and fetch nothing; the CI `lint` job runs the same commands. Fixes it forced: `INDEXES`/`DROPPED_INDEXES` are tuples (shared mutable class constants), `params` lists are annotated `list[Any]`, `contextlib.suppress` in three places, `open()` in context managers, and `.gitattributes` now pins `eol=lf` for the text formats so a Windows checkout no longer disagrees with CI (the `install.sh` blob and the `.sh` worktrees were the live case).
 
-- [ ] **P4-2 Make the CI matrix match the support claims.**
+- [x] **P4-2 Make the CI matrix match the support claims.**
   - The README claims Python 3.11–3.14 on Linux, macOS and Windows. CI runs only Python 3.11 on Ubuntu.
   - Run unit tests on Python 3.11–3.13 (and 3.14) across Ubuntu, macOS and Windows.
   - Run the smoke test on Ubuntu and macOS, against both Hermes versions on PyPI (0.18.2 and 0.19.0).
-  - Fix the Hermes range claim: README and AGENTS say "tested 0.21.2", but that version is not on PyPI.
+  - Fix the Hermes range claim: older docs listed a later release as tested without published-version or compatibility evidence.
+  - **Done:** `.github/workflows/python-ci.yml` tests Python 3.11–3.14 on Ubuntu/macOS/Windows and runs the real-Hermes smoke on Ubuntu/macOS for 0.18.2/0.19.0. Active docs and the provider's supported range now say `>=0.18,<0.20`; the final pushed workflow result remains to be captured.
 
-- [ ] **P4-3 Add coverage** with pytest-cov, reported in CI. Add a regression test for the fresh-install `doctor` case from P0-2.
+- [x] **P4-3 Add coverage** with pytest-cov, reported in CI. Add a regression test for the fresh-install `doctor` case from P0-2.
+  - **Done:** CI installs `pytest-cov`; `test-all.sh` detects it and emits a `mnemosyne_lite` coverage report in the same pytest run. Fresh-install `doctor` has regression coverage in `tests/test_provider_db_path.py`.
 
 - [x] **P4-4 Rename the top-level `lib` package.**
   - `pyproject.toml` installs it as `lib*`. A generic `lib` in site-packages can collide with other packages.
@@ -327,32 +329,37 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
   - **Done (2026-09-27):** `src/lib/storage.py` → `src/mnemosyne_lite/storage.py`; `src/lib/mnemosyne_client.py` → `src/mnemosyne_lite/db_path.py` (git recorded both as renames, so history follows); `src/lib/__init__.py` deleted and the package removed from the tree and from `pyproject.toml`'s `include`/mypy/pyright scopes. The only importers were `cli.py`, `mcp.py`, `tools.py`, four test files and `bench/measure.sh`; all now import from `mnemosyne_lite`. `git` history is the only remaining reference.
   - **Also removed:** `MnemosyneClient` (100 lines in the old `mnemosyne_client.py`). Nothing in the repo, in the docs, or in configuration constructed it — the only reference was `lib/__init__.py`'s own re-export — and the rename breaks `from lib import ...` for any external caller regardless, so keeping a dead class alive under a new name would have preserved nothing.
 
-- [ ] **P4-5 Make CLI output machine-readable.**
+- [x] **P4-5 Make CLI output machine-readable.**
   - Commands print Python dict reprs such as `{'id': ...}`.
   - Add `--format json|text`. The docs already assume `--format json` exists.
+  - **Done:** `mnemosyne-lite` supports `--format json|text` before or after subcommands. JSON success/cancel paths for init, backup, restore, maintenance, remember, bootstrap, diagnostics, recall and list produce one stdout document; text-mode output is preserved. Regression coverage exercises parseable JSON and restore/maintenance safety-copy behavior.
 
 - [x] **P4-6 Move the lite store's default database.**
   - `~/.mnemosyne/mnemosyne.db` sits in the engine's folder.
   - Give lite its own default, with a migration note.
   - **Done (2026-09-27):** the default is now `~/.mnemosyne-lite/mnemosyne.db`, defined once as `DEFAULT_DB` in `mnemosyne_lite/db_path.py` (the CLI's help text reads it from there rather than repeating the literal). **Migration note:** existing lite stores stay where they are; point `--db-path` or `MNEMOSYNE_DB_PATH` at the old file, or move it. Nothing is deleted, and the change fails loudly (`no Mnemosyne database at <new path>`) rather than silently starting an empty store — `mnemosyne-lite diagnostics` prints the resolved path.
 
-- [ ] **P4-7 Add Dependabot** for GitHub Actions and pip, and add a `SECURITY.md`.
+- [x] **P4-7 Add Dependabot** for GitHub Actions and pip, and add a `SECURITY.md`.
+  - **Done:** `.github/dependabot.yml` updates GitHub Actions and pip dependencies; root `SECURITY.md` documents reporting.
 
 ## P5: level-up
 
-- [ ] **P5-1 Decide the Windows story.**
+- [x] **P5-1 Decide the Windows story.**
   - `install.sh` needs real symlinks, and the smoke test skips on Windows.
   - Yet the support matrix lists Windows, and your own setup runs on it (see P0-5).
   - **Options:** add a copy or junction mode plus a Windows CI lane, or drop Windows from the matrix.
+  - **Done:** keep Windows in the Python test matrix and support installer `--copy`/copy fallback with format-v1 digests over the complete package inventory. `doctor` rejects missing, stale, or unexpected files, and installer overwrite/uninstall refuse unverified directories. Windows CI exercises the contract tests; the real-symlink onboarding smoke remains Linux/macOS-only and is explicitly skipped on Windows.
 
-- [ ] **P5-2 Send the provider patches upstream.**
-  - `PATCHES.md` lists 11 local patches (P1 to P11), all marked "Not sent yet".
+- [x] **P5-2 Send the provider patches upstream. (explicitly skipped)**
+  - `PATCHES.md` records local patches P1–P18 and their upstream disposition. None were sent upstream; P5-2 remains explicitly skipped at the user's direction.
   - Each one accepted upstream means less vendored drift to maintain on every re-vendor.
   - The generic ones (P1 to P4) are the easiest; the P0-2 doctor fix belongs there too.
+  - **Disposition:** intentionally skipped at the user's direction; no patches or repository data were sent upstream.
 
-- [ ] **P5-3 Get early warning of upstream drift.**
+- [x] **P5-3 Get early warning of upstream drift.**
   - Add a weekly scheduled workflow that checks PyPI for new `mnemosyne-memory` and `hermes-agent` releases.
   - It should run `scripts/vendor-provider-sync.sh` against the new wheel and the smoke test against the new Hermes, and open an issue if either breaks.
+  - **Done:** weekly `.github/workflows/upstream-drift.yml` checks PyPI, compares a newer engine wheel with the vendor snapshot, runs the smoke against the latest Hermes, and opens/comments on one triage issue. The probe now fails visibly on vendor-sync errors and uses the actual `<0.20` Hermes support bound rather than treating 0.20 as supported.
 
 - [x] **P5-4 Switch lite recall to SQLite full-text search.**
   - Recall is currently a substring scan (`instr()`). It also keeps a full copy of all memory text in RAM for each thread (`storage.py:685`), so memory grows with the corpus times the thread count.
@@ -367,9 +374,10 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
   - Keep one per-thread cache, and move performance claims into a benchmark doc.
   - **Done (2026-09-27):** the id-tuple batching and the per-thread snapshot cache are gone with the substring scan (`_search_candidates`, `SEARCH_QUERY_CACHE_MAX` and `_SEARCH_MISS` deleted), leaving exactly one cache: the per-thread recall memo, which only holds rows a thread asked for rather than a full copy of the corpus. In-place row patching and the per-thread counters stay — they are not caches, and the counters are what make the memo's version correct. `bench/README.md` is the benchmark doc: it records the new median, states the ±8–20% single-run noise and the 56% spread measured between two runs in one session, and says plainly that the honest reading is "about the same p50, less memory, real relevance ranking, one fewer cache" rather than a speed-up.
 
-- [ ] **P5-6 Build a real release pipeline.**
+- [x] **P5-6 Build a real release pipeline.**
   - Tag, build the wheels, install-test them in a fresh venv, then publish a GitHub release.
   - Pin the README's "fetch `docs/AGENT_SETUP.md` and follow it exactly" URL to a release tag instead of `main`. Agents follow that file as instructions.
+  - **Done with one deliberate exception:** `.github/workflows/release.yml` runs only on `v*` tags, builds both wheels, installs/tests them in a fresh venv, and creates a GitHub Release with those tested wheels. No release tag was created/published in this task. The current README has no raw `main` URL for `AGENT_SETUP.md`; it uses a checked-in relative link, so no broken link to a not-yet-existing tag was added. Pin that URL after an authorized release tag containing the runbook exists.
 
 ---
 
@@ -385,7 +393,7 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
 3. **Honest docs (P3):** README, AGENTS, QUICK_START and TROUBLESHOOTING, then the CHANGELOG and a release.
 4. **Lite bugs:** P1-1 to P1-5 and P1-10, each with a regression test.
 5. **Engineering baseline (P4).**
-6. **Level-up (P5):** start with P5-2 and P5-3, since they cut maintenance cost, then P5-4 and P5-5.
+6. **Level-up (P5):** this was the baseline ordering; P5-2 was later explicitly skipped, while P5-3 to P5-6 were handled as recorded above.
 
 ## Relation to `plans/dev-todo-v2.md`
 

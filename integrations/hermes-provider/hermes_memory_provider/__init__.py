@@ -14,17 +14,46 @@ a standalone plugin deployed through the plugin system.
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import json
 import logging
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from datetime import datetime, timedelta
+
+
+# LOCAL PATCH (P15): supported Hermes versions do not ship this helper.
+def spawn_context_thread(target: Callable[[], Any], *, name: Optional[str] = None,
+                         daemon: bool = True) -> threading.Thread:
+    """Start a stdlib thread with the caller's contextvars copied.
+
+    Hermes 0.18.2 and 0.19.0 do not expose a ``spawn_context_thread`` helper;
+    this local compatibility fallback provides that behavior without assuming
+    a newer Hermes API. Each call gets a fresh Context because a Context cannot
+    be entered concurrently or recursively.
+    """
+    context = contextvars.copy_context()
+    thread = threading.Thread(
+        target=context.run,
+        args=(target,),
+        name=name,
+        daemon=daemon,
+    )
+    thread.start()
+    return thread
+
+
+class CheckpointError(RuntimeError):
+    """A required pre-compression checkpoint could not be created."""
+
 
 # Ensure mnemosyne core is importable from this directory
 # MUST be before any `from mnemosyne.*` imports
@@ -1288,6 +1317,14 @@ ALL_TOOL_SCHEMAS = [
     *ALL_PERSONA_TOOL_SCHEMAS,
 ]
 
+# LOCAL PATCH (P18): keep Hermes' prompt/tool surface small unless operators opt in.
+DEFAULT_TOOL_NAMES = (
+    "mnemosyne_remember",
+    "mnemosyne_recall",
+    "mnemosyne_stats",
+    "mnemosyne_forget",
+)
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -1362,7 +1399,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     _SYNC_TURN_SLOW_THRESHOLD_SECONDS = _parse_env_float("MNEMOSYNE_SYNC_TURN_SLOW_THRESHOLD", 5)
 
-    _VALID_SYNC_ROLES: frozenset = frozenset({"user", "assistant", "tool"})
+    # LOCAL PATCH (P16): delegation capture is explicit opt-in.
+    _VALID_SYNC_ROLES: frozenset = frozenset({"user", "assistant", "tool", "delegation"})
+    DELEGATION_MAX_CHARS = 4096
+    COMPRESS_CHECKPOINT_MAX_MESSAGES = 100
+    COMPRESS_CHECKPOINT_MAX_BYTES = 262144
+    COMPRESS_CONTEXT_MAX_MESSAGES = 6
+    COMPRESS_CONTEXT_MAX_CHARS = 8000
 
     def __init__(self):
         # Keep the wrapper alive whenever the provider adopts its BeamMemory.
@@ -1387,6 +1430,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # users and operators need to see.
         self._init_error: Optional[BaseException] = None
         self._session_id = "hermes_default"
+        self._current_session_id = "hermes_default"
         self._hermes_home = ""
         self._platform = "cli"
         self._agent_context = "primary"
@@ -1790,21 +1834,24 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return None
 
     def _configured_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return schemas filtered by memory.mnemosyne.tools, if configured.
+        """Return the curated default or the explicitly configured tool set.
 
-        ``tools`` omitted/None preserves the historical behavior and exposes all
-        Mnemosyne tools. ``tools: []`` exposes no tools while still allowing the
-        provider's memory context/prefetch surface to initialize. Unknown names
-        fail loudly so operators catch typos during Hermes startup instead of
-        silently losing tools.
+        Omitted/null uses the small core surface. ``tools: ["*"]`` opts into
+        every tool; ``tools: []`` disables tool exposure without disabling the
+        provider's memory context/prefetch surface. Unknown names and mixed
+        wildcard lists fail loudly rather than silently changing the surface.
         """
         configured = self._read_config_key("tools")
         if configured is None:
-            return list(ALL_TOOL_SCHEMAS)
+            configured = list(DEFAULT_TOOL_NAMES)
         if isinstance(configured, str):
             configured = [name.strip() for name in configured.replace(",", "\n").split("\n") if name.strip()]
-        if not isinstance(configured, list):
+        if not isinstance(configured, list) or not all(isinstance(name, str) for name in configured):
             raise ValueError("memory.mnemosyne.tools must be a list of tool names")
+        if "*" in configured:
+            if configured != ["*"]:
+                raise ValueError("'*' must be the only entry in memory.mnemosyne.tools")
+            return list(ALL_TOOL_SCHEMAS)
 
         available = {schema["name"]: schema for schema in ALL_TOOL_SCHEMAS}
         unknown = [name for name in configured if name not in available]
@@ -1812,7 +1859,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             known = ", ".join(sorted(available))
             bad = ", ".join(str(name) for name in unknown)
             raise ValueError(f"Unknown Mnemosyne tool(s) in memory.mnemosyne.tools: {bad}. Known tools: {known}")
-        return [available[name] for name in configured]
+        return [available[name] for name in dict.fromkeys(configured)]
 
     def _configured_tool_names(self) -> Set[str]:
         return {schema["name"] for schema in self._configured_tool_schemas()}
@@ -1859,9 +1906,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             {"key": "shared_surface_path", "description": "SQLite path for shared surface memories. Default is <mnemosyne>/data/shared/mnemosyne.db.", "default": "data/shared/mnemosyne.db"},
             {"key": "shared_surface_read", "description": "When true, mnemosyne_recall merges shared-surface results into private bank recall, tagging each result with its bank ('private' or 'surface'). Default false.", "default": False},
             {"key": "skip_contexts", "description": "Agent contexts where Mnemosyne should skip initialization. Comma-separated list. Defaults to 'cron,flush,subagent,background,skill_loop'. Set to empty string to enable all contexts. Also configurable via MNEMOSYNE_SKIP_CONTEXTS env var.", "default": "cron,flush,subagent,background,skill_loop"},
-            {"key": "sync_roles", "description": "Conversation roles to autosave in sync_turn(). List of role names: 'user', 'assistant', 'tool'. Default ['user'] saves user turns only to avoid assistant transcript noise. Set to ['user', 'assistant'] only if assistant transcript autosave is explicitly wanted, or [] to disable conversation autosave entirely. 'tool' stores tool/function turns taken from the full turn message list (local patch F1; last 5 messages, 2000 chars each, importance 0.2). Does not affect explicit mnemosyne_remember calls. Identity signal capture is gated by user sync — excluding 'user' also disables identity extraction. Also configurable via MNEMOSYNE_SYNC_ROLES env var.", "default": ["user"]},
+            {"key": "sync_roles", "description": "Conversation roles to autosave in sync_turn(). Role names: 'user', 'assistant', 'tool', 'delegation'. Default ['user'] saves user turns only. 'tool' opts into tool/function turns; 'delegation' opts into parent-side subagent task/result capture. Set [] to disable conversation autosave. Does not affect explicit mnemosyne_remember calls. Identity signal capture is gated by user sync — excluding 'user' also disables identity extraction. Also configurable via MNEMOSYNE_SYNC_ROLES env var.", "default": ["user"]},
+            {"key": "require_checkpoint", "description": "When true, on_pre_compress writes a bounded, atomic local snapshot of user/assistant text to $HERMES_HOME/mnemosyne/checkpoints. The hook raises CheckpointError if the snapshot cannot be written. Hermes 0.18.2/0.19.0 MemoryManager catches provider hook exceptions, so this cannot abort compression itself; do not treat it as a fail-closed guard.", "default": False},
             {"key": "default_scope", "description": "Default scope for remember() calls when not explicitly specified. 'session' (default) limits memories to the current session. 'global' persists memories across sessions.", "choices": ["session", "global"], "default": "session"},
-            {"key": "tools", "description": "Optional list of Mnemosyne tool names to expose to Hermes. Omit or set null to expose all tools. Set [] to expose no tools while keeping memory context/prefetch enabled. Unknown names raise a clear startup/config error.", "default": None},
+            {"key": "tools", "description": "List of Mnemosyne tool names exposed to Hermes. Omit or set null for the curated core set (remember, recall, stats, forget). Set ['*'] to explicitly expose all tools, or [] to expose none while keeping memory context/prefetch enabled. Unknown names raise a clear startup/config error.", "default": list(DEFAULT_TOOL_NAMES)},
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
@@ -1968,6 +2016,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         self._agent_context = kwargs.get("agent_context", "primary")
         self._platform = kwargs.get("platform", "cli")
+        self._current_session_id = str(session_id or "hermes_default")
         self._hermes_home = kwargs.get("hermes_home", "")
         self._agent_identity = kwargs.get("agent_identity", None) or ""
 
@@ -2611,8 +2660,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             sleep_beam.sleep()
                     except Exception as inner:
                         logger.debug("Mnemosyne auto-sleep worker failed: %s", inner)
-                sleep_thread = threading.Thread(target=_sleep_isolated, daemon=True)
-                sleep_thread.start()
+                sleep_thread = spawn_context_thread(
+                    _sleep_isolated, name="mnemosyne-auto-sleep"
+                )
                 sleep_thread.join(timeout=self._AUTO_SLEEP_TIMEOUT_SECONDS)
                 if sleep_thread.is_alive():
                     logger.warning("Mnemosyne auto-sleep timed out after %.0fs — consolidation deferred", self._AUTO_SLEEP_TIMEOUT_SECONDS)
@@ -3804,6 +3854,132 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         self._turn_count = turn_number
 
+    # LOCAL PATCH (P17): keep per-transcript counters separate from the stable memory namespace.
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        rewound: bool = False,
+        **kwargs,
+    ) -> None:
+        """Track Hermes transcript rotation without changing the memory namespace."""
+        self._current_session_id = str(new_session_id or "hermes_default")
+        if reset or rewound:
+            self._turn_count = 0
+            with self._reflect_budget_lock:
+                self._reflect_calls_this_session = 0
+
+    # LOCAL PATCH (P17): compression context is bounded; the host swallows callback errors.
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Return bounded user/assistant excerpts; optionally checkpoint them locally.
+
+        ``require_checkpoint`` makes this provider method raise on failure, but
+        Hermes 0.18.2/0.19.0 catch hook exceptions in MemoryManager and continue
+        compression. It is therefore a best-effort checkpoint signal, not a
+        process-level fail-closed guarantee.
+        """
+        required_value = self._read_config_key("require_checkpoint")
+        required = (
+            required_value
+            if isinstance(required_value, bool)
+            else str(required_value).strip().lower() in {"1", "true", "yes", "on"}
+        )
+        if not isinstance(messages, list):
+            if required:
+                raise CheckpointError("required pre-compression checkpoint received invalid messages")
+            return ""
+
+        selected = []
+        total_bytes = 0
+        overflow = False
+        for item in messages[-self.COMPRESS_CHECKPOINT_MAX_MESSAGES:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            content = item.get("content")
+            if role not in {"user", "assistant"} or not isinstance(content, str):
+                continue
+            if len(content) > self.COMPRESS_CHECKPOINT_MAX_BYTES:
+                overflow = True
+                break
+            content = content.strip()
+            if not content:
+                continue
+            try:
+                content_bytes = len(content.encode("utf-8"))
+            except UnicodeEncodeError:
+                overflow = True
+                break
+            total_bytes += content_bytes
+            if total_bytes > self.COMPRESS_CHECKPOINT_MAX_BYTES:
+                overflow = True
+                break
+            selected.append({"role": role, "content": content})
+
+        if required and (overflow or len(messages) > self.COMPRESS_CHECKPOINT_MAX_MESSAGES):
+            raise CheckpointError("required pre-compression checkpoint exceeds configured bounds")
+        if required and not selected:
+            raise CheckpointError("required pre-compression checkpoint has no text messages")
+        if required:
+            self._write_compression_checkpoint(selected)
+        if not selected:
+            return ""
+
+        excerpt = selected[-self.COMPRESS_CONTEXT_MAX_MESSAGES:]
+        remaining = self.COMPRESS_CONTEXT_MAX_CHARS
+        lines = ["Mnemosyne pre-compression excerpts (conversation text; preserve useful facts):"]
+        for item in excerpt:
+            text = item["content"][:remaining]
+            if not text:
+                break
+            lines.append(f"[{item['role']}] {text}")
+            remaining -= len(text)
+        return "\n".join(lines)
+
+    def _write_compression_checkpoint(self, messages: List[Dict[str, str]]) -> Path:
+        """Atomically replace this Hermes session's bounded local checkpoint."""
+        home = str(getattr(self, "_hermes_home", "") or "").strip()
+        session_id = str(getattr(self, "_current_session_id", "") or "").strip()
+        if not home or not session_id:
+            raise CheckpointError("required pre-compression checkpoint lacks Hermes home or session")
+        session_digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        directory = Path(home) / "mnemosyne" / "checkpoints"
+        target = directory / f"{session_digest}.json"
+        temp_path = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if os.name != "nt":
+                if directory.is_symlink():
+                    raise OSError("checkpoint directory must not be a symlink")
+                os.chmod(directory, 0o700)
+            payload = {
+                "version": 1,
+                "session_id_sha256": session_digest,
+                "created_at": datetime.now().isoformat(),
+                "messages": messages,
+            }
+            serialized = json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            if len(serialized) + 1 > self.COMPRESS_CHECKPOINT_MAX_BYTES:
+                raise ValueError("checkpoint JSON exceeds the byte limit")
+            fd, temp_path = tempfile.mkstemp(prefix=f".{session_digest}.", suffix=".tmp", dir=directory)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(serialized + b"\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, target)
+            return target
+        except Exception as exc:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+            raise CheckpointError("required pre-compression checkpoint could not be written") from exc
+
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # Bound the consolidation call so a slow LLM (e.g., a Hermes-routed
         # network call) cannot block Hermes shutdown indefinitely. Mirrors
@@ -3841,9 +4017,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 except Exception as inner:
                     logger.debug("Mnemosyne session-end sleep failed: %s", inner)
 
-            sleep_thread = threading.Thread(target=_sleep_with_logging, daemon=True)
+            sleep_thread = spawn_context_thread(
+                _sleep_with_logging, name="mnemosyne-session-end-sleep"
+            )
             self._session_end_thread = sleep_thread
-            sleep_thread.start()
             sleep_thread.join(timeout=timeout)
             if sleep_thread.is_alive():
                 logger.warning(
@@ -3852,6 +4029,50 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 )
         except Exception as e:
             logger.debug("Mnemosyne session-end sleep failed: %s", e)
+
+    # LOCAL PATCH (P16): parent-side delegation capture remains opt-in via sync_roles.
+    def on_delegation(
+        self,
+        task: str,
+        result: str,
+        *,
+        child_session_id: str = "",
+        **kwargs,
+    ) -> None:
+        """Persist a bounded parent-side delegation record only when opted in."""
+        if (
+            not self._beam
+            or "delegation" not in self._sync_roles
+            or self._agent_context in self._skip_contexts
+        ):
+            return
+        if not isinstance(task, str) or not isinstance(result, str):
+            return
+        if not task and not result:
+            return
+        task_header = "[DELEGATION TASK] "
+        result_header = "\n[DELEGATION RESULT] "
+        content_budget = self.DELEGATION_MAX_CHARS - len(task_header) - len(result_header)
+        task_limit = content_budget // 2
+        result_limit = content_budget - task_limit
+        task_text = task[:task_limit].strip()
+        result_text = result[:result_limit].strip()
+        if not task_text and not result_text:
+            return
+        content = f"{task_header}{task_text}{result_header}{result_text}"
+        if self._should_filter(content):
+            return
+        try:
+            with self._ensure_beam_access_lock():
+                self._beam.remember(
+                    content=content,
+                    source="conversation_delegation",
+                    importance=0.2,
+                    scope=self._default_scope,
+                    metadata={"child_session_id": str(child_session_id or "")[:200]},
+                )
+        except Exception as exc:
+            logger.debug("Mnemosyne delegation mirror failed: %s", self._sanitize_sync_turn_error(exc))
 
     def on_memory_write(self, action: str, target: str, content: str,
                         metadata: Optional[Dict[str, Any]] = None) -> None:

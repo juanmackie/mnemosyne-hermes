@@ -7,10 +7,18 @@ by a fake, so this runs in a bare venv. Run with:
     pytest tests/test_provider_db_path.py
 """
 
+import base64
+import contextvars
+import hashlib
+import json
 import os
 import pathlib
+import shutil
 import sys
 import tempfile
+import threading
+from typing import Any
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PROVIDER_ROOT = ROOT / "integrations" / "hermes-provider"
@@ -21,9 +29,17 @@ import hermes_memory_provider as provider_mod  # noqa: E402
 from hermes_memory_provider import cli as cli_mod  # noqa: E402
 
 
+def _module_attr(module: Any, name: str) -> Any:
+    """Resolve optional vendored attributes without inventing static stubs."""
+    value = getattr(module, name, None)
+    assert value is not None, f"missing runtime API {name}"
+    return value
+
+
 class FakeBeam:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
+        self.db_path = kwargs.get("db_path")
         for key, value in kwargs.items():
             setattr(self, key, value)
         if not hasattr(self, "canonical_owner_id"):
@@ -54,17 +70,15 @@ def _init(tmp, **kwargs):
     singleton (and its auto-export of env values) never touches the real box.
     """
     provider = provider_mod.MnemosyneMemoryProvider()
-    original = provider_mod._get_beam_class
-    original_audit = provider_mod.MnemosyneMemoryProvider._init_audit_log
     original_data_dir = os.environ.get("MNEMOSYNE_DATA_DIR")
     os.environ["MNEMOSYNE_DATA_DIR"] = os.path.join(tmp, "_engine_data")
-    provider_mod._get_beam_class = lambda: FakeBeam
-    provider_mod.MnemosyneMemoryProvider._init_audit_log = lambda self: None
+    # Instance override and scoped module patch avoid leaking shared state.
+    provider.__dict__["_init_audit_log"] = lambda: None
     try:
-        provider.initialize(session_id="t3", hermes_home=str(tmp), **kwargs)
+        with patch.object(provider_mod, "_get_beam_class", return_value=FakeBeam):
+            provider.initialize(session_id="t3", hermes_home=str(tmp), **kwargs)
     finally:
-        provider_mod._get_beam_class = original
-        provider_mod.MnemosyneMemoryProvider._init_audit_log = original_audit
+        provider.__dict__.pop("_init_audit_log", None)
         if original_data_dir is None:
             os.environ.pop("MNEMOSYNE_DATA_DIR", None)
         else:
@@ -144,19 +158,172 @@ def test_db_path_wins_over_profile_isolation():
         assert _beam(provider).kwargs["db_path"] == str(pathlib.Path(tmp) / "isolated.db")
 
 
+def test_spawn_context_thread_propagates_contextvars():
+    value = contextvars.ContextVar("provider-test-value", default="missing")
+    token = value.set("inherited")
+    result = []
+    done = threading.Event()
+    try:
+        thread = _module_attr(provider_mod, "spawn_context_thread")(
+            lambda: (result.append(value.get()), done.set()),
+            name="provider-context-test",
+        )
+        assert done.wait(2), "context thread did not complete"
+        thread.join(timeout=0)
+        assert result == ["inherited"], result
+    finally:
+        value.reset(token)
+
+
+def test_on_session_switch_resets_session_scoped_state_only():
+    provider = provider_mod.MnemosyneMemoryProvider()
+    provider._session_id = "agent:hermes"
+    provider._turn_count = 11
+    provider._reflect_calls_this_session = 2
+
+    provider.on_session_switch("new-session", parent_session_id="old-session", reset=True)
+
+    assert provider._current_session_id == "new-session"
+    assert provider._turn_count == 0
+    assert provider._reflect_calls_this_session == 0
+    assert provider._session_id == "agent:hermes", "persistent memory namespace must not rotate"
+
+
+def test_on_delegation_is_opt_in_and_bounded():
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def remember(self, **kwargs):
+            self.calls.append(kwargs)
+
+    provider = provider_mod.MnemosyneMemoryProvider()
+    recorder = Recorder()
+    provider._beam = recorder
+    provider._sync_roles = {"user"}
+    provider.on_delegation("private task", "private result", child_session_id="child")
+    assert recorder.calls == [], "delegation capture must be opt-in"
+
+    provider._sync_roles = {"delegation"}
+    provider.on_delegation("task " + "t" * 9000, "result " + "r" * 9000, child_session_id="child")
+    assert len(recorder.calls) == 1
+    call = recorder.calls[0]
+    assert call["source"] == "conversation_delegation"
+    assert call["metadata"]["child_session_id"] == "child"
+    assert len(call["content"]) <= provider.DELEGATION_MAX_CHARS
+
+
+def test_on_pre_compress_writes_required_checkpoint_and_returns_context():
+    provider = provider_mod.MnemosyneMemoryProvider()
+    with tempfile.TemporaryDirectory() as tmp:
+        provider._hermes_home = tmp
+        provider._current_session_id = "session/checkpoint"
+        provider._read_config_key = lambda key: key == "require_checkpoint"
+        messages = [
+            {"role": "system", "content": "ignore this"},
+            {"role": "user", "content": "remember the local test host"},
+            {"role": "assistant", "content": "host is frost-01"},
+            {"role": "tool", "content": {"private": "not plaintext"}},
+        ]
+        context = provider.on_pre_compress(messages)
+        assert "frost-01" in context, context
+        checkpoint_dir = pathlib.Path(tmp) / "mnemosyne" / "checkpoints"
+        checkpoints = list(checkpoint_dir.glob("*.json"))
+        assert len(checkpoints) == 1, checkpoints
+        if os.name != "nt":
+            assert checkpoint_dir.stat().st_mode & 0o077 == 0, oct(checkpoint_dir.stat().st_mode)
+        payload = json.loads(checkpoints[0].read_text(encoding="utf-8"))
+        assert payload["version"] == 1, payload
+        assert [m["role"] for m in payload["messages"]] == ["user", "assistant"]
+        assert "session/checkpoint" not in checkpoints[0].name, (
+            "session id must not leak to the filename"
+        )
+
+
+def test_on_pre_compress_required_checkpoint_fails_on_write_error():
+    provider = provider_mod.MnemosyneMemoryProvider()
+    with tempfile.TemporaryDirectory() as tmp:
+        provider._hermes_home = tmp
+        provider._current_session_id = "session"
+        provider._read_config_key = lambda key: key == "require_checkpoint"
+        try:
+            provider.on_pre_compress([{"role": "user", "content": "\ud800"}])
+        except _module_attr(provider_mod, "CheckpointError"):
+            pass
+        else:
+            raise AssertionError("invalid Unicode escaped the checkpoint error contract")
+
+        oversized_utf8 = "🙂" * 65537
+        try:
+            provider.on_pre_compress([{"role": "user", "content": oversized_utf8}])
+        except _module_attr(provider_mod, "CheckpointError"):
+            pass
+        else:
+            raise AssertionError("checkpoint byte limit did not bound multibyte text")
+
+        not_a_dir = pathlib.Path(tmp) / "occupied"
+        not_a_dir.write_text("not a directory", encoding="utf-8")
+        provider._hermes_home = str(not_a_dir)
+        provider._current_session_id = "session"
+        provider._read_config_key = lambda key: key == "require_checkpoint"
+        try:
+            provider.on_pre_compress([{"role": "user", "content": "fact"}])
+        except _module_attr(provider_mod, "CheckpointError"):
+            pass
+        else:
+            raise AssertionError("require_checkpoint did not fail on checkpoint I/O error")
+
+
 def test_check_hermes_version_truth_table():
-    ok, _ = cli_mod.check_hermes_version("0.21.2")
-    assert ok is True
-    ok, _ = cli_mod.check_hermes_version("0.18.2")
-    assert ok is True
-    for bad in ("0.17.9", "0.22.0", "1.0.0", None, "not-a-version"):
-        ok, msg = cli_mod.check_hermes_version(bad)
+    for tested in ("0.18.2", "0.19.0"):
+        ok, _ = _module_attr(cli_mod, "check_hermes_version")(tested)
+        assert ok is True, tested
+    for bad in ("0.17.9", "0.20.0", "0.21.2", "0.22.0", "1.0.0", None, "not-a-version"):
+        ok, msg = _module_attr(cli_mod, "check_hermes_version")(bad)
         assert ok is False, (bad, msg)
         assert "range" in msg
 
 
+def test_default_tool_surface_is_curated():
+    provider = provider_mod.MnemosyneMemoryProvider()
+    with patch.object(provider, "_read_config_key", return_value=None):
+        names = [schema["name"] for schema in provider.get_tool_schemas()]
+    assert len(names) == 4, names
+    assert set(names) == {
+        "mnemosyne_remember",
+        "mnemosyne_recall",
+        "mnemosyne_stats",
+        "mnemosyne_forget",
+    }, names
+
+
+def test_full_tool_surface_requires_explicit_wildcard():
+    provider = provider_mod.MnemosyneMemoryProvider()
+    with patch.object(provider, "_read_config_key", return_value=["*"]):
+        full_names = [schema["name"] for schema in provider.get_tool_schemas()]
+    assert len(full_names) == 40, full_names
+    assert "mnemosyne_graph_query" in full_names
+
+
+def test_tool_surface_allows_explicit_subset_and_rejects_mixed_wildcard():
+    provider = provider_mod.MnemosyneMemoryProvider()
+    with patch.object(provider, "_read_config_key", return_value=["mnemosyne_recall"]):
+        assert [s["name"] for s in provider.get_tool_schemas()] == ["mnemosyne_recall"]
+    with patch.object(provider, "_read_config_key", return_value=[]):
+        assert provider.get_tool_schemas() == []
+    with patch.object(provider, "_read_config_key", return_value=["*", "mnemosyne_recall"]):
+        try:
+            provider.get_tool_schemas()
+        except ValueError as exc:
+            assert "only" in str(exc)
+        else:
+            raise AssertionError("mixed wildcard configuration was accepted")
+
+
 def test_check_provider_provenance_canonical():
-    ok, msg = cli_mod.check_provider_provenance(PROVIDER_ROOT / "hermes_memory_provider")
+    ok, msg = _module_attr(cli_mod, "check_provider_provenance")(
+        PROVIDER_ROOT / "hermes_memory_provider"
+    )
     assert ok is True, msg
 
 
@@ -165,19 +332,76 @@ def test_check_provider_provenance_flags_retired_tree():
         retired = pathlib.Path(tmp) / "integrations" / "hermes" / "src" / "mnemosyne_hermes"
         retired.mkdir(parents=True)
         (retired / "__init__.py").write_text("def register(ctx): pass\n", encoding="utf-8")
-        ok, msg = cli_mod.check_provider_provenance(retired)
+        ok, msg = _module_attr(cli_mod, "check_provider_provenance")(retired)
         assert ok is False
         assert "RETIRED" in msg, msg
+
+
+def test_check_provider_provenance_accepts_only_unchanged_verified_copy():
+    source = PROVIDER_ROOT / "hermes_memory_provider"
+    with tempfile.TemporaryDirectory() as tmp:
+        copied = pathlib.Path(tmp) / "plugins" / "mnemosyne"
+        copied.mkdir(parents=True)
+        for item in source.iterdir():
+            if item.is_file() and item.name != "PROVENANCE.json":
+                shutil.copy2(item, copied / item.name)
+
+        check = _module_attr(cli_mod, "check_provider_provenance")
+        ok, msg = check(copied)
+        assert ok is False and "PROVENANCE.json" in msg, msg
+
+        def digest(path):
+            value = hashlib.sha256(path.read_bytes()).digest()
+            return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+        marker = {
+            "format_version": 1,
+            "copied_from": str(source),
+            "files": {item.name: digest(item) for item in copied.iterdir() if item.is_file()},
+        }
+        marker_path = copied / "PROVENANCE.json"
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+        ok, msg = check(copied)
+        assert ok is True and "verified copy" in msg, msg
+
+        nested = copied / "nested"
+        nested.mkdir()
+        (nested / "PROVENANCE.json").write_text("{}", encoding="utf-8")
+        ok, msg = check(copied)
+        assert ok is False, f"nested provenance file was excluded from the inventory: {msg}"
+        shutil.rmtree(nested)
+
+        with (copied / "cli.py").open("a", encoding="utf-8") as output:
+            output.write("# changed after installation\n")
+        ok, msg = check(copied)
+        assert ok is False and "edited after it was installed" in msg, msg
+        shutil.copy2(source / "cli.py", copied / "cli.py")
+
+        helper = copied / "hermes_llm_adapter.py"
+        with helper.open("a", encoding="utf-8") as output:
+            output.write("# changed after installation\n")
+        ok, msg = check(copied)
+        assert ok is False, f"unhashed provider module was accepted: {msg}"
+        shutil.copy2(source / "hermes_llm_adapter.py", helper)
+
+        (copied / "rogue.py").write_text("# unexpected post-install file\n", encoding="utf-8")
+        ok, msg = check(copied)
+        assert ok is False, f"unexpected provider file was accepted: {msg}"
+        (copied / "rogue.py").unlink()
+
+        (copied / "rogue.pyc").write_bytes(b"untracked executable bytecode")
+        ok, msg = check(copied)
+        assert ok is False, f"top-level executable bytecode was accepted: {msg}"
 
 
 def test_describe_memory_location_warns_outside_home():
     with tempfile.TemporaryDirectory() as tmp:
         inside = pathlib.Path(tmp) / "mnemosyne" / "data" / "mnemosyne.db"
-        lines = cli_mod.describe_memory_location(inside, tmp)
+        lines = _module_attr(cli_mod, "describe_memory_location")(inside, tmp)
         assert not any("WARNING" in line for line in lines), lines
 
         outside = pathlib.Path(tmp).parent / "elsewhere" / "mnemosyne.db"
-        lines = cli_mod.describe_memory_location(outside, tmp)
+        lines = _module_attr(cli_mod, "describe_memory_location")(outside, tmp)
         assert any("WARNING" in line for line in lines), lines
 
 
@@ -186,7 +410,7 @@ def test_db_writable_fresh_install_parents_missing():
     # the installer deliberately creates nothing. doctor must still pass.
     with tempfile.TemporaryDirectory() as tmp:
         target = pathlib.Path(tmp) / "mnemosyne" / "data" / "mnemosyne.db"
-        ok, msg = cli_mod._db_writable(str(target))
+        ok, msg = _module_attr(cli_mod, "_db_writable")(str(target))
         assert ok is True, msg
         assert "will be created" in msg, msg
 
@@ -195,16 +419,18 @@ def test_db_writable_existing_file_and_parent():
     with tempfile.TemporaryDirectory() as tmp:
         direct = pathlib.Path(tmp) / "mnemosyne.db"
         direct.touch()
-        ok, msg = cli_mod._db_writable(str(direct))
+        ok, msg = _module_attr(cli_mod, "_db_writable")(str(direct))
         assert ok is True and "file" in msg, msg
 
-        nested_ok, nested_msg = cli_mod._db_writable(str(pathlib.Path(tmp) / "new.db"))
+        nested_ok, nested_msg = _module_attr(cli_mod, "_db_writable")(
+            str(pathlib.Path(tmp) / "new.db")
+        )
         assert nested_ok is True and "not created yet" in nested_msg, nested_msg
 
 
 def test_db_writable_unresolved_path_is_failure():
     for bad in (None, ""):
-        ok, msg = cli_mod._db_writable(bad)
+        ok, msg = _module_attr(cli_mod, "_db_writable")(bad)
         assert ok is False, (bad, msg)
         assert "could not be resolved" in msg, msg
 
@@ -218,8 +444,17 @@ if __name__ == "__main__":
         test_schema_declares_db_path,
         test_db_path_wins_over_profile_isolation,
         test_check_hermes_version_truth_table,
+        test_default_tool_surface_is_curated,
+        test_full_tool_surface_requires_explicit_wildcard,
+        test_tool_surface_allows_explicit_subset_and_rejects_mixed_wildcard,
+        test_on_session_switch_resets_session_scoped_state_only,
+        test_on_delegation_is_opt_in_and_bounded,
+        test_on_pre_compress_writes_required_checkpoint_and_returns_context,
+        test_on_pre_compress_required_checkpoint_fails_on_write_error,
+        test_spawn_context_thread_propagates_contextvars,
         test_check_provider_provenance_canonical,
         test_check_provider_provenance_flags_retired_tree,
+        test_check_provider_provenance_accepts_only_unchanged_verified_copy,
         test_describe_memory_location_warns_outside_home,
         test_db_writable_fresh_install_parents_missing,
         test_db_writable_existing_file_and_parent,

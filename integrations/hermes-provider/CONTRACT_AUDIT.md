@@ -1,8 +1,9 @@
 # Contract audit — vendored `hermes_memory_provider` (mnemosyne-memory 3.15.1)
 
 Scope: the vendored snapshot in `hermes_memory_provider/`, audited against the
-`MemoryProvider` ABC and the memory manager of **hermes-agent 0.18.2** (the
-version installed in the local Hermes venv).
+`MemoryProvider` ABC and `MemoryManager` of **hermes-agent 0.19.0** in a scratch
+venv, with an AST signature diff against the installed **0.18.2** checkout. Both
+published versions are in the CI smoke matrix.
 
 Method: AST signature diff of `agent/memory_provider.py::MemoryProvider` vs
 `hermes_memory_provider/__init__.py::MnemosyneMemoryProvider`, plus reading the
@@ -10,19 +11,50 @@ call sites in `agent/memory_manager.py` and `hermes_cli/backup.py` that invoke
 the hooks. This audit covers the vendored file itself; the 2026-09-18 review
 covered the repo and the slim rewrite, not this file.
 
+## Hermes 0.19.0 contract baseline
+
+Installed `hermes-agent==0.19.0` into a scratch venv (no dependencies needed for
+source inspection) and parsed `agent/memory_provider.py` and
+`agent/memory_manager.py` with Python's AST. The baseline diff against 0.18.2
+found **no signature changes across all 19 `MemoryProvider` methods**. The
+0.19.0 hook signatures are:
+
+```text
+sync_turn(user_content, assistant_content, *, session_id='', messages=None)
+on_session_switch(new_session_id, *, parent_session_id='', reset=False, rewound=False, **kwargs)
+on_pre_compress(messages) -> str
+on_delegation(task, result, *, child_session_id='', **kwargs)
+on_memory_write(action, target, content, metadata=None)
+```
+
+The 0.19.0 `MemoryManager` has 33 methods vs 31 in 0.18.2. Its background
+sync contract is material: `sync_all()` submits provider `sync_turn()` calls to
+a single-worker serialized executor; the provider call itself is not inline in
+the agent turn. The manager added `_forget_background_future`,
+`_prefetch_provider`, and `shutdown_drain_state`, added the optional
+`external_prefetch_timeout` constructor argument, and made
+`_submit_background` accept keyword-only `kind`. There are no
+`spawn_context_thread`, `recall_status`, or `identity_signature` symbols in the
+0.19.0 package. The first is not a Hermes API available to this supported range;
+the latter two are not `MemoryProvider` hooks in these releases.
+
+This is a source/API baseline, not a live gateway run. Discovery and callback
+behavior are tested separately by the onboarding lane.
+
 ## Conformance summary
 
 | ABC member | Kind | Result |
 |---|---|---|
 | `name` | abstract | implemented, `-> str`, returns `"mnemosyne"` |
-| `is_available()` | abstract | implemented, `-> bool` (**reason not exposed** — F11) |
+| `is_available()` | abstract | implemented, `-> bool`; `unavailable_reason()` exposes the sanitized failure reason (F11 addressed) |
 | `initialize(session_id, **kwargs)` | abstract | implemented, signature matches |
 | `get_tool_schemas()` | abstract | implemented, `-> List[Dict[str, Any]]` |
 | `handle_tool_call(tool_name, args, **kwargs)` | concrete | implemented **without `**kwargs`**; still call-compatible (F8) |
 | `system_prompt_block()`, `prefetch`, `queue_prefetch`, `shutdown`, `on_turn_start`, `on_session_end`, `get_config_schema`, `save_config` | concrete | overridden, signatures match |
-| `sync_turn(user, assistant, *, session_id, messages)` | concrete | overridden **without `messages`** (F1) |
-| `on_memory_write(action, target, content, metadata=None)` | concrete | overridden **without `metadata`** (F2) |
-| `on_pre_compress`, `backup_paths`, `on_session_switch`, `on_delegation` | concrete | **not overridden** — ABC defaults used (F3, F4) |
+| `sync_turn(user, assistant, *, session_id, messages)` | concrete | overridden with optional `messages`; opted-in tool turns are stored (F1 addressed by P5) |
+| `on_memory_write(action, target, content, metadata=None)` | concrete | overridden with `metadata=None`; metadata reaches the engine write (F2 addressed by P6) |
+| `on_pre_compress`, `on_session_switch`, `on_delegation` | concrete | implemented locally (P16/P17); checkpoint failure cannot abort host compression because Hermes catches hook exceptions (F3) |
+| `backup_paths` | concrete | ABC default retained; Hermes backup already covers the default in-home DB, but not external DB paths (F4) |
 
 All four abstract members are implemented with matching signatures, so the class
 is instantiable by the loader. The gaps below are all in optional hooks and are
@@ -48,15 +80,23 @@ mirror write (`source=f"builtin_memory_{target}"`, hardcoded importance/scope).
 **Patched as P6** (accept-and-store): metadata is handed to the engine's own
 `remember(metadata=...)` parameter.
 
-### F3 — `on_pre_compress` is not overridden
+### F3 — pre-compression callback cannot enforce fail-closed checkpoints
 
-`conversation_compression.py:634` and `memory_manager.py:892` call it; the ABC
-default returns `""`, so Mnemosyne contributes nothing to the compression
-summary prompt. Because `sync_turn` runs every turn, nothing is *lost* that was
-not already synced — but pre-compression extraction does not happen. This is the
-hook the TODO's "`on_pre_compress` semantics" item points at; in this version
-the provider simply does not participate in it. **Decision needed** (leave as
-upstream chose, or implement).
+The provider now overrides `on_pre_compress` (P17): it returns bounded
+user/assistant excerpts for the compression prompt and optionally writes an
+atomic v1 checkpoint under `$HERMES_HOME/mnemosyne/checkpoints/` when
+`memory.mnemosyne.require_checkpoint` is true. The provider method raises
+`CheckpointError` for invalid/oversized content or I/O failure. However,
+`agent/memory_manager.py::on_pre_compress` catches `Exception` from every
+provider, logs at debug, and continues with the remaining hooks. Therefore the
+provider cannot guarantee that Hermes aborts compression; claiming this flag is
+fail-closed end-to-end would be false. We deliberately do not monkey-patch
+Hermes or use `BaseException` to escape its callback boundary. The limitation is
+explicitly documented in the config schema and here; a true fail-closed
+contract requires an upstream Hermes API change. The optional checkpoint is
+local, bounded (100 text messages / 256 KiB), atomic, stored in an owner-only
+`0700` POSIX directory with private temporary files, and keyed by a hash of the
+transcript session id; default behavior writes no snapshot.
 
 ### F4 — `backup_paths()` is not overridden (documentation constraint, not a code fix)
 
@@ -73,18 +113,19 @@ already covered by `hermes backup`. A store relocated outside the home directory
 is **not** covered by `hermes backup` — that is a Hermes constraint
 (`backup_paths` can only carry in-home paths into `_external/`).
 
-### F5 — `register(ctx)` never registers the provider
+### F5 — `register(ctx)` originally never registered the provider (fixed)
 
-`__init__.py:3774-3793`: `register(ctx)` registers a CLI command, then tries
-`from hermes_plugin import register` inside `try/except: pass`. It never calls
-`ctx.register_memory_provider(...)`, so the loader's collector path
-(`plugins/memory/__init__.py` `_ProviderCollector`) captures nothing and the
-provider is only reached by the loader's fallback scan for a `MemoryProvider`
-subclass. Two entry points, one of them decorative. Addressed in B3.
+Before local patch P1, `register(ctx)` registered a CLI command, then tried
+`from hermes_plugin import register` inside `try/except: pass`; it never called
+`ctx.register_memory_provider(...)`. The loader's collector path
+(`plugins/memory/__init__.py` `_ProviderCollector`) therefore captured nothing
+and reached the provider only through its fallback scan for a `MemoryProvider`
+subclass. P1 adds explicit registration; loader tests and onboarding smoke check
+that only one provider is registered.
 
 ### F6 — silent `MemoryProvider = object` fallback
 
-`__init__.py:1265-1270` imports the ABC inside `try/except ImportError` and
+`hermes_memory_provider/__init__.py` imports the ABC inside `try/except ImportError` and
 substitutes `object`. Without Hermes on the path the class silently stops being
 a provider instead of failing loudly. Keep the import tolerance (it is what makes
 the module importable in a bare venv for tests), but the *availability* path
@@ -95,7 +136,7 @@ must be loud — see F11.
 That is the **directory containing the package**, which is why the vendoring
 location matters:
 
-- it is inserted into `sys.path` (line 69-71), so in this repo it resolves to
+- the import guard inserts it into `sys.path`, so in this repo it resolves to
   `integrations/hermes-provider/`;
 - it is the base of the shared-surface store
   (`integrations/hermes-provider/data/shared/mnemosyne.db` when unset) — do not
@@ -108,18 +149,20 @@ location matters:
 
 `handle_tool_call` returns `json.dumps(...)` for normal, unknown-tool, exception
 and unavailable paths, including a structured
-`{"status": "memory_unavailable", ...}` payload when initialization failed
-(`__init__.py:2460-2490`). `_init_error_reason()` (line 1479) is the sanitized
+`{"status": "memory_unavailable", ...}` payload when initialization failed.
+`_init_error_reason()` is the sanitized
 reason accessor (truncated to 200 chars, whitespace-collapsed). This is the
 "tool results as JSON strings" contract, and it holds.
 
-### F9 — `recall_status` / `identity_signature` do not exist in this version
+### F9 — `recall_status` / `identity_signature` are not Hermes 0.18/0.19 hooks
 
-Neither symbol appears in the vendored snapshot nor in hermes-agent 0.18.2.
-Identity handling is `_capture_identity_signals` / `_identity_fichas`; recall
-diagnostics is the `mnemosyne_recall_diagnostics` tool. The TODO's named
-symbols do not map onto this artifact — recorded so a future audit does not hunt
-for them.
+Neither symbol appears in the vendored snapshot nor in the audited Hermes
+0.18.2/0.19.0 packages, and neither belongs to `MemoryProvider` in the
+supported range. We deliberately do not add dead, undocumented methods with
+invented signatures. Identity capture remains `_capture_identity_signals` /
+`_identity_fichas`; recall diagnostics is the `mnemosyne_recall_diagnostics`
+tool. Revisit only when a supported Hermes release defines a caller and
+contract for these names.
 
 ### F10 — engine coupling (the pin is a contract)
 
@@ -132,12 +175,14 @@ inside handlers. Hence the pin `mnemosyne-memory[embeddings]>=3.15.1,<3.16` in
 `pyproject.toml`, and hence "engine missing" must be loud (F11) rather than a
 hollow provider.
 
-### F11 — `is_available()` returns a bare `False`
+### F11 — `is_available()` must explain engine failures (addressed)
 
-`__init__.py:1509` catches `Exception` around `_get_beam_class()` and returns
-`False` with no reason. Combined with a missing engine in the venv, the live
-result is `available ✓` + silent no-op (the review's worst-UX finding).
-Addressed in B4.
+`is_available()` still returns the ABC-required boolean, but now records the
+caught engine/import failure and exposes a whitespace-collapsed, bounded reason
+through `unavailable_reason()`. The Hermes discovery path therefore receives
+`False` while doctor and diagnostics can report why instead of presenting a
+silent no-op. The bare-venv loader regression and sanitized reason are covered
+by the provider loader/doctor contract tests (P2/P3).
 
 ### F12 — `sync_roles` now accepts `tool`
 
@@ -145,12 +190,68 @@ Consequence of P5: `_VALID_SYNC_ROLES` gained `"tool"` and the config-schema
 description documents it (last 5 messages, 2000 chars, importance 0.2). Default
 (`["user"]`) behaviour is unchanged.
 
+### F13 — direct `sync_turn()` calls are synchronous; Hermes dispatch is not
+
+`MnemosyneMemoryProvider.sync_turn()` performs Beam writes inline. This is
+intentional for the supported Hermes path: AST/source inspection of both 0.18.2
+and 0.19.0 confirms `MemoryManager.sync_all()` submits it to a single-worker,
+serialized background executor, so the user-facing turn does not wait for DB
+work. A smoke regression test now holds a fake DB write open and verifies
+`sync_all()` returns before release, then drains the executor and reads the
+persisted fact back; it also prints the direct-call baseline against the same
+injected delay. A provider-level second worker was rejected: it would make
+Hermes `flush_pending()` report completion before the write is durable and
+would duplicate ordering/lifecycle management. Direct callers of the provider
+method still block and should use Hermes `MemoryManager.sync_all()`.
+
+Hermes 0.18.2/0.19.0 expose no `spawn_context_thread` helper. The provider now
+uses a local compatibility helper that copies `contextvars` into its existing
+sleep workers; it uses stdlib `threading.Thread` internally and does not add a
+second turn-sync worker. The helper has an engine-free context propagation test.
+The Linux onboarding smoke measures the direct blocking baseline and the
+`MemoryManager.sync_all()` dispatch path with an injected DB delay, then drains
+the executor and confirms persistence. That real-Hermes smoke remains the
+platform-level evidence gate for this decision.
+
+### F14 — plugin metadata and bundled/user discovery collision (addressed)
+
+Added `hermes_memory_provider/plugin.yaml` with the provider metadata and hook
+names Hermes' plugin CLI discovery consumes, and included it in the provider
+wheel. The onboarding smoke seeds the same provider name in Hermes' bundled
+root and the installer-created user symlink, then asserts one discovered row,
+bundled-root precedence, one CLI command, and a provider loaded through
+`load_memory_provider()`. It also checks one `register(ctx)` result, one manager
+provider, and the real `doctor`/`memory status` path. The Linux/macOS CI result
+must pass before this is called end-to-end verified.
+
+### F15 — all engine tools exposed by default (addressed)
+
+The provider now defaults to the four core tools (`mnemosyne_remember`,
+`mnemosyne_recall`, `mnemosyne_stats`, `mnemosyne_forget`). Operators must set
+`memory.mnemosyne.tools: ["*"]` to expose all 40 engine tools; explicit subsets
+and an empty list remain supported, while a mixed wildcard or unknown name is
+rejected. `docs/HERMES_INTEGRATION.md` owns the canonical 40-name table and the
+provider suite covers default, wildcard, subset, and invalid configuration.
+
 ## Status
 
-Patched: F1/F2 (P5/P6, accept-and-store), F5 (P1, registration), F11 (P2/P3,
-loud availability), plus P4 (actionable doctor). Deliberately **not** patched:
-F3 (`on_pre_compress` — upstream's choice, the engine has no
-message-accepting extraction API to forward to) and F4 (`backup_paths` — Hermes
-skips out-of-home paths by design, so a patch would be decorative). F6, F7, F9,
-F10 are recorded behaviour/coupling notes, not defects. Every future local change must go through `PATCHES.md` +
+| Finding | Disposition / evidence |
+|---|---|
+| F1 | Fixed: `sync_turn(..., messages=...)` stores opted-in tool turns (P5); delegation task/result capture is a separate bounded `on_delegation` hook (P16). Provider tests cover bounds and opt-in. |
+| F2 | Fixed: `on_memory_write(..., metadata=...)` forwards metadata to engine remember (P6). |
+| F3 | Deliberate limit: P17 adds bounded excerpts and optional atomic checkpoints; Hermes catches hook exceptions, so the flag cannot fail compression closed. |
+| F4 | Documented Hermes constraint: default in-home DB is backed up; external DB paths are skipped by Hermes backup. |
+| F5 | Fixed: `register(ctx)` registers the provider and CLI command (P1); real loader is exercised by onboarding smoke. |
+| F6 | Deliberate compatibility: bare-venv import fallback remains for tests, while unavailable engine failures are reported by F11. |
+| F7 | Deliberate layout contract: provider root is the vendoring directory; the sys.path guard prevents a copied install from shadowing the engine. |
+| F8 | Conformant: all tool-call result paths return JSON strings, including unavailable/error cases. |
+| F9 | Deliberately not added: supported Hermes has no `recall_status` or `identity_signature` caller/contract; diagnostics and identity capture use existing APIs. |
+| F10 | Deliberate pin: provider imports engine internals and stays within `mnemosyne-memory[embeddings]>=3.15.1,<3.16`. |
+| F11 | Fixed: `is_available()` keeps the required boolean and `unavailable_reason()` exposes a bounded sanitized reason; loader/doctor tests cover it. |
+| F12 | Fixed: `sync_roles` accepts `tool` and defaults remain unchanged. |
+| F13 | Deliberate concurrency contract: Hermes serializes provider sync on its background executor; no second provider worker is added. The real-Hermes smoke measures dispatch and direct baseline. |
+| F14 | Fixed in code/tests: plugin metadata and collision assertions are present; Linux/macOS smoke CI is the remaining end-to-end evidence gate. |
+| F15 | Fixed: four-tool default, explicit all-tools opt-in, and one canonical 40-tool table. |
+
+Every future local provider change must go through `PATCHES.md` +
 `VENDORED_FROM.json` (enforced by `tests/test_vendored_provider.py`).

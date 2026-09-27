@@ -19,7 +19,7 @@ what must not drift.
 
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
 - A Hermes install only if you are working on the provider end to end
-  (`hermes-agent >=0.18,<0.22`).
+  (`hermes-agent >=0.18,<0.20`).
 - No API key. Memory works keyless; if a step demands a key, that is a bug.
 
 ## Dev setup

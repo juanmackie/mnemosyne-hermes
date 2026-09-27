@@ -17,7 +17,7 @@ previous slim `lib.storage`-backed provider in `integrations/hermes/` is retired
 | Provenance + hashes | `VENDORED_FROM.json` |
 | Local patches + sync policy | `PATCHES.md` |
 | Contract audit | `CONTRACT_AUDIT.md` |
-| Plugins dir | `$HERMES_HOME/plugins/mnemosyne` → this package |
+| Plugins dir | `$HERMES_HOME/plugins/mnemosyne` → this package (symlink or verified copy) |
 
 ## Install
 
@@ -30,10 +30,11 @@ Docker default).
 uv pip install --python "$HERMES_VENV/bin/python" ./integrations/hermes-provider
 
 # 2. Make Hermes discover it as a memory provider plugin.
-#    The symlink must point at the DIRECTORY CONTAINING __init__.py — pointing
-#    it at the repo root (as install.sh used to) makes the loader skip it.
+#    A symlink must point at the directory containing __init__.py.
 ln -sfn "$(pwd)/integrations/hermes-provider/hermes_memory_provider" \
         "$HERMES_HOME/plugins/mnemosyne"
+#    If directory symlinks are unavailable (e.g. Windows without Developer
+#    Mode), use ./install.sh --copy to install a digest-verified copy instead.
 
 # 3. Point the agent at this provider.
 hermes config set memory.provider mnemosyne
@@ -43,7 +44,17 @@ hermes mnemosyne doctor --no-fix     # must exit 0 in the gateway venv
 ```
 
 `./install.sh` performs these same steps; run it with `--dry-run` first to see
-the resolved venv, DB path and symlink target, and `--help` for every flag.
+the resolved venv, DB path and plugin target. It automatically falls back to a
+copy if directory symlinks are unavailable; `--copy` forces that mode. Copies
+carry format-v1 `PROVENANCE.json` with SHA-256 digests for every package file
+(except the `__pycache__` directories Python creates at runtime and the root
+`PROVENANCE.json` marker). Top-level `.pyc` files and nested marker-named files
+are included. `doctor` rejects missing,
+changed, missing/extra, legacy, or symlinked payload files. The installer also
+refuses to overwrite or uninstall a directory unless its complete inventory
+verifies against the current canonical source path. Re-run the installer after
+updating a copied provider because the copy does not track the source; older
+unversioned copies need to be moved aside or removed manually before upgrade.
 
 **Do not install upstream's bundled provider alongside this one.** The vendored
 copy *is* the `mnemosyne` provider, and two registered paths for the same id is
@@ -116,26 +127,24 @@ but not in the live session.
 ## Supported Hermes range
 
 `hermes mnemosyne` depends on Hermes' plugin CLI discovery internals, so the
-supported range is a contract: **`>=0.18,<0.22`** (tested 0.18.2, 0.19.0,
-0.21.2). The provider logs a warning — it does not refuse to start — when the
-detected `hermes-agent` version is outside that range, and `doctor` prints the
-detected version beside the range. The CI smoke lane pins `hermes-agent==0.19.0`
-(the newest PyPI release; 0.21.2 is not published to PyPI).
+supported range is a contract: **`>=0.18,<0.20`**, audited against the two
+published Hermes releases in the matrix: `0.18.2` and `0.19.0`. The provider
+logs a warning — it does not refuse to start — when the detected `hermes-agent`
+version is outside that range, and `doctor` prints the detected version beside
+the range. Versions outside the audited range are unsupported until their
+plugin-discovery and provider contracts are reviewed.
 
 ## Uninstall
 
-`./install.sh --uninstall` performs the steps below; add `--purge` to also drop
-the engine package and `$HERMES_HOME/mnemosyne` (the memory data).
-
 ```bash
-rm -f "$HERMES_HOME/plugins/mnemosyne"       # the provider symlink only
-uv pip uninstall --python "$HERMES_VENV/bin/python" mnemosyne-hermes-provider
-# Optional: remove the engine too, then the DB directory.
-#   uv pip uninstall --python "$HERMES_VENV/bin/python" mnemosyne-memory
-#   rm -rf "$HERMES_HOME/mnemosyne"
+./install.sh --uninstall          # remove provider link/package; keep engine and data
+./install.sh --uninstall --purge  # also remove engine + $HERMES_HOME/mnemosyne
 ```
-This never touches the memory DB unless you remove `$HERMES_HOME/mnemosyne`
-yourself. Restart the gateway afterwards.
+
+The installer prompts before changing anything (or pass `--yes` explicitly).
+`--purge` removes the default Hermes-home data directory; an explicitly
+configured database outside that directory is not removed. Back up data and
+check the resolved path before purging. Restart the gateway afterwards.
 
 ## Sync policy
 

@@ -243,6 +243,101 @@ def test_mcp_announces_itself_as_mnemosyne_lite():
         assert info["version"] == mnemosyne_lite.__version__, info
 
 
+def test_format_json_emits_one_parseable_document():
+    """`--format json` must produce JSON; text mode must stay one dict per line.
+
+    The flag is accepted before or after the subcommand (like --db-path), and
+    the two modes differ in shape on purpose: recall/list emit one array, the
+    single-result commands emit one object.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        db = str(pathlib.Path(d) / "memory.db")
+        assert _run(["--db-path", db, "init"])[0] == 0
+
+        json_init_db = str(pathlib.Path(d) / "json-init.db")
+        code, out, err = _run(["--db-path", json_init_db, "init", "--format", "json"])
+        assert code == 0, (code, err)
+        assert json.loads(out)["initialized"] == json_init_db, out
+
+        code, out, err = _run(
+            ["--db-path", db, "remember", "--content", "json please", "--format", "json"]
+        )
+        assert code == 0, (code, err)
+        remembered = json.loads(out)
+        assert remembered["success"] is True, remembered
+
+        # --format before the subcommand must work too.
+        code, out, err = _run(["--format", "json", "--db-path", db, "recall", "--query", "json"])
+        assert code == 0, (code, err)
+        found = json.loads(out)
+        assert isinstance(found, list), found
+        assert [r["content"] for r in found] == ["json please"], found
+
+        code, out, err = _run(["--db-path", db, "list", "--format", "json"])
+        assert code == 0, (code, err)
+        assert isinstance(json.loads(out), list), out
+
+        code, out, err = _run(["--db-path", db, "diagnostics", "--format", "json"])
+        assert code == 0, (code, err)
+        diag = json.loads(out)
+        assert diag["db_path"] == db and diag["memory_count"] == 1, diag
+
+        backup_path = str(pathlib.Path(d) / "memory.backup")
+        code, out, err = _run(
+            ["--db-path", db, "backup", "--output", backup_path, "--format", "json"]
+        )
+        assert code == 0, (code, err)
+        assert json.loads(out)["backup"] == backup_path, out
+
+        restore_db = str(pathlib.Path(d) / "restore.db")
+        assert _run(["--db-path", restore_db, "init"])[0] == 0
+        code, out, err = _run(
+            [
+                "--db-path",
+                restore_db,
+                "restore",
+                "--backup",
+                backup_path,
+                "--yes",
+                "--format",
+                "json",
+            ]
+        )
+        assert code == 0, (code, err)
+        restored = json.loads(out)
+        assert restored["restored"] == restore_db and restored["backup"] == backup_path, restored
+        safety = pathlib.Path(restored["safety_backup"])
+        assert safety.is_file() and "pre-restore." in safety.name, restored
+        assert _contents(restore_db) == ["json please"], _contents(restore_db)
+
+        maintenance_db = str(pathlib.Path(d) / "maintenance.db")
+        store = PythonMemoryStorage(maintenance_db)
+        store.remember("duplicate for JSON maintenance", namespace="default", importance=8)
+        store.remember("duplicate for JSON maintenance", namespace="default", importance=8)
+        store.close()
+        code, out, err = _run(
+            [
+                "--db-path",
+                maintenance_db,
+                "maintenance",
+                "--auto-apply",
+                "--yes",
+                "--format",
+                "json",
+            ]
+        )
+        assert code == 0, (code, err)
+        maintenance = json.loads(out)
+        assert maintenance["auto_applied"] is True and maintenance["removed"] == 1, maintenance
+
+        # Text mode is unchanged: one dict repr per line, not JSON.
+        code, out, err = _run(["--db-path", db, "recall", "--query", "json"])
+        assert code == 0, (code, err)
+        assert out.count("\n") == 1, out
+        assert not out.lstrip().startswith("["), out
+        assert "'content': 'json please'" in out, out
+
+
 if __name__ == "__main__":
     tests = [value for key, value in sorted(globals().items()) if key.startswith("test_")]
     for fn in tests:

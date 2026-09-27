@@ -17,7 +17,7 @@ was started before the install.
 
 ```bash
 ./install.sh --dry-run    # shows the venv, symlink target and DB path
-./install.sh              # install provider + engine, link the plugin
+./install.sh              # install provider + engine, link/copy the plugin
 hermes memory status      # provider installed / available / active
 ```
 
@@ -42,18 +42,27 @@ rather than hand-installing one half.
 
 ### The provider loads but is unavailable
 
-Check the plugin symlink. It must point at the directory that contains
-`__init__.py` (the provider package), not at the repository root, or the loader
-skips it.
+Check the plugin entry at `$HERMES_HOME/plugins/mnemosyne`. A symlink must
+point at the directory containing `__init__.py`, not at the repository root. On
+systems where directory symlinks are unavailable, the installer falls back to
+a copy; run `./install.sh --copy` to force that mode.
 
 ```bash
-ls -l "$HERMES_HOME/plugins/mnemosyne"
-# should resolve to .../integrations/hermes-provider/hermes_memory_provider
+ls -ld "$HERMES_HOME/plugins/mnemosyne"
+# symlink: resolves to integrations/hermes-provider/hermes_memory_provider
+# copy: contains PROVENANCE.json
+hermes mnemosyne doctor --no-fix
 ```
 
-If you have both this provider and a copy bundled with `mnemosyne-memory`
-registered, uninstall one of them: two paths for the id `mnemosyne` is exactly
-the failure this repository's provider exists to remove.
+A copied install is accepted only while format-v1 provenance covers every
+package file (excluding runtime bytecode caches and the marker) and the exact
+inventory and SHA-256 digests still match. Re-run the installer after editing a
+copy. The installer refuses to overwrite/uninstall an unverified directory;
+legacy unversioned copies need to be moved aside or removed manually. Hermes
+0.18.2/0.19.0 discovery
+prefers a bundled provider over a same-name user plugin and deduplicates that
+name; the clean-user smoke tests this collision and one-provider registration.
+Do not add another manual registration entry point.
 
 ### Memory is written somewhere unexpected
 
@@ -86,9 +95,9 @@ fixes are the same as for a non-zero `doctor`.
 
 ### `no Mnemosyne database at <path> (nothing was created)`
 
-Every command except `init` and `remember` refuses to invent a store, so a
-mistyped path cannot answer "0 memories". Either create the store or point at an
-existing one:
+Read and maintenance commands refuse to invent a store, so a mistyped path
+cannot answer "0 memories". Create it with `init` or `remember`, restore it from
+an explicit backup, or point the command at an existing store:
 
 ```bash
 mnemosyne-lite init
@@ -119,10 +128,16 @@ path fails at startup instead of answering every request with an error. Run
 client. Nothing but JSON-RPC goes to stdout, so a client that logs stray output
 will show it as a protocol error.
 
-### I expected `--format json`
+### I need structured output
 
-There is no such flag: the CLI prints Python dict reprs, one per line. Use the
-MCP server if you need structured output for a program.
+Pass `--format json` (before or after the subcommand). `init`, `remember`,
+`bootstrap`, `backup`, `restore`, `maintenance` and `diagnostics` print one JSON
+object; `recall` and `list` print one JSON array. Text mode preserves existing
+command-specific output.
+
+```bash
+mnemosyne-lite recall --query "race condition" --format json | jq -r '.[].content'
+```
 
 ### `restore` did not do what I expected
 
@@ -154,7 +169,7 @@ environment. The name collision that used to break the engine is described in
 ## Repository checks
 
 ```bash
-./test-all.sh                # provider contract gates, then pytest
+./test-all.sh --skip-llm     # provider contract gates + local pytest suite
 bash scripts/checks.sh       # notes and version-drift gates
 pre-commit run --all-files   # ruff, mypy, shellcheck
 ```

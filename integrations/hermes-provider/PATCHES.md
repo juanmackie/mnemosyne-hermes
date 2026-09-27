@@ -138,12 +138,68 @@ divergence.
 | Behaviour | No runtime change. `import agent` became `importlib.import_module("agent")` inside the same `try`/`except`; `beam` and `_beam_kwargs` carry explicit `Any` / `dict[str, Any]` annotations. Verified: `mypy hermes_memory_provider/cli.py` — no issues (see `pyproject.toml` in this directory for the module-level override that keeps the rest of the snapshot out of the check). |
 | Upstream | Not sent yet — generic; upstream carries all three complaints. |
 
-### P13 — `doctor` on a fresh install (P0-2)
+### P13 — a verified copy is an acceptable plugin target (P5-1)
 
-Recorded as an amendment to P10 above rather than a separate patch.
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/cli.py` (`check_provider_provenance`, `_db_writable`) |
+| Date | 2026-09-27 |
+| Reason | Windows cannot create a directory symlink without Developer Mode, so `install.sh --copy` places a copy at `$HERMES_HOME/plugins/mnemosyne`. Provenance was a pure path check, so `doctor` refused that install even though the files were byte-identical to the canonical package. The initial marker only hashed `__init__.py` and `cli.py`, leaving helper modules and plugin metadata unverified; installer replacement/uninstall also treated any `PROVENANCE.json` as proof of ownership. Separately, `os.access` raises rather than returning False for a path it cannot encode, which turned a bad DB path into a traceback instead of a failed check. |
+| Behaviour | `check_provider_provenance` still refuses the retired `integrations/hermes` tree first, and still requires the canonical path when the plugin really is under `integrations/hermes-provider/`. Otherwise it accepts only format-v1 provenance with an exact SHA-256 inventory of all regular package files (excluding runtime `__pycache__` directories and only the root marker; top-level `.pyc` and nested marker-named files are included); changed, missing, additional, symlinked, malformed, or legacy unversioned copies fail. The installer overwrites/uninstalls a real directory only when this inventory verifies and its recorded source matches the current canonical package path, never based on marker presence alone. The handler-function checks (`register_memory_provider`, `register`, `register_cli`, `mnemosyne_command`) apply to both origins. `_db_writable` gained `_writable`, which reports an unencodable path as "not writable" instead of raising. |
+| Upstream | Not sent yet — repo-specific provenance. |
 
 The remaining vendored files are byte-identical to the 3.15.1 wheel RECORD.
 `register_memory_provider(ctx)` was already present upstream and is unchanged.
+
+### P14 — supported Hermes range reflects audited releases (P4-2)
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/cli.py` (`SUPPORTED_HERMES_RANGE`, `TESTED_HERMES_VERSIONS`, `check_hermes_version`) |
+| Date | 2026-09-27 |
+| Reason | The old range and tested-version list exceeded the published releases actually audited for this provider. Claiming compatibility beyond the audited contract was misleading. |
+| Behaviour | The accepted range is now `>=0.18,<0.20`; the tested list is 0.18.2 and 0.19.0. `check_hermes_version` refuses 0.20+ with an out-of-range diagnostic. The API baseline was AST-compared across 0.18.2 and 0.19.0; see `CONTRACT_AUDIT.md`. |
+| Upstream | Not sent yet — compatibility support decision. |
+
+### P15 — context-preserving thread helper; keep turn durability under Hermes (P2)
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`spawn_context_thread`, auto-sleep/session-end workers) |
+| Date | 2026-09-27 |
+| Reason | The supported Hermes releases do not export `spawn_context_thread`; the provider previously started its auxiliary sleep workers with raw `threading.Thread`, losing the caller's `contextvars`. Separately, provider `sync_turn` is synchronous when invoked directly. |
+| Behaviour | A local `spawn_context_thread` fallback copies the caller's context into the existing sleep worker call sites. Turn sync remains inline inside the provider because Hermes 0.18.2/0.19.0 already dispatch `MemoryManager.sync_all()` through a single serialized background worker; adding another worker would undermine manager drain/order guarantees. The Linux/macOS Hermes smoke asserts this with a gated slow DB write and round-trip, and the helper's context propagation has a bare test. Direct provider callers must use `MemoryManager.sync_all()` when they need non-blocking behavior. |
+| Upstream | Not sent yet — local compatibility helper. |
+
+### P16 — opt-in parent-side delegation capture (P2 hooks)
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`sync_roles`, `on_delegation`) |
+| Date | 2026-09-27 |
+| Reason | Hermes calls `on_delegation` with the parent-side task/result, but the upstream provider inherited the no-op. Delegation transcripts can contain sensitive data, so capture must not become a new default. |
+| Behaviour | Add `delegation` to the existing `sync_roles` allowlist. Only when explicitly enabled does the provider store bounded task/result text (`<=4096` chars) with source `conversation_delegation`; default `['user']` behavior and the `agent:hermes` memory namespace are unchanged. Filter/skip-context checks and the Beam access lock still apply. |
+| Upstream | Not sent yet — opt-in local policy. |
+
+### P17 — session and pre-compression hooks
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`on_session_switch`, `on_pre_compress`) |
+| Date | 2026-09-27 |
+| Reason | The Hermes 0.18.2/0.19.0 ABC exposes these callbacks, but the provider inherited no-ops. The process may rotate transcript IDs without reinitializing the provider. |
+| Behaviour | `on_session_switch` updates only the transcript ID and resets per-transcript counters for reset/rewind; it never rotates the persistent memory session namespace. `on_pre_compress` returns bounded user/assistant excerpts and optionally atomically writes a local v1 checkpoint when `require_checkpoint` is set. It limits transcript payload to 100 messages and caps the serialized UTF-8 JSON file at 256 KiB. The checkpoint directory is owner-only (`0700` on POSIX), files use `mkstemp` permissions, and symlinked checkpoint directories are refused on POSIX. On write failure the method raises `CheckpointError`. **Limit:** Hermes MemoryManager catches provider callback exceptions and continues compression, so this cannot be end-to-end fail-closed; schema/docs explicitly say so. `recall_status`/`identity_signature` remain absent because neither supported Hermes version defines/calls them (F9). |
+| Upstream | Not sent yet — local hooks. |
+
+### P18 — curated default Hermes tool surface
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`DEFAULT_TOOL_NAMES`, `_configured_tool_schemas`, config schema) |
+| Date | 2026-09-27 |
+| Reason | Exposing all 40 engine tools by default bloated Hermes' prompt and made advanced/destructive operations available without an explicit deployment decision. |
+| Behaviour | Default exposure is the four core tools: remember, recall, stats, and forget. Existing explicit subsets and `[]` remain supported. `memory.mnemosyne.tools: ["*"]` opts into the full 40-tool list; wildcard mixed with names is rejected. Unknown names still fail loudly. The canonical name/default table lives in `docs/HERMES_INTEGRATION.md`; README and AGENTS link to it. |
+| Upstream | Not sent yet — local exposure policy. |
 
 Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 (they need a product decision, not a mechanical fix).

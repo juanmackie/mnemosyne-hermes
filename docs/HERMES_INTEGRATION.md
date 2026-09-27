@@ -29,11 +29,15 @@ cd mnemosyne-hermes
 ```
 
 `./install.sh` installs the vendored provider and its pinned engine into the
-Hermes virtualenv, symlinks `$HERMES_HOME/plugins/mnemosyne` at the directory
-containing `hermes_memory_provider/__init__.py`, and selects
-`memory.provider: mnemosyne`. The database is created on first write, not by the
-installer. `./install.sh --help` lists every flag, including `--venv`,
-`--python`, `--hermes-home` and `--db-path`.
+Hermes virtualenv, then installs `$HERMES_HOME/plugins/mnemosyne` as a symlink
+to the directory containing `hermes_memory_provider/__init__.py`. Where
+directory symlinks are unavailable it falls back to a copy with a
+`PROVENANCE.json` digest record; `./install.sh --copy` forces that mode. Doctor
+accepts a copy only while format-v1 provenance matches the complete package
+inventory (excluding runtime bytecode caches). The installer then selects
+`memory.provider: mnemosyne`. The database is created on
+first write, not by the installer. `./install.sh --help` lists every flag,
+including `--copy`, `--venv`, `--python`, `--hermes-home` and `--db-path`.
 
 ## 2. Verify
 
@@ -84,10 +88,11 @@ It implements the Hermes `MemoryProvider` contract:
   can apply its own `<memory-context>` wrapper and streaming scrubber.
 - **Capture** — user-originated turns are recorded; `cron`, `flush`, `subagent`,
   `background` and `skill_loop` runs are skipped for both capture and injection.
-- **Tools** — `get_tool_schemas()` exposes the engine's tools (`mnemosyne_remember`,
-  `mnemosyne_recall`, and the rest of the engine's set); `handle_tool_call`
-  returns JSON strings and reports `memory_unavailable` with a reason when the
-  engine is not importable.
+- **Tools** — exposes four curated defaults; the complete 40-tool surface is
+  opt-in. Names, groups, and default status are in the
+  [canonical tool table](#canonical-tool-names-and-default-exposure).
+  `handle_tool_call` returns JSON strings and reports `memory_unavailable`
+  with a reason when the engine is not importable.
 
 No cloud API key is required. Core storage and keyword recall are local and
 keyless; optional LLM work goes through the active Hermes model configured in
@@ -99,12 +104,63 @@ keyless; optional LLM work goes through the active Hermes model configured in
 | --- | --- |
 | `memory.provider` | Must be `mnemosyne` |
 | `memory.mnemosyne.db_path` | Explicit store path; beats the env var |
-| `memory.mnemosyne.tools` | Restrict exposed tools (`[]` = none) |
+| `memory.mnemosyne.tools` | Omit/null for four core tools; `['*']` opts into all 40; `[]` disables tool exposure |
 | `memory.mnemosyne.profile_isolation` | Bank per Hermes profile |
 
-Unknown tool names in `memory.mnemosyne.tools` fail loudly at startup, and an
-explicit `db_path` wins over `profile_isolation` (the provider warns when both
-are set) — a typo must not silently move where memory is written.
+Unknown tool names in `memory.mnemosyne.tools` fail loudly at startup; `'*'`
+must be the only list entry. An explicit `db_path` wins over
+`profile_isolation` (the provider warns when both are set) — a typo must not
+silently move where memory is written.
+
+### Canonical tool names and default exposure
+
+This is the canonical Hermes provider tool-name table. The lite MCP tool names
+are a separate API documented in [MCP_SERVER.md](../MCP_SERVER.md).
+`memory.mnemosyne.tools: ["*"]` exposes every row marked **opt-in** as well as
+the four default tools; a configured list can select any subset.
+
+| Tool | Group | Default | Purpose |
+| --- | --- | --- | --- |
+| `mnemosyne_remember` | Core | yes | Store a durable memory. |
+| `mnemosyne_recall` | Core | yes | Search private memories. |
+| `mnemosyne_stats` | Core | yes | Show storage counts and tiers. |
+| `mnemosyne_forget` | Core | yes | Permanently delete a memory by ID. |
+| `mnemosyne_shared_remember` | Shared surface | opt-in | Store a cross-agent surface memory. |
+| `mnemosyne_shared_recall` | Shared surface | opt-in | Search the shared surface store. |
+| `mnemosyne_shared_forget` | Shared surface | opt-in | Delete a shared-surface memory by ID. |
+| `mnemosyne_shared_stats` | Shared surface | opt-in | Show shared-surface path and counts. |
+| `mnemosyne_sleep` | Lifecycle | opt-in | Run consolidation. |
+| `mnemosyne_invalidate` | Lifecycle | opt-in | Expire or supersede a memory. |
+| `mnemosyne_validate` | Lifecycle | opt-in | Attest, update, or invalidate a memory. |
+| `mnemosyne_get` | Retrieval | opt-in | Fetch a memory by primary key. |
+| `mnemosyne_update` | Lifecycle | opt-in | Update memory content or importance. |
+| `mnemosyne_batch` | Lifecycle | opt-in | Apply supported mutations atomically. |
+| `mnemosyne_apply_pending` | Lifecycle | opt-in | Commit staged writes when approval is enabled. |
+| `mnemosyne_triple_add` | Knowledge graph | opt-in | Add a temporal fact triple. |
+| `mnemosyne_triple_query` | Knowledge graph | opt-in | Query temporal fact triples. |
+| `mnemosyne_triple_end` | Knowledge graph | opt-in | End a temporal fact without replacement. |
+| `mnemosyne_remember_canonical` | Canonical profile | opt-in | Set a single-source-of-truth profile fact. |
+| `mnemosyne_recall_canonical` | Canonical profile | opt-in | Read canonical profile facts. |
+| `mnemosyne_forget_canonical` | Canonical profile | opt-in | Retire a canonical profile fact. |
+| `mnemosyne_model_card` | Canonical profile | opt-in | Render canonical facts as a model card. |
+| `mnemosyne_model_refresh` | Canonical profile | opt-in | Inspect inferred canonical updates. |
+| `mnemosyne_task_progress` | Canonical profile | opt-in | Track cross-session task progress. |
+| `mnemosyne_scratchpad_write` | Scratchpad | opt-in | Write a temporary note. |
+| `mnemosyne_scratchpad_read` | Scratchpad | opt-in | Read temporary notes. |
+| `mnemosyne_scratchpad_clear` | Scratchpad | opt-in | Clear temporary notes. |
+| `mnemosyne_export` | Data management | opt-in | Export memories for backup or migration. |
+| `mnemosyne_import` | Data management | opt-in | Import memories from a file or provider. |
+| `mnemosyne_diagnose` | Diagnostics | opt-in | Run PII-safe installation diagnostics. |
+| `mnemosyne_recall_diagnostics` | Diagnostics | opt-in | Report recall-path and fallback metrics. |
+| `mnemosyne_graph_query` | Knowledge graph | opt-in | Traverse graph edges from a memory. |
+| `mnemosyne_graph_link` | Knowledge graph | opt-in | Add a semantic edge between memories. |
+| `mnemosyne_sync_push` | Remote sync | opt-in | Push local changes to a configured server. |
+| `mnemosyne_sync_pull` | Remote sync | opt-in | Pull changes from a configured server. |
+| `mnemosyne_sync_status` | Remote sync | opt-in | Show remote sync state. |
+| `mnemosyne_persona_promote` | Persona | opt-in | Promote a memory to the persona tier. |
+| `mnemosyne_persona_demote` | Persona | opt-in | Demote a persona fact. |
+| `mnemosyne_persona_list` | Persona | opt-in | List persona facts. |
+| `mnemosyne_persona_reinforce` | Persona | opt-in | Reinforce a persona fact. |
 
 ## 5. Using the lite store from Hermes
 

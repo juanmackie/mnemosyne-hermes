@@ -19,8 +19,10 @@ if (_mnemosyne_root / "hermes_memory_provider").is_dir() and str(_mnemosyne_root
 
 # Supported Hermes range (T8): `hermes mnemosyne ...` depends on Hermes' plugin
 # CLI discovery internals, so the range is a contract, not a preference.
-SUPPORTED_HERMES_RANGE = ">=0.18,<0.22"
-TESTED_HERMES_VERSIONS = ("0.18.2", "0.19.0", "0.21.2")
+# LOCAL PATCH (P14): only 0.18.2 and 0.19.0 were available and audited;
+# do not claim support for unpublished/unverified 0.20+ releases.
+SUPPORTED_HERMES_RANGE = ">=0.18,<0.20"
+TESTED_HERMES_VERSIONS = ("0.18.2", "0.19.0")
 
 
 def detect_hermes_version():
@@ -53,7 +55,7 @@ def check_hermes_version(version):
         parts = tuple(int(x) for x in str(version).split(".")[:2])
     except (TypeError, ValueError):
         parts = ()
-    if len(parts) == 2 and (0, 18) <= parts < (0, 22):
+    if len(parts) == 2 and (0, 18) <= parts < (0, 20):
         return True, f"Hermes {version} is within the supported range {SUPPORTED_HERMES_RANGE}"
     return False, (
         f"Hermes {version} is outside the supported range {SUPPORTED_HERMES_RANGE} "
@@ -124,6 +126,93 @@ def describe_memory_location(db_path, hermes_home):
     return lines
 
 
+def _file_digest(path):
+    """sha256 as base64url without padding — the wheel RECORD / manifest format."""
+    import base64
+    import hashlib
+
+    data = hashlib.sha256(Path(path).read_bytes()).digest()
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def _copy_payload_digests(plugin_path):
+    """Hash payload files, excluding only the root marker and runtime caches."""
+    import os
+
+    root = Path(plugin_path)
+    files = {}
+    for current, directories, names in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for directory in directories:
+            if (current_path / directory).is_symlink():
+                raise ValueError(f"provider copy contains a symlink: {current_path / directory}")
+        directories[:] = [name for name in directories if name != "__pycache__"]
+        for name in names:
+            path = current_path / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"provider copy contains a non-regular file: {path}")
+            relative = path.relative_to(root).as_posix()
+            if relative == "PROVENANCE.json":
+                continue
+            files[relative] = _file_digest(path)
+    return files
+
+
+def _verified_copy(plugin_path, expected_source=None):
+    """Return (ok, detail) for a complete, unchanged installer-created copy.
+
+    Windows cannot create a directory symlink without Developer Mode, so
+    `install.sh --copy` writes a versioned digest inventory for every package
+    file. `__pycache__` directories and only the root marker are excluded.
+    Python adds bytecode caches at runtime; top-level `.pyc` and nested
+    marker-named files are included. The inventory also rejects missing,
+    additional, and symlinked payload files.
+    """
+    # LOCAL PATCH (P13): verified copies must cover the complete importable
+    # package, not just __init__.py and cli.py.
+    marker = Path(plugin_path) / "PROVENANCE.json"
+    if marker.is_symlink() or not marker.is_file():
+        return False, (
+            f"plugin target {plugin_path} is not the canonical provider "
+            "(expected .../integrations/hermes-provider/hermes_memory_provider) "
+            "and has no regular PROVENANCE.json, so it cannot be verified as a copy. "
+            "Run `./install.sh --copy` to create one."
+        )
+    try:
+        import json
+
+        recorded = json.loads(marker.read_text(encoding="utf-8"))
+        if not isinstance(recorded, dict) or recorded.get("format_version") != 1:
+            return False, f"{marker} uses an unsupported provenance format; reinstall with ./install.sh --copy"
+        files = recorded.get("files")
+        if not isinstance(files, dict) or not files or not all(
+            isinstance(name, str) and isinstance(digest, str)
+            for name, digest in files.items()
+        ):
+            return False, f"{marker} records no valid file digests"
+        if expected_source is not None:
+            source = Path(recorded.get("copied_from", "")).resolve()
+            if source != Path(expected_source).resolve():
+                return False, f"{marker} was not created from the current canonical provider source"
+        actual_files = _copy_payload_digests(plugin_path)
+    except Exception as e:
+        return False, f"{marker} is unreadable or invalid: {e}"
+
+    if set(files) != set(actual_files):
+        missing = sorted(set(files) - set(actual_files))
+        added = sorted(set(actual_files) - set(files))
+        return False, f"{marker} payload inventory changed (missing={missing}, added={added})"
+    for name, expected in files.items():
+        actual = actual_files[name]
+        if actual != expected:
+            return False, (
+                f"{Path(plugin_path) / name} does not match the digest recorded in {marker} "
+                f"({actual} != {expected}). The copy was edited after it was "
+                "installed; re-run ./install.sh --copy."
+            )
+    return True, f"a verified copy of the canonical provider (from {recorded.get('copied_from', 'unknown')})"
+
+
 def check_provider_provenance(plugin_path):
     """Return (ok, message) for a $HERMES_HOME/plugins/mnemosyne target (T7)."""
     resolved = Path(os.path.realpath(str(plugin_path)))
@@ -134,19 +223,28 @@ def check_provider_provenance(plugin_path):
             return False, (
                 f"plugin target {resolved} is the RETIRED provider tree (integrations/hermes)"
             )
-    if not (
+
+    canonical = (
         resolved.name == "hermes_memory_provider"
         and resolved.parent.name == "hermes-provider"
         and resolved.parent.parent.name == "integrations"
-    ):
-        return False, (
-            f"plugin target {resolved} is not the canonical provider "
-            "(expected .../integrations/hermes-provider/hermes_memory_provider)"
-        )
+    )
+    if canonical:
+        origin = "the canonical provider"
+    else:
+        # LOCAL PATCH (P13): a copy is an acceptable install where symlinks are
+        # not available, as long as it is the copy this repo made and has not
+        # been edited since. Without this, `install.sh --copy` produced an
+        # install that doctor refused.
+        ok, detail = _verified_copy(resolved)
+        if not ok:
+            return False, detail
+        origin = detail
+
     init_py = resolved / "__init__.py"
     cli_py = resolved / "cli.py"
     if not init_py.is_file():
-        return False, f"canonical provider {resolved} has no __init__.py"
+        return False, f"provider {resolved} has no __init__.py"
     init_text = init_py.read_text(encoding="utf-8", errors="replace")
     if "def register_memory_provider" not in init_text or "def register(" not in init_text:
         return False, f"provider {resolved} is missing register()/register_memory_provider()"
@@ -154,7 +252,7 @@ def check_provider_provenance(plugin_path):
     for fn in ("register_cli", "mnemosyne_command"):
         if f"def {fn}" not in cli_text:
             return False, f"provider cli.py is missing {fn} (Hermes CLI handler contract)"
-    return True, f"plugin target {resolved} is the canonical provider"
+    return True, f"plugin target {resolved} is {origin}"
 
 
 def _provider_registration_count():
@@ -179,6 +277,19 @@ def _provider_registration_count():
     return len(box), ""
 
 
+def _writable(path):
+    """os.access(W_OK) as a plain bool; an unusable path is 'not writable'.
+
+    os.access raises rather than returning False for a path it cannot even
+    encode (an embedded NUL, for instance). doctor must report a bad DB path as
+    a failed check, not die with a traceback.
+    """
+    try:
+        return os.access(path, os.W_OK)
+    except (OSError, ValueError):
+        return False
+
+
 def _db_writable(db_path):
     # LOCAL PATCH (P10 amendment): a fresh install has no data directory yet —
     # the installer deliberately creates nothing — so an absent parent is not a
@@ -187,16 +298,16 @@ def _db_writable(db_path):
         return False, "DB path could not be resolved"
     p = Path(str(db_path)).expanduser()
     if p.exists():
-        return os.access(p, os.W_OK), f"{p} (file)"
+        return _writable(p), f"{p} (file)"
     ancestor = p.parent
     while not ancestor.exists() and ancestor != ancestor.parent:
         ancestor = ancestor.parent
     if not ancestor.exists():
         return False, f"{p} (no existing ancestor directory)"
     if ancestor == p.parent:
-        return os.access(ancestor, os.W_OK), f"{p} (parent {ancestor}, not created yet)"
+        return _writable(ancestor), f"{p} (parent {ancestor}, not created yet)"
     return (
-        os.access(ancestor, os.W_OK),
+        _writable(ancestor),
         f"{p} (will be created; nearest existing ancestor {ancestor})",
     )
 

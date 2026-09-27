@@ -12,30 +12,39 @@ SELF="${0//\\//}"
 SCRIPT_DIR="${SELF%/*}"
 [ "$SCRIPT_DIR" = "$SELF" ] && SCRIPT_DIR="."
 case "$SCRIPT_DIR" in
-    /*) : ;;
-    *) SCRIPT_DIR="$PWD/$SCRIPT_DIR" ;;
+/*) : ;;
+*) SCRIPT_DIR="$PWD/$SCRIPT_DIR" ;;
 esac
 # This script lives in bench/, one level below the repo root.
 ROOT="${SCRIPT_DIR%/*}"
 
 # Same pinned-python resolution as .auto/measure.sh (minimal-PATH bash safe).
 if [ -n "${MEASURE_PYTHON:-}" ]; then
-    PYBIN="$MEASURE_PYTHON"
+  PYBIN="$MEASURE_PYTHON"
 elif [ -x "$HOME/.local/bin/python3.exe" ]; then
-    PYBIN="$HOME/.local/bin/python3.exe"
+  PYBIN="$HOME/.local/bin/python3.exe"
 else
-    PYBIN="$(command -v python3 || command -v python || true)"
+  PYBIN="$(command -v python3 || command -v python || true)"
 fi
-[ -n "$PYBIN" ] || { echo "no python on PATH" >&2; exit 1; }
+[ -n "$PYBIN" ] || {
+  echo "no python on PATH" >&2
+  exit 1
+}
 
 # Fast pre-check (<1s): a syntax error must not cost a benchmark run.
 "$PYBIN" -m py_compile "$ROOT/src/mnemosyne_lite/storage.py"
 
 RUNS="${AR_RUNS:-3}"
 case "$RUNS" in
-    ''|*[!0-9]*) echo "AR_RUNS must be a positive integer" >&2; exit 1 ;;
+'' | *[!0-9]*)
+  echo "AR_RUNS must be a positive integer" >&2
+  exit 1
+  ;;
 esac
-[ "$RUNS" -ge 1 ] || { echo "AR_RUNS must be >= 1" >&2; exit 1; }
+[ "$RUNS" -ge 1 ] || {
+  echo "AR_RUNS must be >= 1" >&2
+  exit 1
+}
 # Even counts pick the lower median implicitly; force odd so the median is a
 # real sample.
 [ $((RUNS % 2)) -eq 1 ] || RUNS=$((RUNS + 1))
@@ -43,39 +52,39 @@ esac
 AR_OUT=""
 i=1
 while [ "$i" -le "$RUNS" ]; do
-    # Each invocation must pass its own asserts; set -e aborts on failure
-    # (logged as a crash by the loop).
-    out="$(bash "$ROOT/bench/measure.sh")"
-    AR_OUT="${AR_OUT}${out}
+  # Each invocation must pass its own asserts; set -e aborts on failure
+  # (logged as a crash by the loop).
+  out="$(bash "$ROOT/bench/measure.sh")"
+  AR_OUT="${AR_OUT}${out}
 "
-    i=$((i + 1))
+  i=$((i + 1))
 done
 export AR_OUT
 
 # Adaptive tiebreak: near-threshold results get 2 more samples (median-of-5)
 # so ±noise cannot flip a keep/discard. AR_BASELINE = current best primary.
 if [ -n "${AR_BASELINE:-}" ] && [ "$RUNS" -eq 3 ]; then
-    MED="$("$PYBIN" -c '
+  MED="$("$PYBIN" -c '
 import os, statistics
 xs = [float(l.split("=", 1)[1]) for l in os.environ["AR_OUT"].splitlines()
       if l.startswith("METRIC search_p50_ms=")]
 print(f"{statistics.median(xs):g}")')"
-    DEC="$("$PYBIN" -c '
+  DEC="$("$PYBIN" -c '
 import os, sys
 med, base = float(sys.argv[1]), float(sys.argv[2])
 rel = abs(med - base) / base if base else 0.0
 print("tie" if rel < 0.08 else "clear")' "$MED" "$AR_BASELINE")"
-    if [ "$DEC" = "tie" ]; then
-        i=1
-        while [ "$i" -le 2 ]; do
-            out="$(bash "$ROOT/bench/measure.sh")"
-            AR_OUT="${AR_OUT}${out}
+  if [ "$DEC" = "tie" ]; then
+    i=1
+    while [ "$i" -le 2 ]; do
+      out="$(bash "$ROOT/bench/measure.sh")"
+      AR_OUT="${AR_OUT}${out}
 "
-            i=$((i + 1))
-        done
-        export AR_OUT
-        RUNS=5
-    fi
+      i=$((i + 1))
+    done
+    export AR_OUT
+    RUNS=5
+  fi
 fi
 
 "$PYBIN" - <<'PYEOF'

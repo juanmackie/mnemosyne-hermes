@@ -9,8 +9,8 @@ set -euo pipefail
 SELF="${0//\\//}"
 SCRIPT_DIR="${SELF%/*}"
 case "$SCRIPT_DIR" in
-    /*) : ;;
-    *) SCRIPT_DIR="$PWD/$SCRIPT_DIR" ;;
+/*) : ;;
+*) SCRIPT_DIR="$PWD/$SCRIPT_DIR" ;;
 esac
 ROOT="${SCRIPT_DIR%/*}"
 CORPUS_DB="$SCRIPT_DIR/data/bench_corpus.db"
@@ -19,13 +19,16 @@ CORPUS_DB="$SCRIPT_DIR/data/bench_corpus.db"
 # MEASURE_PYTHON may override; default pins ~/.local/bin/python3.exe (3.11,
 # present in both interactive and tool-spawned envs) for reproducibility.
 if [ -n "${MEASURE_PYTHON:-}" ]; then
-    PYBIN="$MEASURE_PYTHON"
+  PYBIN="$MEASURE_PYTHON"
 elif [ -x "$HOME/.local/bin/python3.exe" ]; then
-    PYBIN="$HOME/.local/bin/python3.exe"
+  PYBIN="$HOME/.local/bin/python3.exe"
 else
-    PYBIN="$(command -v python3 || command -v python || true)"
+  PYBIN="$(command -v python3 || command -v python || true)"
 fi
-[ -n "$PYBIN" ] || { echo "no python on PATH"; exit 1; }
+[ -n "$PYBIN" ] || {
+  echo "no python on PATH"
+  exit 1
+}
 
 "$PYBIN" - "$CORPUS_DB" "$ROOT" <<'PYEOF'
 import sys, os, time, random, gc, re

@@ -39,3 +39,6 @@ ignore_errors = true
 
 [tool.pyright]
 ignore = ["hermes_memory_provider"]
+
+[tool.setuptools.package-data]
+hermes_memory_provider = ["plugin.yaml"]

@@ -1,0 +1,22 @@
+---
+# yamllint configuration.
+#
+# The defaults are close to what this repo wants, with three exceptions that are
+# all about the files being consumed by tools rather than read as documents.
+extends: default
+
+rules:
+  # GitHub Actions requires the `on:` key, and YAML 1.1 parses `on` as the
+  # boolean true, so the default `check-keys` reports every workflow file.
+  # Keys are not values: only check values.
+  truthy:
+    check-keys: false
+  # Match the Python line length (ruff) instead of yamllint's 80, so a pinned
+  # action SHA plus its version comment fits on one line.
+  line-length:
+    max: 100
+  # `# comment` after code is normal in the workflows' shell blocks.
+  comments:
+    min-spaces-from-content: 1
+  # A `---` document start is noise in files that are only ever parsed.
+  document-start: disable

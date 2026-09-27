@@ -25,11 +25,11 @@ history keep it; do not restore it.
 
 | Path | Owns |
 | --- | --- |
-| `install.sh` | Provider install, `--uninstall`, `--purge`, `--dry-run` |
+| `install.sh` | Provider install, `--copy`, `--uninstall`, `--purge`, `--dry-run` |
 | `integrations/hermes-provider/` | The vendored snapshot and every gate around it: `VENDORED_FROM.json` (hashes), `PATCHES.md`, `CONTRACT_AUDIT.md`, `LIVE_VERIFICATION.md`, `README.md`, `pyproject.toml` (engine pin) |
 | `src/mnemosyne_lite/` | `cli.py`, `mcp.py`, `tools.py`, `storage.py`, `db_path.py` |
 | `tests/` | Contract and regression suites (see Verification) |
-| `scripts/` | Repo gates: `checks.sh` (registry), `check_notes.sh`, `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh` |
+| `scripts/` | Repo gates and helpers: `checks.sh` (registry), `check_notes.sh`, `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh`, `upstream-drift-check.py` |
 | `bench/` | The recall-latency harness (`measure.sh`, `autoresearch.sh`, `run.sh`) and its record (`README.md`) |
 | `docs/` | `AGENT_SETUP.md`, `HERMES_INTEGRATION.md`, `MCP_CLIENT_CONFIGS.md`; `docs/archive/` is historical |
 | `examples/` | Runnable usage examples |
@@ -38,8 +38,10 @@ history keep it; do not restore it.
 
 ## Contracts that must not drift
 
-- **Provider id** `mnemosyne`, a single registration, one CLI command. A second
-  entry point for the same id is the failure mode this repo exists to remove.
+- **Provider id** `mnemosyne`, a single registration, one CLI command. Hermes
+  discovery gives a bundled provider precedence over a same-name user plugin;
+  the onboarding smoke exercises that collision and still requires one loaded
+  provider. Do not add another registration entry point.
 - **Vendored snapshot discipline.** `integrations/hermes-provider/hermes_memory_provider/`
   is a byte-hashed upstream snapshot. Any edit requires, in the same change:
   a `# LOCAL PATCH:` marker at the site, a `PATCHES.md` entry, and an updated
@@ -52,6 +54,10 @@ history keep it; do not restore it.
 - **Provider DB precedence**: `memory.mnemosyne.db_path` > `MNEMOSYNE_DB_PATH` >
   engine default (`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes`).
   `db_path` wins over `profile_isolation`.
+- **Hermes provider tool surface**: default exposure is the four core tools;
+  `memory.mnemosyne.tools: ["*"]` opts into the full set. The only canonical
+  Hermes tool-name table is in
+  [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md#canonical-tool-names-and-default-exposure).
 - **Lite MCP tool names** `mnemosyne_memory_search`, `mnemosyne_memory_remember`,
   `mnemosyne_prefetch`, `mnemosyne_sync_turn`; the `mnemosyne.recall` /
   `mnemosyne.remember` aliases; the `sync_turn` skip semantics.
@@ -68,7 +74,10 @@ history keep it; do not restore it.
 - **Keyless by design.** Memory must work with no cloud API key and no OS
   keyring. If a step appears to require one, that is a bug.
 - **LLM inheritance.** Optional engine LLM work uses the active Hermes model
-  through Hermes' own local proxy. Do not add a second provider key.
+  through Hermes' own local proxy. Do not add a second provider key. This tree
+  has no LLM-marked tests (the retired adapter suite was removed); any future
+  LLM lane must prefer `hermes proxy start` before the legacy
+  `ANTHROPIC_API_KEY` fallback.
 - **Secrets never live in the repo.** This repo needs none; do not introduce
   one. Never commit `.env*`, connection configs, keys or tokens.
 - **The engine owns the `mnemosyne` name.** Distribution, import package and
@@ -78,7 +87,7 @@ history keep it; do not restore it.
 ## Verification
 
 ```bash
-./test-all.sh                     # provider contract gates + unit tests
+./test-all.sh --skip-llm          # provider contract gates + local unit tests
 bash scripts/checks.sh            # repo gates (notes ledger, version drift)
 pre-commit run --all-files        # ruff, ruff format, mypy, shellcheck
 bash scripts/smoke-hermes-onboarding.sh   # clean-user acceptance (Linux/macOS)

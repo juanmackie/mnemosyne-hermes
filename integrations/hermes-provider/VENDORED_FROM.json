@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "QDYPEAOo7ZQdjoZCbVlQdKEeLXJvn-UQV1n04sYtDfY",
-      "bytes": 186210,
-      "lines": 3980
+      "sha256": "6TJVo3cM8Dz2B6aJEgFbWFqqzMVGKnK6tbvm3PCrhUE",
+      "bytes": 195756,
+      "lines": 4201
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "XeICgiLqwwywBK5h03zPG5g4_uG-TwagKex3UJzn_Sk",
@@ -27,9 +27,9 @@
       "lines": 139
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "CrJ8TZGA6KbStD2qZSnCM6MzLsHrY8QW6zNbKczFLsM",
-      "bytes": 29552,
-      "lines": 672
+      "sha256": "oEER4MN5ZnfkzytyUonRm1YmxPvG7pgyu3fQaeh3qRY",
+      "bytes": 34419,
+      "lines": 783
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -67,14 +67,20 @@
       "P6 on_memory_write accepts metadata and passes it to the engine's remember(metadata=...)",
       "P7 sys.path guard (T7): only add the repo sibling dir when it really holds hermes_memory_provider/hermes_plugin; a copied install must not shadow the engine",
       "P8 db_path (T3): read memory.mnemosyne.db_path/MNEMOSYNE_DB_PATH and pass into BeamMemory; db_path wins over profile isolation",
-      "P9 startup location + Hermes range logging (T6/T8): describe_memory_location() and check_hermes_version()"
+      "P9 startup location + Hermes range logging (T6/T8): describe_memory_location() and check_hermes_version()",
+      "P15 local spawn_context_thread compatibility helper copies contextvars; existing sleep workers use it while sync_turn relies on Hermes' serialized background MemoryManager",
+      "P16 on_delegation stores bounded task/result only when sync_roles explicitly includes delegation",
+      "P17 implement session/compression hooks; checkpoint JSON is bounded to 256 KiB, uses owner-only permissions and remains best effort because Hermes catches callback exceptions",
+      "P18 curated four-tool default; full 40-tool surface requires tools: ['*']"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",
       "P10 doctor critical checks gate the exit code and print resolved DB/provider/engine + Hermes range (T4/T6/T8)",
       "P10 amendment (fresh-install doctor): _db_writable walks up to the nearest existing ancestor instead of failing when the data dir has not been created yet",
       "P11 db_path wired into the CLI BeamMemory/Mnemosyne and canonical-provider provenance check (T3/T7)",
-      "P12 explicit Any annotations in detect_hermes_version/mnemosyne_command so static analysis can run over the provider (no runtime change)"
+      "P12 explicit Any annotations in detect_hermes_version/mnemosyne_command so static analysis can run over the provider (no runtime change)",
+      "P13 check_provider_provenance accepts only format-v1 copies with an exact SHA-256 inventory of all package files (runtime caches excluded); install/uninstall remove only intact copies from the current canonical source, and _db_writable reports an unencodable path as not writable",
+      "P14 supported Hermes range narrowed to audited published releases; remove unsupported-version claims"
     ]
   }
 }

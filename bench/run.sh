@@ -12,7 +12,10 @@ STATUS="${1:-}"
 DESC="${2:-}"
 ASI="${3:-}"
 DRY=0
-[ -z "$STATUS" ] && { STATUS="dry"; DRY=1; }
+[ -z "$STATUS" ] && {
+  STATUS="dry"
+  DRY=1
+}
 
 OUT=$(mktemp)
 trap 'rm -f "$OUT"' EXIT
@@ -24,8 +27,8 @@ RC=$?
 cp "$OUT" bench/last_measure.txt
 grep -E "^(METRIC|note)" "$OUT" || true
 if [ "$RC" -ne 0 ] && [ "$STATUS" = "keep" ]; then
-    echo "STATUS: cannot keep a failed run"
-    exit 1
+  echo "STATUS: cannot keep a failed run"
+  exit 1
 fi
 
 STATUS_ARG="$STATUS"
