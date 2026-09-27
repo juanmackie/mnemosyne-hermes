@@ -31,7 +31,7 @@ fi
 import sys, os, time, random, gc, re
 sys.path.insert(0, os.path.join(sys.argv[2], "src"))
 
-from lib.storage import PythonMemoryStorage
+from mnemosyne_lite.storage import PythonMemoryStorage
 
 db_path = sys.argv[1]
 CORPUS_VERSION = "v1"

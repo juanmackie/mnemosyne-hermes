@@ -29,7 +29,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["mnemosyne_lite*", "lib*"]
+include = ["mnemosyne_lite*"]
 exclude = ["tests*", "docs*"]
 
 [tool.ruff]
@@ -55,7 +55,7 @@ ignore = [
 
 [tool.mypy]
 # Type-check the code this repo owns, in the same scope as pyright.
-files = ["src/lib", "src/mnemosyne_lite", "tests"]
+files = ["src/mnemosyne_lite", "tests"]
 python_version = "3.11"
 ignore_missing_imports = true
 
@@ -63,5 +63,5 @@ ignore_missing_imports = true
 # The vendored snapshot's optional engine imports are absent in a bare venv and
 # editing it costs a PATCHES.md entry plus a manifest hash update, so its
 # diagnostics are ignored rather than chased.
-include = ["src/lib", "src/mnemosyne_lite", "tests"]
+include = ["src/mnemosyne_lite", "tests"]
 ignore = ["integrations/hermes-provider/hermes_memory_provider"]

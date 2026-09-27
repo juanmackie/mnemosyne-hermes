@@ -4,9 +4,8 @@ import json
 import os
 import sys
 
-from lib.storage import PythonMemoryStorage, StorageError
-
 from . import __version__
+from .storage import PythonMemoryStorage, StorageError
 from .tools import call_tool, tool_schemas
 
 

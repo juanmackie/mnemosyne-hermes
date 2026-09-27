@@ -80,7 +80,7 @@ re-earn, and a cache is also where the cross-thread staleness bug came from.
 
 ## Scope
 
-- Editable: `src/lib/storage.py` — the recall path.
+- Editable: `src/mnemosyne_lite/storage.py` — the recall path.
 - Not the target: this harness. Editing the instrument to improve the number is
   not a result.
 - Contract-frozen: namespace semantics, DB path, tool names, `integrations/`.

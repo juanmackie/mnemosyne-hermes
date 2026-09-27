@@ -22,7 +22,6 @@ Runs two ways:
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -35,21 +34,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 import mnemosyne_lite  # noqa: E402
-from lib.storage import PythonMemoryStorage  # noqa: E402
-
-
-def _load_cli():
-    """Load src/mnemosyne_lite/cli.py the way the console script entry point does."""
-    spec = importlib.util.spec_from_file_location(
-        "mnemosyne_lite_cli_under_test", str(ROOT / "src" / "mnemosyne_lite" / "cli.py")
-    )
-    assert spec is not None and spec.loader is not None, "no module spec for the CLI"
-    cli = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(cli)
-    return cli
-
-
-CLI = _load_cli()
+import mnemosyne_lite.cli as CLI  # noqa: E402
+from mnemosyne_lite.storage import PythonMemoryStorage  # noqa: E402
 
 
 @contextlib.contextmanager

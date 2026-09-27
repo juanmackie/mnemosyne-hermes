@@ -20,8 +20,12 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import mnemosyne_lite  # noqa: E402
-from lib.storage import PythonMemoryStorage, StorageError, StorageSchemaError  # noqa: E402
 from mnemosyne_lite.mcp import serve  # noqa: E402
+from mnemosyne_lite.storage import (  # noqa: E402
+    PythonMemoryStorage,
+    StorageError,
+    StorageSchemaError,
+)
 
 
 def _serve(db_path, requests):

@@ -1,6 +1,11 @@
-"""Shared local-memory tools for MCP and the Hermes provider."""
+"""Tools exposed by the lite MCP server.
 
-from lib.storage import PythonMemoryStorage
+These are the *lite* tools, backed by the lite SQLite store. The Hermes
+provider does not use them: it is engine-backed and exposes the engine's own
+`mnemosyne_memory_*` tools (see integrations/hermes-provider/).
+"""
+
+from .storage import PythonMemoryStorage
 
 SKIP_CONTEXTS = {"cron", "flush", "subagent", "background", "skill_loop"}
 
@@ -57,7 +62,7 @@ def tool_schemas():
     ]
 
 
-def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="agent:hermes"):
+def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"):
     name = name.replace("mnemosyne.", "mnemosyne_", 1)
     name = {
         "mnemosyne_remember": "mnemosyne_memory_remember",
@@ -99,7 +104,9 @@ def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="agent:he
         if (
             arguments.get("execution_context") in SKIP_CONTEXTS
             or arguments.get("speaker", "user") != "user"
-            or arguments.get("policy_owner", "mnemosyne") not in ("", "mnemosyne", "mnemosyne-rust")
+            # "mnemosyne-rust" was the retired Rust policy owner; accepting it
+            # would let a client that no longer exists capture turns here.
+            or arguments.get("policy_owner", "mnemosyne") not in ("", "mnemosyne")
             or not text.strip()
         ):
             return {"ok": True, "synced": False, "status": "skipped"}

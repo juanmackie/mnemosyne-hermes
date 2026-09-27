@@ -28,7 +28,7 @@ fi
 [ -n "$PYBIN" ] || { echo "no python on PATH" >&2; exit 1; }
 
 # Fast pre-check (<1s): a syntax error must not cost a benchmark run.
-"$PYBIN" -m py_compile "$ROOT/src/lib/storage.py"
+"$PYBIN" -m py_compile "$ROOT/src/mnemosyne_lite/storage.py"
 
 RUNS="${AR_RUNS:-3}"
 case "$RUNS" in

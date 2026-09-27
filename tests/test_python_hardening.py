@@ -11,7 +11,6 @@ Covers the bugs that were fixed, each of which used to silently misbehave:
 """
 
 import hashlib
-import importlib.util
 import os
 import sqlite3
 import sys
@@ -20,8 +19,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-from lib.mnemosyne_client import resolve_db_path
-from lib.storage import PythonMemoryStorage, StorageSchemaError
+from mnemosyne_lite.db_path import resolve_db_path
+from mnemosyne_lite.storage import PythonMemoryStorage, StorageSchemaError
 
 # The lite store's exact column list, including the migrated content_lower
 # column. Anything else is a foreign database (notably the mnemosyne-memory
@@ -439,15 +438,7 @@ def test_cli_refuses_missing_store_and_accepts_trailing_db_path():
     `mnemosyne-lite list --db-path /typo/x.db` used to create the directory and
     empty store, then report "0 memories".
     """
-    spec = importlib.util.spec_from_file_location(
-        "mnemosyne_lite_cli_under_test",
-        os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "src", "mnemosyne_lite", "cli.py"
-        ),
-    )
-    assert spec is not None and spec.loader is not None, "no module spec for the CLI"
-    cli = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(cli)
+    from mnemosyne_lite import cli
 
     with tempfile.TemporaryDirectory() as d:
         missing = os.path.join(d, "sub", "missing.db")

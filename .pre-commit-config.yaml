@@ -35,7 +35,7 @@ repos:
         name: mypy
         entry: mypy
         language: system
-        files: ^(src/(lib|mnemosyne_lite)|tests)/.*\.py$
+        files: ^(src/mnemosyne_lite|tests)/.*\.py$
         pass_filenames: false
 
       - id: shellcheck

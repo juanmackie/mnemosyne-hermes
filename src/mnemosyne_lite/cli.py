@@ -1,10 +1,11 @@
-"""mnemosyne-lite CLI — standalone store/manual-testing entry point.
+"""mnemosyne-lite CLI — the standalone store's command-line surface.
 
 Not the Hermes provider (see integrations/hermes-provider/) and not the engine
 CLI (mnemosyne-memory ships `mnemosyne`).
 
-Provides: init, remember, recall, list, bootstrap, embed, migrate, backup, restore, maintenance, diagnostics.
-No external LLM required for core memory operations; no subprocess overhead.
+Provides: init, remember, recall, list, bootstrap, backup, restore, maintenance
+and diagnostics. No external LLM is required and there is no subprocess
+overhead.
 """
 
 import argparse
@@ -13,11 +14,8 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from lib.mnemosyne_client import resolve_db_path  # noqa: E402
-from lib.storage import PythonMemoryStorage, StorageError  # noqa: E402
-
-DEFAULT_DB = os.path.expanduser("~/.mnemosyne/mnemosyne.db")
+from .db_path import DEFAULT_DB, resolve_db_path
+from .storage import PythonMemoryStorage, StorageError
 
 # Commands that may create a store. Every other command must NOT fabricate an
 # empty database at a mistyped path and then report "0 memories".
@@ -112,25 +110,6 @@ def cmd_bootstrap(args):
     }
     print(bootstrap)
     return 0
-
-
-def cmd_embed(args):
-    """Placeholder for embedding rebuilds — requires upstream mnemosyne-memory 3.15.1 source."""
-    print(
-        "ERROR: embed requires upstream mnemosyne-memory 3.15.1 source (blocked).", file=sys.stderr
-    )
-    print(f"DB: {args.db_path}", file=sys.stderr)
-    return 1
-
-
-def cmd_migrate(args):
-    """Placeholder for migrations — requires upstream mnemosyne-memory 3.15.1 source."""
-    print(
-        "ERROR: migrate requires upstream mnemosyne-memory 3.15.1 source (blocked).",
-        file=sys.stderr,
-    )
-    print(f"DB: {args.db_path}", file=sys.stderr)
-    return 1
 
 
 def cmd_backup(args):
@@ -328,7 +307,7 @@ def cmd_maintenance(args):
 
 
 def cmd_diagnostics(args):
-    """Print diagnostics: counts, timings, versions, queue state."""
+    """Print diagnostics: counts, sizes, versions and live PRAGMA state."""
     # Diagnostics is the command you run when the store is missing or suspect,
     # so it reports the resolved path instead of refusing like the read
     # commands do. Storage is only opened when the file really exists.
@@ -345,8 +324,6 @@ def cmd_diagnostics(args):
         "journal_mode": None,
         "schema_version": None,
         "wal": None,
-        "queue_state": "no upstream source — queue not applicable",
-        "blocked": "mnemosyne-memory 3.15.1 upstream source MISSING",
     }
     if os.path.exists(db_path):
         s = _storage(args)
@@ -395,7 +372,10 @@ def main(argv=None):
 
     p_rem = sub.add_parser("remember", parents=[common], help="Store a memory")
     p_rem.add_argument("--content", required=True)
-    p_rem.add_argument("--namespace", default="agent:hermes")
+    # Neutral default: this surface is not the Hermes provider, so writing into
+    # the provider's `agent:hermes` namespace by default was misleading. Pass
+    # --namespace agent:hermes to keep writing where earlier versions put it.
+    p_rem.add_argument("--namespace", default="default")
     p_rem.add_argument("--importance", type=int, default=5)
     p_rem.add_argument("--context", default=None)
     p_rem.add_argument(
@@ -426,16 +406,6 @@ def main(argv=None):
     p_boot.add_argument("--namespace", default=None)
     p_boot.add_argument("--limit", type=int, default=100)
     p_boot.set_defaults(func=cmd_bootstrap)
-
-    p_embed = sub.add_parser(
-        "embed", parents=[common], help="Rebuild embeddings (requires upstream source — blocked)"
-    )
-    p_embed.set_defaults(func=cmd_embed)
-
-    p_migrate = sub.add_parser(
-        "migrate", parents=[common], help="Run migrations (requires upstream source — blocked)"
-    )
-    p_migrate.set_defaults(func=cmd_migrate)
 
     p_backup = sub.add_parser("backup", parents=[common], help="Backup database")
     p_backup.add_argument("--output", default=None)

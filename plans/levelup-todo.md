@@ -289,12 +289,13 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
   - `claude-code-review.yml` tells Claude to use "the repository's CLAUDE.md", which does not exist. Point it at `AGENTS.md`.
   - Confirm the `CLAUDE_CODE_OAUTH_TOKEN` secret exists, or remove `claude.yml` and `claude-code-review.yml`.
 
-- [ ] **P3-7 Clean up the lite surface.**
+- [x] **P3-7 Clean up the lite surface.**
   - Remove the `embed` and `migrate` placeholder commands, which always exit 1 with "blocked".
   - Remove the stale `blocked` and `queue_state` fields from `diagnostics`.
   - Remove the `sys.path.insert` hack at `cli.py:16`.
   - `tools.py` still accepts the retired `mnemosyne-rust` policy owner, and its docstring says "for MCP and the Hermes provider". Fix both.
   - `remember` defaults to the `agent:hermes` namespace on a surface that is explicitly not the Hermes provider. Pick a neutral default.
+  - **Done (2026-09-27):** `embed` and `migrate` are gone (they only printed "blocked" and exited 1); `diagnostics` no longer prints the stale `blocked`/`queue_state` fields; the `sys.path.insert` hack is gone (the package uses relative imports and is only reachable as an installed package or with `src` on the path); `tools.py`'s docstring says these are the lite MCP tools, not the provider's, and `mnemosyne-rust` is out of the `policy_owner` allowlist (a client that no longer exists must not capture turns here); the CLI's `remember --namespace` and the MCP `call_tool` default are now `default` instead of the provider's `agent:hermes`. **Contract note:** `agent:hermes` is still accepted everywhere it was — only the default moved, so pass `--namespace agent:hermes` (or the MCP argument) to keep writing where earlier versions put it.
 
 ## P4: engineering baseline
 
@@ -313,17 +314,20 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
 
 - [ ] **P4-3 Add coverage** with pytest-cov, reported in CI. Add a regression test for the fresh-install `doctor` case from P0-2.
 
-- [ ] **P4-4 Rename the top-level `lib` package.**
+- [x] **P4-4 Rename the top-level `lib` package.**
   - `pyproject.toml` installs it as `lib*`. A generic `lib` in site-packages can collide with other packages.
   - Move it under `mnemosyne_lite` (for example `mnemosyne_lite.storage`). `plans/dev-todo-v2.md` already defers this.
+  - **Done (2026-09-27):** `src/lib/storage.py` → `src/mnemosyne_lite/storage.py`; `src/lib/mnemosyne_client.py` → `src/mnemosyne_lite/db_path.py` (git recorded both as renames, so history follows); `src/lib/__init__.py` deleted and the package removed from the tree and from `pyproject.toml`'s `include`/mypy/pyright scopes. The only importers were `cli.py`, `mcp.py`, `tools.py`, four test files and `bench/measure.sh`; all now import from `mnemosyne_lite`. `git` history is the only remaining reference.
+  - **Also removed:** `MnemosyneClient` (100 lines in the old `mnemosyne_client.py`). Nothing in the repo, in the docs, or in configuration constructed it — the only reference was `lib/__init__.py`'s own re-export — and the rename breaks `from lib import ...` for any external caller regardless, so keeping a dead class alive under a new name would have preserved nothing.
 
 - [ ] **P4-5 Make CLI output machine-readable.**
   - Commands print Python dict reprs such as `{'id': ...}`.
   - Add `--format json|text`. The docs already assume `--format json` exists.
 
-- [ ] **P4-6 Move the lite store's default database.**
+- [x] **P4-6 Move the lite store's default database.**
   - `~/.mnemosyne/mnemosyne.db` sits in the engine's folder.
   - Give lite its own default, with a migration note.
+  - **Done (2026-09-27):** the default is now `~/.mnemosyne-lite/mnemosyne.db`, defined once as `DEFAULT_DB` in `mnemosyne_lite/db_path.py` (the CLI's help text reads it from there rather than repeating the literal). **Migration note:** existing lite stores stay where they are; point `--db-path` or `MNEMOSYNE_DB_PATH` at the old file, or move it. Nothing is deleted, and the change fails loudly (`no Mnemosyne database at <new path>`) rather than silently starting an empty store — `mnemosyne-lite diagnostics` prints the resolved path.
 
 - [ ] **P4-7 Add Dependabot** for GitHub Actions and pip, and add a `SECURITY.md`.
 
