@@ -208,10 +208,13 @@ Hermes 0.18.2/0.19.0 expose no `spawn_context_thread` helper. The provider now
 uses a local compatibility helper that copies `contextvars` into its existing
 sleep workers; it uses stdlib `threading.Thread` internally and does not add a
 second turn-sync worker. The helper has an engine-free context propagation test.
-The Linux onboarding smoke measures the direct blocking baseline and the
+The Linux/macOS onboarding smoke measures the direct blocking baseline and the
 `MemoryManager.sync_all()` dispatch path with an injected DB delay, then drains
-the executor and confirms persistence. That real-Hermes smoke remains the
-platform-level evidence gate for this decision.
+the executor and confirms persistence. GitHub Actions run
+[36311054419](https://github.com/juanmackie/mnemosyne-hermes/actions/runs/36311054419)
+passed all four Hermes 0.18.2/0.19.0 × Ubuntu/macOS variants: observed dispatch
+was 0.8–1.9 ms versus a 217.3–318.4 ms direct baseline. These are single-run
+observations under the smoke's injected delay, not general performance claims.
 
 ### F14 — plugin metadata and bundled/user discovery collision (addressed)
 
@@ -221,8 +224,10 @@ wheel. The onboarding smoke seeds the same provider name in Hermes' bundled
 root and the installer-created user symlink, then asserts one discovered row,
 bundled-root precedence, one CLI command, and a provider loaded through
 `load_memory_provider()`. It also checks one `register(ctx)` result, one manager
-provider, and the real `doctor`/`memory status` path. The Linux/macOS CI result
-must pass before this is called end-to-end verified.
+provider, and the real `doctor`/`memory status` path. GitHub Actions run
+[36311054419](https://github.com/juanmackie/mnemosyne-hermes/actions/runs/36311054419)
+passed all four Ubuntu/macOS × Hermes 0.18.2/0.19.0 smoke variants, including
+`doctor` exit 0 and exactly one discovered provider despite the collision.
 
 ### F15 — all engine tools exposed by default (addressed)
 
@@ -249,8 +254,8 @@ provider suite covers default, wildcard, subset, and invalid configuration.
 | F10 | Deliberate pin: provider imports engine internals and stays within `mnemosyne-memory[embeddings]>=3.15.1,<3.16`. |
 | F11 | Fixed: `is_available()` keeps the required boolean and `unavailable_reason()` exposes a bounded sanitized reason; loader/doctor tests cover it. |
 | F12 | Fixed: `sync_roles` accepts `tool` and defaults remain unchanged. |
-| F13 | Deliberate concurrency contract: Hermes serializes provider sync on its background executor; no second provider worker is added. The real-Hermes smoke measures dispatch and direct baseline. |
-| F14 | Fixed in code/tests: plugin metadata and collision assertions are present; Linux/macOS smoke CI is the remaining end-to-end evidence gate. |
+| F13 | Deliberate concurrency contract: Hermes serializes provider sync on its background executor; no second provider worker is added. Run 36311054419 passed all four real-Hermes variants; injected-delay dispatch measured 0.8–1.9 ms vs 217.3–318.4 ms direct. |
+| F14 | End-to-end verified: plugin metadata and collision assertions pass on Ubuntu/macOS with Hermes 0.18.2/0.19.0 in run 36311054419; doctor exits 0 and exactly one provider is discovered. |
 | F15 | Fixed: four-tool default, explicit all-tools opt-in, and one canonical 40-tool table. |
 
 Every future local provider change must go through `PATCHES.md` +
