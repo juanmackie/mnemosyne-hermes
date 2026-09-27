@@ -1,7 +1,7 @@
 name: Python CI (Hermes-first)
 
 # The single tested contract: a clean-user Hermes install. Unit/contract tests
-# plus the real-Hermes onboarding smoke lane. Replaces the retired Rust `ci.yml`.
+# plus the real-Hermes onboarding smoke lane. Replaces the retired Rust ci.yml.
 
 on:
   pull_request:
@@ -25,13 +25,9 @@ jobs:
       - name: Create venv and install test deps
         run: |
           uv venv --python 3.11 .venv
-          uv pip install --python .venv/bin/python pytest pytest-asyncio
-      - name: Vendored provider drift gate
-        run: .venv/bin/python tests/test_vendored_provider.py
-      - name: Provider loader contract
-        run: .venv/bin/python tests/test_provider_loader.py
-      - name: Python unit/contract tests (no LLM)
-        run: ./test-all.sh --skip-llm
+          uv pip install --python .venv/bin/python pytest
+      - name: Provider contract gates + Python unit tests
+        run: ./test-all.sh
       - name: Repo gates
         run: bash scripts/checks.sh
 
