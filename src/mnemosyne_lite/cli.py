@@ -8,6 +8,7 @@ No external LLM required for core memory operations; no subprocess overhead.
 """
 
 import argparse
+import contextlib
 import os
 import sys
 import time
@@ -93,16 +94,19 @@ def cmd_list(args):
 
 
 def cmd_bootstrap(args):
-    """Return bounded constraints, facts, policies, guardrails, skills, provenance, abstentions."""
+    """Return bounded constraints, provenance and abstentions for a namespace.
+
+    The facts/policies/guardrails/skills lists this used to print were always
+    empty: they filtered on `m.get("memory_type")`, and this store has no
+    `memory_type` column (that is the engine's schema). Printing four empty
+    lists implied they had been searched. Category filtering needs a schema
+    change; until then this reports only what the store can answer.
+    """
     s = _storage(args)
     memories = s.list_memories(namespace=args.namespace, limit=args.limit, sort_by="importance")
     s.close()
     bootstrap = {
         "constraints": [f"namespace={args.namespace}" if args.namespace else "no namespace filter"],
-        "facts": [m["content"] for m in memories if m.get("memory_type") == "fact"],
-        "policies": [m["content"] for m in memories if m.get("memory_type") == "policy"],
-        "guardrails": [m["content"] for m in memories if m.get("memory_type") == "guardrail"],
-        "skills": [m["content"] for m in memories if m.get("memory_type") == "skill"],
         "provenance": [{"id": m["id"], "namespace": m["namespace"]} for m in memories],
         "abstentions": [],
     }
@@ -131,9 +135,13 @@ def cmd_migrate(args):
 
 def cmd_backup(args):
     """Backup the database using SQLite .backup API."""
-    db_path = args.db_path
-    if not os.path.exists(db_path):
-        print(f"ERROR: database not found: {db_path}", file=sys.stderr)
+    # Resolve through the same path the other commands use. Reading args.db_path
+    # directly meant a missing --db-path/MNEMOSYNE_DB_PATH gave None, and the
+    # command died with "stat: path should be string ... not NoneType".
+    try:
+        db_path = _resolve_existing_db(args)
+    except StorageError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         return 1
     dest = args.output or (db_path + f".backup.{int(time.time())}")
     try:
@@ -152,15 +160,17 @@ def cmd_backup(args):
 
 
 def _package_version():
-    """Version from package metadata, so diagnostics never prints a stale literal."""
-    from importlib.metadata import version
+    """This package's version — one source, no stale literal.
 
-    for dist in ("mnemosyne-lite", "mnemosyne"):
-        try:
-            return version(dist)
-        except Exception:
-            continue
-    return "unknown"
+    Read from the package rather than `importlib.metadata`, which the CLI also
+    consults with the wrong name: the fallback to the `mnemosyne` distribution
+    reported the *engine's* version (mnemosyne-memory owns that name) as this
+    CLI's. `scripts/check_version_drift.sh` gates this value against
+    pyproject.toml, and mcp.py reports it as `serverInfo.version`.
+    """
+    from mnemosyne_lite import __version__
+
+    return __version__
 
 
 def cmd_mcp(args):
@@ -180,31 +190,71 @@ SYNCHRONOUS_NAMES = {0: "OFF", 1: "NORMAL", 2: "FULL", 3: "EXTRA"}
 
 
 def cmd_restore(args):
-    """Restore the database from a backup; overwrites --db-path.
+    """Restore the database from a backup; replaces --db-path.
 
     Accepts both formats this project produces: a real SQLite backup file (what
-    `mnemosyne backup` writes) and a gzipped SQL dump (what the ops scripts
-    write). Feeding a .gz to sqlite3.connect() used to fail with "file is not a
-    database", which told the user nothing.
+    `mnemosyne-lite backup` writes) and a gzipped SQL dump. Feeding a .gz to
+    sqlite3.connect() used to fail with "file is not a database", which told
+    the user nothing.
+
+    The restore is staged rather than in place. The source is replayed into a
+    fresh temporary file next to the destination, that file is opened as a
+    store to prove it really is one, and only then is it moved over the
+    destination. Before this, a dump was replayed straight onto the live
+    database (colliding with its tables), nothing checked that the source was a
+    Mnemosyne store, and a bad restore destroyed the previous contents with no
+    way back.
     """
     backup_path = args.backup
     if not os.path.exists(backup_path):
         print(f"ERROR: backup not found: {backup_path}", file=sys.stderr)
         return 1
-    dest = resolve_db_path(getattr(args, "db_path", None))
+    dest = os.path.expanduser(resolve_db_path(getattr(args, "db_path", None)))
     dest_dir = os.path.dirname(dest)
     if dest_dir:
-        os.makedirs(dest_dir, exist_ok=True)
-    try:
-        import gzip
-        import sqlite3
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except OSError as e:
+            print(f"ERROR: cannot create {dest_dir}: {e}", file=sys.stderr)
+            return 1
 
+    if not getattr(args, "yes", False):
+        # A closed/piped stdin raises EOFError rather than answering "no", and
+        # must not traceback: no confirmation means no restore.
+        try:
+            answer = input(f"Replace {dest} with {backup_path}? [y/N]: ")
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Cancelled; nothing changed.")
+            return 1
+
+    import gzip
+    import sqlite3
+
+    if os.path.exists(dest):
+        safety = f"{dest}.pre-restore.{int(time.time())}"
+        try:
+            src = sqlite3.connect(dest)
+            dst = sqlite3.connect(safety)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
+        except Exception as e:
+            print(f"ERROR: could not write the safety backup {safety}: {e}", file=sys.stderr)
+            return 1
+        print(f"Safety backup: {safety}")
+
+    staged = f"{dest}.restore-tmp.{os.getpid()}"
+    try:
         with open(backup_path, "rb") as fh:
             gzipped = fh.read(2) == b"\x1f\x8b"
         if gzipped or backup_path.endswith(".gz"):
             with gzip.open(backup_path, "rt", encoding="utf-8", errors="replace") as fh:
                 sql = fh.read()
-            conn = sqlite3.connect(dest)
+            conn = sqlite3.connect(staged)
             try:
                 # A `sqlite3 .dump` file carries BEGIN/COMMIT, so the script is
                 # applied atomically; a truncated dump rolls back.
@@ -213,18 +263,33 @@ def cmd_restore(args):
             finally:
                 conn.close()
         else:
-            src = sqlite3.connect(backup_path)
-            dst = sqlite3.connect(dest)
+            # mode=ro: validating must not rewrite the backup itself.
+            src = sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True)
+            dst = sqlite3.connect(staged)
             try:
                 src.backup(dst)
             finally:
                 dst.close()
                 src.close()
-        print(f"Restored: {dest} from {backup_path}")
-        return 0
+
+        # Proves the staged file is a store this project can open: a foreign or
+        # truncated source is refused here, before the destination is touched.
+        PythonMemoryStorage(staged).close()
+        os.replace(staged, dest)
+    except StorageError as e:
+        print(f"ERROR: {backup_path} is not a Mnemosyne store: {e}", file=sys.stderr)
+        return 1
     except Exception as e:
         print(f"ERROR: restore failed: {e}", file=sys.stderr)
         return 1
+    finally:
+        # Best effort: a leftover staged file is not worth failing the restore
+        # for, and the next run reuses the same name only after this process
+        # exits (the name carries the pid).
+        with contextlib.suppress(OSError):
+            os.remove(staged)
+    print(f"Restored: {dest} from {backup_path}")
+    return 0
 
 
 def cmd_maintenance(args):
@@ -356,7 +421,7 @@ def main(argv=None):
     p_boot = sub.add_parser(
         "bootstrap",
         parents=[common],
-        help="Return bounded constraints, facts, policies, guardrails, skills, provenance, abstentions",
+        help="Return bounded constraints, provenance and abstentions",
     )
     p_boot.add_argument("--namespace", default=None)
     p_boot.add_argument("--limit", type=int, default=100)
@@ -378,6 +443,7 @@ def main(argv=None):
 
     p_restore = sub.add_parser("restore", parents=[common], help="Restore database from backup")
     p_restore.add_argument("--backup", required=True)
+    p_restore.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     p_restore.set_defaults(func=cmd_restore)
 
     p_maint = sub.add_parser(

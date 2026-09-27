@@ -33,6 +33,7 @@ def _load_as_loader_does(module_name):
         str(PROVIDER_DIR / "__init__.py"),
         submodule_search_locations=[str(PROVIDER_DIR)],
     )
+    assert spec is not None and spec.loader is not None, "no module spec for the provider"
     mod = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = mod
     for child in sorted(PROVIDER_DIR.glob("*.py")):
@@ -41,6 +42,7 @@ def _load_as_loader_does(module_name):
         sub_name = f"{module_name}.{child.stem}"
         if sub_name not in sys.modules:
             sub = importlib.util.spec_from_file_location(sub_name, str(child))
+            assert sub is not None and sub.loader is not None, sub_name
             sub_mod = importlib.util.module_from_spec(sub)
             sys.modules[sub_name] = sub_mod
             # Optional extras (sync/persona schemas) degrade to [] upstream.
@@ -90,6 +92,7 @@ provider_dir = {str(PROVIDER_DIR)!r}
 spec = importlib.util.spec_from_file_location(
     "_hermes_user_memory.mnemosyne", provider_dir + "/__init__.py",
     submodule_search_locations=[provider_dir])
+assert spec is not None and spec.loader is not None, "no module spec for the provider"
 mod = importlib.util.module_from_spec(spec)
 sys.modules["_hermes_user_memory.mnemosyne"] = mod
 spec.loader.exec_module(mod)          # must NOT raise

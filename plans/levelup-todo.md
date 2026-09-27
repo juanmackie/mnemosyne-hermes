@@ -79,26 +79,30 @@ Limits of this review:
   - **Fix:** make the cache per-thread, the same way `search_cache` already is. Add a cross-thread case to `tests/test_recall_freshness.py`.
   - **Done (2026-09-27):** `_recall_cache` is now a property backed by `self._local.recall_cache`, and `_conn()` clears it on reconnect (a new connection resets both numbers the version is built from, so an entry from the previous connection could otherwise match). `_flush_accesses` patches only its own thread's rows; other threads discard via `PRAGMA data_version`, which this commit moves. Regression test `test_recall_memo_is_per_thread`. Verified both ways against HEAD's `storage.py`: pre-fix a second thread's recall returned 1 stale row while `count()` returned 2; post-fix it returns 2.
 
-- [ ] **P1-2 `mnemosyne-lite backup` crashes with default settings.**
+- [x] **P1-2 `mnemosyne-lite backup` crashes with default settings.**
   - `cmd_backup` uses `args.db_path` directly (`src/mnemosyne_lite/cli.py:147`). Without `--db-path` or `MNEMOSYNE_DB_PATH` that value is `None`, so the command dies with `TypeError: stat: path should be string… not NoneType`.
   - **Fix:** use `_resolve_existing_db(args)`.
+  - **Done (2026-09-27):** `cmd_backup` resolves through `_resolve_existing_db` and reports the missing store in one line. Regression tests `test_backup_without_db_path_reports_a_missing_store` and `test_backup_writes_a_usable_copy` in `tests/test_lite_cli.py`.
 
-- [ ] **P1-3 `bootstrap` categories are always empty.**
+- [x] **P1-3 `bootstrap` categories are always empty.**
   - It filters on `m.get("memory_type")` (`cli.py:103-107`), but the lite schema has no `memory_type` column. So facts, policies, guardrails and skills always come back as `[]`.
   - **Fix:** either remove the categories, or add the column with a schema version 2 migration.
+  - **Done (2026-09-27): removed the categories.** The store has no `memory_type` column (that is the engine's schema), so all four lists filtered on a key that never exists and printed empty as if they had been searched. Adding the column would be a real feature (schema v2 migration + `remember()` parameter + CLI flag) with no caller; nothing else in the repo uses it. `bootstrap` now returns constraints, provenance and abstentions, which is what it can answer. Regression test `test_bootstrap_does_not_print_categories_it_cannot_answer`.
 
-- [ ] **P1-4 `restore` is unsafe** (`cli.py:189-235`).
+- [x] **P1-4 `restore` is unsafe** (`cli.py:189-235`).
   - It overwrites the live database with no confirmation and no safety backup.
   - It never checks that the source file is a Mnemosyne store.
   - Replaying a `.gz` dump with `executescript` onto an existing database collides with its tables.
   - **Fix:** add a confirmation prompt. Make a safety backup first. Check the source by opening it with `PythonMemoryStorage` before swapping it in.
+  - **Done (2026-09-27):** the restore is staged, not in place. A prompt (or `--yes`) is required; the current store is copied to `<db>.pre-restore.<ts>` first; the source is replayed into `<db>.restore-tmp.<pid>` next to the destination; that staged file is opened with `PythonMemoryStorage` (a foreign or truncated source is refused there, before the destination is touched); only then is it `os.replace`d in. Because the dump is replayed into a fresh file, it can no longer collide with the live database's tables. A SQLite backup source is read with `mode=ro` so validation cannot rewrite the backup. Three regression tests, including a gzipped-dump round trip that also asserts the safety copy really holds the old store and that no staged file survives.
 
-- [ ] **P1-5 Recall hides database errors.**
+- [x] **P1-5 Recall hides database errors.**
   - Recall returns `[]` on any `sqlite3.Error` (`storage.py:791-793`); `list_memories` (`:862`) and `count` (`:1024`) do the same.
   - MCP clients cannot tell "no match" from "store broken", which contradicts the fail-closed design.
   - **Fix:** raise `StorageError`, or return `isError` over MCP.
+  - **Done (2026-09-27):** `recall`, `list_memories` and `count` raise `StorageError` naming the path and the SQLite error. The same lie existed in `consolidate`: a failed read returned "0 duplicate groups" — a clean bill of health for a store it could not read — and a failed delete was swallowed into `removed = 0` after a rollback. Both now raise. The CLI's `main()` already turns `StorageError` into one line and exit 1, and the MCP tool path already reports `isError`, so both surfaces distinguish "no match" from "store broken".
 
-- [ ] **P1-6 Orchestration agents never save anything.**
+- [x] **P1-6 Orchestration agents never save anything.** (resolved by P2-3: `src/orchestration/` is gone)
   - All 8 memory writes call `self.storage.store({...})`, which is the retired PyO3 API:
     - `executor.py:786`, `executor.py:898`
     - `optimizer.py:463`, `optimizer.py:744`
@@ -106,24 +110,25 @@ Limits of this review:
     - `reviewer.py:300`, `reviewer.py:514`
   - `PythonMemoryStorage` only has `remember()`, so every call raises `AttributeError`.
 
-- [ ] **P1-7 `optimizer.py:555` checks `'' in task_lower`.**
+- [x] **P1-7 `optimizer.py:555` checks `'' in task_lower`.** (resolved by P2-3: `src/orchestration/` is gone)
   - That is always true, so every task gets `file_types=['']`.
   - It is left over from a bulk deletion of `.rs` strings; the same edit left the "e.g., , .py" artifact in the old prompt.
 
-- [ ] **P1-8 DSPy module loading always fails.**
+- [x] **P1-8 DSPy module loading always fails.** (resolved by P2-3: `src/orchestration/` is gone)
   - `dspy_service.py:118,143,160` import `mnemosyne.orchestration.dspy_modules…`.
   - That path does not exist, because `mnemosyne` is the engine's package.
 
-- [ ] **P1-9 The executor runs model-written commands in a shell.**
+- [x] **P1-9 The executor runs model-written commands in a shell.** (resolved by P2-3: `src/orchestration/` is gone — the unsandboxed executor no longer ships)
   - `run_command` (`executor.py:~735`) passes model-generated strings to `asyncio.create_subprocess_shell`.
   - The "trusted execution boundary" only sets the working directory. The command can still touch any absolute path.
   - **Fix:** add an allowlist or an approval hook, or document the executor as unsandboxed.
 
-- [ ] **P1-10 Wrong name and version labels.**
+- [x] **P1-10 Wrong name and version labels.**
   - `_package_version()` (`cli.py:162-169`) falls back to the `mnemosyne` distribution. That is the engine, so the lite CLI can report the engine's version.
   - `src/mnemosyne_lite/mcp.py:44` hardcodes `serverInfo` as `name: "mnemosyne"` and `version: "2.4.0"`. It should say `mnemosyne-lite` and read `__version__`.
+  - **Done (2026-09-27):** `_package_version()` now returns `mnemosyne_lite.__version__` — one source, no metadata lookup and no fallback to the engine's distribution name. `mcp.py` reports `serverInfo` as `mnemosyne-lite` with that version. `tests/test_lite_mcp.py` asserted the old name; that assertion was updated for the intended contract change (and now checks the version too). Regression tests `test_version_labels_come_from_this_package` and `test_mcp_announces_itself_as_mnemosyne_lite`.
 
-- [ ] **P1-11 `.auto/run.sh` can log a failed run as a success.**
+- [x] **P1-11 `.auto/run.sh` can log a failed run as a success.** (fixed in P2-8, as `bench/run.sh`)
   - `RC=$?` runs after `cp`, so it captures `cp`'s exit code instead of `measure.sh`'s.
   - A failed measurement can therefore be logged as `keep`.
 

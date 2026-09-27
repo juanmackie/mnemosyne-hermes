@@ -445,6 +445,7 @@ def test_cli_refuses_missing_store_and_accepts_trailing_db_path():
             os.path.dirname(os.path.abspath(__file__)), "..", "src", "mnemosyne_lite", "cli.py"
         ),
     )
+    assert spec is not None and spec.loader is not None, "no module spec for the CLI"
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
 

@@ -19,6 +19,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
+import mnemosyne_lite  # noqa: E402
 from lib.storage import PythonMemoryStorage, StorageError, StorageSchemaError  # noqa: E402
 from mnemosyne_lite.mcp import serve  # noqa: E402
 
@@ -74,7 +75,11 @@ def test_round_trip_over_the_mcp_protocol():
             ],
         )
         assert [r["id"] for r in responses] == [1, 2, 3, 4, 5], responses
-        assert responses[0]["result"]["serverInfo"]["name"] == "mnemosyne"
+        # This server is the lite surface: it must not announce itself as the
+        # engine (`mnemosyne`) and must not carry a hand-written version.
+        server_info = responses[0]["result"]["serverInfo"]
+        assert server_info["name"] == "mnemosyne-lite", server_info
+        assert server_info["version"] == mnemosyne_lite.__version__, server_info
         names = [t["name"] for t in responses[2]["result"]["tools"]]
         assert "mnemosyne_memory_search" in names and "mnemosyne_memory_remember" in names
         assert responses[3]["result"]["isError"] is False

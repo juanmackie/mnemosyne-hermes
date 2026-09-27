@@ -6,6 +6,7 @@ import sys
 
 from lib.storage import PythonMemoryStorage, StorageError
 
+from . import __version__
 from .tools import call_tool, tool_schemas
 
 
@@ -48,7 +49,10 @@ def serve(db_path, stdin=None, stdout=None):
                         if requested in ("2024-11-05", "2025-03-26", "2025-06-18")
                         else "2025-06-18",
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "mnemosyne", "version": "2.4.0"},
+                        # This server is the lite surface, not the engine and
+                        # not the Hermes provider: the old literal claimed the
+                        # engine's name (`mnemosyne`) and a hand-written version.
+                        "serverInfo": {"name": "mnemosyne-lite", "version": __version__},
                     }
                 elif method == "ping":
                     result = {}

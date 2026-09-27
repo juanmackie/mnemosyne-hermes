@@ -170,8 +170,10 @@ class PythonMemoryStorage:
             db_path: Path to SQLite database file
 
         Raises:
-            OSError: If database directory cannot be created
-            sqlite3.Error: If database cannot be initialized
+            StorageError: If the database directory cannot be created, or the
+                file cannot be opened (locked, unreadable, or not a store).
+            StorageSchemaError: If the file exists but is not a lite store; the
+                file is left byte-identical in that case.
         """
         if not db_path:
             raise ValueError("db_path is required")
@@ -232,10 +234,22 @@ class PythonMemoryStorage:
         ) from last
 
     def _ensure_db_dir(self):
-        """Ensure the database directory exists."""
+        """Ensure the database directory exists.
+
+        A bare OSError here reached the CLI as a traceback, because `main()`
+        only catches StorageError/ValueError. Name the directory and the cause
+        instead, and keep the refusal style the rest of the store uses.
+        """
         db_dir = os.path.dirname(self.db_path)
-        if db_dir:
+        if not db_dir:
+            return
+        try:
             os.makedirs(db_dir, exist_ok=True)
+        except OSError as e:
+            raise StorageError(
+                f"cannot create the database directory {db_dir}: {e}. "
+                "Point --db-path at a writable location."
+            ) from e
 
     def _connect(self, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
         """Open a connection WITHOUT changing any persistent database state.
@@ -827,9 +841,12 @@ class PythonMemoryStorage:
                     rows = rows[:max_results]
             else:
                 rows = conn.execute(sql, params).fetchall()
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            # Fail closed: "no match" and "store broken" must not look the same.
+            # Returning [] here contradicted the refusal path (a foreign or
+            # unreadable store is refused loudly everywhere else).
             logger.exception("Recall query failed")
-            return []
+            raise StorageError(f"recall failed on {self.db_path}: {e}") from e
 
         results = [self._row_to_dict(row) for row in rows]
         ids = tuple(r["id"] for r in results)
@@ -893,9 +910,9 @@ class PythonMemoryStorage:
             params.append(limit)
 
             rows = conn.execute(sql, params).fetchall()
-        except sqlite3.Error:
+        except sqlite3.Error as e:
             logger.exception("List query failed")
-            return []
+            raise StorageError(f"list failed on {self.db_path}: {e}") from e
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -929,15 +946,11 @@ class PythonMemoryStorage:
                 params.append(namespace)
 
             rows = conn.execute(sql, params).fetchall()
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            # A failed read used to report "0 duplicate groups", i.e. a clean
+            # bill of health for a store it could not read.
             logger.exception("Consolidate read failed")
-            return {
-                "total": 0,
-                "duplicate_groups": 0,
-                "exact_duplicate_groups": 0,
-                "removed": 0,
-                "auto_applied": auto_apply,
-            }
+            raise StorageError(f"consolidate read failed on {self.db_path}: {e}") from e
 
         proposals: dict[str, list[str]] = {}
         exact: dict[str, list[sqlite3.Row]] = {}
@@ -962,10 +975,10 @@ class PythonMemoryStorage:
                         conn.execute("DELETE FROM memories WHERE id = ?", (row[0],))
                         removed += 1
                 conn.commit()
-            except sqlite3.Error:
+            except sqlite3.Error as e:
                 conn.rollback()
                 logger.exception("Consolidate delete failed")
-                removed = 0
+                raise StorageError(f"consolidate delete failed on {self.db_path}: {e}") from e
             self._flush_accesses()
             self._maybe_checkpoint()
 
@@ -1043,6 +1056,6 @@ class PythonMemoryStorage:
             else:
                 row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
             return row[0] if row else 0
-        except sqlite3.Error:
+        except sqlite3.Error as e:
             logger.exception("Count query failed")
-            return 0
+            raise StorageError(f"count failed on {self.db_path}: {e}") from e
