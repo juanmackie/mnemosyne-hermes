@@ -128,6 +128,20 @@ divergence.
 | Behaviour | The CLI resolves the same DB path as the provider and passes it to `BeamMemory`/`Mnemosyne`. `check_provider_provenance` requires the plugin target to resolve under `integrations/hermes-provider/hermes_memory_provider`, flags the retired `integrations/hermes` tree, and verifies the `register_cli`/`mnemosyne_command` handler contract. |
 | Upstream | Not sent yet — repo-specific provenance. |
 
+### P12 — explicit annotations so static analysis can run (P4-1)
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/cli.py` (`detect_hermes_version`, `mnemosyne_command`) |
+| Date | 2026-09-27 |
+| Reason | Three inference artefacts made the provider un-analysable: `import agent` named a module that only exists inside a Hermes install, so it read as an undeclared hard dependency; the inferred `dict[str, str]` for `_beam_kwargs` made `BeamMemory(**_beam_kwargs)` look like a type error; and `beam = None` made every later `beam.<method>()` look like an attribute access on `None`. |
+| Behaviour | No runtime change. `import agent` became `importlib.import_module("agent")` inside the same `try`/`except`; `beam` and `_beam_kwargs` carry explicit `Any` / `dict[str, Any]` annotations. Verified: `mypy hermes_memory_provider/cli.py` — no issues (see `pyproject.toml` in this directory for the module-level override that keeps the rest of the snapshot out of the check). |
+| Upstream | Not sent yet — generic; upstream carries all three complaints. |
+
+### P13 — `doctor` on a fresh install (P0-2)
+
+Recorded as an amendment to P10 above rather than a separate patch.
+
 The remaining vendored files are byte-identical to the 3.15.1 wheel RECORD.
 `register_memory_provider(ctx)` was already present upstream and is unchanged.
 

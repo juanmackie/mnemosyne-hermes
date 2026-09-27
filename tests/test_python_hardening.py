@@ -8,10 +8,7 @@ Runs two ways:
 Covers the bugs that were fixed, each of which used to silently misbehave:
   * recall() treating '%'/'_' in a query as LIKE wildcards
   * DATABASE_URL being used verbatim as a SQLite file path
-  * the context monitor re-firing preservation ~100x/second
-  * the parallel executor hanging forever on unmet dependencies
 """
-import asyncio
 import hashlib
 import importlib.util
 import os
@@ -22,15 +19,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-from lib.storage import PythonMemoryStorage, StorageError, StorageSchemaError
 from lib.mnemosyne_client import resolve_db_path
-from orchestration.coordinator import MockCoordinator
-from orchestration.context_monitor import (
-    ContextMetrics, ContextState, LowLatencyContextMonitor,
-)
-from orchestration.parallel_executor import (
-    ExecutionPlan, ParallelExecutor, SubTask, TaskStatus,
-)
+from lib.storage import PythonMemoryStorage, StorageSchemaError
 
 # The lite store's exact column list, including the migrated content_lower
 # column. Anything else is a foreign database (notably the mnemosyne-memory
@@ -502,62 +492,6 @@ def test_refusal_corpus_if_available():
             # An accepted file must really be a lite store (a fresh/legacy one).
             assert _columns(dst) in lite_shapes, f"{src} was accepted but is not a lite store"
     print(f"corpus check: {refused}/{len(banks)} banks refused byte-identically")
-
-
-def test_context_monitor_edge_triggers():
-    mon = LowLatencyContextMonitor(
-        coordinator=MockCoordinator(),
-        preservation_threshold=0.75, critical_threshold=0.90,
-    )
-    fired = {"pres": 0, "crit": 0}
-    mon.set_preservation_callback(lambda m: fired.__setitem__("pres", fired["pres"] + 1))
-    mon.set_critical_callback(lambda m: fired.__setitem__("crit", fired["crit"] + 1))
-
-    def metrics(u):
-        state = (ContextState.SAFE if u < 0.5 else ContextState.MODERATE if u < 0.75
-                 else ContextState.HIGH if u < 0.90 else ContextState.CRITICAL)
-        return ContextMetrics(u, 100, int(u * 100), 100 - int(u * 100), state, 0.0, 1, 0, 0)
-
-    async def drive():
-        for u in (0.5, 0.8, 0.8, 0.8, 0.85, 0.95, 0.95, 0.6, 0.8):
-            await mon._check_thresholds(metrics(u))
-    asyncio.run(drive())
-    # crossed into preservation twice (0.8, and again after dropping to 0.6),
-    # critical once at 0.95 -- not once per poll.
-    assert fired == {"pres": 2, "crit": 1}, fired
-
-
-def test_parallel_executor_does_not_hang_on_unmet_dep():
-    async def run():
-        ex = ParallelExecutor(MockCoordinator(), storage=None)
-        plan = ExecutionPlan(
-            tasks={"x": SubTask("x", "X", depends_on=["missing"])},
-            critical_path=["x"],
-        )
-        try:
-            await asyncio.wait_for(ex.execute(plan), timeout=3)
-        except RuntimeError:
-            return
-        raise AssertionError("unmet dependency should fail, not hang")
-
-    asyncio.run(run())
-
-
-def test_parallel_executor_reusable():
-    async def run():
-        ex = ParallelExecutor(MockCoordinator(), storage=None)
-        plan = ExecutionPlan(
-            tasks={
-                "a": SubTask("a", "A"),
-                "b": SubTask("b", "B", depends_on=["a"]),
-            },
-            critical_path=["a", "b"],
-        )
-        first = await ex.execute(plan)
-        second = await ex.execute(plan)
-        assert first["completed"] == second["completed"] == 2
-
-    asyncio.run(run())
 
 
 if __name__ == "__main__":

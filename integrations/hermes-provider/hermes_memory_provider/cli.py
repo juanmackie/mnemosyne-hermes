@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 # T7: see the matching guard in __init__.py. Only add the repo sibling dir when
 # it really holds the package; a copied install must not shadow the engine.
@@ -30,8 +31,12 @@ def detect_hermes_version():
     except Exception:
         pass
     try:
-        import agent
-        return getattr(agent, "__version__", None)
+        # LOCAL PATCH (P12): import_module rather than `import agent`. Same
+        # lookup at runtime, but the `agent` module only exists inside a Hermes
+        # install, so a static import here reads as a hard dependency on a
+        # module this package does not declare.
+        import importlib as _il
+        return getattr(_il.import_module("agent"), "__version__", None)
     except Exception:
         return None
 
@@ -289,12 +294,17 @@ def mnemosyne_command(args):
     # missing -- the Hermes CLI ignores a handler's return value, so an early
     # `return 1` would exit 0. version/list-providers also need no beam.
     needs_beam = cmd in ("stats", "sleep", "inspect", "clear")
-    beam = None
+    # LOCAL PATCH (P12): annotate instead of inferring. `beam` is None on the
+    # commands that need no engine, and `_beam_kwargs` mixes a str session id
+    # with the resolved db path, so an inferred `dict[str, str]` made the
+    # BeamMemory call look like a type error and every later `beam.<method>`
+    # look like an attribute access on None. No runtime change.
+    beam: Any = None
     if needs_beam:
         try:
             from mnemosyne.core.beam import BeamMemory
             _resolved_db_path = resolve_effective_db_path()
-            _beam_kwargs = {"session_id": "hermes_default"}
+            _beam_kwargs: dict[str, Any] = {"session_id": "hermes_default"}
             if _resolved_db_path:
                 _beam_kwargs["db_path"] = _resolved_db_path
             beam = BeamMemory(**_beam_kwargs)

@@ -130,20 +130,22 @@ Limits of this review:
 
 Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-native-provider` `09a6973`) keep the old work. Deleting it from `main` loses nothing.
 
-- [ ] **P2-1 Delete the retired Rust adapter, `integrations/hermes-memory-provider/`** (including its tracked `mnemosyne_rust_hermes.egg-info`).
+- [x] **P2-1 Delete the retired Rust adapter, `integrations/hermes-memory-provider/`** (including its tracked `mnemosyne_rust_hermes.egg-info`).
   - It talks to a Rust binary that no longer exists.
   - Its README says this repo "does not ship a Python provider named mnemosyne", which contradicts the canonical provider.
   - Its 21 tests are the first thing `test-all.sh` runs, and AGENTS.md calls them the "fast unit tests". So CI's headline test run says nothing about the provider you actually ship.
   - **Follow-up:** point `test-all.sh` and AGENTS.md at `tests/test_vendored_provider.py`, `tests/test_provider_loader.py` and `tests/test_provider_db_path.py`.
   - **Optional:** fold the `integrations/hermes/` tombstone README into `docs/archive/`.
+  - **Done (2026-09-27):** adapter and egg-info deleted; tombstone README now `docs/archive/RETIRED_SLIM_PROVIDER.md`. `test-all.sh` runs the three real provider gates (`tests/test_vendored_provider.py`, `test_provider_loader.py`, `test_provider_db_path.py`) instead of the dead adapter's unittest suite, and its dead `--skip-llm` / `--llm-only` modes are gone (no LLM-marked test remains).
 
-- [ ] **P2-2 Delete the Rust test suites.**
+- [x] **P2-2 Delete the Rust test suites.**
+  - **Done (2026-09-27):** `tests/e2e/`, `tests/manual/`, `tests/scripts/`, `tests/e2e_validation.sh` deleted.
   - `tests/e2e/`: 94 files. `lib/common.sh:268-280` runs `cargo build --release`.
   - `tests/manual/`
   - `tests/scripts/`
   - `tests/e2e_validation.sh`
 
-- [ ] **P2-3 Decide the fate of `src/orchestration/`** (about 24k lines, including 44 files under `dspy_modules/`).
+- [x] **P2-3 Decide the fate of `src/orchestration/`** (about 24k lines, including 44 files under `dspy_modules/`).
   - `dspy_modules/` has 10 `test_*.py` files inside `src/`, and pytest never runs them.
   - Nothing packages it: `pyproject.toml` only includes `mnemosyne_lite*` and `lib*`.
   - Saving is broken (P1-6), DSPy loading is broken (P1-8), and the shell executor is unsandboxed (P1-9).
@@ -155,37 +157,44 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
     - `src/mnemosyne_orchestration.egg-info`
     - `uv.lock`: its root package is `mnemosyne-orchestration` and it was last touched 2025-11-04. Regenerate it for `mnemosyne-lite`, or drop it.
   - **If you keep it,** it needs its own milestone: fix P1-6 to P1-9, package it, and rewrite the tests against `hermes_llm`.
+  - **Done (2026-09-27): archived then deleted.** `git tag archive/orchestration` + `archive/rust-era` (both pushed) hold the last commit containing it, so it is one command away. Removed `src/orchestration/`, `tests/orchestration/`, `test_orchestration_integration.py`, `test_privacy_python_integration.py`, `test_executor_boundary.py`, `test_hermes_llm.py`, the `orchestration` extras, `src/mnemosyne_orchestration.egg-info/` and `uv.lock`. `tests/test_python_hardening.py` imported `orchestration.coordinator`/`context_monitor`/`parallel_executor`, so its three orchestration tests and those imports went too; its storage-safety tests are untouched. Suite is now 46 passed, 0 skipped (was 79 passed / 36 skipped).
 
-- [ ] **P2-4 Delete unused schema and protocol files.**
+- [x] **P2-4 Delete unused schema and protocol files.**
+  - **Done (2026-09-27):** `migrations/` (52 files), `patches/`, `proto/` deleted. Verified nothing under `src/`, `tests/`, `scripts/`, `install.sh` or `pyproject.toml` reads them.
   - `migrations/`: 51 SQL files plus `MANIFEST.md`
   - `patches/`: diffs against those migrations
   - `proto/`: gRPC definitions
   - No runtime code reads any of them. The lite store has its own inline schema, and the engine owns its own.
 
-- [ ] **P2-5 Delete Rust-era scripts and specs.**
+- [x] **P2-5 Delete Rust-era scripts and specs.**
   - `scripts/test-server.sh`: runs `./target/debug/mnemosyne serve`
   - `scripts/baseline/verify_baseline_install.sh`
   - `scripts/beads-sync.sh`
   - `spec.md`: a Rust TUI network-panel spec for `src/bin/dash`
   - `benchmark/retrieval/` and `tests/benchmark/`: they drive `mnemosyne recall --hierarchical`, a Rust CLI flag. Retarget them at the lite or engine recall, or delete them.
   - **Review before deleting:** `scripts/safe-shutdown.sh`, `scripts/cleanup-processes.sh`, `scripts/diagnostics/collect-memory-diagnostics.sh` and `scripts/build-diagrams.sh` (it builds D2 diagrams for the Rust architecture).
+  - **Done (2026-09-27):** all of the above deleted, including the four to review — they serve the retired server/diagram pipeline and nothing referenced them. `scripts/engine-parity-check.sh` and `scripts/vendor-provider-sync.sh` are kept (both are cited by `LIVE_VERIFICATION.md` / `PATCHES.md`).
 
-- [ ] **P2-6 Replace `scripts/install/uninstall.sh`.**
+- [x] **P2-6 Replace `scripts/install/uninstall.sh`.**
   - It deletes `~/.local/bin/mnemosyne` and calls `mnemosyne config delete-key`.
   - It never removes the plugin link or the provider package, yet the README points users at it.
   - **Fix:** implement the uninstall steps from `integrations/hermes-provider/README.md` (remove the plugin link, `uv pip uninstall mnemosyne-hermes-provider`, keep data by default). `install.sh --uninstall` is one option.
+  - **Done (2026-09-27):** the 493-line Rust-era script is deleted and `install.sh --uninstall [--purge] [--dry-run] [--yes]` implements the README's steps: removes the plugin entry only when it is a symlink, uninstalls `mnemosyne-hermes-provider`, and keeps memory unless `--purge` (which also removes `mnemosyne-memory` and `$HERMES_HOME/mnemosyne`, guarded against `/`, `.` and empty paths). It warns when `config.yaml` still selects `memory.provider=mnemosyne`, and it never removes a real directory where the plugin link should be. This is also the repo side of P0-5: the live Hermes agent can run it after pulling.
 
-- [ ] **P2-7 Remove the "planning deliverable" stubs.**
+- [x] **P2-7 Remove the "planning deliverable" stubs.**
   - `scripts/verify_backup_auth.sh` and `scripts/redeploy/*_proposed.sh` only print text ("NOT EXECUTED").
   - Also: `deploy/sanitized_example/`, `.auto/deliverables/`, `.auto/retirement/`, `docs/plans/item_*`, `docs/plans/SYNTHESIS.md`.
   - The banners in AGENTS.md and README ("Pivot Complete — Planning Deliverable", "No DB rebuild/redeploy executed") come from the same pass. Remove them too (see P3-1 and P3-2).
+  - **Done (2026-09-27):** `scripts/verify_backup_auth.sh`, `scripts/redeploy/`, `deploy/sanitized_example/`, `.auto/deliverables/`, `.auto/retirement/`, `docs/plans/item_*` and `docs/plans/SYNTHESIS.md` deleted. The AGENTS.md/README banners are handled in P3-1/P3-2.
 
-- [ ] **P2-8 Move experiment state off `main`.**
+- [x] **P2-8 Move experiment state off `main`.**
   - At the root: `autoresearch.md`, `autoresearch.jsonl`, `autoresearch.sh`, `autoresearch.ideas.md`, `autoresearch-dashboard.md`.
   - Also `experiments/`, `history/seed/`, and `.auto/` (about 60 files, 500 KB, mostly JSONL logs and probes).
   - **Fix:** keep the reproducible benchmark harness in a `bench/` folder with a README. Drop the logs; git history keeps them.
+  - **Done (2026-09-27):** `bench/` now holds `measure.sh` (recall latency on the deterministic 3000-row corpus), `autoresearch.sh` (median of `AR_RUNS`, median-of-5 tiebreak near `AR_BASELINE`), `run.sh` (experiment ledger, with the P1-11 exit-code bug fixed) and `README.md` — which is also the benchmark doc P5-5 asks for, including the loop's recorded 0.0051 ms p50 and the explicit note that it is a historical claim, not a current measurement. Root `autoresearch.*`, `experiments/`, `history/seed/` and `.auto/` (55 files) deleted; `.gitignore` now ignores `bench/data/`, `bench/log.jsonl`, `bench/last_measure.txt`.
 
-- [ ] **P2-9 Clear clutter.**
+- [x] **P2-9 Clear clutter.**
+  - **Done (2026-09-27):** `Makefile.archive`, `.test-hook-trigger`, `.beads/`, `src/mnemosyne.egg-info/` deleted. `.gitmessage` rewritten without the Claude attribution and without the retired DSPy/SpecFlow track labels (and nothing set `commit.template`, so it is a template you opt into). `.github/ISSUE_TEMPLATE/config.yml` links now point at this repo's README, QUICK_START, AGENT_SETUP and TROUBLESHOOTING.
   - `Makefile.archive`: its `doctor` target imports `mnemosyne_orchestration.config`, which does not exist, and its other targets are placeholders.
   - `.test-hook-trigger`
   - `.beads/`: `daemon.lock` is tracked, and `issues.jsonl` was last touched 2025-11-23.
@@ -193,7 +202,7 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
   - `.gitmessage`: it appends "Generated with Claude Code" and "Co-Authored-By: Claude", which breaks AGENTS.md's no-AI-attribution rule. It also carries the old DSPy/SpecFlow track labels.
   - `.github/ISSUE_TEMPLATE/config.yml`: every link points at rand/mnemosyne.
 
-- [ ] **P2-10 Purge the stale docs.** Move these to `docs/archive/` or delete them.
+- [x] **P2-10 Purge the stale docs.** Move these to `docs/archive/` or delete them.
   - **`docs/` folders:** `historical/` (40), `plans/` (17), `archive/` (15), `whitepaper/` (12) plus `whitepaper.html` and `whitepaper.md`, `design/`, `v2/`, `specs/`, `test-reports/`.
   - **`docs/` files:**
     - `SESSION_*.md`
@@ -211,6 +220,7 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
     - `DOCUMENTATION.md`: 16 broken links
     - `SECRETS_MANAGEMENT.md`: the engine CLI has no `secrets` command (checked in the installed 3.15.1 source)
   - **Target:** about 8 living docs: README, QUICK_START, TROUBLESHOOTING, AGENTS, CONTRIBUTING, CHANGELOG, the provider README, and `docs/AGENT_SETUP.md`.
+  - **Done (2026-09-27):** `docs/` went from 255 tracked files to 6: `AGENT_SETUP.md`, `HERMES_INTEGRATION.md`, `MCP_CLIENT_CONFIGS.md`, `TROUBLESHOOTING.md` (promoted to the root in P3-3), plus `archive/RUST_ARCHIVE_REF.md`, `archive/RETIRED_SLIM_PROVIDER.md` and `archive/ARCHITECTURE_RUST.md` (ARCHITECTURE.md was not on this list; it describes the retired product, so it is archived rather than deleted). Every listed folder, site asset and root file is gone. `MCP_SERVER.md` is kept: it documents the lite MCP stdio server, which really ships. Survivor links into the purged set are fixed in P3.
 
 ## P3: update docs and contracts to match what exists
 

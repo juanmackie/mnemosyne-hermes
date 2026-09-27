@@ -1,14 +1,14 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 💬 GitHub Discussions
-    url: https://github.com/rand/mnemosyne/discussions
-    about: Ask questions, share ideas, and discuss with the community
   - name: 📖 Documentation
-    url: https://github.com/rand/mnemosyne/blob/main/DOCUMENTATION.md
-    about: Browse complete documentation including guides, examples, and troubleshooting
-  - name: 🚀 Quick Start Guide
-    url: https://github.com/rand/mnemosyne/blob/main/QUICK_START.md
-    about: Get started with Mnemosyne in 5 minutes
+    url: https://github.com/juanmackie/mnemosyne-hermes/blob/main/README.md
+    about: What this repo is, how to install the provider, and how to verify it
+  - name: 🚀 Quick Start
+    url: https://github.com/juanmackie/mnemosyne-hermes/blob/main/QUICK_START.md
+    about: Get the provider installed and verified in a few minutes
+  - name: 🤖 Agent setup
+    url: https://github.com/juanmackie/mnemosyne-hermes/blob/main/docs/AGENT_SETUP.md  # yamllint disable-line rule:line-length
+    about: The step-by-step runbook an agent should follow when setting this up
   - name: 🔧 Troubleshooting
-    url: https://github.com/rand/mnemosyne/blob/main/TROUBLESHOOTING.md
-    about: Find solutions to common issues and problems
+    url: https://github.com/juanmackie/mnemosyne-hermes/blob/main/TROUBLESHOOTING.md  # yamllint disable-line rule:line-length
+    about: Diagnose doctor failures, plugin link problems and DB path issues

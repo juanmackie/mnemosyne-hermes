@@ -20,3 +20,22 @@ dependencies = [
 where = ["."]
 include = ["hermes_memory_provider*"]
 exclude = ["tests*"]
+
+# This directory is a byte-hashed upstream snapshot (VENDORED_FROM.json): its
+# optional engine imports (`mnemosyne.*`, `agent`) are absent in a bare venv,
+# and every edit costs a PATCHES.md entry plus a manifest hash update. Static
+# analysis of the snapshot is therefore off by design. What keeps it honest is
+# the drift gate (tests/test_vendored_provider.py) plus the loader, db-path and
+# doctor contract tests.
+[tool.mypy]
+exclude = ["^hermes_memory_provider/"]
+ignore_missing_imports = true
+
+# `exclude` only stops mypy *searching* for files; anything that imports the
+# snapshot still gets it analysed. Suppress its diagnostics by module instead.
+[[tool.mypy.overrides]]
+module = ["hermes_memory_provider", "hermes_memory_provider.*"]
+ignore_errors = true
+
+[tool.pyright]
+ignore = ["hermes_memory_provider"]

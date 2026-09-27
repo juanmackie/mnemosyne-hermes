@@ -7,7 +7,7 @@
 # integrations/hermes-provider/README.md.
 name = "mnemosyne-lite"
 version = "2.4.0"
-description = "Self-hostable Python memory system with SQLite storage, MCP/CLI surface, and optional multi-agent orchestration."
+description = "Standalone SQLite memory store with a CLI and an MCP stdio server."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -16,15 +16,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-orchestration = [
-    "dspy-ai>=3.0.3",
-    "anthropic>=0.72.0",
-    "claude-agent-sdk>=0.1.0",
-    "rich>=13.0.0",
-]
 dev = [
     "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
 ]
 
 [project.scripts]
@@ -37,11 +30,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["mnemosyne_lite*", "lib*"]
-exclude = ["tests*", "benchmark*", "docs*"]
+exclude = ["tests*", "docs*"]
 
-[tool.pytest.ini_options]
-markers = [
-    "integration: Integration tests that require an active Hermes model/proxy or legacy API key (deselect with '-m \"not integration\"')",
-    "slow: Slow-running tests that can be skipped for quick validation",
-]
-asyncio_mode = "auto"
+[tool.pyright]
+# Type-check the code this repo owns. `integrations/hermes-provider/` is a
+# byte-hashed upstream snapshot (VENDORED_FROM.json) whose optional engine
+# imports are absent in a bare venv; editing it costs a PATCHES.md entry plus a
+# manifest hash update, so its diagnostics are ignored rather than chased.
+include = ["src/lib", "src/mnemosyne_lite", "tests"]
+ignore = ["integrations/hermes-provider/hermes_memory_provider"]

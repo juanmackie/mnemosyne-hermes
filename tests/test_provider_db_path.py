@@ -34,6 +34,18 @@ class FakeBeam:
         pass
 
 
+def _beam(provider):
+    """Provider beam, typed so the checker sees FakeBeam rather than None.
+
+    The vendored provider declares ``self._beam = None`` and assigns the real
+    object in ``initialize()``; the annotation on that attribute cannot be
+    tightened without another vendored-file patch, so narrow it here.
+    """
+    beam = provider._beam
+    assert isinstance(beam, FakeBeam), beam
+    return beam
+
+
 def _init(tmp, **kwargs):
     """Build a provider with FakeBeam and run initialize().
 
@@ -68,8 +80,8 @@ def test_db_path_from_env():
         finally:
             os.environ.pop("MNEMOSYNE_DB_PATH", None)
         assert provider._db_path == target, provider._db_path
-        assert provider._beam.db_path == target
-        assert provider._beam.kwargs["db_path"] == target
+        assert _beam(provider).db_path == target
+        assert _beam(provider).kwargs["db_path"] == target
 
 
 def test_db_path_from_hermes_config_beats_env():
@@ -90,7 +102,7 @@ def test_db_path_from_hermes_config_beats_env():
         finally:
             os.environ.pop("MNEMOSYNE_DB_PATH", None)
         assert provider._db_path == str(pathlib.Path(tmp) / "cfg.db")
-        assert provider._beam.kwargs["db_path"] == str(pathlib.Path(tmp) / "cfg.db")
+        assert _beam(provider).kwargs["db_path"] == str(pathlib.Path(tmp) / "cfg.db")
 
 
 def test_db_path_kwargs_beats_all():
@@ -100,7 +112,7 @@ def test_db_path_kwargs_beats_all():
             provider = _init(tmp, db_path=str(pathlib.Path(tmp) / "kwarg.db"))
         finally:
             os.environ.pop("MNEMOSYNE_DB_PATH", None)
-        assert provider._beam.kwargs["db_path"] == str(pathlib.Path(tmp) / "kwarg.db")
+        assert _beam(provider).kwargs["db_path"] == str(pathlib.Path(tmp) / "kwarg.db")
 
 
 def test_db_path_unset_passes_nothing_to_beam():
@@ -108,7 +120,7 @@ def test_db_path_unset_passes_nothing_to_beam():
         os.environ.pop("MNEMOSYNE_DB_PATH", None)
         provider = _init(tmp)
         assert provider._db_path is None
-        assert "db_path" not in provider._beam.kwargs
+        assert "db_path" not in _beam(provider).kwargs
 
 
 def test_schema_declares_db_path():
@@ -128,7 +140,7 @@ def test_db_path_wins_over_profile_isolation():
             os.environ.pop("MNEMOSYNE_DB_PATH", None)
         assert provider._db_path == str(pathlib.Path(tmp) / "isolated.db")
         # db_path wins => the plain BeamMemory branch, not the bank branch.
-        assert provider._beam.kwargs["db_path"] == str(pathlib.Path(tmp) / "isolated.db")
+        assert _beam(provider).kwargs["db_path"] == str(pathlib.Path(tmp) / "isolated.db")
 
 
 def test_check_hermes_version_truth_table():

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Install the canonical Hermes memory provider (vendored, engineer-backed).
+# Install or remove the canonical Hermes memory provider (vendored, engine-backed).
 #
 #   ./install.sh [--dry-run] [--yes] [--venv DIR | --python PATH] [--hermes-home DIR] [--db-path PATH]
+#   ./install.sh --uninstall [--purge] [--yes] [--venv DIR | --python PATH] [--hermes-home DIR]
 #
 # What it does, in order:
 #   1. resolve the Hermes venv (works for pip-less and root-owned venvs)
@@ -22,18 +23,41 @@ ENGINE_PIN='mnemosyne-memory[embeddings]>=3.15.1,<3.16'
 
 DRY_RUN=false
 ASSUME_YES=false
+UNINSTALL=false
+PURGE=false
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 VENV="${HERMES_VENV:-}"
 PY_OVERRIDE=""
 DB_PATH="${MNEMOSYNE_DB_PATH:-}"
 
 usage() {
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
     cat <<'EOF'
+Install or remove the canonical Hermes memory provider (vendored, engine-backed).
+
+  ./install.sh [--dry-run] [--yes] [--venv DIR | --python PATH]
+               [--hermes-home DIR] [--db-path PATH]
+  ./install.sh --uninstall [--purge] [--yes] [--venv DIR | --python PATH] [--hermes-home DIR]
+
+Install, in order:
+  1. resolve the Hermes venv (works for pip-less and root-owned venvs)
+  2. install the vendored provider + the pinned engine with uv
+  3. point $HERMES_HOME/plugins/mnemosyne at the vendored package directory
+  4. set memory.provider=mnemosyne via `hermes config set` (never a blind
+     rewrite of config.yaml)
+  5. verify: engine importable, provider importable, exactly one registration
+
+Nothing here creates or opens the memory database. The resolved DB path is
+printed up front so you can check it before anything is written.
+
+Uninstall removes the plugin link and the provider package. Memory is kept
+unless --purge is also given, which drops the engine package and the
+$HERMES_HOME/mnemosyne data directory as well.
 
 Options:
   --dry-run            print the plan; write nothing
   --yes                skip the confirmation prompt (required when not a TTY)
+  --uninstall          remove the provider instead of installing it
+  --purge              with --uninstall: also remove the engine and the data dir
   --venv DIR           Hermes virtualenv (default: autodetect)
   --python PATH        the Hermes venv's python, when you know it exactly
   --hermes-home DIR    Hermes home (default: $HERMES_HOME or ~/.hermes)
@@ -45,6 +69,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)     DRY_RUN=true; shift ;;
         --yes|-y)      ASSUME_YES=true; shift ;;
+        --uninstall)   UNINSTALL=true; shift ;;
+        --purge)       PURGE=true; shift ;;
         --venv)        VENV="$2"; shift 2 ;;
         --python)      PY_OVERRIDE="$2"; shift 2 ;;
         --hermes-home) HERMES_HOME="$2"; shift 2 ;;
@@ -56,6 +82,9 @@ done
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 note() { printf '  %s\n' "$*"; }
+
+PLUGIN_LINK="$HERMES_HOME/plugins/mnemosyne"
+CONFIG_FILE="$HERMES_HOME/config.yaml"
 
 venv_python() {
     if [[ -x "$1/bin/python" ]]; then printf '%s' "$1/bin/python"
@@ -92,6 +121,87 @@ if [[ -z "${VENV_PY:-}" ]]; then
     VENV_PY="$(venv_python "$VENV")"
 fi
 [[ -n "$VENV_PY" ]] || fail "$VENV has no python (looked for bin/python and Scripts/python.exe)"
+
+# --- uninstall: the inverse of install, memory kept unless --purge -------
+if [[ "$UNINSTALL" == true ]]; then
+    [[ -n "$DB_PATH" ]] || DB_PATH="$HERMES_HOME/mnemosyne/data/mnemosyne.db"
+    DATA_ROOT="$HERMES_HOME/mnemosyne"
+    cat <<EOF
+Hermes provider uninstall plan
+  repo             : $ROOT
+  venv             : $VENV
+  plugin link      : $PLUGIN_LINK   (removed)
+  provider package : mnemosyne-hermes-provider   (uninstalled)
+  memory DB path   : $DB_PATH
+EOF
+    if [[ "$PURGE" == true ]]; then
+        echo "  --purge          : ALSO removes the engine package and $DATA_ROOT"
+    else
+        echo "  memory data      : kept (pass --purge to remove the engine and $DATA_ROOT)"
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        echo
+        echo "--dry-run: no changes made."
+        exit 0
+    fi
+    if [[ "$ASSUME_YES" != true ]]; then
+        if [[ -t 0 ]]; then
+            read -r -p "Proceed? [y/N]: " reply
+            [[ "$reply" =~ ^[Yy] ]] || { echo "Cancelled; nothing changed."; exit 1; }
+        else
+            fail "refusing to uninstall without confirmation (pass --yes, or --dry-run to inspect)"
+        fi
+    fi
+
+    # Only ever remove the plugin entry as a symlink. A real directory there is
+    # the user's own copy or a manual edit, and this script did not create it.
+    if [[ -L "$PLUGIN_LINK" ]]; then
+        rm -f "$PLUGIN_LINK"
+        note "removed plugin link $PLUGIN_LINK"
+    elif [[ -e "$PLUGIN_LINK" ]]; then
+        note "NOT removing $PLUGIN_LINK: not a symlink; remove it yourself if it is stale"
+    else
+        note "no plugin link at $PLUGIN_LINK"
+    fi
+
+    if command -v uv >/dev/null 2>&1; then
+        uv pip uninstall --python "$VENV_PY" mnemosyne-hermes-provider >/dev/null 2>&1 || true
+    elif "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+        "$VENV_PY" -m pip uninstall -y mnemosyne-hermes-provider >/dev/null 2>&1 || true
+    else
+        fail "neither uv nor pip is usable for $VENV"
+    fi
+    note "uninstalled mnemosyne-hermes-provider from $VENV"
+
+    if [[ "$PURGE" == true ]]; then
+        if command -v uv >/dev/null 2>&1; then
+            uv pip uninstall --python "$VENV_PY" mnemosyne-memory >/dev/null 2>&1 || true
+        else
+            "$VENV_PY" -m pip uninstall -y mnemosyne-memory >/dev/null 2>&1 || true
+        fi
+        note "uninstalled the engine (mnemosyne-memory)"
+        case "$DATA_ROOT" in
+            ''|/|/mnemosyne|.|..) fail "refusing to remove '$DATA_ROOT'; remove it yourself" ;;
+        esac
+        if [[ -d "$DATA_ROOT" ]]; then
+            rm -rf "$DATA_ROOT"
+            note "removed data directory $DATA_ROOT"
+        else
+            note "no data directory at $DATA_ROOT"
+        fi
+    fi
+
+    if [[ -f "$CONFIG_FILE" ]] && grep -qE 'provider:[[:space:]]*mnemosyne' "$CONFIG_FILE"; then
+        note "NOTE: $CONFIG_FILE still selects memory.provider=mnemosyne."
+        note "      Point it elsewhere (or clear it) before restarting Hermes."
+    fi
+
+    echo
+    echo "Uninstalled. Restart the gateway so it stops running the provider module."
+    exit 0
+fi
+
 [[ -d "$PROVIDER_PKG" ]] || fail "vendored provider missing at $PROVIDER_PKG"
 
 # --- 2. work out the resolved DB path BEFORE writing anything ---------------
@@ -134,16 +244,6 @@ fi
 
 if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]]; then
     fail "$PLUGIN_LINK exists and is not a symlink; remove it first"
-fi
-# T7: flag a pre-existing link into the retired provider tree before replacing it.
-if [[ -L "$PLUGIN_LINK" ]]; then
-    existing_target="$(readlink -f "$PLUGIN_LINK" 2>/dev/null || true)"
-    case "$existing_target" in
-        "$ROOT"/integrations/hermes/*)
-            fail "$PLUGIN_LINK points at the RETIRED provider tree ($existing_target).
-       That provider exposes no register_cli, so 'hermes mnemosyne' would not exist.
-       Remove the link and re-run this script to point at the canonical provider." ;;
-    esac
 fi
 
 # --- 3. install provider + engine -------------------------------------------
