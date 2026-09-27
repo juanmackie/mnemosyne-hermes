@@ -175,14 +175,25 @@ def _provider_registration_count():
 
 
 def _db_writable(db_path):
+    # LOCAL PATCH (P10 amendment): a fresh install has no data directory yet —
+    # the installer deliberately creates nothing — so an absent parent is not a
+    # failure. Walk up to the nearest existing ancestor and check that one.
     if not db_path:
         return False, "DB path could not be resolved"
     p = Path(str(db_path)).expanduser()
     if p.exists():
         return os.access(p, os.W_OK), f"{p} (file)"
-    if p.parent.exists():
-        return os.access(p.parent, os.W_OK), f"{p} (parent {p.parent}, not created yet)"
-    return False, f"{p} (parent {p.parent} does not exist)"
+    ancestor = p.parent
+    while not ancestor.exists() and ancestor != ancestor.parent:
+        ancestor = ancestor.parent
+    if not ancestor.exists():
+        return False, f"{p} (no existing ancestor directory)"
+    if ancestor == p.parent:
+        return os.access(ancestor, os.W_OK), f"{p} (parent {ancestor}, not created yet)"
+    return (
+        os.access(ancestor, os.W_OK),
+        f"{p} (will be created; nearest existing ancestor {ancestor})",
+    )
 
 
 def _db_integrity(db_path):

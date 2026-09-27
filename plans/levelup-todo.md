@@ -1,0 +1,369 @@
+# Level-up TODO — full project review
+
+- **Date:** 2026-09-27
+- **Reviewed at:** `main @ a951105` (clean tree)
+- **Scope:** whole repository, CI history, and the local Hermes install that runs it
+- **Status:** open. Nothing in this file has been applied yet.
+
+## Where the project stands
+
+What actually ships today:
+
+1. **The Hermes provider.** `integrations/hermes-provider/` is a vendored copy of the provider from `mnemosyne-memory` 3.15.1 (by AxDSan), plus local patches. `./install.sh` installs it with the pinned engine, and `hermes mnemosyne doctor` checks it.
+2. **`mnemosyne-lite`.** `src/lib` + `src/mnemosyne_lite` is a standalone SQLite keyword-search store with a CLI and an MCP stdio server. It is not a Hermes provider.
+3. **`src/orchestration/`.** About 24k lines. Nothing packages it, and it does not work (see P1-6 to P1-9).
+
+Most of the rest of the repo describes the retired Rust product.
+
+Evidence gathered during the review:
+
+- Python CI has failed on all 10 runs since it was added on 2026-09-18, and every Pages deploy has failed too.
+- `pytest tests -m 'not integration'`: 79 passed, 36 skipped, 6 deselected. The result is the same locally and in CI.
+- Provider gates pass: `test_vendored_provider.py` 3/3 and `test_provider_loader.py` 3/3. The old Rust-adapter unittest suite reports 21 OK.
+- 223 of the 250 tracked markdown files mention Rust-era concepts. 32 files have 97 broken relative links between them.
+- The engine (`mnemosyne-memory` 3.15.1) and `hermes-agent` 0.19.0 are the newest releases on PyPI, so the pins are current.
+
+Limits of this review:
+
+- `AGENTS.md` says to read `Vibe Coding Rules 10.md` first, but that file is outside the repo and the read was blocked. This review does not apply V10.
+- The onboarding smoke test skips itself on Windows. Its results below come from the CI log (run `36284065100`), not a local run.
+- No LLM or integration tests were run.
+
+---
+
+## P0: main is red and new installs fail (do first)
+
+- [x] **P0-1 Fix the notes check that fails CI.** (done 2026-09-27: line 5 is now a `#` comment, the three dead entries carry resolution lines, file sorted; `bash scripts/checks.sh` prints `ALL PASS`)
+  - **Problem:** `.mnemosyne_notes:5` is a prose line ("Notes lifecycle (2026-09-19): …") with no tab-separated fields, and the file is not sorted. So `scripts/check_notes.sh` fails, which fails `scripts/checks.sh` and the CI "Repo gates" step.
+  - **Also stale:** the three entries point at files that no longer exist (`Makefile+L29`, `README.md+L828`, `src/utils/retrieval.rs`).
+  - **Fix:** make line 5 a `#` comment. Retire the three entries by adding resolution lines, as the file's own lifecycle rule requires. Sort the file (`LC_ALL=C sort`).
+  - **Check:** `bash scripts/checks.sh` prints `ALL PASS`.
+
+- [ ] **P0-2 `doctor` fails on every fresh install.**
+  - **Problem:** `_db_writable` (`integrations/hermes-provider/hermes_memory_provider/cli.py:177-185`) fails when the database's parent folder does not exist. Right after `./install.sh` it never exists, because the installer deliberately creates nothing.
+  - **CI evidence:** `[FAIL] DB resolved + writable — …/hermes-home/mnemosyne/data/mnemosyne.db (parent …/mnemosyne/data does not exist)`
+  - **Impact:** README, `QUICK_START.md` and `docs/AGENT_SETUP.md` all say `doctor` "must exit 0". AGENT_SETUP also tells agents to stop when a check fails. So every new user and every agent-driven setup stops at this step.
+  - **Fix:** walk up to the nearest folder that exists, check it is writable, and report "will be created".
+  - **Bookkeeping:** this file is vendored, so record the change as an amendment to patch P10 in `integrations/hermes-provider/PATCHES.md`, with a `# LOCAL PATCH:` marker. Then update the hash in `VENDORED_FROM.json`.
+  - **Test:** add a unit test for the case where the folder has not been created yet.
+  - **Check:** `bash scripts/smoke-hermes-onboarding.sh` passes in CI.
+  - **Done (2026-09-27):** `_db_writable` walks up to the nearest existing ancestor; regression tests `test_db_writable_fresh_install_parents_missing`, `test_db_writable_existing_file_and_parent`, `test_db_writable_unresolved_path_is_failure`. Recorded as a P10 amendment in `PATCHES.md`, `VENDORED_FROM.json` hash/bytes/lines updated, `tests/test_vendored_provider.py` green. Local smoke run impossible (no WSL/Docker; the script self-skips on Windows) — the CI `hermes-onboarding` lane is the end-to-end check.
+
+- [ ] **P0-3 Pages deploy fails on every push.**
+  - **Problem:** Pages is not enabled on the repo (`deploy-pages` gets a 404). The site it would publish, `docs/index.html`, is upstream rand/mnemosyne's Rust marketing page, with 15 links to rand/mnemosyne.
+  - **Fix:** delete `.github/workflows/pages.yml` until there is a real site. The alternative is to build a new site and enable Pages.
+  - **Done (2026-09-27):** `.github/workflows/pages.yml` deleted. P3/P2-10 remove the stale `docs/index.html` site assets that it would have published.
+
+- [ ] **P0-4 `release.yml` builds a Rust binary.**
+  - **Problem:** it runs `cargo build --release --bin mnemosyne` for four targets, so any `v*` tag push fails.
+  - **Fix:** replace it with a Python release (see P5-6) or delete it.
+  - **Done (2026-09-27):** `.github/workflows/release.yml` deleted (the cargo-only matrix). P5-6 adds the Python wheel release pipeline that replaces it.
+
+- [ ] **P0-5 Your own Hermes is not using the provider.** (Local machine, not the repo.)
+  - `HERMES_HOME=%LOCALAPPDATA%\hermes`. Its `config.yaml` has `memory.provider: ''`, and it has no `plugins/mnemosyne`.
+  - `~/.hermes/plugins/mnemosyne` links to `venv/Lib/site-packages/hermes_memory_provider/`. That is the unpatched upstream copy, not the vendored one.
+  - The Hermes venv still has old editable installs:
+    - `mnemosyne 2.4.0`: this repo under its old name, which is the collision the README warns about
+    - `mnemosyne-hermes`: points at the retired `integrations/hermes`
+    - `mnemosyne-orchestration`
+    - `mnemosyne-rust-hermes`
+  - The local `dist/` still holds a `mnemosyne-2.4.0` wheel under the old colliding name.
+  - **Fix:** uninstall those four packages, delete `dist/`, then run `integrations/hermes-provider/LIVE_VERIFICATION.md`. The plan still lists that check as "not executed". Also see P5-1 (Windows).
+  - **Status (2026-09-27): handed off.** The live Hermes agent pulls this repo and performs the machine cleanup after this work lands, so no local venv/`dist/` mutation was done here. The repo side is ready for it: `install.sh --uninstall` (P2-6) removes the plugin link and the provider package while keeping data, and `docs/AGENT_SETUP.md` stays the agent-facing runbook (P3).
+
+## P1: code bugs
+
+- [ ] **P1-1 Recall can return stale results across threads (lite store).**
+  - **Cause:** the recall cache `_recall_cache` lives on the shared storage object (`src/lib/storage.py:173`). Its validity check `_search_version` (`storage.py:657-665`) uses `PRAGMA data_version` and `total_changes` from the calling thread's own connection, and those numbers cannot be compared across connections.
+  - **Reproduced:** thread A recalls "alpha". Thread B stores "alpha two". A new thread C recalls "alpha" and gets only `['alpha one']`, while `count()` returns 2.
+  - **Fix:** make the cache per-thread, the same way `search_cache` already is. Add a cross-thread case to `tests/test_recall_freshness.py`.
+
+- [ ] **P1-2 `mnemosyne-lite backup` crashes with default settings.**
+  - `cmd_backup` uses `args.db_path` directly (`src/mnemosyne_lite/cli.py:147`). Without `--db-path` or `MNEMOSYNE_DB_PATH` that value is `None`, so the command dies with `TypeError: stat: path should be string… not NoneType`.
+  - **Fix:** use `_resolve_existing_db(args)`.
+
+- [ ] **P1-3 `bootstrap` categories are always empty.**
+  - It filters on `m.get("memory_type")` (`cli.py:103-107`), but the lite schema has no `memory_type` column. So facts, policies, guardrails and skills always come back as `[]`.
+  - **Fix:** either remove the categories, or add the column with a schema version 2 migration.
+
+- [ ] **P1-4 `restore` is unsafe** (`cli.py:189-235`).
+  - It overwrites the live database with no confirmation and no safety backup.
+  - It never checks that the source file is a Mnemosyne store.
+  - Replaying a `.gz` dump with `executescript` onto an existing database collides with its tables.
+  - **Fix:** add a confirmation prompt. Make a safety backup first. Check the source by opening it with `PythonMemoryStorage` before swapping it in.
+
+- [ ] **P1-5 Recall hides database errors.**
+  - Recall returns `[]` on any `sqlite3.Error` (`storage.py:791-793`); `list_memories` (`:862`) and `count` (`:1024`) do the same.
+  - MCP clients cannot tell "no match" from "store broken", which contradicts the fail-closed design.
+  - **Fix:** raise `StorageError`, or return `isError` over MCP.
+
+- [ ] **P1-6 Orchestration agents never save anything.**
+  - All 8 memory writes call `self.storage.store({...})`, which is the retired PyO3 API:
+    - `executor.py:786`, `executor.py:898`
+    - `optimizer.py:463`, `optimizer.py:744`
+    - `orchestrator.py:319`, `orchestrator.py:464`
+    - `reviewer.py:300`, `reviewer.py:514`
+  - `PythonMemoryStorage` only has `remember()`, so every call raises `AttributeError`.
+
+- [ ] **P1-7 `optimizer.py:555` checks `'' in task_lower`.**
+  - That is always true, so every task gets `file_types=['']`.
+  - It is left over from a bulk deletion of `.rs` strings; the same edit left the "e.g., , .py" artifact in the old prompt.
+
+- [ ] **P1-8 DSPy module loading always fails.**
+  - `dspy_service.py:118,143,160` import `mnemosyne.orchestration.dspy_modules…`.
+  - That path does not exist, because `mnemosyne` is the engine's package.
+
+- [ ] **P1-9 The executor runs model-written commands in a shell.**
+  - `run_command` (`executor.py:~735`) passes model-generated strings to `asyncio.create_subprocess_shell`.
+  - The "trusted execution boundary" only sets the working directory. The command can still touch any absolute path.
+  - **Fix:** add an allowlist or an approval hook, or document the executor as unsandboxed.
+
+- [ ] **P1-10 Wrong name and version labels.**
+  - `_package_version()` (`cli.py:162-169`) falls back to the `mnemosyne` distribution. That is the engine, so the lite CLI can report the engine's version.
+  - `src/mnemosyne_lite/mcp.py:44` hardcodes `serverInfo` as `name: "mnemosyne"` and `version: "2.4.0"`. It should say `mnemosyne-lite` and read `__version__`.
+
+- [ ] **P1-11 `.auto/run.sh` can log a failed run as a success.**
+  - `RC=$?` runs after `cp`, so it captures `cp`'s exit code instead of `measure.sh`'s.
+  - A failed measurement can therefore be logged as `keep`.
+
+## P2: remove Rust-era and experiment leftovers
+
+Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-native-provider` `09a6973`) keep the old work. Deleting it from `main` loses nothing.
+
+- [ ] **P2-1 Delete the retired Rust adapter, `integrations/hermes-memory-provider/`** (including its tracked `mnemosyne_rust_hermes.egg-info`).
+  - It talks to a Rust binary that no longer exists.
+  - Its README says this repo "does not ship a Python provider named mnemosyne", which contradicts the canonical provider.
+  - Its 21 tests are the first thing `test-all.sh` runs, and AGENTS.md calls them the "fast unit tests". So CI's headline test run says nothing about the provider you actually ship.
+  - **Follow-up:** point `test-all.sh` and AGENTS.md at `tests/test_vendored_provider.py`, `tests/test_provider_loader.py` and `tests/test_provider_db_path.py`.
+  - **Optional:** fold the `integrations/hermes/` tombstone README into `docs/archive/`.
+
+- [ ] **P2-2 Delete the Rust test suites.**
+  - `tests/e2e/`: 94 files. `lib/common.sh:268-280` runs `cargo build --release`.
+  - `tests/manual/`
+  - `tests/scripts/`
+  - `tests/e2e_validation.sh`
+
+- [ ] **P2-3 Decide the fate of `src/orchestration/`** (about 24k lines, including 44 files under `dspy_modules/`).
+  - `dspy_modules/` has 10 `test_*.py` files inside `src/`, and pytest never runs them.
+  - Nothing packages it: `pyproject.toml` only includes `mnemosyne_lite*` and `lib*`.
+  - Saving is broken (P1-6), DSPy loading is broken (P1-8), and the shell executor is unsandboxed (P1-9).
+  - Its tests account for all 36 skips. They skip on the PyO3 module `mnemosyne_core`, or on a missing `ANTHROPIC_API_KEY`. The API-key gate contradicts AGENTS.md's rule that LLM calls go through the Hermes proxy.
+  - **Recommendation:** tag it (for example `archive/orchestration`) and remove it from `main`. That also removes:
+    - `tests/orchestration/`
+    - `tests/test_orchestration_integration.py`, `tests/test_privacy_python_integration.py`, `tests/test_executor_boundary.py`, `tests/test_hermes_llm.py`
+    - the `orchestration` extras in `pyproject.toml` and `requirements.txt`
+    - `src/mnemosyne_orchestration.egg-info`
+    - `uv.lock`: its root package is `mnemosyne-orchestration` and it was last touched 2025-11-04. Regenerate it for `mnemosyne-lite`, or drop it.
+  - **If you keep it,** it needs its own milestone: fix P1-6 to P1-9, package it, and rewrite the tests against `hermes_llm`.
+
+- [ ] **P2-4 Delete unused schema and protocol files.**
+  - `migrations/`: 51 SQL files plus `MANIFEST.md`
+  - `patches/`: diffs against those migrations
+  - `proto/`: gRPC definitions
+  - No runtime code reads any of them. The lite store has its own inline schema, and the engine owns its own.
+
+- [ ] **P2-5 Delete Rust-era scripts and specs.**
+  - `scripts/test-server.sh`: runs `./target/debug/mnemosyne serve`
+  - `scripts/baseline/verify_baseline_install.sh`
+  - `scripts/beads-sync.sh`
+  - `spec.md`: a Rust TUI network-panel spec for `src/bin/dash`
+  - `benchmark/retrieval/` and `tests/benchmark/`: they drive `mnemosyne recall --hierarchical`, a Rust CLI flag. Retarget them at the lite or engine recall, or delete them.
+  - **Review before deleting:** `scripts/safe-shutdown.sh`, `scripts/cleanup-processes.sh`, `scripts/diagnostics/collect-memory-diagnostics.sh` and `scripts/build-diagrams.sh` (it builds D2 diagrams for the Rust architecture).
+
+- [ ] **P2-6 Replace `scripts/install/uninstall.sh`.**
+  - It deletes `~/.local/bin/mnemosyne` and calls `mnemosyne config delete-key`.
+  - It never removes the plugin link or the provider package, yet the README points users at it.
+  - **Fix:** implement the uninstall steps from `integrations/hermes-provider/README.md` (remove the plugin link, `uv pip uninstall mnemosyne-hermes-provider`, keep data by default). `install.sh --uninstall` is one option.
+
+- [ ] **P2-7 Remove the "planning deliverable" stubs.**
+  - `scripts/verify_backup_auth.sh` and `scripts/redeploy/*_proposed.sh` only print text ("NOT EXECUTED").
+  - Also: `deploy/sanitized_example/`, `.auto/deliverables/`, `.auto/retirement/`, `docs/plans/item_*`, `docs/plans/SYNTHESIS.md`.
+  - The banners in AGENTS.md and README ("Pivot Complete — Planning Deliverable", "No DB rebuild/redeploy executed") come from the same pass. Remove them too (see P3-1 and P3-2).
+
+- [ ] **P2-8 Move experiment state off `main`.**
+  - At the root: `autoresearch.md`, `autoresearch.jsonl`, `autoresearch.sh`, `autoresearch.ideas.md`, `autoresearch-dashboard.md`.
+  - Also `experiments/`, `history/seed/`, and `.auto/` (about 60 files, 500 KB, mostly JSONL logs and probes).
+  - **Fix:** keep the reproducible benchmark harness in a `bench/` folder with a README. Drop the logs; git history keeps them.
+
+- [ ] **P2-9 Clear clutter.**
+  - `Makefile.archive`: its `doctor` target imports `mnemosyne_orchestration.config`, which does not exist, and its other targets are placeholders.
+  - `.test-hook-trigger`
+  - `.beads/`: `daemon.lock` is tracked, and `issues.jsonl` was last touched 2025-11-23.
+  - Tracked `src/mnemosyne.egg-info/` and `src/mnemosyne_orchestration.egg-info/`. `.gitignore` already excludes `*.egg-info/`, but these were committed before that rule.
+  - `.gitmessage`: it appends "Generated with Claude Code" and "Co-Authored-By: Claude", which breaks AGENTS.md's no-AI-attribution rule. It also carries the old DSPy/SpecFlow track labels.
+  - `.github/ISSUE_TEMPLATE/config.yml`: every link points at rand/mnemosyne.
+
+- [ ] **P2-10 Purge the stale docs.** Move these to `docs/archive/` or delete them.
+  - **`docs/` folders:** `historical/` (40), `plans/` (17), `archive/` (15), `whitepaper/` (12) plus `whitepaper.html` and `whitepaper.md`, `design/`, `v2/`, `specs/`, `test-reports/`.
+  - **`docs/` files:**
+    - `SESSION_*.md`
+    - `FEATURE_BRANCH_STATUS.md`
+    - `FD_LEAK_FIX_TEST_RESULTS.md`
+    - `DSPY_*.md`
+    - `BEADS_INTEGRATION.md`
+    - the ICS guides
+    - the Rust audits in `docs/security/`
+  - **Site assets:** `index.html`, `css/`, `js/`, `overrides/`, `assets/`, `diagrams-d2/`.
+  - **Root files:**
+    - `AGENT_GUIDE.md`: 80 KB and 187 Rust references
+    - `PR_REVIEW.md`, `ROADMAP.md`, `ORCHESTRATION.md`, `EVALUATION.md`, `CONTEXT_LOADING.md`
+    - `HOOKS_TESTING.md`, `LLM_TESTING.md`, `MANUAL_TESTING.md`
+    - `DOCUMENTATION.md`: 16 broken links
+    - `SECRETS_MANAGEMENT.md`: the engine CLI has no `secrets` command (checked in the installed 3.15.1 source)
+  - **Target:** about 8 living docs: README, QUICK_START, TROUBLESHOOTING, AGENTS, CONTRIBUTING, CHANGELOG, the provider README, and `docs/AGENT_SETUP.md`.
+
+## P3: update docs and contracts to match what exists
+
+- [ ] **P3-1 Rewrite the README.**
+  - **Banners:** remove the planning-deliverable banners.
+  - **Status line:** "Current status (v2.4.0): dynamic profile slice + typed `extends` edges are delivered" describes Rust features. `scripts/check_version_drift.sh` checks that exact string, so change the check together with the text.
+  - **Features and architecture:** these all describe the Rust product:
+    - LibSQL vector search
+    - hierarchical topic tree, reasoning memory, bootstrap, dynamic profile
+    - the evolution and evaluation systems
+    - the ICS editor with CRDT, vim mode and tree-sitter
+    - the Ractor actor diagram
+    - the Performance section, whose numbers come from the Rust server
+  - **Broken links:** `TODO_TRACKING.md` (twice) and the root `TROUBLESHOOTING.md` do not exist.
+  - **Invalid commands:** the Migration section uses `mnemosyne import --from … --namespace … --format json`. The engine's import has no `--from` or `--namespace` flag.
+  - **Contributing section:** it still says "Use Beads", "Work Plan Protocol" and "commit before testing".
+  - **Suggested structure:**
+    1. What this is: a Hermes provider distribution
+    2. Quickstart
+    3. Verify
+    4. The lite surface
+    5. The real architecture
+    6. Credits
+  - **Credits:** credit AxDSan/mnemosyne prominently, since the engine and provider are theirs, and state the relationship to rand/mnemosyne.
+
+- [ ] **P3-2 Rewrite `AGENTS.md` against the real file tree.**
+  - **Paths that do not exist:**
+    - `python.toml`, `build.py`, `Makefile`
+    - `src/mcp|cli|storage|embeddings|agents|ics|tui|api|rpc|coordination|python_bindings|bin|services|evolution|evaluation`
+    - `scripts/rebuild-and-update-install.sh`, `build-and-install.sh`, `test-hermes-adoption.sh`
+    - `tests/ics_integration_test`
+  - **Rules for features that are gone:** `mnemosyne serve`, `mnemosyne secrets`, Ractor actors, Iroh P2P, the `--no-enrich` keyless check, and the Makefile `doctor` target.
+  - **Test pointer:** its "fast unit tests" point at the dead adapter (see P2-1).
+  - **Docs index:** it points at the missing root `TROUBLESHOOTING.md`.
+
+- [ ] **P3-3 Fix the other entry docs.**
+  - **Docs:**
+    - `QUICK_START.md`: shows binary-install output (`~/.local/bin/mnemosyne`) and `mnemosyne secrets init` / `set`.
+    - `MCP_SERVER.md:317`: uses `mnemosyne remember … --no-enrich`.
+    - `docs/HERMES_INTEGRATION.md`: imports into the Rust store at :259, calls `serve` "the legacy equivalent" at :147, and lists a `mnemosyne_hierarchy` tool at :197.
+    - `docs/TROUBLESHOOTING.md`: uses `cargo test` and `RUST_LOG`. Rewrite it and promote it to the root, where the other docs already link.
+  - **Examples:**
+    - `examples/hermes/mcp-config.json`: points at `target/release/mnemosyne` with `args: ["serve"]`.
+    - `examples/basic-usage/*.sh`: promise "automatic LLM enrichment" and `--format json`.
+  - **GitHub templates:**
+    - `.github/PULL_REQUEST_TEMPLATE.md`: `cargo test`, `fmt`, `clippy`, `tarpaulin`.
+    - `.github/ISSUE_TEMPLATE/bug_report.md`: offers `cargo install` as an install method.
+
+- [ ] **P3-4 Fix the CHANGELOG.**
+  - The `[Unreleased]` section lists Rust work (`LibsqlStorage`, `src/hierarchy.rs`, `tests/*.rs`, `ci.yml`).
+  - Write the pivot entry: vendored provider, lite rename, Rust retirement, installer and doctor.
+  - Cut a release. 3.0.0 is the honest version, because the pivot removes the binary and its CLI.
+
+- [ ] **P3-5 Use one version source.**
+  - Today the version appears in `pyproject.toml` (2.4.0), `mnemosyne_lite.__version__`, the `mcp.py` literal, the provider `pyproject.toml` (0.1.0) and `orchestration.__version__` (0.1.0).
+  - Extend `check_version_drift.sh` to cover them all, or read `importlib.metadata` at runtime.
+
+- [ ] **P3-6 Keep CI current.**
+  - Bump `actions/checkout@v4` and `astral-sh/setup-uv@v5`; every run shows Node 20 deprecation warnings.
+  - `claude-code-review.yml` tells Claude to use "the repository's CLAUDE.md", which does not exist. Point it at `AGENTS.md`.
+  - Confirm the `CLAUDE_CODE_OAUTH_TOKEN` secret exists, or remove `claude.yml` and `claude-code-review.yml`.
+
+- [ ] **P3-7 Clean up the lite surface.**
+  - Remove the `embed` and `migrate` placeholder commands, which always exit 1 with "blocked".
+  - Remove the stale `blocked` and `queue_state` fields from `diagnostics`.
+  - Remove the `sys.path.insert` hack at `cli.py:16`.
+  - `tools.py` still accepts the retired `mnemosyne-rust` policy owner, and its docstring says "for MCP and the Hermes provider". Fix both.
+  - `remember` defaults to the `agent:hermes` namespace on a surface that is explicitly not the Hermes provider. Pick a neutral default.
+
+## P4: engineering baseline
+
+- [ ] **P4-1 Add linting and type checks.** Nothing is configured today; the old Makefile placeholders say "not configured".
+  - ruff for linting and formatting.
+  - mypy or pyright on `src/lib`, `src/mnemosyne_lite` and `tests`. Exclude the vendored provider.
+  - shellcheck on `install.sh` and `scripts/`.
+  - pre-commit plus a CI job.
+
+- [ ] **P4-2 Make the CI matrix match the support claims.**
+  - The README claims Python 3.11–3.14 on Linux, macOS and Windows. CI runs only Python 3.11 on Ubuntu.
+  - Run unit tests on Python 3.11–3.13 (and 3.14) across Ubuntu, macOS and Windows.
+  - Run the smoke test on Ubuntu and macOS, against both Hermes versions on PyPI (0.18.2 and 0.19.0).
+  - Fix the Hermes range claim: README and AGENTS say "tested 0.21.2", but that version is not on PyPI.
+
+- [ ] **P4-3 Add coverage** with pytest-cov, reported in CI. Add a regression test for the fresh-install `doctor` case from P0-2.
+
+- [ ] **P4-4 Rename the top-level `lib` package.**
+  - `pyproject.toml` installs it as `lib*`. A generic `lib` in site-packages can collide with other packages.
+  - Move it under `mnemosyne_lite` (for example `mnemosyne_lite.storage`). `plans/dev-todo-v2.md` already defers this.
+
+- [ ] **P4-5 Make CLI output machine-readable.**
+  - Commands print Python dict reprs such as `{'id': ...}`.
+  - Add `--format json|text`. The docs already assume `--format json` exists.
+
+- [ ] **P4-6 Move the lite store's default database.**
+  - `~/.mnemosyne/mnemosyne.db` sits in the engine's folder.
+  - Give lite its own default, with a migration note.
+
+- [ ] **P4-7 Add Dependabot** for GitHub Actions and pip, and add a `SECURITY.md`.
+
+## P5: level-up
+
+- [ ] **P5-1 Decide the Windows story.**
+  - `install.sh` needs real symlinks, and the smoke test skips on Windows.
+  - Yet the support matrix lists Windows, and your own setup runs on it (see P0-5).
+  - **Options:** add a copy or junction mode plus a Windows CI lane, or drop Windows from the matrix.
+
+- [ ] **P5-2 Send the provider patches upstream.**
+  - `PATCHES.md` lists 11 local patches (P1 to P11), all marked "Not sent yet".
+  - Each one accepted upstream means less vendored drift to maintain on every re-vendor.
+  - The generic ones (P1 to P4) are the easiest; the P0-2 doctor fix belongs there too.
+
+- [ ] **P5-3 Get early warning of upstream drift.**
+  - Add a weekly scheduled workflow that checks PyPI for new `mnemosyne-memory` and `hermes-agent` releases.
+  - It should run `scripts/vendor-provider-sync.sh` against the new wheel and the smoke test against the new Hermes, and open an issue if either breaks.
+
+- [ ] **P5-4 Switch lite recall to SQLite full-text search.**
+  - Recall is currently a substring scan (`instr()`). It also keeps a full copy of all memory text in RAM for each thread (`storage.py:685`), so memory grows with the corpus times the thread count.
+  - Replace it with FTS5 and BM25 ranking. `sqlite3` ships FTS5, so recall stays keyless.
+  - This gives real relevance ranking and bounded memory, and removes most of the cache code.
+
+- [ ] **P5-5 Simplify `storage.py`.**
+  - The autoresearch loop cut median search latency from 0.0102 ms to 0.0051 ms (about 5 microseconds).
+  - It got there by layering id-tuple batching, patching cached rows in place, per-thread counters, and two caches. That layering is where the P1-1 bug came from.
+  - Keep one per-thread cache, and move performance claims into a benchmark doc.
+
+- [ ] **P5-6 Build a real release pipeline.**
+  - Tag, build the wheels, install-test them in a fresh venv, then publish a GitHub release.
+  - Pin the README's "fetch `docs/AGENT_SETUP.md` and follow it exactly" URL to a release tag instead of `main`. Agents follow that file as instructions.
+
+---
+
+## Suggested order
+
+1. **Green `main`:** P0-1 to P0-4, as one small PR. Done when both CI jobs pass and no Pages or release job can fail.
+2. **Deletions (P2):** three PRs:
+   1. code and tests (P2-1 to P2-6)
+   2. docs (P2-10)
+   3. experiments and clutter (P2-7 to P2-9)
+
+   Each PR should leave CI green.
+3. **Honest docs (P3):** README, AGENTS, QUICK_START and TROUBLESHOOTING, then the CHANGELOG and a release.
+4. **Lite bugs:** P1-1 to P1-5 and P1-10, each with a regression test.
+5. **Engineering baseline (P4).**
+6. **Level-up (P5):** start with P5-2 and P5-3, since they cut maintenance cost, then P5-4 and P5-5.
+
+## Relation to `plans/dev-todo-v2.md`
+
+That plan's Tracks A and B (storage safety and the canonical provider) are done. Its "release prep" section (§9) was left out of scope, and most of this file is that pass made concrete:
+
+- CI replacement
+- the docs overhaul
+- a single version source
+- deleting dead weight
+- the `lib` rename
+
+It also left open the live verification (`LIVE_VERIFICATION.md`), which is still not executed (see P0-5).

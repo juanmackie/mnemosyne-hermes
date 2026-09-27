@@ -170,11 +170,32 @@ def test_describe_memory_location_warns_outside_home():
         assert any("WARNING" in line for line in lines), lines
 
 
-def test_db_writable_missing_parent_is_failure():
+def test_db_writable_fresh_install_parents_missing():
+    # P0-2: right after `./install.sh` the data dir does not exist yet, because
+    # the installer deliberately creates nothing. doctor must still pass.
     with tempfile.TemporaryDirectory() as tmp:
-        target = pathlib.Path(tmp) / "nope" / "nope" / "mnemosyne.db"
-        ok, _ = cli_mod._db_writable(str(target))
-        assert ok is False
+        target = pathlib.Path(tmp) / "mnemosyne" / "data" / "mnemosyne.db"
+        ok, msg = cli_mod._db_writable(str(target))
+        assert ok is True, msg
+        assert "will be created" in msg, msg
+
+
+def test_db_writable_existing_file_and_parent():
+    with tempfile.TemporaryDirectory() as tmp:
+        direct = pathlib.Path(tmp) / "mnemosyne.db"
+        direct.touch()
+        ok, msg = cli_mod._db_writable(str(direct))
+        assert ok is True and "file" in msg, msg
+
+        nested_ok, nested_msg = cli_mod._db_writable(str(pathlib.Path(tmp) / "new.db"))
+        assert nested_ok is True and "not created yet" in nested_msg, nested_msg
+
+
+def test_db_writable_unresolved_path_is_failure():
+    for bad in (None, ""):
+        ok, msg = cli_mod._db_writable(bad)
+        assert ok is False, (bad, msg)
+        assert "could not be resolved" in msg, msg
 
 
 if __name__ == "__main__":
@@ -189,7 +210,9 @@ if __name__ == "__main__":
         test_check_provider_provenance_canonical,
         test_check_provider_provenance_flags_retired_tree,
         test_describe_memory_location_warns_outside_home,
-        test_db_writable_missing_parent_is_failure,
+        test_db_writable_fresh_install_parents_missing,
+        test_db_writable_existing_file_and_parent,
+        test_db_writable_unresolved_path_is_failure,
     ]
     for fn in tests:
         fn()

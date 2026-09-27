@@ -27,9 +27,9 @@
       "lines": 139
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "dalVbQHo1t_9uTgCguxHg79cGtesv9Rm7a6IbwMHGzg",
-      "bytes": 28299,
-      "lines": 651
+      "sha256": "mQA4ODQT55bjG3Ra4VZTr9wh5LhEGqYn77MOnss0g-E",
+      "bytes": 28826,
+      "lines": 662
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -72,6 +72,7 @@
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",
       "P10 doctor critical checks gate the exit code and print resolved DB/provider/engine + Hermes range (T4/T6/T8)",
+      "P10 amendment (fresh-install doctor): _db_writable walks up to the nearest existing ancestor instead of failing when the data dir has not been created yet",
       "P11 db_path wired into the CLI BeamMemory/Mnemosyne and canonical-provider provenance check (T3/T7)"
     ]
   }

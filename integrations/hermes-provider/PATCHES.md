@@ -115,6 +115,7 @@ divergence.
 | Date | 2026-09-18 |
 | Reason | `doctor` printed `Checks passed: 16/43` and returned 0 regardless, so a clean-user acceptance gate was a false green. |
 | Behaviour | Five explicit critical checks (engine importable, provider registered exactly once, DB resolved + writable, DB integrity, canonical provider deployed) decide the exit code; the engine's own diagnostics remain informational. The header prints the resolved DB, provider package, engine version and Hermes range. |
+| Amendment (2026-09-27) | The "DB resolved + writable" check failed on every fresh install: `_db_writable` required the DB's immediate parent to exist, and `install.sh` deliberately creates nothing. It now walks up to the nearest existing ancestor, checks that one is writable, and reports "will be created". Regression test: `tests/test_provider_db_path.py::test_db_writable_fresh_install_parents_missing`. |
 | Upstream | Not sent yet — repo-specific acceptance contract. |
 
 ### P11 — CLI `db_path` + provenance check (T3/T7)
