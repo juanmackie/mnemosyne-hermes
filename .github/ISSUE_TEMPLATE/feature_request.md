@@ -24,15 +24,14 @@ Show how you'd like to use this feature:
 
 ```bash
 # Command-line example
-mnemosyne [new-command] [args]
+mnemosyne-lite [new-command] [args]
 ```
 
 or
 
 ```python
-# API example
-from mnemosyne import Memory
-memory = Memory.some_new_method()
+# Python example
+from mnemosyne_lite.storage import PythonMemoryStorage
 ```
 
 or

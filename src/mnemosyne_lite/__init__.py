@@ -13,6 +13,8 @@ memory provider — that is ``integrations/hermes-provider/`` under the provider
 id ``mnemosyne``.
 """
 
-__version__ = "2.4.0"
+# The distribution's one version source: pyproject.toml reads this value
+# dynamically and scripts/check_version_drift.sh gates it against the README.
+__version__ = "3.0.0"
 
 __all__ = []

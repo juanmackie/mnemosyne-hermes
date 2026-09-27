@@ -1,362 +1,142 @@
-# Quick Start Guide
+# Quick Start
 
-Get Mnemosyne running and store your first memory in **under 5 minutes**.
+This repository ships two products, installed separately. They do not share a
+store and neither one needs a cloud API key to store or search memory.
 
-## What You'll Do
+| Component | What it is | Installed with |
+| --- | --- | --- |
+| Hermes provider | Engine-backed memory provider, provider id `mnemosyne` | `./install.sh` |
+| Lite surface | Standalone SQLite store (CLI + MCP stdio server) | `pip install -e .` |
 
-1. ✅ Install Mnemosyne (2 minutes)
-2. ✅ Configure your API key (1 minute)
-3. ✅ Store and retrieve your first memory (2 minutes)
+The engine (`mnemosyne-memory`, PyPI) and the vendored provider are by
+Abdias J / AxDSan (MIT); see the provider README for provenance and hashes.
 
-**Time to Complete**: ~5 minutes
+## What you need
 
----
+- `git` and `uv` — the installer drives `uv pip`, which also works in pip-less
+  and root-owned Hermes virtualenvs.
+- A working Hermes install: `hermes` on `PATH` with `$HERMES_HOME` set (default
+  `~/.hermes`).
+- Python 3.11+ for the lite surface (core memory uses only the stdlib).
 
-## Prerequisites Check
-
-Before starting, verify you have:
-
-```bash
-# Python 3.11+ installed
-python --version
-# Should show: Python 3.11 or higher
-
-# If not installed:
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-You'll also need an **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com/).
-
----
-
-## Step 1: Install Mnemosyne (2 minutes)
-
-### One-Command Installation
+## 1. Install the Hermes provider
 
 ```bash
-# Clone the repository
-git clone https://github.com/rand/mnemosyne.git
-cd mnemosyne
-
-# Run automated install script
-./scripts/install/install.sh
+git clone https://github.com/juanmackie/mnemosyne-hermes.git
+cd mnemosyne-hermes
+./install.sh --dry-run     # plan only: resolved venv, symlink target, DB path
+./install.sh               # asks before changing anything
 ```
 
-The installer will:
-- ✅ Install the Python-native package
-- ✅ Install to `~/.local/bin/mnemosyne`
-- ✅ Create database at `~/.local/share/mnemosyne/`
-- ✅ Set up MCP integration with Claude Code
-- ✅ Prompt for API key (you can skip and do it in Step 2)
+`./install.sh` does this, in order:
 
-**Output you should see:**
-```
-🎉 Mnemosyne installation complete!
+1. installs the vendored provider plus its pinned engine into the Hermes venv;
+2. symlinks `$HERMES_HOME/plugins/mnemosyne` at
+   `integrations/hermes-provider/hermes_memory_provider` (the directory that
+   contains `__init__.py`);
+3. selects `memory.provider: mnemosyne`.
 
-✓ Binary installed: /Users/you/.local/bin/mnemosyne
-✓ Database initialized: /Users/you/.local/share/mnemosyne/mnemosyne.db
-✓ MCP server configured: /Users/you/.claude/mcp_config.json
-```
+The memory database is created on first write, not by the installer.
 
-### Verify Installation
+### Verify the install
 
 ```bash
-# Check mnemosyne is in your PATH
-which mnemosyne
-# Should show: /Users/you/.local/bin/mnemosyne
-
-# Test the command
-mnemosyne --help
-# Should show usage information
+hermes mnemosyne doctor --no-fix        # must exit 0
+hermes memory status                    # installed / available / active
+bash scripts/smoke-hermes-onboarding.sh # clean-user acceptance lane
 ```
 
----
+Then restart the gateway: Hermes caches the loaded provider module per process,
+so a running gateway keeps executing the old code until it restarts.
 
-## Step 2: Configure API Key (1 minute)
-
-Mnemosyne uses Claude Haiku to automatically enrich memories with summaries, tags, and semantic links.
-
-### Option A: Interactive Setup (Recommended)
+### Use it
 
 ```bash
-mnemosyne secrets init
+hermes mnemosyne stats                  # memory counts
+hermes mnemosyne inspect "storage"      # search the store by hand
+hermes mnemosyne doctor --no-fix        # diagnose; --dry-run shows fixes
 ```
 
-This will prompt you to enter your Anthropic API key and encrypt it securely using [age](https://age-encryption.org/).
+The provider injects relevant context before each model call and captures
+user-originated turns (`cron`, `flush`, `subagent`, `background` and
+`skill_loop` runs are skipped). Its optional LLM work goes through the active
+Hermes model from `$HERMES_HOME/config.yaml` — no second API key.
 
-### Option B: Environment Variable
+The store it writes is resolved in this order: `memory.mnemosyne.db_path` >
+`MNEMOSYNE_DB_PATH` > engine default (`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` >
+`~/.hermes`, then `mnemosyne/data/mnemosyne.db`). `doctor` prints the path it
+resolved.
+
+## 2. The lite surface (standalone)
 
 ```bash
-# Add to ~/.bashrc, ~/.zshrc, or ~/.profile
-export ANTHROPIC_API_KEY=sk-ant-api03-YOUR_KEY_HERE
-
-# Reload shell config
-source ~/.zshrc  # or source ~/.bashrc
+pip install -e .
+mnemosyne-lite init
+mnemosyne-lite remember --content "Storage decision: SQLite for the lite store"
+mnemosyne-lite recall --query "storage decision"
+mnemosyne-lite list --limit 10
 ```
 
-### Verify Configuration
+| Command | What it does |
+| --- | --- |
+| `mnemosyne-lite init` | Create the schema (idempotent) |
+| `mnemosyne-lite remember` | Store a memory (`--content`, `--namespace`, `--importance`) |
+| `mnemosyne-lite recall` | Search by literal substring (`--query`, `--max-results`) |
+| `mnemosyne-lite list` | List memories (`--limit`, `--sort-by`) |
+| `mnemosyne-lite bootstrap` | Bounded constraints, provenance and abstentions |
+| `mnemosyne-lite backup` | Copy the store with SQLite's backup API |
+| `mnemosyne-lite restore` | Replace the store from a backup (asks first) |
+| `mnemosyne-lite maintenance` | Report duplicate groups; `--auto-apply` deletes them |
+| `mnemosyne-lite diagnostics` | Path, size, counts, versions, live PRAGMA state |
+| `mnemosyne-lite mcp` | MCP stdio server (alias: `serve`) |
+
+Things worth knowing:
+
+- Default store: `~/.mnemosyne-lite/mnemosyne.db`. Override with `--db-path` or
+  `MNEMOSYNE_DB_PATH`. `DATABASE_URL` is honoured only for `sqlite`, `sqlite3`
+  and `file` schemes; any other scheme is rejected with an error rather than
+  used as a filename.
+- Output is Python dict reprs, one per line. There is no `--format json`.
+- `remember --namespace` defaults to `default`. `agent:hermes` is still accepted
+  — it is the Hermes provider's namespace, not this surface's default.
+- `--no-enrich` is accepted for compatibility and does nothing: core memory
+  never calls an LLM.
+- Read commands refuse to invent a store: a missing or foreign database is an
+  error, so a mistyped path cannot report "0 memories".
+- This is not a Hermes provider. Install it in its own virtualenv (see the
+  provider README for the collision it used to cause).
+
+### MCP server
 
 ```bash
-mnemosyne config show-key
+mnemosyne-lite mcp          # newline-delimited JSON-RPC 2.0 on stdio
 ```
 
-**Expected output:**
-```
-✓ API key is accessible via secure system
-```
+It serves an existing store over the four lite tools
+(`mnemosyne_memory_search`, `mnemosyne_memory_remember`, `mnemosyne_prefetch`,
+`mnemosyne_sync_turn`). See [MCP_SERVER.md](MCP_SERVER.md) for the protocol and
+[examples/hermes/mcp-config.json](examples/hermes/mcp-config.json) for a client
+entry.
 
----
-
-## Step 3: Your First Memory (2 minutes)
-
-### Store a Memory
+## 3. Checks to run before opening a PR
 
 ```bash
-mnemosyne remember \
-  --content "Decided to use LibSQL for storage because it supports native vector search and FTS5 full-text search" \
-  --namespace "global" \
-  --importance 8 \
-  --format json
+./test-all.sh               # provider contract gates, then pytest
+bash scripts/checks.sh      # repo gates (notes, version drift)
+pre-commit run --all-files  # ruff, mypy, shellcheck
 ```
-
-**What happens:**
-1. Content is stored in the database
-2. Claude Haiku generates a summary and keywords
-3. Memory is classified (decision, pattern, bug, or context)
-4. Semantic links to related memories are created
-
-**Expected output:**
-```json
-{
-  "id": "mem_abc123...",
-  "content": "Decided to use LibSQL for storage...",
-  "summary": "Storage decision: LibSQL for vector search and FTS5",
-  "importance": 8,
-  "tags": ["storage", "libsql", "architecture"],
-  "memory_type": "decision",
-  "created_at": "2025-10-27T12:34:56Z"
-}
-```
-
-### Retrieve the Memory
-
-```bash
-mnemosyne recall \
-  --query "storage decision" \
-  --limit 5 \
-  --format json
-```
-
-**Expected output:**
-```json
-{
-  "results": [
-    {
-      "id": "mem_abc123...",
-      "summary": "Storage decision: LibSQL for vector search and FTS5",
-      "content": "Decided to use LibSQL for storage...",
-      "score": 0.95,
-      "importance": 8,
-      "tags": ["storage", "libsql", "architecture"]
-    }
-  ]
-}
-```
-
-### List All Memories
-
-```bash
-mnemosyne list \
-  --namespace "global" \
-  --limit 10 \
-  --format json
-```
-
----
-
-## Step 4: Use in Claude Code (Bonus!)
-
-Mnemosyne integrates seamlessly with Claude Code through the MCP protocol.
-
-### Verify Integration
-
-Open Claude Code and check that Mnemosyne tools are available:
-- Look for "mnemosyne" in the MCP servers list
-- You should see 8 tools: remember, recall, list, graph, context, consolidate, update, delete
-
-### Use Slash Commands
-
-In Claude Code, try these commands:
-
-```
-/memory-store Remember: Always run tests before committing code
-
-/memory-search testing best practices
-
-/memory-context
-
-/memory-list
-```
-
-### Let Agents Use Memory Automatically
-
-Claude Code's multi-agent system will automatically:
-- 📥 Load project context at session start (via hooks)
-- 🔍 Search memories when you ask questions
-- 💾 Store important decisions during conversations
-- 🔗 Link new memories to existing knowledge
-
----
-
-## Next Steps
-
-### Learn Common Workflows
-
-See [Common Workflows](docs/guides/workflows.md) for practical patterns:
-- Daily development session
-- Debugging recurring issues
-- Team knowledge sharing
-- CI/CD integration
-
-### Explore the MCP API
-
-See [MCP Server Documentation](MCP_SERVER.md) for details on all 8 OODA-aligned tools:
-
-**OBSERVE:**
-- `mnemosyne.recall` - Search memories
-- `mnemosyne.list` - List recent memories
-
-**ORIENT:**
-- `mnemosyne.graph` - Get memory graph
-- `mnemosyne.context` - Get full context
-
-**DECIDE:**
-- `mnemosyne.remember` - Store new memory
-- `mnemosyne.consolidate` - Merge similar memories
-
-**ACT:**
-- `mnemosyne.update` - Update existing memory
-- `mnemosyne.delete` - Archive memory
-
-### Configure Hooks
-
-Automatic memory capture happens via hooks:
-- **session-start**: Load project context automatically
-- **pre-compact**: Preserve decisions before conversation compaction
-- **post-commit**: Link git commits to architectural decisions
-
-See [Hooks Testing Guide](HOOKS_TESTING.md) for details.
-
-### Advanced Features
-
-- **Orchestration**: Optional Python multi-agent coordination (separate install)
-- **Project Namespaces**: Automatic memory isolation per project
-- **Importance Decay**: Memories age naturally over time
-- **Memory Consolidation**: Automatic deduplication
-
-See [Architecture Documentation](ARCHITECTURE.md) for deep dive.
-
----
 
 ## Troubleshooting
 
-If something didn't work:
+Common failures and their fixes are in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-### "mnemosyne: command not found"
+## Where to go next
 
-```bash
-# Add to PATH
-export PATH="$HOME/.local/bin:$PATH"
-
-# Or reinstall with custom location
-./scripts/install/install.sh --bin-dir /usr/local/bin
-```
-
-### "No API key found"
-
-```bash
-# Set via environment variable
-export ANTHROPIC_API_KEY=sk-ant-api03-YOUR_KEY
-
-# Or use secrets management
-mnemosyne secrets set ANTHROPIC_API_KEY
-```
-
-### "Database initialization failed"
-
-```bash
-# Create parent directory manually
-mkdir -p ~/.local/share/mnemosyne
-
-# Initialize with explicit path
-mnemosyne --db-path ~/.local/share/mnemosyne/mnemosyne.db init
-```
-
-### More Help
-
-See the comprehensive [Troubleshooting Guide](TROUBLESHOOTING.md) for solutions to common issues.
-
----
-
-## Summary: What You Accomplished
-
-✅ Installed Mnemosyne and configured Claude Code integration
-✅ Set up secure API key management
-✅ Stored your first memory with automatic LLM enrichment
-✅ Retrieved memory using hybrid search
-✅ Ready to use Mnemosyne in your daily development workflow
-
-**Total time**: ~5 minutes ⚡️
-
----
-
-## Quick Reference Card
-
-```bash
-# Store memory
-mnemosyne remember --content "Your decision" --importance 8
-
-# Search memories
-mnemosyne recall --query "search terms"
-
-# List recent memories
-mnemosyne list --limit 10
-
-# Get project context
-mnemosyne recall --query "project context" --namespace "project:myproject"
-
-# Export to markdown
-mnemosyne export --output memories.md
-
-# Check status
-mnemosyne config show-key
-```
-
-### In Claude Code
-
-```
-/memory-store <content>        Store a new memory
-/memory-search <query>         Search memories
-/memory-context                Load full project context
-/memory-list                   Browse all memories
-/memory-export                 Export to markdown
-/memory-consolidate            Review duplicates
-```
-
----
-
-## Get Help
-
-- 📖 **[Full Documentation](DOCUMENTATION.md)** - Complete guide index
-- 🔧 **[Troubleshooting](TROUBLESHOOTING.md)** - Common issues and solutions
-- 💬 **[GitHub Discussions](https://github.com/rand/mnemosyne/discussions)** - Ask questions
-- 🐛 **[Issue Tracker](https://github.com/rand/mnemosyne/issues)** - Report bugs
-
----
-
-**Welcome to Mnemosyne!** 🧠✨
-
-You now have a persistent memory system that makes your AI assistant smarter over time.
-
-**Last Updated**: 2025-10-27
-**Version**: 1.0.0
+- [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md)
+  — the provider, its DB precedence, sync policy and uninstall.
+- [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) — wiring the provider
+  into a Hermes install.
+- [docs/MCP_CLIENT_CONFIGS.md](docs/MCP_CLIENT_CONFIGS.md) — MCP client entries.
+- [docs/AGENT_SETUP.md](docs/AGENT_SETUP.md) — agent-executed setup runbook.
+- [AGENTS.md](AGENTS.md) — repository layout and contracts for contributors.

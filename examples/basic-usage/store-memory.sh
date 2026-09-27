@@ -2,47 +2,35 @@
 #
 # Example: Store a Memory
 #
-# This example demonstrates how to store a memory with automatic LLM enrichment.
-# The LLM will generate a summary, extract keywords, classify the type, and create tags.
+# `mnemosyne-lite remember` writes straight to the local SQLite store. No LLM is
+# involved: nothing generates a summary, tags or a classification, and no API
+# key is needed.
 #
 # Usage:
 #   ./store-memory.sh
 
 set -e
 
-echo "📝 Storing a memory with LLM enrichment..."
+echo "📝 Storing a memory"
 echo ""
 
-# Store a memory about an architecture decision
-mnemosyne remember \
+mnemosyne-lite remember \
   --content "Decided to use Redis for session storage instead of in-memory sessions.
-
-             Rationale:
-             - Need session persistence across server restarts
-             - Plan to scale horizontally with multiple app servers
-             - Redis provides fast access (< 1ms) and automatic expiration
-
-             Trade-offs:
-             - Added dependency (Redis server required)
-             - Slightly slower than in-memory (negligible in practice)
-
-             Configuration:
-             - TTL: 24 hours
-             - Connection pool: 10 connections
-             - Fallback: Reject requests if Redis unavailable" \
+             Rationale: sessions must survive restarts and scale across app servers.
+             Trade-offs: an extra dependency (Redis) for a fast, shared store.
+             Configuration: 24h TTL, 10-connection pool, reject requests if Redis is down." \
   --importance 8 \
-  --namespace "global" \
-  --format json
+  --namespace default
 
 echo ""
-echo "✅ Memory stored successfully!"
+echo "✅ Stored."
 echo ""
-echo "The LLM has automatically:"
-echo "  - Generated a concise summary"
-echo "  - Extracted relevant keywords"
-echo "  - Classified the memory type (decision/pattern/bug/context)"
-echo "  - Created searchable tags"
-echo "  - Identified semantic links to related memories"
+echo "The command prints the stored memory as a Python dict:"
+echo "  {'id': ..., 'content': <first 200 chars>, 'namespace': 'default',"
+echo "   'importance': 8, 'success': True}"
+echo ""
+echo "There is no --format json flag; redirect stdout if you want a file."
 echo ""
 echo "Try searching for it:"
-echo "  mnemosyne recall --query \"Redis session\" --format json"
+echo "  mnemosyne-lite recall --query \"session storage\""
+echo "  mnemosyne-lite list --limit 5"

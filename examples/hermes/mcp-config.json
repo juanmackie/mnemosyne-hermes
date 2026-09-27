@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "mnemosyne": {
-      "command": "/absolute/path/to/mnemosyne/target/release/mnemosyne",
-      "args": ["serve"],
+    "mnemosyne-lite": {
+      "command": "/absolute/path/to/mnemosyne-lite",
+      "args": ["mcp"],
       "env": {
-        "MNEMOSYNE_DB_PATH": "~/.local/share/mnemosyne/memory.db"
+        "MNEMOSYNE_DB_PATH": "/absolute/path/to/.mnemosyne-lite/mnemosyne.db"
       }
     }
   }

@@ -42,8 +42,8 @@ hermes config set memory.provider mnemosyne
 hermes mnemosyne doctor --no-fix     # must exit 0 in the gateway venv
 ```
 
-`scripts/install/…` and `./install.sh` perform the same steps; run them with
-`--dry-run` first to see the resolved venv, DB path and symlink target.
+`./install.sh` performs these same steps; run it with `--dry-run` first to see
+the resolved venv, DB path and symlink target, and `--help` for every flag.
 
 **Do not install upstream's bundled provider alongside this one.** The vendored
 copy *is* the `mnemosyne` provider, and two registered paths for the same id is
@@ -58,7 +58,7 @@ same-named packages instead of refusing, so a wheel install overwrote exactly tw
 engine files — `mnemosyne/__init__.py` and `mnemosyne/cli.py` (measured by
 copying those two files over a copy of the engine tree):
 
-```
+```text
 import mnemosyne.core.beam        # still works — the engine's core/ directory survives
 from mnemosyne import Mnemosyne   # ImportError: cannot import name 'Mnemosyne' from 'mnemosyne'
 mnemosyne.__version__             # the lite package's version, not the engine's
@@ -89,7 +89,7 @@ the provider logs a warning at init and `hermes mnemosyne doctor` reports it,
 because logs and memory are then split across two roots.
 
 `db_path` wins over `profile_isolation` (per-profile banks); the provider warns
-when both are set. The standalone lite surface uses `~/.mnemosyne/mnemosyne.db`
+when both are set. The standalone lite surface uses `~/.mnemosyne-lite/mnemosyne.db`
 — that is **not** the provider's store. Check `hermes mnemosyne inspect` or
 `doctor` to confirm which store is live.
 
@@ -123,6 +123,9 @@ detected version beside the range. The CI smoke lane pins `hermes-agent==0.19.0`
 (the newest PyPI release; 0.21.2 is not published to PyPI).
 
 ## Uninstall
+
+`./install.sh --uninstall` performs the steps below; add `--purge` to also drop
+the engine package and `$HERMES_HOME/mnemosyne` (the memory data).
 
 ```bash
 rm -f "$HERMES_HOME/plugins/mnemosyne"       # the provider symlink only

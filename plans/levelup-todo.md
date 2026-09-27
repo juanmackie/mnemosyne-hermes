@@ -230,7 +230,7 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
 
 ## P3: update docs and contracts to match what exists
 
-- [ ] **P3-1 Rewrite the README.**
+- [x] **P3-1 Rewrite the README.**
   - **Banners:** remove the planning-deliverable banners.
   - **Status line:** "Current status (v2.4.0): dynamic profile slice + typed `extends` edges are delivered" describes Rust features. `scripts/check_version_drift.sh` checks that exact string, so change the check together with the text.
   - **Features and architecture:** these all describe the Rust product:
@@ -251,8 +251,9 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
     5. The real architecture
     6. Credits
   - **Credits:** credit AxDSan/mnemosyne prominently, since the engine and provider are theirs, and state the relationship to rand/mnemosyne.
+  - **Done (2026-09-27):** rewritten to the suggested structure (what this is / quickstart / verify / the lite surface / the real architecture / contributing / credits). The `Current status (v2.4.0): dynamic profile slice + typed \`extends\` edges` line is gone, so `scripts/check_version_drift.sh` was changed with it (P3-5). `**Current Version**: 3.0.0` is kept as the one machine-readable marker the gate reads. The Migration section, the Beads/Work-Plan/"commit before testing" contributing text, the Performance section and the Ractor/ICS/evolution/evaluation/LibSQL feature list are all gone; `TODO_TRACKING.md` and the root `TROUBLESHOOTING.md` links are resolved (the latter now exists). Credits name AxDSan/mnemosyne as the source of the engine and the upstream provider, and state plainly that this is not rand/mnemosyne.
 
-- [ ] **P3-2 Rewrite `AGENTS.md` against the real file tree.**
+- [x] **P3-2 Rewrite `AGENTS.md` against the real file tree.**
   - **Paths that do not exist:**
     - `python.toml`, `build.py`, `Makefile`
     - `src/mcp|cli|storage|embeddings|agents|ics|tui|api|rpc|coordination|python_bindings|bin|services|evolution|evaluation`
@@ -261,8 +262,9 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
   - **Rules for features that are gone:** `mnemosyne serve`, `mnemosyne secrets`, Ractor actors, Iroh P2P, the `--no-enrich` keyless check, and the Makefile `doctor` target.
   - **Test pointer:** its "fast unit tests" point at the dead adapter (see P2-1).
   - **Docs index:** it points at the missing root `TROUBLESHOOTING.md`.
+  - **Done (2026-09-27):** rewritten against the real tree. Every listed path was checked against `git ls-files`; the rules for `mnemosyne serve`, `mnemosyne secrets`, Ractor, Iroh, `--no-enrich` and the Makefile `doctor` target are gone. The "fast unit tests" pointer now names the three real provider gates, the docs index lists only files that exist, and a new "Contracts that must not drift" section carries the facts that were previously scattered (provider id, vendored-snapshot discipline, engine pin, DB precedence, lite MCP tool names, lite DB default, storage-safety rules, keyless requirement).
 
-- [ ] **P3-3 Fix the other entry docs.**
+- [x] **P3-3 Fix the other entry docs.**
   - **Docs:**
     - `QUICK_START.md`: shows binary-install output (`~/.local/bin/mnemosyne`) and `mnemosyne secrets init` / `set`.
     - `MCP_SERVER.md:317`: uses `mnemosyne remember … --no-enrich`.
@@ -274,20 +276,25 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
   - **GitHub templates:**
     - `.github/PULL_REQUEST_TEMPLATE.md`: `cargo test`, `fmt`, `clippy`, `tarpaulin`.
     - `.github/ISSUE_TEMPLATE/bug_report.md`: offers `cargo install` as an install method.
+  - **Done (2026-09-27):** `QUICK_START.md`, `MCP_SERVER.md`, `docs/HERMES_INTEGRATION.md` and `TROUBLESHOOTING.md` (moved to the root) rewritten; the three `examples/basic-usage` scripts, `examples/hermes/mcp-config.json`, both GitHub templates and the two stale lines in `integrations/hermes-provider/README.md` fixed. Also fixed outside the listed set: `docs/AGENT_SETUP.md` (its MCP step used `command: mnemosyne`), `docs/MCP_CLIENT_CONFIGS.md` (wrong command, wrong DB path, and a false "dotted names are advertised" claim), `CONTRIBUTING.md` (rewritten — it was Rust-era throughout: clippy, iroh, libsql, tree-sitter, `python.toml`), and the two remaining issue templates.
+  - **Deleted rather than fixed:** `examples/mcp-integration/` (439 + 530 lines describing `mnemosyne secrets`, `mnemosyne serve`, `RUST_LOG` and `--format json`) and `examples/workflows/` (both scripts pipe `--format json` into jq against a CLI that no longer exists). `examples/README.md` was rewritten for the three surviving examples. `evolution-config.example.toml` was also deleted: it configured the retired evolution subsystem.
 
-- [ ] **P3-4 Fix the CHANGELOG.**
+- [x] **P3-4 Fix the CHANGELOG.**
   - The `[Unreleased]` section lists Rust work (`LibsqlStorage`, `src/hierarchy.rs`, `tests/*.rs`, `ci.yml`).
   - Write the pivot entry: vendored provider, lite rename, Rust retirement, installer and doctor.
   - Cut a release. 3.0.0 is the honest version, because the pivot removes the binary and its CLI.
+  - **Done (2026-09-27):** the `[Unreleased]` Rust block is replaced by a `[3.0.0] - 2026-09-27` entry covering the whole pivot (provider vendoring, installer and doctor, the lite rename, the Rust retirement, the storage fixes, the deletions), and the header now says plainly that entries up to `2.4.0` describe the retired Rust product. The two trailing version links that pointed at `rand/mnemosyne` are gone. The historical entries are kept as history.
 
-- [ ] **P3-5 Use one version source.**
+- [x] **P3-5 Use one version source.**
   - Today the version appears in `pyproject.toml` (2.4.0), `mnemosyne_lite.__version__`, the `mcp.py` literal, the provider `pyproject.toml` (0.1.0) and `orchestration.__version__` (0.1.0).
   - Extend `check_version_drift.sh` to cover them all, or read `importlib.metadata` at runtime.
+  - **Done (2026-09-27): stronger than either option — the literal was removed.** `pyproject.toml` declares `dynamic = ["version"]` with `[tool.setuptools.dynamic] version = { attr = "mnemosyne_lite.__version__" }`, so there is exactly one version literal in the repo. `scripts/check_version_drift.sh` now fails if a `version =` literal reappears in `pyproject.toml`, if the dynamic wiring breaks, if the README marker drifts, or if the engine pin moves in any of its three carriers. The CLI reads the package (`mnemosyne_lite.__version__`) and `mcp.py` reports the same value, so neither can carry a stale copy. Verified by building a wheel: `mnemosyne_lite-3.0.0-py3-none-any.whl`, METADATA `Version: 3.0.0`. (Orchestration's `__version__` is gone with the module, and the provider is a separate distribution with its own version.)
 
-- [ ] **P3-6 Keep CI current.**
+- [x] **P3-6 Keep CI current.**
   - Bump `actions/checkout@v4` and `astral-sh/setup-uv@v5`; every run shows Node 20 deprecation warnings.
   - `claude-code-review.yml` tells Claude to use "the repository's CLAUDE.md", which does not exist. Point it at `AGENTS.md`.
   - Confirm the `CLAUDE_CODE_OAUTH_TOKEN` secret exists, or remove `claude.yml` and `claude-code-review.yml`.
+  - **Done (2026-09-27):** both actions are bumped and pinned to full commit SHAs with the version in a trailing comment (`actions/checkout` v7 → `3d3c42e5…`, `astral-sh/setup-uv` v10.2.0 → `c18668ad…`); the SHAs were resolved with `gh api …/commits/<tag>` rather than assumed. The secret does not exist (`gh secret list` prints nothing) and every historical run of those workflows failed, so `claude.yml` and `claude-code-review.yml` are deleted — which also removes the `CLAUDE.md` instruction, since that file never existed. The lint job now also builds the wheel, so broken dynamic-version wiring fails in CI rather than only in the release pipeline.
 
 - [x] **P3-7 Clean up the lite surface.**
   - Remove the `embed` and `migrate` placeholder commands, which always exit 1 with "blocked".
@@ -347,15 +354,18 @@ Git history and `docs/archive/RUST_ARCHIVE_REF.md` (pointing at `feat/hermes-nat
   - Add a weekly scheduled workflow that checks PyPI for new `mnemosyne-memory` and `hermes-agent` releases.
   - It should run `scripts/vendor-provider-sync.sh` against the new wheel and the smoke test against the new Hermes, and open an issue if either breaks.
 
-- [ ] **P5-4 Switch lite recall to SQLite full-text search.**
+- [x] **P5-4 Switch lite recall to SQLite full-text search.**
   - Recall is currently a substring scan (`instr()`). It also keeps a full copy of all memory text in RAM for each thread (`storage.py:685`), so memory grows with the corpus times the thread count.
   - Replace it with FTS5 and BM25 ranking. `sqlite3` ships FTS5, so recall stays keyless.
   - This gives real relevance ranking and bounded memory, and removes most of the cache code.
+  - **Done (2026-09-27):** `memories_fts` is an external-content FTS5 table over `memories.content` (the index only — the corpus is not duplicated), kept in sync by three triggers, with `AFTER UPDATE OF content` so the access-count flush does not reindex. Schema generation 2; a store classified below that (a v1 store, or a legacy one from before the sentinel) rebuilds the index inside the same `BEGIN IMMEDIATE` transaction as the version bump, so it can never open at v2 with an empty index. `recall()` is now `MATCH` ordered by `bm25, importance DESC, created_at DESC, id`; the trailing `id` is load-bearing — BM25 ties are the normal case and without a unique final key a `LIMIT` can drop a different row between two identical queries.
+  - **The semantics change is deliberate and documented:** matching is per token (so `al` no longer finds `alpha`) and FTS5's `unicode61` tokenizer folds case *and* diacritics (so `munchen` finds `MÜNCHEN`). A query with no letter or digit has no token to match and FTS5 answers it with an empty result rather than an error, so those queries (`%`, `_`, `\`) keep the literal `instr()` scan over `content_lower` — that is now the only caller of it. Verified: 57 tests pass, including a new `test_v1_store_gains_the_full_text_index` migration test, `test_recall_ranks_best_match_first`, `test_recall_matches_tokens_not_substrings` and `test_equal_rank_order_is_deterministic`; `bench/measure.sh` and `bench/autoresearch.sh` both run (median-of-5 p50 0.0058 ms, p99 0.444 ms, recorded in `bench/README.md`).
 
-- [ ] **P5-5 Simplify `storage.py`.**
+- [x] **P5-5 Simplify `storage.py`.**
   - The autoresearch loop cut median search latency from 0.0102 ms to 0.0051 ms (about 5 microseconds).
   - It got there by layering id-tuple batching, patching cached rows in place, per-thread counters, and two caches. That layering is where the P1-1 bug came from.
   - Keep one per-thread cache, and move performance claims into a benchmark doc.
+  - **Done (2026-09-27):** the id-tuple batching and the per-thread snapshot cache are gone with the substring scan (`_search_candidates`, `SEARCH_QUERY_CACHE_MAX` and `_SEARCH_MISS` deleted), leaving exactly one cache: the per-thread recall memo, which only holds rows a thread asked for rather than a full copy of the corpus. In-place row patching and the per-thread counters stay — they are not caches, and the counters are what make the memo's version correct. `bench/README.md` is the benchmark doc: it records the new median, states the ±8–20% single-run noise and the 56% spread measured between two runs in one session, and says plainly that the honest reading is "about the same p50, less memory, real relevance ranking, one fewer cache" rather than a speed-up.
 
 - [ ] **P5-6 Build a real release pipeline.**
   - Tag, build the wheels, install-test them in a fresh venv, then publish a GitHub release.

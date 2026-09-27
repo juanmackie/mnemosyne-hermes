@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -27,6 +28,28 @@ def _is_lock_error(exc: Exception) -> bool:
     """True for SQLITE_BUSY / SQLITE_LOCKED, which are worth retrying."""
     text = str(exc).lower()
     return "locked" in text or "busy" in text
+
+
+# A character FTS5's unicode61 tokenizer would keep: a letter or a digit. `_` is
+# deliberately excluded because that tokenizer treats it as a separator.
+_FTS_TOKEN_CHAR = re.compile(r"[^\W_]")
+
+
+def _fts_match_expression(query: str) -> str | None:
+    """Build an FTS5 MATCH expression from user text, or None to fall back.
+
+    Every whitespace-separated token is emitted as a quoted phrase, so FTS5
+    operators in the input (`AND`, `OR`, `NEAR`, `*`, `^`, `:`, `-`) are read as
+    text rather than syntax, and a double quote in the input is doubled instead
+    of ending the phrase.
+
+    None means the query has no letter or digit at all. FTS5's tokenizer would
+    find nothing to match and return an empty result, which is
+    indistinguishable from a real miss, so the caller searches it literally.
+    """
+    if not _FTS_TOKEN_CHAR.search(query):
+        return None
+    return " ".join('"' + token.replace('"', '""') + '"' for token in query.split())
 
 
 @dataclass
@@ -74,7 +97,12 @@ class PythonMemoryStorage:
     # Schema generation recorded in PRAGMA user_version. A store carrying a
     # HIGHER version was written by a newer release: refuse it rather than
     # downgrade-migrate it.
-    SCHEMA_VERSION = 1
+    #
+    # 1 -> 2 added the FTS5 full-text index (`memories_fts`, see FTS_DDL).
+    SCHEMA_VERSION = 2
+    # Versions this release opens and migrates forward. 0 is a store written
+    # before the sentinel existed: a legacy lite table, or an empty file.
+    MIGRATABLE_SCHEMA_VERSIONS = (0, 1)
 
     # The exact column set this store writes to `memories` (pre- and
     # post-content_lower). Anything else is not ours and is refused untouched.
@@ -115,6 +143,31 @@ class PythonMemoryStorage:
             content_lower TEXT
         )
     """
+
+    # Full-text index over `memories.content`, plus the triggers that keep it in
+    # sync. This is an external-content FTS5 table: it stores the index only and
+    # reads the text back from `memories`, so the corpus is not duplicated.
+    #
+    # `AFTER UPDATE OF content` (not plain AFTER UPDATE) matters: the buffered
+    # access-count flush UPDATEs access_count/last_accessed on every recall
+    # batch, and reindexing the row for that would be pure churn.
+    FTS_DDL = (
+        "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
+        "content, content='memories', content_rowid='rowid', tokenize='unicode61')",
+        "CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN "
+        "INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content); END",
+        "CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN "
+        "INSERT INTO memories_fts(memories_fts, rowid, content) "
+        "VALUES ('delete', old.rowid, old.content); END",
+        "CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE OF content ON memories "
+        "BEGIN INSERT INTO memories_fts(memories_fts, rowid, content) "
+        "VALUES ('delete', old.rowid, old.content); "
+        "INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content); END",
+    )
+    # The schema generation that introduced the index. A store classified below
+    # this needs `rebuild` once; above it, the triggers have kept the index
+    # current, so opening stays O(1) instead of reindexing the corpus.
+    FTS_SCHEMA_VERSION = 2
 
     # Case folding for the content_lower column and for recall queries.
     # Both SQLite's lower() (used by the backfill and by remember's INSERT) and
@@ -184,11 +237,11 @@ class PythonMemoryStorage:
 
     @property
     def _recall_cache(self):
-        """Result memo for recall(): key -> (version, rows, ids), per thread.
+        """The store's only cache: recall results, per thread.
 
-        Validated against `_search_version`, so a local write or another
-        connection's commit invalidates it, and `_flush_accesses` patches the
-        rows whose access_count it changed.
+        key -> (version, rows, ids), validated against `_search_version`, so a
+        local write or another connection's commit invalidates it, and
+        `_flush_accesses` patches the rows whose access_count it changed.
 
         Per thread, not shared: the version an entry is validated against is
         built from the calling thread's own connection (`PRAGMA data_version`
@@ -197,6 +250,11 @@ class PythonMemoryStorage:
         connections whose version tuples happened to agree read each other's
         rows, and a thread could serve a result from a DB state it had never
         observed while `count()` already saw the write.
+
+        The pre-FTS5 design also cached a full copy of every memory's text per
+        thread, so memory grew with the corpus times the thread count. The
+        full-text index made that snapshot unnecessary: this memo only holds the
+        rows a thread actually asked for.
         """
         cache = getattr(self._local, "recall_cache", None)
         if cache is None:
@@ -341,7 +399,6 @@ class PythonMemoryStorage:
             pass
         conn = self._new_conn()
         self._local.conn = conn
-        self._local.search_cache = None
         # A reconnect resets both numbers a version is built from, so an entry
         # left by the previous connection could otherwise match the new one.
         self._local.recall_cache = None
@@ -442,8 +499,8 @@ class PythonMemoryStorage:
         for ids in batch:
             for mem_id in ids:
                 counts[mem_id] = counts.get(mem_id, 0) + 1
+        now = time.time()
         try:
-            now = time.time()
             conn = self._conn()
             before = conn.total_changes
             conn.executemany(
@@ -490,12 +547,16 @@ class PythonMemoryStorage:
             self._recall_cache.clear()
         self._maybe_checkpoint()
 
-    def _classify_schema(self, conn: sqlite3.Connection) -> str:
-        """Return 'fresh' or 'ours' for this file, or raise StorageSchemaError.
+    def _classify_schema(self, conn: sqlite3.Connection) -> tuple[str, int]:
+        """Return ('fresh' | 'ours', user_version) for this file, or raise.
 
         Reads only — no DDL, no DML, no persistent pragma — so a refusal leaves
         the file byte-identical. Runs BEFORE the WAL switch in _init_schema,
         because changing the journal mode is itself a write.
+
+        The version is returned because the migration needs it: a store
+        classified below FTS_SCHEMA_VERSION predates the full-text index and
+        must rebuild it once, while a current one must not.
         """
         try:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -520,13 +581,13 @@ class PythonMemoryStorage:
                 f"(user_version={version} > {self.SCHEMA_VERSION}). "
                 "Refusing to downgrade it; nothing was modified."
             )
-        if version not in (0, self.SCHEMA_VERSION):
+        if version not in (*self.MIGRATABLE_SCHEMA_VERSIONS, self.SCHEMA_VERSION):
             raise StorageSchemaError(
                 f"{self.db_path} carries an unrecognised user_version={version}. "
                 "Nothing was modified."
             )
         if not tables:
-            return "fresh"
+            return "fresh", version
         if "memories" not in tables:
             raise StorageSchemaError(
                 f"{self.db_path} is not a Mnemosyne store: it has tables "
@@ -542,7 +603,7 @@ class PythonMemoryStorage:
                 f"{self.db_path} is not a Mnemosyne store: 'memories' has "
                 f"{len(columns)} columns ({detail}). Nothing was modified."
             )
-        return "ours"
+        return "ours", version
 
     def _init_schema(self):
         """Create or migrate the store in ONE transaction, or change nothing.
@@ -555,12 +616,20 @@ class PythonMemoryStorage:
         """
         init_conn = self._connect(self.CLASSIFY_BUSY_TIMEOUT_MS)
         try:
-            self._classify_schema(init_conn)
+            _kind, classified_version = self._classify_schema(init_conn)
             self._configure(init_conn)
             init_conn.execute("BEGIN IMMEDIATE")
             try:
                 init_conn.execute(self.SCHEMA)
                 self._ensure_content_lower(init_conn)
+                for ddl in self.FTS_DDL:
+                    init_conn.execute(ddl)
+                if classified_version < self.FTS_SCHEMA_VERSION:
+                    # A store from before the index (or a legacy one from before
+                    # the sentinel) has no indexed rows: build it now, inside
+                    # the same transaction, so the corpus is never searchable
+                    # through a half-built index.
+                    init_conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
                 for drop_sql in self.DROPPED_INDEXES:
                     init_conn.execute(drop_sql)
                 for ddl in self.INDEXES:
@@ -592,12 +661,12 @@ class PythonMemoryStorage:
     def _ensure_content_lower(self, conn: sqlite3.Connection) -> None:
         """Create and backfill the ASCII-lowered copy of content.
 
-        recall() searches `content_lower` with instr() rather than `content`
-        with LIKE: LIKE's case-insensitive pattern matcher costs ~1.3-1.6x a
-        plain substring search per row, and for the full-scan shapes (rare
-        term, phrase, no match) that per-row cost *is* the whole query once the
-        ordered index removes the sort. Results are unchanged -- SQLite's
-        lower() folds exactly the ASCII range LIKE folds.
+        recall() searches the FTS5 index built over `content`; this column is
+        only used by the literal-substring fallback for queries with no letters
+        or digits (see _recall_substring). The two must agree: LIKE folds ASCII
+        case only, and instr() needs the query folded the same way. Non-ASCII
+        stays case-sensitive (LIKE does not fold it), and '%'/'_'/'\\' stay
+        literal.
 
         Rows written by a pre-migration version leave the column NULL, and
         instr(NULL, ...) is NULL, which would silently drop those rows from
@@ -708,8 +777,8 @@ class PythonMemoryStorage:
     def _search_version(self, conn):
         # data_version detects other connections; total_changes detects this
         # one, minus changes already attributed to access-count flushes (see
-        # _flush_accesses): UPDATEs of access_count/last_accessed never touch
-        # content_lower, so they must not invalidate the content snapshot.
+        # _flush_accesses): UPDATEs of access_count/last_accessed change no
+        # searchable text, so they must not invalidate the recall memo.
         # Callers all hold a connection from _conn() on this thread, which
         # seeds ignored_changes — direct read, no getattr.
         return (
@@ -717,41 +786,57 @@ class PythonMemoryStorage:
             conn.total_changes - self._local.ignored_changes,
         )
 
-    # ponytail: linear native substring scans avoid building a posting index;
-    # consider a persistent substring index only for much larger corpora.
-    # Per-query candidate lists are cached too: they are a pure function of
-    # (snapshot, folded query), and any local or concurrent write changes the
-    # version and forces a fresh scan. Cap keeps long-running threads bounded.
-    SEARCH_QUERY_CACHE_MAX = 64
-    _SEARCH_MISS = object()
+    def _recall_fulltext(self, conn, match, namespace, max_results, min_importance):
+        """FTS5 MATCH, ordered by BM25 with a stable tie-break.
 
-    def _search_candidates(self, conn, query):
-        """Cache the normalized snapshot and per-query candidate id lists.
-
-        SQLite remains authoritative: candidates only narrow the fetch, and
-        every returned row is still read through SQL.
+        BM25 alone leaves equally-scoring rows in an arbitrary order, so a
+        `LIMIT` could drop a different row between two identical queries. The
+        tie-break is the store's own importance/recency order.
         """
-        version = self._search_version(conn)
-        cache = getattr(self._local, "search_cache", None)
-        if cache is None or cache[0] != version:
-            # (version, {query: candidates}, snapshot)
-            cache = (version, {}, conn.execute("SELECT id, content_lower FROM memories").fetchall())
-            self._local.search_cache = cache
-        else:
-            cached = cache[1].get(query, self._SEARCH_MISS)
-            if cached is not self._SEARCH_MISS:
-                return cached, version
-        candidates = []
-        for mem_id, content in cache[2]:
-            if content and query in content:
-                candidates.append(mem_id)
-                if len(candidates) > 128:
-                    candidates = None
-                    break
-        if len(cache[1]) >= self.SEARCH_QUERY_CACHE_MAX:
-            cache[1].clear()
-        cache[1][query] = candidates
-        return candidates, version
+        sql = (
+            "SELECT m.* FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid "
+            "WHERE memories_fts MATCH ?"
+        )
+        params: list[Any] = [match]
+        if namespace:
+            sql += " AND m.namespace = ?"
+            params.append(namespace)
+        if min_importance is not None:
+            sql += " AND m.importance >= ?"
+            params.append(min_importance)
+        # `m.id` last: BM25 ties are common (identical text, identical scores),
+        # and without a unique final key `LIMIT` can drop a different row between
+        # two identical queries.
+        sql += " ORDER BY bm25(memories_fts), m.importance DESC, m.created_at DESC, m.id LIMIT ?"
+        params.append(max_results)
+        return conn.execute(sql, params).fetchall()
+
+    def _recall_substring(self, conn, query, namespace, max_results, min_importance):
+        """Literal substring scan, for queries FTS5 cannot tokenize.
+
+        A query with no letters or digits (`%`, `_`, `***`) has no FTS token to
+        match, and FTS5 answers it with an empty result rather than an error —
+        indistinguishable from a real miss. `instr()` on `content_lower` takes
+        it literally, which is also what every query did before the full-text
+        index existed.
+        """
+        sql = "SELECT * FROM memories WHERE instr(content_lower, ?) > 0"
+        # instr() is case-sensitive, so fold the query the same way the stored
+        # column was folded (ASCII-only, like LIKE). instr also takes the query
+        # literally, so '%' and '_' need no escaping.
+        params: list[Any] = [query.translate(self.ASCII_LOWER)]
+        if namespace:
+            sql += " AND namespace = ?"
+            params.append(namespace)
+        if min_importance is not None:
+            sql += " AND importance >= ?"
+            params.append(min_importance)
+        # `id` last for the same reason as the full-text path: without a unique
+        # final key, equally-ranked rows come back in an arbitrary order and
+        # `LIMIT` can drop a different one between two identical queries.
+        sql += " ORDER BY importance DESC, created_at DESC, id LIMIT ?"
+        params.append(max_results)
+        return conn.execute(sql, params).fetchall()
 
     def recall(
         self,
@@ -761,7 +846,12 @@ class PythonMemoryStorage:
         min_importance: int | None = None,
     ) -> list[dict[str, Any]]:
         """
-        Search memories by keyword match.
+        Search memories by keyword.
+
+        Matching is SQLite full text (FTS5, ranked by BM25 with the store's
+        importance/recency order as the tie-break). A query containing no
+        letters or digits is searched literally as a substring instead, because
+        it has no token for FTS5 to match.
 
         Args:
             query: Search term (required)
@@ -770,10 +860,11 @@ class PythonMemoryStorage:
             min_importance: Minimum importance filter
 
         Returns:
-            List of matching memories
+            List of matching memories, best match first
 
         Raises:
             ValueError: If query is empty
+            StorageError: If the store cannot be read
         """
         # isspace() answers the same emptiness question as strip() without
         # allocating a copy of the query on every recall.
@@ -803,44 +894,11 @@ class PythonMemoryStorage:
             # this return is the hot path of every memo hit.
             return [r.copy() for r in cached]
         try:
-            sql = "SELECT * FROM memories WHERE instr(content_lower, ?) > 0"
-            # instr() is case-sensitive, so fold the query the same way the
-            # stored column was folded (ASCII-only, like LIKE). instr also
-            # takes the query literally, so '%' and '_' no longer need escaping.
-            params: list[Any] = [query.translate(self.ASCII_LOWER)]
-
-            if namespace:
-                sql += " AND namespace = ?"
-                params.append(namespace)
-
-            if min_importance is not None:
-                sql += " AND importance >= ?"
-                params.append(min_importance)
-
-            sql += " ORDER BY importance DESC, created_at DESC LIMIT ?"
-            params.append(max_results)
-
-            # Keep the original query for short/common queries and concurrent writes.
-            candidates = None
-            query_lower = params[0]
-            if not namespace and len(query_lower) >= 3 and not conn.in_transaction:
-                candidates, version = self._search_candidates(conn, query_lower)
-            if candidates is not None and len(candidates) <= 128:
-                rows = []
-                if candidates:
-                    predicate = " AND id IN (" + ",".join("?" for _ in candidates) + ")"
-                    narrowed = sql.replace(" ORDER BY", predicate + " ORDER BY", 1)
-                    narrowed = narrowed.removesuffix(" LIMIT ?")
-                    rows = conn.execute(narrowed, params[:-1] + list(candidates)).fetchall()
-                ranks = {(row[3], row[7]) for row in rows}
-                # Preserve the original plan's tie ordering, including LIMIT ties.
-                # A writer may also commit during index building/filtering/fetching.
-                if len(ranks) != len(rows) or self._search_version(conn) != version:
-                    rows = conn.execute(sql, params).fetchall()
-                else:
-                    rows = rows[:max_results]
+            match = _fts_match_expression(query)
+            if match is None:
+                rows = self._recall_substring(conn, query, namespace, max_results, min_importance)
             else:
-                rows = conn.execute(sql, params).fetchall()
+                rows = self._recall_fulltext(conn, match, namespace, max_results, min_importance)
         except sqlite3.Error as e:
             # Fail closed: "no match" and "store broken" must not look the same.
             # Returning [] here contradicted the refusal path (a foreign or

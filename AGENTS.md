@@ -1,56 +1,139 @@
-# mnemosyne-hermes agent contract (Updated — Pivot Complete — Planning Deliverable)
+# mnemosyne-hermes agent contract
 
-> **Archive reference**: Previous Python implementation at `feat/hermes-native-provider` (`09a6973`) / `main` (`ba6fe984`). Retirement applied (`src/` deleted; adapter/build/release retired). Python-only runtime (`mnemosyne-python` adapter preserved initially; future `mnemosyne` Python server). Contracts preserved: `memory.provider`, namespace (`agent:hermes`), DB path (`MNEMOSYNE_DB_PATH`), tool names (`mnemosyne_memory_search`, `mnemosyne_memory_remember`), persisted identifiers. Keyless memory preserved; enrichment optional. No DB migration to Python; no nomic switch applied.
+Nearest-owning contract for this repository. It refines the parent policy with
+repository-specific facts and cannot weaken a mandatory parent rule; conflicts
+resolve to the parent.
 
-## Operating Standard
+Read [README.md](README.md) for what the project is. This file is about what an
+agent must not break.
 
-- Apply `C:\Users\juanm\Documents\GitHub\Vibe Coding Rules 10.md` (V10) as the repository operating standard; read it in full before substantive work.
-- This file is the nearest-owning contract. It refines the parent policy with repository-specific facts and cannot weaken a mandatory parent rule; conflicts resolve to the parent.
+## What ships
 
-## Scope and Ownership
+Two artifacts, deliberately separate:
 
-- Root: `python.toml`, `build.py`, `Makefile` (build/test/check/lint/format/doctor targets), `test-all.sh`, `install.sh`, `pyproject.toml`/`requirements.txt` (optional Python feature), `migrations/` (libsql and sqlite schemas).
-- `src/` owns the implementation: `mcp/` (MCP server surface), `cli/` (CLI commands incl. `serve`, `mcp`, `secrets`, `import`, `ics`/`edit`), `storage/` (LibSQL/SQLite persistence), `embeddings/`, `orchestration/` and `agents/` (Ractor multi-agent system), `ics/` (collaborative editor), `tui/`, `api/`, `rpc/`, `coordination/` (Iroh P2P), `python_bindings/` (optional, off by default), `bin/`, `services/`, `evolution/`, `evaluation/`.
-- `tests/` owns integration/e2e/stress suites (`ics_integration_test`, `tests/e2e/`, `tests/manual/`); `benches/` and `benchmark/` own performance harnesses.
-- `scripts/` owns build/install/test automation (`rebuild-and-update-install.sh`, `build-and-install.sh`, `test-hermes-adoption.sh`, `test-server.sh`, diagnostics/testing subdirs).
-- `docs/` owns architecture, feature, and operations documentation; top-level `.md` files (README, ARCHITECTURE, AGENT_GUIDE, SECRETS_MANAGEMENT, MCP_SERVER, TROUBLESHOOTING, etc.) are the entry points — read them rather than duplicating their content here.
-- `proto/` owns gRPC/protobuf contracts; changing them requires checking all consumers.
+1. **The provider** — `integrations/hermes-provider/`. A vendored, engine-backed
+   Hermes memory provider. Provider id **`mnemosyne`**. Installed by `./install.sh`.
+   This is the product.
+2. **The lite surface** — `src/mnemosyne_lite/`. A standalone SQLite keyword
+   store with a CLI (`mnemosyne-lite`) and an MCP stdio server. **Not** a Hermes
+   provider, and it must never be installed into the Hermes venv.
 
-## Constraints
+The Rust product that used to live here is retired. `docs/archive/` and git
+history keep it; do not restore it.
 
-- Dual-surface product: the same core is exposed as a Hermes server (`mnemosyne serve`) and an MCP stdio server (`mnemosyne mcp`). Changes to memory/retrieval behavior must keep both surfaces and the Hermes MCP stdio contract intact.
-- Local-first and keyless by design: memory must work without cloud API keys or OS keyrings; graceful degradation is required, not optional. Preserve the keyless verification path (e.g. `mnemosyne remember --no-enrich` with API keys unset).
-- LLM inheritance: optional Python orchestration/DSPy calls must use the active Hermes model from `$HERMES_HOME/config.yaml` through Hermes' local subscription proxy (`hermes proxy start`). Do not require or copy a separate provider API key when Hermes is configured; standalone `ANTHROPIC_API_KEY` remains a legacy fallback only.
-- Secrets never live in the repo. Use the built-in secret manager (`mnemosyne secrets init/set/list`) or the environment; secrets are age-encrypted at `~/.config/mnemosyne/secrets.age`. Never commit `.env*`, connection configs, keys, or tokens; `mnemosyne secrets list` prints names only.
-- The Python/agent feature is optional and off by default; pure Python builds work standalone (`pip install -e .` works standalone). Keep `pyproject.toml`/`requirements.txt` changes consistent with the Python package.
-- Storage is local LibSQL/SQLite with vector search, FTS5, and graph links; migrations in `migrations/` are part of any schema change. User memory data is private — never send it to external services unless the flow already does so and the change preserves consent/privacy behavior (privacy-preserving evaluation, hashed task IDs).
-- Installed-binary flow: development installs go to `~/.local/bin` via `scripts/rebuild-and-update-install.sh`; the Makefile `doctor` target expects a built binary (python bin dir or `target/release`).
-- Git: work on feature/fix branches; do not commit directly to `main`. Use descriptive commit messages describing the work, not the tool. Do not attribute commits to AI unless explicitly requested.
-- Namespaces (e.g. `agent:hermes`) and import/export paths (`mnemosyne import --from ...`) are user-facing contracts; preserve them across refactors.
-- Multi-agent orchestration (Ractor actors: Orchestrator, Optimizer, Reviewer, Executor) has quality gates, deadlock handling, and event persistence; changes there must keep the audit trail and work-queue semantics. The Reviewer's LLM enhancement is an optional enhancement, not a required dependency.
-- P2P peer coordination (Iroh) and the evaluation/evolution subsystems have config surfaces (`evolution-config.example.toml`); keep example configs in sync with schema changes.
+## Scope and ownership
+
+| Path | Owns |
+| --- | --- |
+| `install.sh` | Provider install, `--uninstall`, `--purge`, `--dry-run` |
+| `integrations/hermes-provider/` | The vendored snapshot and every gate around it: `VENDORED_FROM.json` (hashes), `PATCHES.md`, `CONTRACT_AUDIT.md`, `LIVE_VERIFICATION.md`, `README.md`, `pyproject.toml` (engine pin) |
+| `src/mnemosyne_lite/` | `cli.py`, `mcp.py`, `tools.py`, `storage.py`, `db_path.py` |
+| `tests/` | Contract and regression suites (see Verification) |
+| `scripts/` | Repo gates: `checks.sh` (registry), `check_notes.sh`, `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh` |
+| `bench/` | The recall-latency harness (`measure.sh`, `autoresearch.sh`, `run.sh`) and its record (`README.md`) |
+| `docs/` | `AGENT_SETUP.md`, `HERMES_INTEGRATION.md`, `MCP_CLIENT_CONFIGS.md`; `docs/archive/` is historical |
+| `examples/` | Runnable usage examples |
+| `plans/` | Working plans; historical context, not current contracts |
+| Root docs | `README.md`, `QUICK_START.md`, `TROUBLESHOOTING.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `MCP_SERVER.md`, `AGENTS.md`, `LICENSE`, `NOTICE` |
+
+## Contracts that must not drift
+
+- **Provider id** `mnemosyne`, a single registration, one CLI command. A second
+  entry point for the same id is the failure mode this repo exists to remove.
+- **Vendored snapshot discipline.** `integrations/hermes-provider/hermes_memory_provider/`
+  is a byte-hashed upstream snapshot. Any edit requires, in the same change:
+  a `# LOCAL PATCH:` marker at the site, a `PATCHES.md` entry, and an updated
+  hash/bytes/lines in `VENDORED_FROM.json`. `python tests/test_vendored_provider.py`
+  is the gate. Never "fix" a vendored file without the manifest update.
+- **Engine pin** `mnemosyne-memory[embeddings]>=3.15.1,<3.16` in `install.sh`,
+  `integrations/hermes-provider/pyproject.toml` and `VENDORED_FROM.json`. The
+  upper bound is a real contract; widening it requires re-running
+  `CONTRACT_AUDIT.md`.
+- **Provider DB precedence**: `memory.mnemosyne.db_path` > `MNEMOSYNE_DB_PATH` >
+  engine default (`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes`).
+  `db_path` wins over `profile_isolation`.
+- **Lite MCP tool names** `mnemosyne_memory_search`, `mnemosyne_memory_remember`,
+  `mnemosyne_prefetch`, `mnemosyne_sync_turn`; the `mnemosyne.recall` /
+  `mnemosyne.remember` aliases; the `sync_turn` skip semantics.
+- **Lite default DB** `~/.mnemosyne-lite/mnemosyne.db`, and `DATABASE_URL`
+  accepted only for `sqlite`/`sqlite3`/`file`.
+- **Storage safety.** Classification runs before any DDL/DML/persistent pragma,
+  and a refusal leaves the file byte-identical. Do not move a write ahead of the
+  classification. WAL stays bounded. One connection per thread, and the recall
+  memo is per-thread because its version is built from the calling thread's
+  connection.
+- **Fail loud.** A store that cannot be read raises `StorageError`; it does not
+  return `[]` or `0`. "No match" and "store broken" must stay distinguishable on
+  both surfaces.
+- **Keyless by design.** Memory must work with no cloud API key and no OS
+  keyring. If a step appears to require one, that is a bug.
+- **LLM inheritance.** Optional engine LLM work uses the active Hermes model
+  through Hermes' own local proxy. Do not add a second provider key.
+- **Secrets never live in the repo.** This repo needs none; do not introduce
+  one. Never commit `.env*`, connection configs, keys or tokens.
+- **The engine owns the `mnemosyne` name.** Distribution, import package and
+  console script. That is why the lite distribution is `mnemosyne-lite` /
+  `mnemosyne_lite`. Do not put `src/` ahead of the engine in a Hermes venv.
 
 ## Verification
 
-- Fast unit tests: `python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v` (Python adapter); `python -m pytest` (optional); `python tests/test_vendored_provider.py` and `python tests/test_provider_loader.py` (provider drift/loader contract).
-- Hermes-first CI: `.github/workflows/python-ci.yml` runs the unit/contract suite plus the clean-user onboarding smoke lane (`scripts/smoke-hermes-onboarding.sh`, pinned real `hermes-agent`). `.github/workflows/ci.yml` (cargo) is retired.
-- Clean-user acceptance: `bash scripts/smoke-hermes-onboarding.sh` asserts doctor exit 0, `hermes memory status` installed/available/active, a `sync_turn` round-trip, and exactly one registered provider.
-- Supported Hermes range: `>=0.18,<0.22` (tested 0.18.2, 0.19.0, 0.21.2); the CI lane pins the newest PyPI release (0.19.0). The provider warns outside the range.
-- Health check after install (Python): `hermes mnemosyne doctor --no-fix` (exits non-zero on a critical failure) and `hermes memory status`; see also `scripts/baseline/verify_baseline_install.sh`.
-- DB path precedence (T3): `memory.mnemosyne.db_path` > `MNEMOSYNE_DB_PATH` > engine default (`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes`). `doctor` prints the resolved path.
-- Build (lite surface only): `pip install -e .` installs `mnemosyne-lite` — it is **not** the Hermes provider. Install the provider with `./install.sh` (pure Python, no maturin/PyO3 needed).
-- Python archive reference: `feat/hermes-native-provider` (`09a6973`) / `main` (`ba6fe984`); `docs/archive/RUST_ARCHIVE_REF.md`.
-- No deployed operations executed in this planning deliverable (Repo-only authorization for items 4-7; Document-only for item 1; No DB rebuild/redeploy/smoke/rollback executed).
-- All commands above are evidenced in `Makefile`, `scripts/`, and `tests/`. There is no browser/UI harness for the TUI/ICS — exercise `mnemosyne edit` / `mnemosyne ics` interactively and report what was actually exercised.
-- LLM-dependent tests need a configured `ANTHROPIC_API_KEY` via the secret manager or environment; without it, use `./test-all.sh --skip-llm` and disclose the gap.
+```bash
+./test-all.sh                     # provider contract gates + unit tests
+bash scripts/checks.sh            # repo gates (notes ledger, version drift)
+pre-commit run --all-files        # ruff, ruff format, mypy, shellcheck
+bash scripts/smoke-hermes-onboarding.sh   # clean-user acceptance (Linux/macOS)
+```
+
+The provider gates, runnable on their own in a bare venv:
+
+```bash
+python tests/test_vendored_provider.py   # snapshot hashes + declared patches
+python tests/test_provider_loader.py     # loader contract, engine absent and present
+python tests/test_provider_db_path.py    # DB path precedence + doctor checks
+```
+
+Health checks after an install: `hermes mnemosyne doctor --no-fix` (must exit 0)
+and `hermes memory status`.
+
+`scripts/checks.sh` is the registry of repo gates: a gate that is not listed
+there is invisible. Add new gates to it.
+
+## Working rules
+
+- Keep the vendored provider's type-check and lint exclusions in place
+  (`[tool.ruff] force-exclude`, `[tool.pyright] ignore`, and the mypy module
+  override in `integrations/hermes-provider/pyproject.toml`). They exist because
+  the snapshot is upstream's code and its optional imports are absent in a bare
+  venv — not because the checks were inconvenient.
+- One version source: `pyproject.toml` == `mnemosyne_lite.__version__` == the
+  README's `**Current Version**` line. `scripts/check_version_drift.sh` enforces
+  it, including that the literal appears nowhere else under `src/mnemosyne_lite/`.
+- Commit messages describe the work, not the tool. Do not attribute commits to
+  an AI unless explicitly asked.
+- Prefer a branch for non-trivial work. CI runs on pushes to `main` and on pull
+  requests.
+- Do not commit scratch state: `.dream-rsi/`, `.pi/`, `bench/data/`,
+  `bench/log.jsonl`, `bench/last_measure.txt`, `*.egg-info/`.
 
 ## Documentation index
 
-- Entry points: `README.md` (features, quickstart), `ARCHITECTURE.md`, `AGENT_GUIDE.md`, `SECRETS_MANAGEMENT.md`, `MCP_SERVER.md`, `QUICK_START.md`, and `integrations/hermes-provider/README.md` (installation).
-- Deep dives in `docs/`: `HERMES_INTEGRATION.md`, `HIERARCHICAL_MEMORY.md`, `REASONING_MEMORY.md`, `BOOTSTRAP.md`, plus `guides/ICS_INTEGRATION.md`; `docs/architecture/`, `docs/features/`, `docs/operations/`, `docs/security/` own their topics.
-- Process docs: `CONTRIBUTING.md`, `TROUBLESHOOTING.md`, `MANUAL_TESTING.md`, `LLM_TESTING.md`, `HOOKS_TESTING.md`.
-- `plans/` and `docs/plans/` hold working plans; treat them as historical context, not current contracts.
+- `README.md` — what ships, quickstart, verify, the lite surface, credits.
+- `QUICK_START.md` — the short version of the same.
+- `docs/AGENT_SETUP.md` — the step-by-step runbook an agent executes.
+- `integrations/hermes-provider/README.md` — the canonical provider document.
+- `docs/HERMES_INTEGRATION.md` — the longer Hermes integration guide.
+- `MCP_SERVER.md`, `docs/MCP_CLIENT_CONFIGS.md` — the lite MCP surface.
+- `TROUBLESHOOTING.md` — the failure modes and what they mean.
+- `CONTRIBUTING.md`, `CHANGELOG.md`, `docs/archive/RUST_ARCHIVE_REF.md`.
 
 ## Known gaps
 
-- The repo carries stale top-level plan/status snapshots in `docs/historical/` and `docs/plans/`; treat them as historical context, not living contracts, and do not update them unless a task explicitly targets them. The root-level `*_AUDIT_TASK_*.md`/`TEST_RESULTS.md`/`EVENT_BROADCASTING_STATUS.md` snapshots were removed (T9).
+- `plans/` and `docs/archive/` are historical. Do not treat them as contracts
+  and do not update them unless a task targets them.
+- `integrations/hermes-provider/LIVE_VERIFICATION.md` has not been executed
+  against a live gateway in this repository's history. The CI smoke lane is the
+  substitute evidence.
+- The local patches in `PATCHES.md` have not been sent upstream; the sync
+  procedure in `scripts/vendor-provider-sync.sh` re-applies them.
+- There is no browser/UI harness: the CLI and MCP server are exercised by
+  `tests/test_lite_cli.py` and `tests/test_lite_mcp.py`.

@@ -6,7 +6,9 @@
 # `from mnemosyne import Mnemosyne`) and replaced the engine's script. See
 # integrations/hermes-provider/README.md.
 name = "mnemosyne-lite"
-version = "2.4.0"
+# One version source: `src/mnemosyne_lite/__init__.py`. This file carries no
+# literal, so there is nothing here to forget when the version moves.
+dynamic = ["version"]
 description = "Standalone SQLite memory store with a CLI and an MCP stdio server."
 readme = "README.md"
 license = { text = "MIT" }
@@ -31,6 +33,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 include = ["mnemosyne_lite*"]
 exclude = ["tests*", "docs*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "mnemosyne_lite.__version__" }
 
 [tool.ruff]
 line-length = 100

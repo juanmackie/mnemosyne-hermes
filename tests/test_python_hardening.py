@@ -53,61 +53,53 @@ def test_recall_treats_wildcards_literally():
         s.close()
 
 
-def test_recall_matches_like_semantics_on_the_lowercase_copy():
-    """recall() searches content_lower with instr(), not content with LIKE.
+def test_recall_matches_fts_tokens_with_a_literal_fallback():
+    """recall() is full-text search, with a literal scan for punctuation-only queries.
 
-    The two must agree: LIKE folds ASCII case only, and instr() needs the
-    query folded the same way. Non-ASCII must stay case-sensitive (LIKE does
-    not fold it), and '%'/'_'/'\\' must stay literal.
+    This replaces a test that asserted recall() matched LIKE substring
+    semantics. It does not any more: FTS5 matches tokens, folds case and
+    diacritics, and ranks by BM25. A query with no letter or digit has no token
+    to match, so it falls back to the literal substring scan over
+    `content_lower` -- that is the only path that still uses it.
     """
     with tempfile.TemporaryDirectory() as d:
         s = PythonMemoryStorage(os.path.join(d, "m.db"))
-        rows = [
-            "Caf\u00e9 M\u00dcNCHEN project",
-            "100% cotton",
-            "under_score",
-            "back\\slash",
-            "MixedCASE Alpha",
-            "xylophone",
-        ]
-        # Distinct importance per row: recall orders by (importance, created_at)
-        # and rows written in the same clock tick would otherwise tie, making
-        # the ID order plan-dependent rather than comparable.
-        for i, text in enumerate(rows):
+        for i, text in enumerate(
+            [
+                "Café MÜNCHEN project",
+                "100% cotton",
+                "under_score",
+                "back\\slash",
+                "MixedCASE Alpha",
+                "xylophone",
+            ]
+        ):
             s.remember(text, "ns", 5 + i)
 
-        def like_ids(query):
-            esc = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            return [
-                r[0]
-                for r in s._conn().execute(
-                    "SELECT id FROM memories WHERE content LIKE ? ESCAPE '\\' "
-                    "ORDER BY importance DESC, created_at DESC LIMIT 50",
-                    (f"%{esc}%",),
-                )
-            ]
+        def found(query):
+            return {m["content"] for m in s.recall(query, namespace="ns", max_results=50)}
 
-        for query in [
-            "project",
-            "PROJECT",
-            "m\u00fcnchen",
-            "M\u00dcNCHEN",
-            "caf\u00e9",
-            "%",
-            "100%",
-            "_",
-            "snake_case",
-            "back\\slash",
-            "alpha",
-            "ALPHA",
-            "x",
-            "zzz",
-            "xylophone",
-            "XYLOPHONE",
-        ]:
-            want = like_ids(query)
-            got = [m["id"] for m in s.recall(query, namespace="ns", max_results=50)]
-            assert got == want, f"query {query!r}: {got} != {want}"
+        # Whole tokens match, case-insensitively on either side.
+        assert found("project") == {"Café MÜNCHEN project"}
+        assert found("PROJECT") == {"Café MÜNCHEN project"}
+        assert found("alpha") == {"MixedCASE Alpha"}
+        assert found("ALPHA") == {"MixedCASE Alpha"}
+        assert found("xylophone") == {"xylophone"}
+        assert found("XYLOPHONE") == {"xylophone"}
+        # FTS5's unicode61 tokenizer folds diacritics too, so the unaccented
+        # spelling finds the accented row. The old ASCII-only scan did not.
+        assert found("munchen") == {"Café MÜNCHEN project"}
+        assert found("cafe") == {"Café MÜNCHEN project"}
+        # A substring of a token is not a match: this used to be a substring scan.
+        assert found("al") == set()
+        assert found("MÜNCH") == set()
+        # A query with no letter or digit has no token, so it stays literal.
+        assert found("%") == {"100% cotton"}
+        assert found("_") == {"under_score"}
+        assert found("\\") == {"back\\slash"}
+        assert found("100%") == {"100% cotton"}
+        # A miss is an empty result, not an error.
+        assert found("zzzqqqnomatch") == set()
         s.close()
 
 
@@ -340,6 +332,55 @@ def test_legacy_store_migrates_and_stamps_schema_version():
         # Re-opening a migrated store must stay a no-op, not a re-migration.
         s = PythonMemoryStorage(db)
         s.close()
+
+
+def test_v1_store_gains_the_full_text_index():
+    """A store written before the index (user_version=1) migrates on open.
+
+    The index must be built over the existing corpus inside the same
+    transaction as the version bump. A store that opened at the new version
+    with an empty index would silently return nothing for text it contains,
+    which is worse than refusing to open it.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "v1.db")
+        # Exactly what the previous release left behind: our columns including
+        # content_lower, a populated corpus, user_version=1, no FTS objects.
+        c = sqlite3.connect(path)
+        c.execute(
+            "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL, "
+            "namespace TEXT NOT NULL, importance INTEGER DEFAULT 5, context TEXT, "
+            "summary TEXT, keywords TEXT, created_at REAL DEFAULT 0, "
+            "access_count INTEGER DEFAULT 0, last_accessed REAL, content_lower TEXT)"
+        )
+        c.execute(
+            "INSERT INTO memories (id, content, content_lower, namespace, importance, created_at) "
+            "VALUES ('v1', 'legacy xylophone row', 'legacy xylophone row', 'ns', 5, 1.0)"
+        )
+        c.execute("PRAGMA user_version = 1")
+        c.commit()
+        c.close()
+
+        s = PythonMemoryStorage(path)
+        try:
+            assert s._conn().execute("PRAGMA user_version").fetchone()[0] == 2
+            assert s.count() == 1
+            # The existing row is searchable, so the index was built, not just
+            # declared.
+            assert [r["id"] for r in s.recall("xylophone", namespace="ns")] == ["v1"]
+            # And it stays live: the insert trigger indexes new rows.
+            s.remember("fresh xylophone row", "ns", 5)
+            assert len(s.recall("xylophone", namespace="ns")) == 2
+            # Re-opening a migrated store is a no-op, not a re-migration.
+            s.close()
+            again = PythonMemoryStorage(path)
+            try:
+                assert again.count() == 2
+                assert again._conn().execute("PRAGMA user_version").fetchone()[0] == 2
+            finally:
+                again.close()
+        finally:
+            s.close()
 
 
 def test_wal_stays_bounded_under_sustained_writes():

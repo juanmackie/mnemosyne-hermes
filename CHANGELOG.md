@@ -1,43 +1,106 @@
 # Changelog
 
-All notable changes to Mnemosyne will be documented in this file.
+Notable changes to this repository.
+
+**This repository is a Hermes provider distribution.** Entries up to `2.4.0`
+belong to the Rust product it used to be and are kept as history: they describe
+a binary, a LibSQL/Turso store, an ICS editor and an actor runtime that do not
+ship here. `3.0.0` is the pivot release, and it is breaking.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.0] - 2026-09-27
+
+The pivot release. This repository is a Hermes provider distribution now, so
+this version is breaking by construction: there is no `mnemosyne` binary, no
+`mnemosyne serve`, no `secrets` command and no LibSQL/Turso store. Everything
+below `2.4.0` describes the retired Rust product.
 
 ### Added
-- **Typed `extends` graph edges from session extraction** (supermemory graph-memory borrow): when a later turn restates a stored fact, the near-duplicate is still dedup-skipped but the relation is no longer discarded — an idempotent, bidirectional `extends` edge is recorded from the turn's source memory to the fact it reaffirms (`LibsqlStorage::add_typed_edge`, wired in `sync_*` extraction). Repeated turns now accumulate graph structure around a fact, feeding the graph lane and future DERIVES inference; covered by `tests/typed_edges_extract.rs`.
-- **Dynamic profile slice** (`StorageBackend::dynamic_profile`), the recent-focus counterpart to the standing always-on profile — supermemory's static vs dynamic split. Recency-ordered "what an agent is working on right now" (importance >= 6, no `always_on`/`reference_only`), surfaced as an additive `dynamic_profile` field beside the unchanged `profile` in `mnemosyne recall` (CLI + MCP) and `[now]` lines in compact text. Expiry/supersede/archive/namespace wall shared with `profile_facts`; covered by `tests/profile_facts.rs`.
-- Agent-scoped `MemoryManager` API with recall, listing, updates, archival, context prefetch, and turn sync helpers.
-- `mnemosyne recall` routed through the single shared `rank_recall` path; MCP and CLI outputs compared by `tests/recall_parity.rs` (caught divergent rerank-before-truncate order, abstention, and match_reason format).
-- Recall responses now carry `shown`/`candidates`/`capped`/`abstained`/`est_tokens` and an in-band `legend` so the consuming agent never misreads a field meaning.
-- `.mnemosyne_notes` provenance-stamped ledger + `scripts/check_notes.sh` gate + `scripts/checks.sh` registry (fmt, notes, lib tests, parity test).
-- CI workflow (`.github/workflows/ci.yml`): fmt gate, advisory clippy, lib + parity tests on ubuntu+macos.
-- `Makefile` no longer blanket-suppresses lints; `RUSTFLAGS="-A warnings"` replaced by ack-ledger pattern.- `agent:` namespaces plus `list`, `prefetch`, and `sync` CLI commands.
-- Context fencing/scrubbing helpers and offline local-embedding fallback paths.
 
-### Added - OpenViking-inspired hierarchical memory (feature/openviking-borrows)
-- **Topic-tree memory organization** (`src/hierarchy.rs`): deterministic topic paths from namespace+type+tag, directory L0/L1 sidecars aggregated bottom-up, freshness metadata with stable sampling
-- **Hierarchical retriever**: global search -> priority-queue recursion with score propagation (`alpha*own + (1-alpha)*parent`), convergence detection, replayable retrieval trajectory
-- **Tiered content (L0/L1/L2)**: 256-char abstracts / 4k overviews / full detail loaded on demand
-- **Token-budgeted context assembler** (`src/context_assembler.rs`): breadth-first-then-depth tier filling, fallback-instead-of-truncate, token ledger
-- **Intent analyzer** (`src/intent.rs`): typed query planning with chit-chat skip (0 queries), style rewrites per context type
-- **Session commit pipeline** (`src/session_extract.rs`): two-phase archive + extraction, similarity pre-filter dedup decisions (skip/merge/delete/create), memory_diff audit logs
-- **Hotness scoring** (`src/utils/hotness.rs`): sigmoid(log1p(access)) x recency decay blended into reranking
-- **MCP tools**: `mnemosyne.used` (usage feedback), `mnemosyne.hierarchy` (tree browsing); `mnemosyne.recall` gains optional `hierarchical` mode returning trajectories
-- **CLI**: `mnemosyne recall --hierarchical --trace --budget-tokens`
-- **Doctor**: API-key resolution and data-directory writability checks
-- **Benchmarks**: `benchmark/retrieval/locomo_eval.py` Hit@k/MRR harness with flat-vs-hierarchical compare mode
+- `integrations/hermes-provider/`: the canonical Hermes memory provider — a
+  byte-hashed snapshot of `hermes_memory_provider` from `mnemosyne-memory
+  3.15.1` (MIT, © Abdias J / AxDSan) plus a declared local-patch layer
+  (`PATCHES.md`, `VENDORED_FROM.json`, `CONTRACT_AUDIT.md`).
+- `install.sh`: installs the provider and the pinned engine into the Hermes
+  venv, links the plugin directory, selects `memory.provider=mnemosyne` through
+  `hermes config set`, and verifies that exactly one provider registers.
+  `--uninstall [--purge]` reverses it, keeping memory unless purged.
+- `hermes mnemosyne doctor`: five critical checks decide its exit code, and it
+  prints the resolved DB path, provider package, engine version and detected
+  Hermes range. A fresh install whose data directory does not exist yet passes.
+- `scripts/smoke-hermes-onboarding.sh`: the clean-user acceptance lane — fresh
+  venv, fresh `HERMES_HOME`, real Hermes, then `doctor` + `memory status` + a
+  `sync_turn` round trip + a single-registration check.
+- `bench/`: the reproducible recall-latency harness and the one recorded
+  measurement, with the noise floor stated rather than a bare number.
+- Gates: `scripts/check_notes.sh` (provenance ledger), `scripts/checks.sh` (the
+  registry every gate must be listed in), `scripts/check_version_drift.sh` (one
+  version source), and the three provider gates
+  `tests/test_vendored_provider.py`, `tests/test_provider_loader.py`,
+  `tests/test_provider_db_path.py`.
+- A lint/type/shell baseline: ruff, `ruff format`, mypy and shellcheck, as
+  `.pre-commit-config.yaml` hooks and a CI job.
 
 ### Changed
-- Added `remember --no-enrich` for fast raw-memory imports.
-- Reduced evaluation/evolution test overhead through in-memory fixtures, synchronous pure-computation tests, and batched migrations.
+
+- The lite surface is `mnemosyne-lite` / `mnemosyne_lite`, not `mnemosyne`. The
+  old name collided with the engine, which owns that distribution name, import
+  package and console script.
+- The top-level `lib` package is gone: its code is `mnemosyne_lite.storage` and
+  `mnemosyne_lite.db_path`. The unused `MnemosyneClient` went with it.
+- The lite store's default moved from `~/.mnemosyne/mnemosyne.db` (the engine's
+  folder) to `~/.mnemosyne-lite/mnemosyne.db`.
+- `remember`'s namespace default is `default`, not the provider's
+  `agent:hermes`. The name is still accepted everywhere; only the default moved.
+- `mnemosyne-lite backup` resolves its path like every other command instead of
+  crashing with a `TypeError` when no path was configured.
+- `bootstrap` no longer prints four always-empty category lists. The store has
+  no `memory_type` column, so it reports constraints, provenance and abstentions.
+- `restore` is staged: it confirms, writes a safety copy, restores into a
+  temporary file, verifies that file really is a store, and only then replaces
+  the destination. A gzipped dump can no longer collide with the live database.
+- The lite MCP server reports `serverInfo` as `mnemosyne-lite` with the package
+  version, instead of the literal `mnemosyne` / `2.4.0`.
+- The lite CLI no longer reports the engine's version as its own.
+- CI runs three jobs (unit/contract, lint, Hermes onboarding) on pinned action
+  SHAs.
 
 ### Fixed
-- Removed the recall CLI's per-result memory fetch in vector-search merging.
-- Made agent database filenames reject path traversal and made prefetch/sync honor the configured database path and namespace.
+
+- Recall could return stale results across threads: the recall memo was a single
+  dict on the storage object, while the version that validates an entry is built
+  from the calling thread's own connection. It is per-thread now.
+- `recall`, `list_memories`, `count` and `consolidate` returned `[]` / `0` on a
+  SQLite error, so a broken store looked like an empty one. They raise
+  `StorageError`.
+- A failed `os.makedirs` reached the CLI as a traceback instead of one line.
+- `scripts/check_notes.sh` no longer computes an unused variable, and the shell
+  scripts pass shellcheck.
+
+### Removed
+
+- The retired Rust adapter `integrations/hermes-memory-provider/`, its test
+  suite and its tracked `egg-info`.
+- `src/orchestration/` (about 24k lines): nothing packaged it, memory saving
+  called a retired API, DSPy module loading pointed at a package that does not
+  exist, and the executor ran model-written commands in a shell. Archived at the
+  `archive/orchestration` and `archive/rust-era` tags.
+- The Rust test suites (`tests/e2e/`, `tests/manual/`, `tests/scripts/`), the
+  unused `migrations/`, `patches/` and `proto/` trees, the Rust-era ops scripts,
+  `spec.md`, `benchmark/retrieval/`, `Makefile.archive`, `.beads/`, `uv.lock`
+  and the tracked `egg-info` directories.
+- The stale docs set: `AGENT_GUIDE.md`, `PR_REVIEW.md`, `ROADMAP.md`,
+  `ORCHESTRATION.md`, `EVALUATION.md`, `CONTEXT_LOADING.md`, `HOOKS_TESTING.md`,
+  `LLM_TESTING.md`, `MANUAL_TESTING.md`, `DOCUMENTATION.md`,
+  `SECRETS_MANAGEMENT.md`, and the site, whitepaper, spec and plan trees under
+  `docs/`.
+- `embed` and `migrate`, which existed only to print "blocked" and exit 1.
+- The Pages deploy workflow (it published another project's site and Pages was
+  never enabled), the cargo release workflow (it could not build), and the two
+  Claude workflows (no `CLAUDE_CODE_OAUTH_TOKEN` secret exists, and every
+  historical run failed).
 
 ## [2.3.1] - 2025-11-09
 
@@ -713,8 +776,3 @@ See [ROADMAP.md](ROADMAP.md) for planned features:
 - Background memory evolution (auto-consolidation)
 - Advanced agent features (role-based views, prefetching)
 - VSCode extension with memory browser
-
----
-
-[1.0.0]: https://github.com/rand/mnemosyne/releases/tag/v1.0.0
-[0.1.0]: https://github.com/rand/mnemosyne/releases/tag/v0.1.0

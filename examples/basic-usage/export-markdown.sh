@@ -1,50 +1,44 @@
 #!/usr/bin/env bash
 #
-# Example: Export Memories to Markdown
+# Example: Dump Memories to a File
 #
-# This example shows how to export memories to a readable Markdown file.
-# Useful for documentation, sharing with team, or backup.
+# The lite CLI has no export command: `list` prints one Python dict per memory,
+# so a dump is a redirect. For a copy you can restore, use `mnemosyne-lite
+# backup` instead — that writes a real SQLite backup file.
 #
 # Usage:
 #   ./export-markdown.sh [output-file] [namespace]
 
 set -e
 
-OUTPUT_FILE="${1:-memories-export-$(date +%Y%m%d).md}"
+OUTPUT_FILE="${1:-memories-export-$(date +%Y%m%d).txt}"
 NAMESPACE="${2:-}"
 
-echo "📤 Exporting memories to: $OUTPUT_FILE"
+echo "📤 Dumping memories to: $OUTPUT_FILE"
 echo ""
 
 if [ -n "$NAMESPACE" ]; then
   echo "Namespace filter: $NAMESPACE"
-  mnemosyne export \
-    --output "$OUTPUT_FILE" \
-    --namespace "$NAMESPACE"
+  mnemosyne-lite list --limit 100 --namespace "$NAMESPACE" >"$OUTPUT_FILE"
 else
-  echo "No namespace filter (exporting all memories)"
-  mnemosyne export \
-    --output "$OUTPUT_FILE"
+  echo "No namespace filter (all namespaces)"
+  mnemosyne-lite list --limit 100 >"$OUTPUT_FILE"
 fi
 
 echo ""
-echo "✅ Export complete!"
+echo "✅ Dump complete!"
 echo ""
 echo "File: $OUTPUT_FILE"
-echo "Size: $(wc -c < "$OUTPUT_FILE") bytes"
-echo "Memories: $(grep -c "^## " "$OUTPUT_FILE" || echo "0")"
+echo "Bytes: $(wc -c <"$OUTPUT_FILE")"
+echo "Memories: $(wc -l <"$OUTPUT_FILE")"
 echo ""
 echo "Preview:"
-head -20 "$OUTPUT_FILE"
-echo ""
-echo "..."
+head -5 "$OUTPUT_FILE"
 echo ""
 echo "Use cases:"
-echo "  - Share knowledge with team members"
-echo "  - Create project documentation"
-echo "  - Backup important decisions"
-echo "  - Onboarding new developers"
+echo "  - Keep a human-readable copy of a namespace"
+echo "  - Diff two dumps after a cleanup"
 echo ""
-echo "Examples:"
-echo "  ./export-markdown.sh team-knowledge.md \"project:myapp\""
-echo "  ./export-markdown.sh architecture-decisions.md \"global\""
+echo "For a restorable copy of the whole store:"
+echo "  mnemosyne-lite backup --output memories.db"
+echo "  mnemosyne-lite restore --backup memories.db --yes"

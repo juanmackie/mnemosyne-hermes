@@ -1,92 +1,54 @@
-# Mnemosyne Examples
+# Examples
 
-This directory contains practical examples demonstrating how to use Mnemosyne.
-
-## Directory Structure
-
-```
-examples/
-├── basic-usage/          # Simple command-line usage
-│   ├── store-memory.sh
-│   ├── search-memories.sh
-│   └── export-markdown.sh
-├── workflows/            # Real-world workflow examples
-│   ├── daily-standup.sh
-│   └── bug-tracking.sh
-└── mcp-integration/      # Claude Code integration examples
-    ├── claude-code-setup.md
-    └── slash-commands.md
-```
-
-## Prerequisites
-
-All examples assume you have:
-- Mnemosyne installed and in PATH
-- API key configured (`mnemosyne config show-key` succeeds)
-- Database initialized
-
-If not, see [integrations/hermes-provider/README.md](../integrations/hermes-provider/README.md).
-
-## Running Examples
-
-All shell scripts are executable:
+Small, runnable examples for the lite surface (`mnemosyne-lite`). They assume
+the lite package is installed in its own virtualenv:
 
 ```bash
-# Make executable (if needed)
-chmod +x examples/basic-usage/*.sh
-
-# Run any example
-./examples/basic-usage/store-memory.sh
+pip install -e .
+mnemosyne-lite init          # creates ~/.mnemosyne-lite/mnemosyne.db
 ```
 
-## Example Categories
+Do **not** install it into a Hermes venv: the engine (`mnemosyne-memory`) owns
+the `mnemosyne` distribution name, import package and console script, and the
+two must not merge. See [../README.md](../README.md).
 
-### Basic Usage
+```text
+examples/
+├── basic-usage/          the lite CLI
+│   ├── store-memory.sh       remember, with no LLM and no API key
+│   ├── search-memories.sh    recall, with namespace and importance filters
+│   └── export-markdown.sh    dump the store to a file (and when to use backup)
+└── hermes/
+    ├── HERMES.md             a memory-workspace convention for a Hermes agent
+    └── mcp-config.json       an MCP client entry for the lite stdio server
+```
 
-Simple command-line operations:
-- Store a memory with enrichment
-- Search memories by query
-- Export memories to Markdown
+## `basic-usage/`
 
-**Start here if new to Mnemosyne.**
+Each script takes optional arguments and prints what it is doing. They all read
+`MNEMOSYNE_DB_PATH` and accept `--db-path` where it makes sense.
 
-### Workflows
+```bash
+./examples/basic-usage/store-memory.sh
+./examples/basic-usage/search-memories.sh "architecture decision"
+./examples/basic-usage/export-markdown.sh memories.txt
+```
 
-Complete workflow demonstrations:
-- Daily standup preparation
-- Bug tracking and resolution
-- Team knowledge sharing
+## `hermes/`
 
-**Use these as templates for your own workflows.**
+`HERMES.md` is an example of the convention file a Hermes agent reads to decide
+which namespace a memory belongs in. `mcp-config.json` is the MCP client entry
+for the lite server — copy it into your client's MCP settings and replace the
+absolute paths.
 
-### MCP Integration
+The lite MCP server exposes `mnemosyne_memory_search`,
+`mnemosyne_memory_remember`, `mnemosyne_prefetch` and `mnemosyne_sync_turn`.
+See [../MCP_SERVER.md](../MCP_SERVER.md) and
+[../docs/MCP_CLIENT_CONFIGS.md](../docs/MCP_CLIENT_CONFIGS.md).
 
-Claude Code integration:
-- Setup instructions
-- Slash command reference
-- Programmatic tool usage
+## Provider examples
 
-**Read these to understand Claude Code integration.**
-
-## Learning Path
-
-1. **Start**: [basic-usage/store-memory.sh](basic-usage/store-memory.sh)
-2. **Search**: [basic-usage/search-memories.sh](basic-usage/search-memories.sh)
-3. **Export**: [basic-usage/export-markdown.sh](basic-usage/export-markdown.sh)
-4. **Workflow**: [workflows/bug-tracking.sh](workflows/bug-tracking.sh)
-5. **Integration**: [mcp-integration/claude-code-setup.md](mcp-integration/claude-code-setup.md)
-
-## Contributing Examples
-
-Have a useful example? Contributions welcome!
-
-1. Create example script in appropriate directory
-2. Add documentation at the top of the script
-3. Test the example works
-4. Submit a pull request
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
-
----
-
-**Last Updated**: 2025-10-27
+The Hermes **provider** is not exercised here; it is installed and verified by
+`./install.sh` and `hermes mnemosyne doctor`. Start with
+[../integrations/hermes-provider/README.md](../integrations/hermes-provider/README.md)
+and [../docs/AGENT_SETUP.md](../docs/AGENT_SETUP.md).

@@ -57,19 +57,27 @@ hermes mnemosyne inspect "test"        # search the live store
 For a full write/read round-trip, ask the agent to remember a fact and recall
 it, or run the CI smoke test: `bash scripts/smoke-hermes-onboarding.sh`.
 
-## 5. MCP stdio surface (optional, independent)
-Hermes `~/.hermes/config.yaml`:
-```yaml
-mcp:
-  servers:
-    mnemosyne:
-      command: mnemosyne
-      args: ["mcp"]
-```
-`install.sh` already ran `hermes config set memory.provider mnemosyne`.
+## 5. The lite MCP surface (optional, independent of the provider)
 
-**Verify:** restart the runtime; store + recall through the mnemosyne tools.
-(`mnemosyne mcp` stdout is pure JSON-RPC; diagnostics go to stderr.)
+This is the **lite** store's MCP server, not the provider. Install it in its
+own virtualenv — never in the Hermes venv, where the engine owns the
+`mnemosyne` name.
+
+```bash
+pip install -e .                      # installs the mnemosyne-lite CLI
+mnemosyne-lite init                   # creates ~/.mnemosyne-lite/mnemosyne.db
+```
+
+MCP client configuration:
+
+```json
+{"mcpServers": {"mnemosyne-lite": {"command": "mnemosyne-lite", "args": ["mcp"]}}}
+```
+
+**Verify:** `mnemosyne-lite diagnostics` prints the resolved DB path, then call
+`mnemosyne_memory_remember` and `mnemosyne_memory_search` through the client.
+(`mnemosyne-lite mcp` writes pure JSON-RPC to stdout; diagnostics go to stderr.)
+See `MCP_SERVER.md` and `docs/MCP_CLIENT_CONFIGS.md`.
 
 ---
 References: `integrations/hermes-provider/README.md`,

@@ -1,341 +1,149 @@
 # Mnemosyne + Hermes Agent
 
-This is the canonical setup guide for using Mnemosyne as a local memory layer
-for Hermes. It covers the shortest path from zero installation to a verified
-memory, then shows how to migrate an existing Python `mnemosyne-memory` store.
+This is the setup guide for running this repository's Hermes memory provider.
+It takes you from a clean checkout to a verified install, then explains the
+configuration keys and tool surface the provider exposes.
 
-## Adapter Status (Updated)
+Two products ship here, and this page covers only the first:
 
-The Python adapter (`mnemosyne_rust_hermes`) is **retired as a provider**: it drove a
-Rust binary over MCP stdio and its registration path was never read by the Hermes
-plugin loader. It is preserved for reference and its tests still run. The canonical
-provider is `mnemosyne` — see [section 3a](#3a-native-provider-mode-automatic-memory).
+| Product | What it is | Doc |
+| --- | --- | --- |
+| Hermes provider | Engine-backed, provider id `mnemosyne` | this page |
+| Lite surface | Standalone SQLite store + MCP server | [QUICK_START.md](../QUICK_START.md) |
 
-```bash
-# Retired — kept only so old links resolve. Do not install it as a provider:
-#   python -m pip install integrations/hermes-memory-provider/
-```
+The provider is the only provider this repository registers; the lite surface has
+its own protocol notes in [MCP_SERVER.md](../MCP_SERVER.md). The provider is a vendored
+snapshot of `hermes_memory_provider` from `mnemosyne-memory 3.15.1` (MIT, ©
+Abdias J / AxDSan) with a declared patch layer — provenance, hashes and the sync
+policy live in [integrations/hermes-provider/README.md](../integrations/hermes-provider/README.md).
 
-Historically it communicated with a `mnemosyne` binary over a persistent stdio
-JSON-RPC session (`MNEMOSYNE_BIN`). No current install path registers it.
+## 1. Install
 
-## 1. Install the provider and the engine
-
-There is no curl one-liner and no release binary: the installer needs a
-checkout.
+Prerequisites: a Hermes install (`$HERMES_HOME`, default `~/.hermes`) and `uv`.
 
 ```bash
 git clone https://github.com/juanmackie/mnemosyne-hermes.git
 cd mnemosyne-hermes
 ./install.sh --dry-run     # plan only: venv, symlink target, resolved DB path
-./install.sh               # writes nothing until you confirm
+./install.sh               # uv install + plugin symlink + provider selection
+```
+
+`./install.sh` installs the vendored provider and its pinned engine into the
+Hermes virtualenv, symlinks `$HERMES_HOME/plugins/mnemosyne` at the directory
+containing `hermes_memory_provider/__init__.py`, and selects
+`memory.provider: mnemosyne`. The database is created on first write, not by the
+installer. `./install.sh --help` lists every flag, including `--venv`,
+`--python`, `--hermes-home` and `--db-path`.
+
+## 2. Verify
+
+```bash
 hermes mnemosyne doctor --no-fix   # must exit 0
+hermes memory status               # provider installed / available / active
+ls -l "$HERMES_HOME/plugins/mnemosyne"   # must point at the provider package
+bash scripts/smoke-hermes-onboarding.sh  # clean-user acceptance lane
 ```
 
-`./install.sh` installs the vendored provider plus its pinned engine with `uv`,
-links `$HERMES_HOME/plugins/mnemosyne` at the canonical
-`integrations/hermes-provider/hermes_memory_provider`, and selects
-`memory.provider: mnemosyne`.
+`doctor` exits non-zero when the engine import is missing, instead of leaving a
+provider that reports `available` and then no-ops every call. The loader test
+covers both the bare and the installed case.
 
-The provider resolves its DB in this order: `memory.mnemosyne.db_path` >
-`MNEMOSYNE_DB_PATH` > engine default (`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` >
-`~/.hermes`), then `mnemosyne/data/mnemosyne.db`. `doctor` prints the resolved
-path and warns when it sits outside `$HERMES_HOME`. (The standalone lite surface
-uses `~/.mnemosyne/mnemosyne.db`; that is **not** the provider's store.)
+**Restart the gateway after any provider change.** Hermes caches a loaded
+provider module in `sys.modules` for the life of the process, so a running
+gateway keeps executing the old module while a one-shot CLI probe already looks
+healthy.
 
-Verify the provider is registered and the link is canonical:
+## 3. Where memory lives
 
-```bash
-hermes memory status               # mnemosyne installed / available / active
-ls -l "$HERMES_HOME/plugins/mnemosyne"
-hermes mnemosyne doctor --no-fix
-```
+The provider resolves its database in this order (first match wins):
 
-## 2. Connect Hermes
+| Order | Source | Notes |
+| --- | --- | --- |
+| 1 | `memory.mnemosyne.db_path` in `$HERMES_HOME/config.yaml` | Per-install override |
+| 2 | `MNEMOSYNE_DB_PATH` environment variable | Read by the provider and the CLI |
+| 3 | Engine default | `MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes` |
 
-Two integrations are supported. They are independent, and you can enable both:
-one captures and injects memory automatically, the other lets the agent call
-memory tools explicitly.
+`doctor` and `hermes mnemosyne stats` print the resolved path. The provider logs
+a warning (and `doctor` reports it) when the store sits outside `$HERMES_HOME`,
+because logs and memory are then split across two roots.
 
-| Mode | What you get | Requires |
-|---|---|---|
-| **Native provider** (recommended) | Automatic capture of user turns, plus automatic context injection before each call. The agent never has to ask for memory. | The `mnemosyne` binary **and** the Python adapter package. |
-| **MCP-only** | The agent can call memory tools explicitly when it chooses. Nothing is captured or injected automatically. | Only the `mnemosyne` binary. |
+If you already have an engine database from an earlier install, there is nothing
+to migrate: point the provider at that file with `memory.mnemosyne.db_path` or
+`MNEMOSYNE_DB_PATH` and it becomes the live store. `hermes mnemosyne import
+--list-providers` lists the external sources the CLI can import from.
 
-Both modes drive the same local store, so anything written by one is visible to
-the other.
+The lite surface's store (`~/.mnemosyne-lite/mnemosyne.db` by default) is a
+different file and a different product. Nothing written by the provider is
+visible to `mnemosyne-lite`, and the reverse is true too.
 
-### 2. LLM inheritance (no second API key)
+## 4. What the provider does
 
-Mnemosyne's optional orchestration and DSPy features inherit the active Hermes
-model from `$HERMES_HOME/config.yaml` (default `~/.hermes/config.yaml`). The
-configured `model.default` is sent through Hermes' local OpenAI-compatible
-subscription proxy when using Portal/OAuth. For a configured custom provider,
-its endpoint and provider credential are inherited from the Hermes profile
-(`.env`) rather than a second Mnemosyne key; secrets are never logged or
-persisted by Mnemosyne.
+It implements the Hermes `MemoryProvider` contract:
 
-Start the proxy once in the Hermes environment:
+- **Injection** — prefetch before each model call, returned unfenced so Hermes
+  can apply its own `<memory-context>` wrapper and streaming scrubber.
+- **Capture** — user-originated turns are recorded; `cron`, `flush`, `subagent`,
+  `background` and `skill_loop` runs are skipped for both capture and injection.
+- **Tools** — `get_tool_schemas()` exposes the engine's tools (`mnemosyne_remember`,
+  `mnemosyne_recall`, and the rest of the engine's set); `handle_tool_call`
+  returns JSON strings and reports `memory_unavailable` with a reason when the
+  engine is not importable.
 
-```bash
-hermes setup --portal
-hermes proxy start
-```
+No cloud API key is required. Core storage and keyword recall are local and
+keyless; optional LLM work goes through the active Hermes model configured in
+`$HERMES_HOME/config.yaml`, so there is no second provider key to manage.
 
-The default endpoint is `http://127.0.0.1:8645/v1`. Set
-`HERMES_PROXY_BASE_URL` only when the proxy uses another address. If no Hermes
-instance or proxy is configured, local memory still works and standalone
-`ANTHROPIC_API_KEY` remains a legacy fallback.
+### Configuration keys
 
-### 3a. Native provider mode (automatic memory)
+| Key | Effect |
+| --- | --- |
+| `memory.provider` | Must be `mnemosyne` |
+| `memory.mnemosyne.db_path` | Explicit store path; beats the env var |
+| `memory.mnemosyne.tools` | Restrict exposed tools (`[]` = none) |
+| `memory.mnemosyne.profile_isolation` | Bank per Hermes profile |
 
-**The canonical provider in this repository is the vendored, engine-backed one
-at [`integrations/hermes-provider/`](../integrations/hermes-provider/README.md).**
-It is a byte-identical snapshot of `mnemosyne-memory 3.15.1`'s
-`hermes_memory_provider` plus a small, declared local patch layer, it registers
-the provider id **`mnemosyne`**, and it is what `./install.sh` installs:
+Unknown tool names in `memory.mnemosyne.tools` fail loudly at startup, and an
+explicit `db_path` wins over `profile_isolation` (the provider warns when both
+are set) — a typo must not silently move where memory is written.
 
-```bash
-./install.sh --dry-run     # show venv, symlink target and DB path; write nothing
-./install.sh               # uv install + plugin symlink + memory.provider=mnemosyne
-hermes mnemosyne doctor --no-fix
-```
+## 5. Using the lite store from Hermes
 
-It implements the Hermes `MemoryProvider` contract: `initialize`, prefetch before each
-call, non-blocking capture of every completed turn, `on_session_end` flush, and an
-idempotent `shutdown`. Tool results are JSON strings, and a failed engine import
-reports `unavailable_reason()` instead of pretending to be healthy — see
-`integrations/hermes-provider/CONTRACT_AUDIT.md` for the line-by-line audit
-(including the hooks it deliberately does **not** override). Prefetch returns
-**unfenced** text: Hermes applies its own `<memory-context>` wrapper and streaming
-scrubber, so the provider must not add those tags itself.
-
-Automatic capture applies to **user-originated turns only**, and only while this
-provider owns capture. Exactly one component owns automatic capture at a time, so
-a run never double-writes. Cron, flush, subagent, background, and skill-loop
-executions are skipped for both capture and injection.
-
-> The Rust-era `mnemosyne-rust` adapter in
-> [`integrations/hermes-memory-provider/`](../integrations/hermes-memory-provider/)
-> is **retired as a provider**: it drove a binary over MCP stdio and its
-> `hermes_agent.memory_providers` entry point was never read by the Hermes plugin
-> loader. Its tests still run; nothing registers it.
->
-> The slim `mnemosyne_hermes` provider that used to live in
-> `integrations/hermes/` is also retired — see that directory's README.
-
-### 3b. MCP-only mode (explicit tool calls)
-
-Add the server to `~/.hermes/config.yaml` under the `mcp_servers` key:
+If you want explicit memory tools over the *lite* store rather than the
+provider, register the lite MCP server as an MCP server instead:
 
 ```yaml
 mcp_servers:
-  mnemosyne:
-    command: /home/you/.local/bin/mnemosyne
+  mnemosyne-lite:
+    command: /absolute/path/to/mnemosyne-lite
     args: ["mcp"]
     env:
-      MNEMOSYNE_DB_PATH: /home/you/.local/share/mnemosyne/mnemosyne.db
+      MNEMOSYNE_DB_PATH: /home/you/.mnemosyne-lite/mnemosyne.db
 ```
 
-Use an **absolute** `command` path. Hermes may start the server from a
-different working directory than your shell, in which case a bare `mnemosyne`
-will not resolve. `MNEMOSYNE_DB_PATH` accepts home-relative, relative, or absolute
-paths (a leading `~` is expanded), and absolute paths are recommended for shared
-or scripted configuration. The CLI, the importer, and the MCP server all resolve
-to the same database.
+That path is the lite store, not the provider's DB. Use an absolute `command`:
+Hermes may start the server from a different working directory than your shell.
+Running both is fine — they are separate stores with separate schemas, and the
+MCP tools never touch the provider's database. See
+[MCP_SERVER.md](../MCP_SERVER.md) for the protocol and
+[MCP client configuration examples](MCP_CLIENT_CONFIGS.md) for other clients.
 
-`mnemosyne mcp` and the legacy `mnemosyne serve` command are equivalent. MCP
-stdout is reserved for JSON-RPC; diagnostics go to stderr, so the process is safe
-for stdio clients.
-
-### 3c. Docker: keep the store and the model cache on volumes
-
-No image is published from this repository. Build and tag one yourself, then
-mount the two paths that must outlive the container. The container filesystem is
-disposable; the volumes are not.
-
-```yaml
-services:
-  mnemosyne:
-    image: mnemosyne-hermes:2.3.3        # your own build/tag
-    command: ["mcp"]
-    stdin_open: true                     # stdio MCP needs the streams attached
-    volumes:
-      - mnemosyne-db:/data/mnemosyne
-      - mnemosyne-models:/home/mnemosyne/.cache/mnemosyne
-    environment:
-      MNEMOSYNE_DB_PATH: /data/mnemosyne/mnemosyne.db
-
-volumes:
-  mnemosyne-db:
-  mnemosyne-models:
-```
-
-Paths are absolute, and each one means something different on each side of a
-mapping: the MCP `env` block points at `/data/mnemosyne/mnemosyne.db` *inside*
-the container, while the `mnemosyne-db` volume is what actually persists it. Mount
-the embedding model cache as well, or a model-backed image re-downloads the ONNX
-weights on every start.
-
-If Hermes runs on the host, point `mcp_servers.command` at a wrapper that keeps
-stdio attached, for example `docker run -i --rm -v mnemosyne-db:/data/mnemosyne
-mnemosyne-hermes:2.3.3 mcp`. If Hermes runs in the same Compose project, both
-services share the `mnemosyne-db` volume instead.
-## 4. Tool surface
-
-Mnemosyne retains its original dotted MCP names and advertises Hermes-compatible
-underscore aliases with identical schemas:
-
-| Hermes tool | Compatibility name | Purpose |
-|---|---|---|
-| `mnemosyne_remember` | `mnemosyne.remember` | Store durable memory |
-| `mnemosyne_recall` | `mnemosyne.recall` | Search ranked memories |
-| `mnemosyne_forget` | `mnemosyne.delete` | Archive a memory |
-| `mnemosyne_list` | `mnemosyne.list` | Browse recent memories |
-| `mnemosyne_context` | `mnemosyne.context` | Load linked context |
-| `mnemosyne_graph` | `mnemosyne.graph` | Traverse memory links |
-| `mnemosyne_hierarchy` | `mnemosyne.hierarchy` | Browse topic hierarchy |
-| `mnemosyne_bootstrap` | `mnemosyne.bootstrap` | Build bounded project startup context |
-| `mnemosyne_update` | `mnemosyne.update` | Amend a memory |
-| `mnemosyne_consolidate` | `mnemosyne.consolidate` | Find/consolidate candidates |
-| `mnemosyne_used` | `mnemosyne.used` | Report useful recalls |
-
-### Lifecycle tools
-
-These two exist for provider-style use: a memory provider calls them on the
-agent's behalf, one before a turn and one after it. Any MCP client can call them
-directly as well.
-
-| Tool | Compatibility alias | Purpose |
-|---|---|---|
-| `mnemosyne.prefetch` | `mnemosyne_prefetch` | Recall context to inject before a call |
-| `mnemosyne.sync_turn` | `mnemosyne_sync_turn` | Capture one completed turn |
-
-`mnemosyne.prefetch` takes `query` (required) plus optional `namespace`,
-`budget_tokens` (default 1024), `limit` (default 5), and `execution_context`. It returns
-`{text, count, diagnostics}`. `text` is **unfenced** - Hermes adds its own
-`<memory-context>` wrapper - and `diagnostics` carries the resolved namespace, the
-embedding mode, model name, dimensions and fallback reason, per-section counts,
-the candidate and selected memory ids, dedup exclusions, and the token budget
-accounting. Diagnostics never echo raw memory text.
-
-`mnemosyne.sync_turn` takes `user_text` and `assistant_text` (both required) plus
-optional `namespace`, `session_id`, `turn_id`, `execution_context`, `speaker`, and
-`policy_owner`. It returns
-`{status: "captured", source_memory_id, derived_ids, policy_proposal_ids,
-extraction_status}` or `{status: "skipped", reason}`.
-
-Both honour `execution_context`. For `cron`, `flush`, `subagent`,
-`background`, and `skill_loop` they skip: prefetch returns empty text with
-`skipped: true`, and sync_turn returns `status: "skipped"`. Replaying the same
-(`session_id`, `turn_id`) pair reuses the existing turn memory instead of
-duplicating it, so retries are safe.
-
-The provider surfaces also include `mnemosyne_persona`,`mnemosyne_canonical`, and `mnemosyne_triples`. Bootstrap is the shared,
-read-only startup assembly path: it returns separate approved constraints,
-facts, failure guardrails, policies, relevant project-local skills, provenance,
-and abstentions under a token budget. Constraint proposals are reviewed with
-`mnemosyne constraint` and are only visible to bootstrap after owner approval.
-Persona reads durable preference/constraint memories; canonical facts provide one current value per
-(category, name) slot; triples provide add/query operations with one current
-object per (subject, predicate) slot and archived superseded values. Imported
-canonical/triple rows remain tagged memory records, so the source data is still
-portable even when a provider version has extra columns.
-
-## 4. Migrate an existing Python memory store
-
-Keep the original database as a backup. The importer reads the source and never
-writes to it. It supports the common Python provider tables when present:
-`working_memory`, `episodic_memory`, legacy `memories`, `canonical_facts`,
-`triples`, `facts`, and `annotations`.
-
-Preview counts first:
+## 6. Uninstall
 
 ```bash
-mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
-  --namespace agent:hermes --dry-run --format json
+./install.sh --uninstall            # symlink + provider package, memory kept
+./install.sh --uninstall --purge    # also the engine and $HERMES_HOME/mnemosyne
 ```
 
-Import into the default Rust store (or set `MNEMOSYNE_DB_PATH`):
-
-```bash
-MNEMOSYNE_DB_PATH="$HOME/.local/share/mnemosyne/mnemosyne.db" \
-  mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db \
-  --namespace agent:hermes --format json
-```
-
-Import IDs are deterministic. Running the same command again skips rows already
-present instead of duplicating them. The report includes scanned/imported/skipped
-counts and source-table metadata. Use a different `--namespace` for each Hermes
-profile or memory bank.
-
-## 5. Verify without a cloud key
-
-```bash
-unset ANTHROPIC_API_KEY OPENAI_API_KEY
-MNEMOSYNE_DB_PATH="$HOME/.local/share/mnemosyne/mnemosyne.db" \
-  mnemosyne remember --content "The user prefers local-only storage" \
-  --namespace agent:hermes --no-enrich --format json
-MNEMOSYNE_DB_PATH="$HOME/.local/share/mnemosyne/mnemosyne.db" \
-  mnemosyne recall --query "where should memory be stored" \
-  --namespace agent:hermes --format json
-```
-
-Core storage, keyword search, import, list, graph, MCP discovery, and the
-release binary's deterministic fallback embeddings do not require an API key or
-network access. The default release intentionally excludes the ONNX model
-runtime; it uses a deterministic hash embedding for local remember/recall. On
-stores larger than 1,000 active memories, import and recall report a warning
-because fallback vectors can materially reduce semantic recall. For higher
-retrieval quality, upgrade to the model-backed path:
-
-```bash
-# 1. Install the Python-native package (no Rust compiler needed).
-pip install -e .
-
-# 2. Verify the provider mode: the adapter uses PythonMemoryStorage
-#    with synchronous=NORMAL durability.
-mnemosyne diagnostics
-
-# 3. Embedding rebuilds require upstream mnemosyne-memory 3.15.1 source
-#    (blocked until upstream source is fetched).
-mnemosyne embed --all  # blocked: upstream source MISSING
-```
-
-The `bge-small-en-v1.5` embedding identity (384 dimensions) is preserved
-in `.mnemosyne_notes` and adapter contracts. Do not mix embedding models
-within one database. Run `mnemosyne embed --all` to re-embed the
-whole bank once upstream source is available.
-
-## Configuration and namespaces
-
-- `MNEMOSYNE_DB_PATH` selects the local SQLite/LibSQL database. The value may
-  be absolute, relative, or home-relative; a leading `~` is expanded to your
-  home directory so CLI, import, and the MCP server all resolve to the same
-  database. Absolute paths are recommended for shared or scripted config.
-- `global` stores personal facts shared across projects.
-- `agent:hermes` isolates a Hermes identity.
-- `project:<name>` isolates a workspace.
-- `session:<project>:<id>` isolates temporary context.
-
-For other MCP clients, use the same `mnemosyne mcp` stdio command and the
-standard `mcpServers` configuration shape. The underscore aliases are safe for
-clients that expose provider tools as native commands. The release is local-only
-by default. Distributed Iroh peer networking
-is an explicit source-build feature (blocked until upstream source is fetched).
-See [MCP client configuration examples](MCP_CLIENT_CONFIGS.md) for Claude Code,
-Cursor, Codex, Windsurf, OpenClaw, and generic MCP clients.
+Restart the gateway afterwards, and point `memory.provider` elsewhere if
+`$HERMES_HOME/config.yaml` still selects `mnemosyne`.
 
 ## Troubleshooting
 
 | Symptom | Fix |
-|---|---|
-| `mnemosyne: command not found` | Add `~/.local/bin` to `PATH` or pass `--bin-dir` during install. |
-| Release checksum fails | Delete the partial download and retry; do not bypass verification. |
-| Hermes cannot start the server | Run `mnemosyne mcp --help`; use an absolute command path in Hermes config. |
-| Memories are in the wrong store | Set `MNEMOSYNE_DB_PATH` in the MCP server `env` block and in CLI commands. |
-| Import reports zero rows | Run `--dry-run --format json`; inspect source table presence and keep the original DB unchanged. |
-| No vector model is available | The release uses deterministic fallback embeddings; stores over 1,000 active memories emit a retrieval-quality warning. Build with `--features local-embeddings`, then run `mnemosyne embed --all` for model-backed vectors. |
+| --- | --- |
+| Doctor exits non-zero | Read the first `FAIL` line; `--dry-run` lists the fixes |
+| No provider in `hermes memory status` | Check the plugin symlink, re-run `./install.sh` |
+| Unexpected store path | `hermes mnemosyne doctor --no-fix` prints the resolved path |
+| Fix works in CLI only | Restart the gateway; the old module stays cached |
 
-For protocol details, see [MCP_SERVER.md](../MCP_SERVER.md). For retrieval
-quality methodology, see [benchmark/retrieval/README.md](../benchmark/retrieval/README.md).
+More in [TROUBLESHOOTING.md](../TROUBLESHOOTING.md).

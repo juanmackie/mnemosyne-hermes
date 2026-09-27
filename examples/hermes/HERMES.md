@@ -12,4 +12,5 @@ Memory workspace for a personal agent running a local Hermes model.
 - Durable user preferences go in the `global` namespace.
 - Project-specific facts go in per-project namespaces (auto-detected from
   `HERMES.md` / `AGENTS.md` / `CLAUDE.md` at the repo root).
-- Run `mnemosyne consolidate` periodically to merge duplicate memories.
+- Run `mnemosyne-lite maintenance --auto-apply` periodically to remove exact
+  duplicate memories (it previews the groups and asks first).

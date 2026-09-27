@@ -1,571 +1,191 @@
-# Mnemosyne (Python Runtime — Pivot Complete — Design/Implementation)
+# mnemosyne-hermes
 
-> **Archive reference**: Previous Rust implementation preserved at `feat/hermes-native-provider` (`09a697398672e5a74928bd47ccea6028e563cfc3`) / previous stable main (`ba6fe984`). Archive doc: `docs/archive/RUST_ARCHIVE_REF.md`.
-> **Planning deliverable status**: All 8 ordered items completed (design only; repo-level changes applied; no deployed changes; no DB rebuild/redeploy executed per authorization: `Repo-only`; backup/auth: `Document only`; Rust retirement: `Full retirement`).
-> Contracts preserved: `memory.provider` (`mnemosyne`), namespace (`agent:hermes`), DB path (`MNEMOSYNE_DB_PATH`), tool names (`mnemosyne_memory_search`, `mnemosyne_memory_remember`), persisted identifiers. The canonical Hermes provider is the vendored, engine-backed one in [`integrations/hermes-provider/`](integrations/hermes-provider/README.md); the Rust-era `mnemosyne-rust` adapter is retired as a provider.
+**Current Version**: 3.0.0
 
-# Mnemosyne
+A Hermes memory-provider distribution: the Hermes provider this repo owns, plus
+a small standalone SQLite store that ships alongside it.
 
-> **Fork notice**: This is a community-maintained fork of [rand/mnemosyne](https://github.com/rand/mnemosyne),
-> optimized for the [Hermes](docs/HERMES_INTEGRATION.md) agent runtime — keyless personal-agent operation,
-> graceful degradation without OS keyrings or cloud LLMs, Hermes MCP stdio contract compliance, and
-> OpenViking-inspired hierarchical memory. All changes are released under the same MIT license.
+Two things ship here, and they are deliberately separate:
 
-**Current status (v2.4.0):** dynamic profile slice + typed `extends` edges are delivered and benchmarked; graph-aware `is_latest` is deferred to P5.
+| | What it is | Who installs it |
+| --- | --- | --- |
+| **The provider** — `integrations/hermes-provider/` | A vendored, engine-backed Hermes memory provider. Provider id `mnemosyne`. | `./install.sh` |
+| **The lite surface** — `src/mnemosyne_lite/` | A standalone SQLite keyword store with a CLI (`mnemosyne-lite`) and an MCP stdio server. **Not** a Hermes provider. | `pip install -e .` |
 
-**Local-first persistent memory for Hermes and every MCP-compatible personal agent**
+The provider is the product. The lite surface is a small, keyless store you can
+run without Hermes at all — useful for testing, scripts and MCP clients that are
+not Hermes.
 
-Mnemosyne provides private semantic memory with LibSQL vector search, full-text
-search, graph links, and hierarchical retrieval. It works without a cloud API
-key and keeps the standard MCP surface available for Claude Code, Cursor, Codex,
-Windsurf, and custom agents.
+This repository is **not** [rand/mnemosyne](https://github.com/rand/mnemosyne).
+The Rust product that used to live here is retired; `docs/archive/` and git
+history keep it.
 
-## Hermes-first quickstart
+## What you need
+
+- A Hermes install (`hermes-agent >=0.18,<0.22`) and its virtualenv.
+- [`uv`](https://docs.astral.sh/uv/) — it works in pip-less and root-owned
+  venvs, which is how some Docker Hermes installs ship.
+- Python 3.11+ for the lite surface.
+
+No cloud API key is required, for either half. Memory works keyless: the
+provider is engine-backed keyword/vector search, and the lite store is plain
+SQLite. Optional LLM work inside the engine goes through the model Hermes is
+already configured with — this repo never asks for a second provider key.
+
+## Quickstart — the provider
 
 ```bash
-# Installs the Hermes memory provider (vendored, engine-backed) into the Hermes
-# venv with uv, links the plugin dir and selects the provider. Nothing is
-# written until you confirm; --dry-run prints the plan (venv, symlink, DB path).
-./install.sh --dry-run
-./install.sh
-
-# Prove it before trusting it.
-hermes mnemosyne doctor --no-fix     # must exit 0
-```
-
-Full provider documentation: [`integrations/hermes-provider/README.md`](integrations/hermes-provider/README.md)
-(install, DB paths, fail-loud behaviour, upstream sync policy).
-
-> **Python-only quickstart (pivot)**: `python -m pip install .` (pure Python; no `maturin`/PyO3 if `mnemosyne_core` retired). The Hermes provider contract is `memory.provider: mnemosyne` (DB at `MNEMOSYNE_DB_PATH`); the `mnemosyne-rust` id is retired. See [`integrations/hermes-provider/README.md`](integrations/hermes-provider/README.md). Note this repo's own `mnemosyne` package must **not** be installed into the same venv as the engine — it shadows `mnemosyne/core/*`.
-
-Then register `mnemosyne` in Hermes' `~/.hermes/config.yaml` under `mcp.servers`
-with `command: mnemosyne` and `args: ["mcp"]`. The complete install → configure
-→ import → verify path is [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md).
-
----
-
-## Features
-
-### Core Memory System
-- **Project-Aware**: Automatic namespace detection from git repositories and CLAUDE.md
-- **Semantic Search**: LibSQL vector embeddings + full-text search (FTS5) + graph connectivity
-- **Type System**: Insight, Architecture, Decision, Task, Reference memory types
-- **Graph Linking**: Automatic bidirectional relationship management. Session extraction now also records typed `extends` edges when a later turn restates a stored fact — repetition builds graph structure instead of being silently dropped.
-- **Privacy-First**: Local-only storage with optional privacy-preserving evaluation
-- **Hierarchical Topic Tree** *(OpenViking-inspired)*: memories organized into directories with L0 abstracts / L1 overviews / L2 full content; directory-recursive retrieval with score propagation, retrieval trajectories, and token-budgeted context assembly — see [docs/HIERARCHICAL_MEMORY.md](docs/HIERARCHICAL_MEMORY.md)
-- **Outcome-Aware Reasoning Memory** *(ReasoningBank-inspired)*: distills observable successful-task strategies and failure guardrails with verifier-supplied outcomes, provenance-bound evidence, sparse retrieval, and no hidden chain-of-thought storage — see [docs/REASONING_MEMORY.md](docs/REASONING_MEMORY.md)
-- **Project-context Bootstrap**: a shared, read-only CLI/MCP assembly path for bounded project constraints, facts, reasoning guardrails, policies, skills, provenance, and explicit abstentions — see [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)
-- **Static + Dynamic Profile** *(supermemory-inspired)*: recall carries a standing always-on profile (identity, preferences — no query is close to them) plus a recency-ordered dynamic slice of what the agent is actively working on; both ride beside — never inside — the ranked results
-
-### Evolution System
-- **Consolidation**: Detect and merge duplicate/similar memories with LLM-assisted analysis
-- **Importance Scoring**: Graph-based importance recalibration
-- **Link Decay**: Time-based link strength management
-- **Archival**: Automatic cleanup of low-value memories
-- **Supersede**: Track memory replacements with audit trail
-
-### Evaluation System *(Privacy-Preserving)*
-- **Feedback Collection**: Implicit signals (access, edit, commit) with privacy-preserving task hashing
-- **Feature Extraction**: 13 privacy-preserving features (keyword overlap, semantic similarity, recency, etc.)
-- **Online Learning**: Hierarchical weight adaptation (session → project → global)
-- **Relevance Scoring**: Context-aware ranking with learned weights
-
-### Interactive Collaborative Space (ICS)
-**Integrated context editor accessible via `mnemosyne edit` or `/ics` slash command**
-
-- **CRDT Editing**: Automerge-based collaborative text editor
-- **Template System**: 5 built-in templates (API, Architecture, Bugfix, Feature, Refactor)
-- **Panels**: Memory browser, diagnostics, proposals, typed holes
-- **Syntax Highlighting**: Tree-sitter 0.23 based highlighting for 13 languages (Rust, Python, Go, TypeScript, JavaScript, JSON, TOML, YAML, Markdown, Bash, C, C++, Zig)
-- **Semantic Highlighting (3-Tier System)**:
-  - **Tier 1: Structural** (<5ms real-time) - XML tags, RFC 2119 constraints, modality/hedging, ambiguity detection, domain patterns
-  - **Tier 2: Relational** (<200ms incremental) - Named entities, relationships, semantic roles, coreference resolution, anaphora
-  - **Tier 3: Analytical** (2s+ background, optional) - Discourse analysis, contradiction detection, pragmatics, LLM-powered
-- **ICS Patterns**: `#file`, `@symbol`, `?hole` with color-coded highlighting
-- **Hybrid Highlighting**: Combines tree-sitter syntax with semantic pattern detection (3-layer priority system)
-- **Vim Mode**: Complete vi/vim keybindings with modal editing (14 movement commands: w/b/e, f/F/t/T, PageUp/Down, gg/G)
-- **Semantic Analysis**: Real-time triple extraction, typed hole detection, dependency graphs
-- **Undo/Redo**: Transaction-based history with Automerge
-- **Claude Code Integration**: Seamless handoff via file-based coordination protocol
-
-**Usage**:
-```bash
-# From Claude Code session
-/ics context.md
-/ics --template feature new-feature.md
-/ics --panel memory --template api auth.md
-
-# Command-line
-mnemosyne edit context.md
-mnemosyne edit --template architecture decision.md
-mnemosyne ics --readonly --panel diagnostics review.md
-```
-
-See [docs/guides/ICS_INTEGRATION.md](docs/guides/ICS_INTEGRATION.md) for complete guide.
-
-
-
----
-
-## Quick Start
-
-### Installation
-
-**Hermes memory provider (the tested contract)**:
-```bash
-# There is no curl one-liner: the installer needs a checkout.
 git clone https://github.com/juanmackie/mnemosyne-hermes.git
 cd mnemosyne-hermes
-./install.sh
+./install.sh --dry-run     # prints the resolved venv, DB path and link target
+./install.sh               # provider + pinned engine, into the Hermes venv
+```
+
+`install.sh` does four things and nothing else: installs
+`integrations/hermes-provider` plus the pinned engine into the Hermes venv,
+points `$HERMES_HOME/plugins/mnemosyne` at the vendored package directory, sets
+`memory.provider: mnemosyne` via `hermes config set`, and verifies that exactly
+one provider registers. It never creates or opens the memory database — the
+resolved DB path is printed up front so you can check it first.
+
+## Verify
+
+```bash
 hermes mnemosyne doctor --no-fix   # must exit 0
+hermes memory status               # mnemosyne installed / available / active
 ```
 
-`./install.sh` installs the vendored provider and the pinned engine into the
-Hermes venv, links `$HERMES_HOME/plugins/mnemosyne`, and sets
-`memory.provider=mnemosyne`. Full provider docs:
+`doctor` is the acceptance gate. It prints the resolved DB path, the provider
+package it loaded, the engine version and the detected Hermes version, and its
+exit code is decided by five critical checks — engine importable, provider
+registered exactly once, DB resolved and writable, DB integrity, canonical
+provider deployed. A fresh install with no data directory yet passes: the check
+walks up to the nearest existing ancestor and reports that the path will be
+created.
+
+The full clean-user acceptance lane is `bash scripts/smoke-hermes-onboarding.sh`
+(fresh venv, fresh `HERMES_HOME`, real Hermes, then `doctor` + `memory status` +
+a `sync_turn` round trip + a single-registration check). It needs real symlinks,
+so it runs on Linux/macOS; on Windows it skips.
+
+### Uninstall
+
+```bash
+./install.sh --uninstall          # removes the plugin link and the provider
+./install.sh --uninstall --purge  # also removes the engine and the data dir
+```
+
+Memory is kept unless you pass `--purge`. Both forms print their plan first and
+support `--dry-run`. Restart the gateway afterwards: Hermes caches a loaded
+provider module for the life of the process.
+
+## The lite surface
+
+```bash
+pip install -e .                  # installs `mnemosyne-lite`
+mnemosyne-lite init               # creates ~/.mnemosyne-lite/mnemosyne.db
+mnemosyne-lite remember --content "decided to use SQLite" --importance 8
+mnemosyne-lite recall --query SQLite
+mnemosyne-lite diagnostics        # resolved DB path, counts, live PRAGMA state
+```
+
+Commands: `init`, `remember`, `recall`, `list`, `bootstrap`, `backup`,
+`restore`, `maintenance`, `diagnostics`, `mcp`. Output is Python dict reprs.
+
+The store is created only by `init` and `remember`. Every other command refuses
+to invent an empty database at a mistyped path, and a file that is not a lite
+store is refused byte-identically rather than adopted — that refusal is what
+keeps a mistyped `--db-path` away from an engine bank.
+
+The default database is `~/.mnemosyne-lite/mnemosyne.db`. Override it with
+`--db-path` or `MNEMOSYNE_DB_PATH`; `DATABASE_URL` is honoured only for
+`sqlite://`, `sqlite3://` and `file://`, and any other scheme is rejected
+loudly instead of becoming a file whose name is a URL. Stores created by older
+versions live at `~/.mnemosyne/mnemosyne.db` — point `--db-path` at them or move
+the file; nothing is deleted for you.
+
+### MCP over stdio
+
+```bash
+MNEMOSYNE_DB_PATH=~/.mnemosyne-lite/mnemosyne.db mnemosyne-lite mcp
+```
+
+Newline-delimited JSON-RPC 2.0 on stdin/stdout, logs on stderr. Four tools:
+`mnemosyne_memory_search`, `mnemosyne_memory_remember`, `mnemosyne_prefetch`
+and `mnemosyne_sync_turn` (`mnemosyne.recall` and `mnemosyne.remember` are
+accepted as aliases). A failed call returns `isError: true` rather than an
+empty result, so a client can tell "no match" from "store broken". See
+[MCP_SERVER.md](MCP_SERVER.md) and [docs/MCP_CLIENT_CONFIGS.md](docs/MCP_CLIENT_CONFIGS.md).
+
+## The real architecture
+
+**The provider** is the vendored `hermes_memory_provider` from
+`mnemosyne-memory 3.15.1` — vectors, FTS and graph ranking come from the engine
+(`mnemosyne.core.*`), not from this repo. The snapshot is byte-hashed, and the
+gates that keep it honest are the point of this repository:
+
+| Concern | Where |
+| --- | --- |
+| Upstream provenance + per-file hashes | `integrations/hermes-provider/VENDORED_FROM.json` |
+| Local patches, each with a reason | `integrations/hermes-provider/PATCHES.md` |
+| Upstream contract audit | `integrations/hermes-provider/CONTRACT_AUDIT.md` |
+| Drift gate | `tests/test_vendored_provider.py` |
+| Loader contract (bare venv and engine present) | `tests/test_provider_loader.py` |
+| DB path precedence + doctor checks | `tests/test_provider_db_path.py` |
+| Re-vendor procedure | `scripts/vendor-provider-sync.sh` |
+
+Editing a vendored file is a deliberate act: it needs a `# LOCAL PATCH:` marker,
+a `PATCHES.md` entry and a `VENDORED_FROM.json` hash update in the same change,
+or the drift gate fails.
+
+The provider resolves its database in this order: `memory.mnemosyne.db_path`
+(Hermes `config.yaml`) > `MNEMOSYNE_DB_PATH` > the engine default
+(`MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes`). `db_path` wins over
+`profile_isolation`, and `doctor` warns when the store sits outside
+`$HERMES_HOME`. The full provider documentation is
 [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md).
 
-**Standalone lite surface (not a Hermes provider)**:
-```bash
-# Installs the `mnemosyne-lite` package and its `mnemosyne-lite` console
-# script. It is NOT the Hermes memory provider and must not be installed into
-# the Hermes venv (the engine owns the `mnemosyne` package name). Use its own venv.
-pip install -e .
-mnemosyne-lite --help
-```
+**The lite store** is one SQLite file with an inline schema, no dependencies
+beyond the standard library, and a per-thread connection per thread. Its recall
+memo is per-thread for a reason: the version that validates a memo entry is
+built from the calling thread's own connection, so a shared memo let one thread
+read another's rows. `tests/test_python_hardening.py` and
+`tests/test_recall_freshness.py` cover the storage-safety rules; `bench/` holds
+the recall-latency harness and the one recorded measurement.
 
-
-#### Standalone Python surface (not a Hermes provider)
-
-`src/lib` + `src/mnemosyne_lite` (distribution and console script
-**`mnemosyne-lite`**) are a **standalone** SQLite store with keyword-only recall,
-a CLI (`init`, `remember`, `recall`, `list`, `bootstrap`, `backup`, `restore`,
-`maintenance`, `diagnostics`) and a newline-delimited **MCP stdio server**
-(`mnemosyne-lite mcp`) for scripts and non-Hermes clients. It is **not** the
-Hermes memory provider — the Hermes provider is the engine-backed one (see
-[docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md)) and this surface must
-never be advertised as it.
-
-The distribution is deliberately *not* named `mnemosyne`: that name belongs to
-the engine (`mnemosyne-memory`), which owns the `mnemosyne` import package and
-the `mnemosyne` console script. Installing both under one name merged two
-`mnemosyne/__init__.py`/`cli.py` files into one package and replaced the
-engine's CLI — see
-[integrations/hermes-provider/README.md](integrations/hermes-provider/README.md).
-Do not install this surface into the engine's virtualenv.
-
-Storage safety contract (see `tests/test_python_hardening.py` for the checks):
-
-- A database that is not a Mnemosyne lite store is **refused byte-identically**,
-  including `mnemosyne-memory` engine banks (their `memories` table also has a
-  `namespace` column, but 24 columns overall). Nothing is ALTERed before the
-  shape is validated, and the migration commits in one transaction. `PRAGMA
-  user_version` records the generation; a newer generation is refused rather
-  than downgraded.
-- Read-only commands (`recall`, `list`, `bootstrap`, `maintenance`, `diagnostics`)
-  refuse to run against a missing path instead of creating an empty database.
-  Only `init` and `remember` create one.
-- `maintenance --auto-apply` deletes only byte-identical duplicates inside one
-  namespace and asks for confirmation (`--yes` skips the prompt).
-  Prefix-similar memories are reported as proposals and are never deleted.
-
-**Migration size growth**: the first open of a pre-`content_lower` store adds
-that column, backfills it, and creates a covering index in one transaction.
-Expect the file to grow roughly **3–4×** on a content-heavy store. It is
-one-off; the WAL stays bounded at ~4 MB.
-
-**Migration**:
-```bash
-# Preview, then import an existing Python mnemosyne-memory database.
-mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db --dry-run --format json
-mnemosyne import --from ~/.hermes/mnemosyne/data/mnemosyne.db --namespace agent:hermes --format json
-```
-
-**Uninstallation**:
-```bash
-# Remove binary and MCP config (preserves data)
-./scripts/install/uninstall.sh
-
-# Remove everything including data
-./scripts/install/uninstall.sh --purge
-```
-
-### Set up with your agent (copy-paste)
-
-Paste this to Claude Code, Cursor, Codex, Windsurf, or any agent:
+### Repository layout
 
 ```text
-Set up Mnemosyne local memory on this machine. Fetch the official agent
-runbook and follow it exactly, step by step:
-
-  curl -fsSL https://raw.githubusercontent.com/juanmackie/mnemosyne-hermes/main/docs/AGENT_SETUP.md
-
-Verify each step's check before the next. Never overwrite existing config
-or data. No API keys required — if one seems needed, stop. Finish with a
-pass/fail checklist (step, pass/fail, one-line evidence).
+install.sh                       provider installer (and --uninstall)
+integrations/hermes-provider/    the vendored provider + its gates
+src/mnemosyne_lite/              the standalone store, CLI and MCP server
+tests/                           contract and regression suites
+scripts/                         repo gates, the smoke lane, re-vendor
+bench/                           recall benchmark harness + its record
+docs/                            AGENT_SETUP, HERMES_INTEGRATION, MCP_CLIENT_CONFIGS
+plans/                           working plans, including the review this came from
 ```
-
-The agent reads `docs/AGENT_SETUP.md`, runs install → DB → health check →
-smoke test → MCP wiring, and reports back.
-
-### Basic Usage
-
-Three surfaces exist; only the first is the Hermes memory provider.
-
-**Hermes memory provider** (installed by `./install.sh` into the Hermes venv):
-```bash
-hermes mnemosyne doctor --no-fix    # health; exits non-zero on a critical failure
-hermes mnemosyne stats              # counts from the live store
-hermes mnemosyne inspect "query"    # search the live store
-hermes mnemosyne sleep              # run consolidation
-```
-
-**Standalone lite surface** (`pip install -e .`, in its own venv — this is
-**not** the Hermes provider):
-```bash
-mnemosyne-lite init
-mnemosyne-lite remember --content "User prefers concise code reviews" --importance 8
-mnemosyne-lite recall --query "code review preferences"
-mnemosyne-lite bootstrap --limit 100
-mnemosyne-lite maintenance          # dedup and near-duplicate proposals
-mnemosyne-lite diagnostics
-mnemosyne-lite mcp                  # MCP stdio server for any MCP client
-```
-
-**Engine CLI** (installed into the Hermes venv by `./install.sh`; the engine
-owns the `mnemosyne` command):
-```bash
-mnemosyne store "Database uses LibSQL with vector search" user 9
-mnemosyne recall "database" 5
-mnemosyne stats
-mnemosyne doctor
-```
-
-The retired Rust-era `mnemosyne-ics`, `mnemosyne-dash`, `mnemosyne tui`, and
-`mnemosyne orchestrate` commands are not part of this runtime, and there is no
-standalone binary to download — everything above is pure Python. The ICS work
-lives under `src/` and `docs/features/ICS_*.md`.
-
----
-
-## Architecture
-
-### Storage Layer
-- **LibSQL**: SQLite-compatible with native vector search (sqlite-vec)
-- **Embeddings**:
-  - Default release: deterministic local hash embeddings (keyless, no model download)
-  - Large stores (>1,000 active memories) report when fallback embeddings may reduce semantic recall
-  - Optional model-backed embeddings: `pip install 'mnemosyne-memory[embeddings]'`
-  - Remote: Voyage AI (voyage-3-large, 1536d)
-- **Search Config**: Hybrid scoring (semantic 70%, FTS 20%, graph 10%)
-- **Performance**: 2.25ms avg operations, 0.88ms list, 1.61ms search
-- **Read-Only Support**: Auto-detects and handles read-only databases gracefully
-
-### Multi-Agent System
-```
-┌─────────────────────────────────────────────────────┐
-│           Multi-Agent Orchestration                  │
-│                                                      │
-│  ┌──────────────┐    ┌──────────────┐              │
-│  │ Orchestrator │◄──►│  Optimizer   │              │
-│  │  (Ractor)    │    │  (Ractor)    │              │
-│  └──────┬───────┘    └──────┬───────┘              │
-│         │                   │                        │
-│         │              Skill Discovery               │
-│         ▼                   ▼                        │
-│  ┌──────────────┐    ┌──────────────┐              │
-│  │   Executor   │◄──►│   Reviewer   │              │
-│  │  (Ractor)    │    │  (Ractor)    │              │
-│  │  + Sub-agents│    │ Quality Gates│              │
-│  └──────────────┘    └──────────────┘              │
-└─────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│       Storage + Evolution + Evaluation               │
-│                                                      │
-│  LibSQL  ◄──►  Consolidation  ◄──►  Evaluation     │
-│  Vector       (Deduplication)     (Learning Weights)│
-└─────────────────────────────────────────────────────┘
-```
-
-**Actor Responsibilities**:
-- **Orchestrator**: Work queue, deadlock detection/resolution, phase transitions
-- **Optimizer**: Context management, dynamic skill discovery, memory loading
-- **Reviewer**: Quality gates, test verification, anti-pattern detection
-- **Executor**: Work execution, sub-agent spawning for parallel work
-
----
-
-## CLI Reference
-
-### Hermes provider (`hermes mnemosyne ...`)
-```bash
-hermes mnemosyne stats [--global]
-hermes mnemosyne sleep [--all-sessions] [--dry-run]
-hermes mnemosyne inspect [QUERY] [--limit N]
-hermes mnemosyne clear
-hermes mnemosyne doctor [--dry-run] [--no-fix]
-hermes mnemosyne version
-hermes mnemosyne export --output FILE
-hermes mnemosyne import [--input FILE | --from PROVIDER]
-```
-
-### Standalone lite surface (`mnemosyne-lite ...`)
-```bash
-mnemosyne-lite init
-mnemosyne-lite remember --content TEXT [--namespace NS] [--importance 1-10]
-mnemosyne-lite recall --query TEXT [--namespace NS] [--max-results N]
-mnemosyne-lite list [--namespace NS] [--limit N]
-mnemosyne-lite bootstrap [--namespace NS] [--limit N]
-mnemosyne-lite maintenance [--namespace NS] [--auto-apply --yes]
-mnemosyne-lite diagnostics
-mnemosyne-lite backup [--output DIR]
-mnemosyne-lite restore --backup FILE
-mnemosyne-lite mcp            # alias: serve
-```
-`embed` and `migrate` exist but are blocked pending the upstream
-`mnemosyne-memory` source.
-
-### Engine CLI (`mnemosyne ...`)
-```bash
-mnemosyne store <content> [source] [importance]
-mnemosyne recall <query> [top_k]
-mnemosyne stats | sleep | diagnose | doctor | verify
-mnemosyne export | import | backup | restore | bank | reindex
-mnemosyne mcp [--transport sse] [--port 8080]
-mnemosyne config reload|get|set|migrate
-```
-
-### MCP clients
-Any MCP client drives the same local store:
-```yaml
-mcp:
-  servers:
-    mnemosyne:
-      command: mnemosyne-lite   # or the engine's `mnemosyne`
-      args: ["mcp"]
-```
-
----
-
-## Configuration
-
-### Environment Variables
-```bash
-# Database location (full precedence chain: integrations/hermes-provider/README.md)
-export MNEMOSYNE_DB_PATH="$HOME/.hermes/mnemosyne/data/mnemosyne.db"
-export MNEMOSYNE_DATA_DIR="$HOME/.hermes"   # moves the engine default
-
-# Optional LLM enrichment (core memory is keyless without these)
-export ANTHROPIC_API_KEY="sk-ant-..."
-export VOYAGE_API_KEY="pa-..."              # remote embeddings
-
-# Provider runtime
-export MNEMOSYNE_SKIP_CONTEXTS="cron,flush,subagent,background,skill_loop"
-export MNEMOSYNE_SYNC_ROLES="user"
-```
-
-### Retrieval configuration
-Retrieval weights are engine config keys (`mnemosyne config set <key> <value>`):
-`vec_weight` (vector similarity), `fts_weight` (keyword match), and graph link
-decay. The Hermes provider inherits them automatically.
-
----
-
-## Documentation
-
-### Getting Started
-- [README.md](README.md) - Project overview and quick start (this file)
-- [QUICK_START.md](QUICK_START.md) - Get up and running in 5 minutes
-- [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md) - Installation, DB paths, verification
-
-### For Agents/Developers
-- **[AGENT_GUIDE.md](AGENT_GUIDE.md)** - **START HERE** - Comprehensive development guide
-- [docs/INDEX.md](docs/INDEX.md) - Documentation navigation hub
-- [docs/TYPES_REFERENCE.md](docs/TYPES_REFERENCE.md) - Complete type system reference
-- [docs/STORAGE_SCHEMA.md](docs/STORAGE_SCHEMA.md) - Database schema and query patterns
-
-### Core System
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture and design decisions
-- [ORCHESTRATION.md](ORCHESTRATION.md) - Multi-agent coordination guide
-- [MCP_SERVER.md](MCP_SERVER.md) - MCP protocol integration
-
-### Features
-- [docs/features/EVOLUTION.md](docs/features/EVOLUTION.md) - Memory evolution system
-- [docs/features/VECTOR_SEARCH.md](docs/features/VECTOR_SEARCH.md) - Semantic search implementation
-- [docs/features/PRIVACY.md](docs/features/PRIVACY.md) - Privacy-preserving evaluation
-- [docs/features/ICS_README.md](docs/features/ICS_README.md) - Integrated Context Studio
-- [docs/features/semantic_highlighting.md](docs/features/semantic_highlighting.md) - 3-tier highlighting system
-
-### Guides
-- [docs/guides/migration.md](docs/guides/migration.md) - Migration from TUI to composable tools
-- [docs/guides/llm-reviewer.md](docs/guides/llm-reviewer.md) - LLM reviewer system
-- [docs/guides/llm-reviewer-setup.md](docs/guides/llm-reviewer-setup.md) - Setup and troubleshooting
-- [docs/guides/workflows.md](docs/guides/workflows.md) - Common development workflows
-
-### Specifications
-- [docs/specs/background-processing-spec.md](docs/specs/background-processing-spec.md) - Tier 3 background processing
-- [docs/features/ics-integration-spec.md](docs/features/ics-integration-spec.md) - ICS integration specification
-- [docs/specs/incremental-analysis-spec.md](docs/specs/incremental-analysis-spec.md) - Incremental semantic analysis
-- [docs/features/semantic-highlighter-test-plan.md](docs/features/semantic-highlighter-test-plan.md) - Semantic highlighter testing strategy
-- [docs/specs/tier3-llm-integration-spec.md](docs/specs/tier3-llm-integration-spec.md) - LLM integration architecture
-
-### Development
-- [CHANGELOG.md](CHANGELOG.md) - Version history
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Common issues and solutions
-- [TODO_TRACKING.md](TODO_TRACKING.md) - Development progress tracking
-- [docs/BUILD_OPTIMIZATION.md](docs/BUILD_OPTIMIZATION.md) - Build performance tuning
-
----
-
-## Testing
-
-```bash
-# Full suite (no LLM/API keys needed)
-./test-all.sh --skip-llm
-
-# Focused provider gates
-python tests/test_vendored_provider.py   # vendored snapshot drift
-python tests/test_provider_loader.py     # loader contract
-python tests/test_provider_db_path.py    # DB path precedence
-
-# Repo gates (notes ledger + version drift)
-bash scripts/checks.sh
-
-# Clean-user Hermes onboarding (requires a real Hermes; Linux/macOS)
-bash scripts/smoke-hermes-onboarding.sh
-```
-
----
-
-## Troubleshooting
-
-### `hermes mnemosyne` is not a command
-
-The provider's CLI exists only after `./install.sh` **and** a gateway restart
-(Hermes caches plugin modules per process):
-
-```bash
-hermes memory status
-ls -l "$HERMES_HOME/plugins/mnemosyne"
-hermes mnemosyne doctor --no-fix
-```
-
-`doctor` exits non-zero and names the failing critical check. If it flags
-`canonical provider deployed`, the symlink points away from
-`integrations/hermes-provider/hermes_memory_provider` — re-run `./install.sh`.
-
-### Memory is empty after a restart
-
-`doctor` prints the resolved DB path. A DB outside `$HERMES_HOME` usually means
-`MNEMOSYNE_DATA_DIR` or `MNEMOSYNE_DB_PATH` moved the store; see the precedence
-chain in [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md).
-
-For more, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-
----
-
-## Performance
-
-**Hermes recall path** (177-memory eval corpus, one warm `mnemosyne serve` process):
-
-- Warm `mnemosyne_recall` p95: **20 ms** (was 418 ms before the shared-connection and
-  WAL work). Ranking is unchanged; all of it was fixed per-call cost.
-- The local store runs in WAL mode with `busy_timeout=5000` and `synchronous=NORMAL`.
-  That is what makes a commit-heavy recall path usable: one single-row commit costs
-  ~0.3 ms instead of ~29 ms (rollback journal + `synchronous=FULL`).
-- `synchronous=NORMAL` survives application crashes; an OS or power failure can lose
-  the last few commits. Set `MNEMOSYNE_SQLITE_SYNCHRONOUS=full` for per-commit fsync —
-  still ~2.4× cheaper per commit than the pre-WAL setting. WAL keeps `-wal`/`-shm`
-  sidecars, so the database must live on a local filesystem, not NFS.
-- Retrieval diagnostics are written per query, but the fallback-rate sweep over trace
-  history (O(all traces): 5 ms at 10k rows, 27 ms at 50k) plus golden evaluation runs
-  once every 64 traces, so it never lands on the recall critical path.
-
-**Storage Operations** (Python-native SQLite):
-- Store: direct SQLite INSERT (no subprocess overhead)
-- List: direct SQLite SELECT with namespace filter
-- Search: direct SQLite SELECT with LIKE/keyword match
-
-**Memory**:
-- Python SQLite storage (WAL mode, synchronous=NORMAL)
-- Thread-local connections, bounded access-count flushing
-- Efficient vector storage with LibSQL embeddings
-
-**Scalability**:
-- Thread-local connections for concurrent access
-- WAL mode with manual checkpoint
-- Database-backed job leases for coordination
-- Deadlock prevention via dependency-aware scheduling
-- Context preservation at 75% utilization threshold
-
----
 
 ## Contributing
 
-1. Follow Work Plan Protocol (Phases 1-4: Prompt → Spec → Plan → Artifacts)
-2. Use Beads for task tracking: `bd import -i .beads/issues.jsonl`
-3. Quality gates: Tests pass, no anti-patterns, constraints maintained
-4. Commit before testing (never test uncommitted code)
-5. Run `bash scripts/checks.sh` (notes ledger + version drift) and `bash -n install.sh scripts/*.sh` before PRs
-
-**Development Workflow**:
 ```bash
-# Setup
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-
-# Development cycle
-python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v
-
-# E2E testing
-bash test-all.sh --skip-llm
-
-# Commit
-git add . && git commit -m "Descriptive message"
-
-# Before PR
-./test-all.sh --skip-llm
+./test-all.sh                    # provider contract gates + unit tests
+bash scripts/checks.sh           # repo gates (notes ledger, version drift)
+pre-commit run --all-files       # ruff, ruff format, mypy, shellcheck
 ```
 
----
+`.pre-commit-config.yaml` uses tools on `PATH` rather than pinned hook repos, so
+local and CI runs use the same executables. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## License
+## Credits
 
-See LICENSE file for details.
-
----
-
-## Status
-
-**Current Version**: 2.4.0
-
-Hermes is the primary target runtime. The memory provider is keyless and
-local-first by default: no cloud API key, no OS keyring, and no network access
-required for core memory. Model-backed embeddings are optional.
-
-### Support matrix
-
-| Aspect | Supported | Notes |
-|---|---|---|
-| Primary runtime | Hermes memory provider + MCP stdio | `memory.provider: mnemosyne`; `command: mnemosyne`, `args: ["mcp"]` |
-| Other MCP clients | Claude Code, Cursor, Codex, Windsurf | standard `mcpServers` config |
-| Hermes versions | `>=0.18,<0.22` (tested 0.18.2, 0.19.0, 0.21.2) | see [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md) |
-| Platforms | Linux, macOS, Windows | pure-Python runtime |
-| Storage | Local SQLite/LibSQL | no cloud service required |
-| Embeddings | optional `mnemosyne-memory[embeddings]` | keyless keyword/FTS fallback |
-| Python | 3.11–3.14 | provider runs in the Hermes venv |
-
-Full historical release notes (previously listed here) are superseded by
-[CHANGELOG.md](CHANGELOG.md), the single source of truth for release history.
-Older superseded status reports live in [docs/archive/](docs/archive/). Current
-roadmap and known issues are tracked in [TODO_TRACKING.md](TODO_TRACKING.md).
-
----
-
-For detailed technical documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
-For troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-For MCP server integration, see [MCP_SERVER.md](MCP_SERVER.md).
-For development progress, see [TODO_TRACKING.md](TODO_TRACKING.md).
+- **The engine and the upstream provider** are
+  [AxDSan/mnemosyne](https://github.com/AxDSan/mnemosyne) by Abdias J (AxDSan),
+  MIT licensed. `integrations/hermes-provider/` is a byte-hashed snapshot of the
+  `hermes_memory_provider` package from `mnemosyne-memory 3.15.1`, plus the
+  local patches listed in `PATCHES.md`. Upstream is the source of truth; this
+  repository owns the Hermes-specific plumbing, not the memory engine.
+- **Not related to** [rand/mnemosyne](https://github.com/rand/mnemosyne), a
+  different project that shares the name. That is the Rust product this
+  repository used to be a rewrite of; it is retired here.
+- See [NOTICE](NOTICE) for attribution and [LICENSE](LICENSE) for terms.

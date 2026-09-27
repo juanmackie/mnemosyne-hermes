@@ -2,8 +2,11 @@
 #
 # Example: Search Memories
 #
-# This example demonstrates hybrid search (FTS5 keyword + graph traversal).
-# Mnemosyne finds relevant memories using keyword matching and relationship graphs.
+# `mnemosyne-lite recall` runs a full-text search (SQLite FTS5, ranked by
+# BM25) and filters by namespace and importance. It matches tokens, not
+# substrings: `al` does not find `alpha`. A query with no letters or digits
+# ("%", "_") is searched literally instead. It is keyword search, not
+# semantic search.
 #
 # Usage:
 #   ./search-memories.sh [query]
@@ -15,32 +18,21 @@ QUERY="${1:-architecture decision}"
 echo "🔍 Searching for: '$QUERY'"
 echo ""
 
-# Search with default settings
-echo "=== Basic Search ==="
-mnemosyne recall \
-  --query "$QUERY" \
-  --limit 5 \
-  --format json | \
-  jq -r '.results[] | "[\(.importance)/10] \(.summary)\n  Tags: \(.tags | join(", "))\n"'
+echo "=== Basic search ==="
+mnemosyne-lite recall --query "$QUERY" --max-results 5
 
 echo ""
-echo "=== Filtered by Importance (7+) ==="
-# Search with importance filter
-mnemosyne recall \
-  --query "$QUERY" \
-  --min-importance 7 \
-  --limit 3 \
-  --format json | \
-  jq -r '.results[] | "[\(.importance)/10] \(.summary)"'
+echo "=== Importance 7 and up ==="
+mnemosyne-lite recall --query "$QUERY" --min-importance 7 --max-results 3
 
 echo ""
-echo "=== Search Tips ==="
-echo "  - Use specific technical terms for better results"
-echo "  - Combine with --min-importance to filter low-priority items"
-echo "  - Use --namespace to search within specific projects"
-echo "  - Graph traversal automatically finds related memories"
+echo "=== Search tips ==="
+echo "  - Matching is literal: use words you actually wrote"
+echo "  - --max-results caps the output (default 10)"
+echo "  - --namespace searches one namespace only"
+echo "  - 'mnemosyne-lite diagnostics' lists namespaces and counts"
+echo "  - output is one Python dict per memory; there is no --format json"
 echo ""
 echo "Examples:"
-echo "  mnemosyne recall --query \"bug race condition\""
-echo "  mnemosyne recall --query \"authentication\" --min-importance 8"
-echo "  mnemosyne recall --query \"database\" --namespace \"project:myapp\""
+echo "  mnemosyne-lite recall --query \"race condition\" --namespace project:myapp"
+echo "  mnemosyne-lite recall --query \"authentication\" --min-importance 8"

@@ -1,436 +1,171 @@
 # Mnemosyne MCP Server
 
-## Overview
+The lite surface ships an MCP stdio server. It speaks newline-delimited
+JSON-RPC 2.0 on stdin/stdout, is backed by the lite SQLite store, and needs no
+API key or network access.
 
-The Mnemosyne MCP (Model Context Protocol) server provides a JSON-RPC 2.0 interface over stdio for Claude Code integration. It exposes memory tools organized around the OODA loop, including hierarchical retrieval and bounded result surfaces.
+This is **not** the Hermes provider. The provider is a Hermes plugin (see
+[integrations/hermes-provider/README.md](integrations/hermes-provider/README.md))
+and does not use this server or its tools.
 
-## Running the Server
+## Running it
 
 ```bash
-# Start MCP server (stdio mode for Hermes/Claude Code)
-mnemosyne mcp
-
-# With custom DB path
-MNEMOSYNE_DB_PATH=~/.hermes/mnemosyne/mnemosyne.db mnemosyne mcp
+mnemosyne-lite init        # once: create the store
+mnemosyne-lite mcp         # serve it (alias: mnemosyne-lite serve)
 ```
+
+The store is resolved the same way as every other lite command: `--db-path` >
+`MNEMOSYNE_DB_PATH` > `DATABASE_URL` (only the `sqlite`, `sqlite3` and `file`
+schemes are accepted; anything else is rejected with an error) > the default
+`~/.mnemosyne-lite/mnemosyne.db`.
+
+The server opens the store **before** the request loop, so a missing or foreign
+database fails at startup instead of answering every request with an error. It
+never creates a store: run `mnemosyne-lite init` first.
 
 ## Protocol
 
-### JSON-RPC 2.0
+One JSON object per line on stdin, one per line on stdout. Nothing else is
+written to stdout, so the process is safe to attach to a stdio client. Requests
+without an `id` are notifications and get no response.
 
-All communication uses JSON-RPC 2.0 over stdin/stdout:
-- **Requests**: JSON objects on stdin, one per line
-- **Responses**: JSON objects on stdout, one per line
-- **Logs**: Sent to stderr (not stdout)
+### initialize
 
-### Initialize
-
-Before using the server, send an initialize request:
-
-**Request:**
 ```json
 {"jsonrpc":"2.0","method":"initialize","id":1}
 ```
 
-**Response:**
 ```json
 {
   "jsonrpc": "2.0",
+  "id": 1,
   "result": {
-    "protocolVersion": "2024-11-05",
-    "serverInfo": {
-      "name": "mnemosyne",
-      "version": "0.1.0"
-    },
-    "capabilities": {
-      "tools": {}
-    }
-  },
-  "id": 1
+    "protocolVersion": "2025-06-18",
+    "capabilities": {"tools": {}},
+    "serverInfo": {"name": "mnemosyne-lite", "version": "<package __version__>"}
+  }
 }
 ```
+
+`protocolVersion` echoes the client's value when it is one of `2024-11-05`,
+`2025-03-26` or `2025-06-18`; anything else (or nothing) gets `2025-06-18`.
+`serverInfo.version` is the installed package's `mnemosyne_lite.__version__` —
+the same string `mnemosyne-lite --version` prints, so the sample above shows a
+placeholder rather than a number that goes stale.
+
+### ping
+
+Returns `{"jsonrpc": "2.0", "id": <id>, "result": {}}`.
+
+### tools/list
+
+Returns every lite tool as `{"name", "description", "inputSchema"}`, where
+`inputSchema` is a JSON Schema object with `additionalProperties: false`.
+
+### tools/call
+
+```json
+{"jsonrpc":"2.0","method":"tools/call",
+ "params":{"name":"mnemosyne_memory_search","arguments":{"query":"storage"}},"id":3}
+```
+
+A successful call returns the payload three times over: `structuredContent`
+(the raw dict), `content[0].text` (the same dict as a JSON string) and
+`isError: false`.
 
 ## Tools
 
-### List Available Tools
+All four tools are listed by `tools/list`. Their schemas set
+`additionalProperties: false`, so an unknown argument is an error rather than a
+silently ignored field.
 
-**Request:**
-```json
-{"jsonrpc":"2.0","method":"tools/list","id":2}
-```
+### `mnemosyne_memory_search`
 
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "tools": [
-      {
-        "name": "mnemosyne.recall",
-        "description": "Search memories by semantic query, keywords, or tags...",
-        "input_schema": { ... }
-      },
-      ...
-    ]
-  },
-  "id": 2
-}
-```
+Arguments: `query` (required), `namespace`, `max_results` (1-100, default 10),
+`min_importance` (0-10).
 
-### Memory Tools (MCP)
+Literal substring search over the store.
 
-The adapter exposes these tool schemas (verified):
+### `mnemosyne_memory_remember`
 
-- `mnemosyne_memory_search` — Search memories by keyword/namespace
-- `mnemosyne_memory_remember` — Store a memory (keyless, no API key required)
-- `mnemosyne_prefetch` — Prefetch memories for session
-- `mnemosyne_sync_turn` — Record turn to memory (skips cron/flush/subagent/background/skill_loop contexts)
+Arguments: `content` (required), `namespace`, `importance` (0-10, default 5),
+`context`.
 
-All tools use direct SQLite access (`PythonMemoryStorage`). No subprocess overhead. No LLM required for core operations.
+Stores a memory. No enrichment, no LLM.
 
-#### Search
+### `mnemosyne_prefetch`
 
-**Request:**
-```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne_memory_search","arguments":{"query":"test","namespace":"agent:hermes","max_results":10},"id":3}
-```
+Arguments: same as `mnemosyne_memory_search`.
 
-**Response:**
-```json
-{"jsonrpc":"2.0","result":{"ok":true,"results":[{"id":"...","content":"test memory","namespace":"agent:hermes","importance":5}],"count":1,"namespace":"agent:hermes"},"id":3}
-```
+Recall for a conversation. It adds a bullet-list `text` field for injection.
+When the literal search finds nothing it retries on the 4+ letter words of the
+query and returns the top results by importance and recency.
 
-#### Remember
+### `mnemosyne_sync_turn`
 
-**Request:**
-```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne_memory_remember","arguments":{"content":"test memory","namespace":"agent:hermes","importance":5},"id":4}
-```
+Arguments: `user_text` (required), `assistant_text`, `namespace`, `session_id`,
+`execution_context`, `speaker`, `policy_owner`.
 
-**Response:**
-```json
-{"jsonrpc":"2.0","result":{"ok":true,"results":[{"content":"test memory","namespace":"agent:hermes"}],"count":1,"namespace":"agent:hermes"},"id":4}
-```
+Captures user-authored text from a completed turn. It returns
+`{"ok": true, "synced": false, "status": "skipped"}` instead of writing when
+`execution_context` is `cron`, `flush`, `subagent`, `background` or
+`skill_loop`, when `speaker` is not `user`, when `policy_owner` is neither `""`
+nor `mnemosyne`, or when `user_text` is blank. Otherwise it stores the text and
+returns `status: "captured"` with `source_memory_id`.
 
-#### ORIENT Tools
+Namespaces default to `default`. `agent:hermes` is accepted but is the Hermes
+provider's namespace, not this server's default.
 
-##### 3. mnemosyne.graph
-Get memory graph from seed IDs.
+Aliases: the tool name has its first `.` rewritten to `_`, so `mnemosyne.recall`
+maps to `mnemosyne_memory_search` and `mnemosyne.remember` maps to
+`mnemosyne_memory_remember`. Any other name is an error.
 
-**Request:**
+## Errors
+
+| Situation | Response |
+| --- | --- |
+| Unparsable line | JSON-RPC error `-32700` |
+| Not a JSON-RPC 2.0 request, or `params` is not an object | error `-32600` |
+| Unknown method | error `-32601` |
+| Tool fails | `result` with `isError: true` |
+
+A failing tool call is deliberately **not** a JSON-RPC error: the call itself
+succeeded, the tool did not, and the reason is in `content[0].text`. Strict
+argument validation means an unknown argument, a missing required argument or a
+wrongly typed value all surface this way.
+
+## Client entry
+
 ```json
 {
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "mnemosyne.graph",
-    "arguments": {
-      "seed_ids": ["uuid-1", "uuid-2"],
-      "max_hops": 2
-    }
-  },
-  "id": 5
-}
-```
-
-**Status:** ✅ **Implemented** - Uses bounded storage-backend graph traversal. `max_hops` is capped at 8 and `max_results` defaults to 100 (maximum 1000); truncated responses are marked explicitly.
-
-##### 4. mnemosyne.context
-Get full context for memory IDs.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "mnemosyne.context",
-    "arguments": {
-      "memory_ids": ["uuid-1", "uuid-2"],
-      "include_links": true
-    }
-  },
-  "id": 6
-}
-```
-
-**Status:** ✅ **Implemented** - Fetches memories from storage and optionally expands links. `max_results` defaults to 100 (maximum 1000), and oversized input/link expansions are rejected or marked as truncated.
-
-#### DECIDE Tools
-
-##### 5. mnemosyne.remember
-Store new memory with LLM enrichment.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "mnemosyne.remember",
-    "arguments": {
-      "content": "Decided to use PostgreSQL for user database because...",
-      "namespace": "project:myapp",
-      "importance": 9,
-      "context": "Database selection discussion"
-    }
-  },
-  "id": 7
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "{\"memory_id\": \"uuid\", \"summary\": \"...\", \"importance\": 9, \"tags\": [...]}"
+  "mcpServers": {
+    "mnemosyne-lite": {
+      "command": "mnemosyne-lite",
+      "args": ["mcp"],
+      "env": {
+        "MNEMOSYNE_DB_PATH": "/home/you/.mnemosyne-lite/mnemosyne.db"
       }
-    ]
-  },
-  "id": 7
-}
-```
-
-**Status:** ✅ **Implemented** - Uses LLM service for enrichment
-**Requires:** ANTHROPIC_API_KEY
-
-##### 6. mnemosyne.consolidate
-Merge/supersede similar memories.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "mnemosyne.consolidate",
-    "arguments": {
-      "memory_ids": ["uuid-1", "uuid-2"],
-      "namespace": "project:myapp"
     }
-  },
-  "id": 8
+  }
 }
 ```
 
-**Status:** Phase 5 - Currently returns placeholder
+Use an absolute `command` path if the client does not inherit your `PATH`. The
+same shape works in Hermes, Claude Code, Cursor, Windsurf and OpenClaw; see
+[docs/MCP_CLIENT_CONFIGS.md](docs/MCP_CLIENT_CONFIGS.md) for per-client files.
 
-#### ACT Tools
-
-##### 7. mnemosyne.update
-Update existing memory.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "mnemosyne.update",
-    "arguments": {
-      "memory_id": "uuid",
-      "content": "Updated content",
-      "importance": 10,
-      "add_tags": ["critical", "reviewed"]
-    }
-  },
-  "id": 9
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "{\"memory_id\": \"uuid\", \"updated\": true}"
-      }
-    ]
-  },
-  "id": 9
-}
-```
-
-**Status:** ✅ **Implemented** - Updates via storage backend
-
-##### 8. mnemosyne.delete
-Archive (soft delete) memory.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "mnemosyne.delete",
-    "arguments": {
-      "memory_id": "uuid"
-    }
-  },
-  "id": 10
-}
-```
-
-**Status:** ✅ **Implemented** - Archives via storage backend
-
-## Error Handling
-
-### JSON-RPC Errors
-
-The server returns standard JSON-RPC 2.0 errors:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "error": {
-    "code": -32601,
-    "message": "Method not found: invalid_method"
-  },
-  "id": 1
-}
-```
-
-**Standard Error Codes:**
-- `-32700`: Parse error
-- `-32600`: Invalid request
-- `-32601`: Method not found
-- `-32602`: Invalid params
-- `-32603`: Internal error
-- `-32000`: Application error (tool execution failed)
-
-## Configuration
-
-### API Key Setup
-
-Core memory operations work without any API key (keyless by design). Optional LLM enrichment uses the active Hermes model from `$HERMES_HOME/config.yaml` (no second API key required).
+## Manual test
 
 ```bash
-# Verify keyless operation
-unset ANTHROPIC_API_KEY OPENAI_API_KEY
-mnemosyne remember --content "test" --namespace agent:hermes --no-enrich
+printf '%s\n' \
+  '{"jsonrpc":"2.0","method":"initialize","id":1}' \
+  '{"jsonrpc":"2.0","method":"tools/list","id":2}' \
+  '{"jsonrpc":"2.0","method":"tools/call",'\
+  '"params":{"name":"mnemosyne_memory_search",'\
+  '"arguments":{"query":"storage"}},"id":3}' \
+  | mnemosyne-lite mcp
 ```
 
-**Note:** The server starts without an API key. LLM-dependent tools (optional enrichment) return gracefully when no backend is configured.
-
-## Testing
-
-### Manual Testing
-
-```bash
-# Test initialize
-echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | mnemosyne mcp
-
-# Test list tools
-echo '{"jsonrpc":"2.0","method":"tools/list","id":2}' | mnemosyne mcp
-
-# Test recall
-echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mnemosyne_memory_search","arguments":{"query":"test"}},"id":3}' | mnemosyne mcp
-```
-
-### Test Scripts
-
-```bash
-# Run adapter contract tests
-python -m unittest discover -s integrations/hermes-memory-provider/tests -t . -v
-
-# Skip LLM-dependent tests
-./test-all.sh --skip-llm
-```
-
-## Implementation Status
-
-| Tool | Status | Phase | Notes |
-|------|--------|-------|-------|
-| mnemosyne.recall | ✅ Complete | Current | Hybrid factual search, independently returned anchored response guidance, optional abstention, token/degradation metadata |
-| mnemosyne.list | ✅ Complete | Current | Namespace-based listing with offset pagination |
-| mnemosyne.graph | ✅ Complete | Phase 4 | Storage backend integration |
-| mnemosyne.context | ✅ Complete | Phase 4 | Memory retrieval |
-| mnemosyne.remember | ✅ Complete | Phase 4 | LLM enrichment working |
-| mnemosyne.consolidate | ⏳ Pending | Phase 5 | LLM-guided consolidation |
-| mnemosyne.update | ✅ Complete | Phase 4 | Storage backend integration |
-| mnemosyne.delete | ✅ Complete | Phase 4 | Soft delete (archive) |
-
-## Architecture
-
-```mermaid
-flowchart TD
-    User([User/Agent])
-
-    subgraph Claude["Claude Code"]
-        UI[Slash Commands]
-        Client[MCP Client]
-    end
-
-    Protocol{{JSON-RPC 2.0<br/>over stdio}}
-
-    subgraph Server["Mnemosyne MCP Server"]
-        Handler[Protocol Handler]
-        Router[Tool Router<br/>10 Memory Tools]
-
-        subgraph Services["Core Services"]
-            Storage[(Storage<br/>LibSQL + FTS5 + vectors)]
-            LLM[LLM Service<br/>Claude Haiku]
-            Config[Config Manager<br/>OS Keychain]
-            NS[Namespace<br/>Git-aware]
-        end
-    end
-
-    API[/Anthropic API\]
-    DB[(LibSQL<br/>FTS5 + Graph + vectors)]
-
-    User --> UI
-    UI --> Client
-    Client <--> Protocol
-    Protocol <--> Handler
-    Handler --> Router
-
-    Router --> Storage
-    Router --> LLM
-    Router --> Config
-    Router --> NS
-
-    Storage <--> DB
-    LLM --> API
-    NS --> DB
-```
-
-**Communication**: JSON-RPC 2.0 over stdin/stdout for seamless integration with Claude Code.
-
-### Recall channels
-
-`mnemosyne.recall` keeps `results` factual and returns explicit response
-policies separately in `response_guidance`. The `channels` object reports the
-factual/guidance quotas and independent abstention reasons. If
-`budget_tokens` is supplied, `token_ledger` reports the existing context
-assembler's budget accounting. Interaction policies are global, anchored,
-evidence-backed guidance for response style only; they must not be quoted as
-facts about the user.
-
-**OODA-Aligned Tools**:
-
-| Phase | Tool | Purpose |
-|-------|------|---------|
-| **Observe** | `recall` | Search memories by query |
-| **Observe** | `list` | Browse memories by filters |
-| **Orient** | `graph` | Explore semantic relationships |
-| **Orient** | `context` | Load full project context |
-| **Decide** | `remember` | Store new memory with enrichment |
-| **Decide** | `consolidate` | Merge/supersede duplicate memories |
-| **Act** | `update` | Modify existing memory |
-| **Act** | `delete` | Archive memory (soft delete) |
-| **Observe** | `used` | Report which recalled memories were helpful |
-| **Observe** | `hierarchy` | Browse the hierarchical topic tree |
-
-## Next Steps
-
-**Remaining work**
-1. Continue improving consolidation quality and safety
-2. Expand protocol-level contract tests
-3. Add further bounded context surfaces as retrieval features grow
+Three response lines, one per request. The test suite that keeps this contract
+honest runs with `./test-all.sh`.

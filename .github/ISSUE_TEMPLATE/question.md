@@ -43,7 +43,7 @@ Describe your goal or use case:
 
 ```bash
 # Commands you've run
-mnemosyne ...
+mnemosyne-lite ...
 ```
 
 **What was the result?**

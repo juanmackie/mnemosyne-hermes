@@ -12,15 +12,16 @@ A clear and concise description of the bug.
 
 ## Environment
 
-- **Mnemosyne Version**: [e.g., 1.0.0]
-- **OS**: [e.g., macOS 14.0, Ubuntu 22.04]
-- **Rust Version**: [e.g., 1.75.0]
-- **Python Version** (if using Python bindings): [e.g., 3.11]
-- **Installation Method**: [automated script / manual / cargo install]
+- **Component**: [Hermes provider / lite CLI / lite MCP server]
+- **Version**: output of `hermes mnemosyne version` or `mnemosyne-lite --version`
+- **OS**: [e.g. macOS 14.0, Ubuntu 22.04, Windows 11]
+- **Python Version**: [e.g. 3.11.9]
+- **Hermes Version**: [e.g. 0.19.0, output of `hermes --version`]
+- **Installed with**: [`./install.sh` / `pip install -e .` / other]
 
 ## Steps to Reproduce
 
-1. Run command `mnemosyne ...`
+1. Run command `...`
 2. Expected behavior: ...
 3. Actual behavior: ...
 
@@ -30,61 +31,50 @@ What you expected to happen.
 
 ## Actual Behavior
 
-What actually happened. Include error messages, stack traces, or unexpected output.
+What actually happened. Include error messages, stop the traceback at the line
+that names the problem, and redact any paths containing your username.
 
-```
+```text
 [Paste error messages or output here]
 ```
 
-## Additional Context
-
-### Configuration
+## Diagnostics
 
 ```bash
-# Output of:
-mnemosyne --version
-mnemosyne secrets get ANTHROPIC_API_KEY  # (redact the actual key!)
-echo $MNEMOSYNE_DB_PATH
+# Provider
+hermes mnemosyne doctor --no-fix
+hermes memory status
+hermes --version
+ls -l "$HERMES_HOME/plugins/mnemosyne"
+
+# Lite surface
+mnemosyne-lite diagnostics
+echo "$MNEMOSYNE_DB_PATH"
+ls -l ~/.mnemosyne-lite/
 ```
 
-### Database State
+`mnemosyne-lite diagnostics` prints the resolved database path and counts even
+when the store is missing, which is usually enough to identify the problem.
+Both surfaces print single-line errors to stderr; there is no log level to raise
+and no API key involved in memory storage or search.
 
-```bash
-# Output of:
-ls -la ~/.local/share/mnemosyne/
-# or your custom database path
-```
+## MCP Integration (if applicable)
 
-### Logs
-
-If available, include relevant log output:
-
-```bash
-# For debug logs:
-RUST_LOG=debug mnemosyne [command] 2>&1 | tee /tmp/mnemosyne-debug.log
-```
-
-### MCP Integration (if applicable)
-
-- **Claude Code Version**: [e.g., 1.2.0]
-- **MCP Config**: [project-specific / global]
-
-```json
-// Contents of .claude/mcp_config.json (if relevant)
-```
+- **Client**: [Hermes / Claude Code / Cursor / other, with version]
+- **Server entry**: the `command`, `args` and `env` you configured
 
 ## Workaround
 
-If you found a workaround, please describe it here so others can benefit.
+If you found a workaround, describe it here so others can use it.
 
 ## Possible Solution
 
-If you have ideas about what might be causing the issue or how to fix it, please share.
+If you have an idea about the cause or the fix, share it.
 
 ---
 
 **Before submitting:**
-- [ ] I've checked [TROUBLESHOOTING.md](../../TROUBLESHOOTING.md)
-- [ ] I've searched existing issues
-- [ ] I've included all requested information
-- [ ] I've redacted sensitive information (API keys, paths with usernames)
+- [ ] I have checked [TROUBLESHOOTING.md](../../TROUBLESHOOTING.md)
+- [ ] I have searched the existing issues
+- [ ] I have included the diagnostics output for the surface that failed
+- [ ] I have removed paths with usernames and any private memory content

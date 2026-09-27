@@ -64,19 +64,38 @@ harness output of the last iteration.
 
 ## Recorded result
 
-The retired loop's last state, from git history (commit `64a2c9e`, "best
-0.0051ms p50 (-50%)"), against a starting point of 0.0102 ms:
+Measured on the dev host (Windows, Python 3.11) with `AR_RUNS=5`, after recall
+moved to FTS5 (see below). Median of five invocations:
 
 | metric | value |
 | --- | --- |
-| `search_p50_ms` | 0.0051 |
-| change vs start | −50% |
+| `search_p50_ms` | 0.0058 |
+| `search_p99_ms` | 0.444 |
+| `assert_ok` | 1 |
 
-That number was measured with the layered caches the loop added (id-tuple
-batching, in-place row patching, per-thread counters, two caches). It is **not**
-re-measured here: this doc records what the loop claimed at the time, not a
-current measurement. Anything the loop bought by adding a cache is a claim to
-re-earn, and a cache is also where the cross-thread staleness bug came from.
+Two single invocations during the same session gave p50 0.0053 and 0.0083 — a
+56% spread, which is why the number above is a median and why a single run is
+not a result. The p99 tail is dominated by shape 5 (wide, `max_results=50`),
+where BM25 has to rank every match before the `LIMIT`.
+
+### What changed, and what the old number meant
+
+The retired experiment loop recorded `search_p50_ms` 0.0051 (commit `64a2c9e`,
+"best 0.0051ms p50 (-50%)") against a starting point of 0.0102 ms. It got there
+by layering id-tuple batching, in-place row patching, per-thread counters and
+**two** caches — one of which cached a full copy of every memory's text per
+thread, so memory grew with the corpus times the thread count, and one of which
+was shared across threads and produced a cross-thread staleness bug.
+
+The current implementation replaces the substring scan with an FTS5 index and
+BM25 ranking. That removes the text snapshot entirely (the index is external
+content, so the corpus is not duplicated) and leaves one cache: the per-thread
+recall memo, which only holds rows a thread actually asked for. The p50 is
+within the noise band of the old claim; the honest reading is "about the same
+p50, less memory, real relevance ranking, one fewer cache", not a speed-up.
+
+Ranking is no longer `importance DESC, created_at DESC`: it is `bm25`, then
+that chain as the tie-break, then `id` so a `LIMIT` is deterministic.
 
 ## Scope
 

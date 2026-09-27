@@ -1,825 +1,158 @@
-# Contributing to Mnemosyne
+# Contributing
 
-Thank you for your interest in contributing to Mnemosyne! This document provides guidelines and instructions for contributing to the project.
+Thanks for taking a look. This repository is small and has a narrow job, so the
+rules below are mostly about not breaking the two things that ship.
 
-## Table of Contents
+## What ships
 
-1. [Code of Conduct](#code-of-conduct)
-2. [Getting Started](#getting-started)
-3. [Development Setup](#development-setup)
-4. [Development Workflow](#development-workflow)
-5. [Code Standards](#code-standards)
-6. [Testing Guidelines](#testing-guidelines)
-7. [Documentation](#documentation)
-8. [Pull Request Process](#pull-request-process)
-9. [Issue Guidelines](#issue-guidelines)
-10. [Project Phases](#project-phases)
+1. **The Hermes provider** — `integrations/hermes-provider/`. A vendored,
+   engine-backed memory provider, provider id `mnemosyne`, installed by
+   `./install.sh`. This is the product.
+2. **The lite surface** — `src/mnemosyne_lite/`. A standalone SQLite keyword
+   store with a CLI (`mnemosyne-lite`) and an MCP stdio server. Not a Hermes
+   provider.
 
----
+[README.md](README.md) explains both; [AGENTS.md](AGENTS.md) is the contract for
+what must not drift.
 
-## Code of Conduct
+## Prerequisites
 
-### Our Pledge
+- Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
+- A Hermes install only if you are working on the provider end to end
+  (`hermes-agent >=0.18,<0.22`).
+- No API key. Memory works keyless; if a step demands a key, that is a bug.
 
-We are committed to providing a welcoming and inclusive experience for everyone. We expect all contributors to:
-
-- Use welcoming and inclusive language
-- Be respectful of differing viewpoints and experiences
-- Accept constructive criticism gracefully
-- Focus on what is best for the project and community
-- Show empathy towards other community members
-
-### Our Standards
-
-**Acceptable behavior**:
-- Professional and respectful communication
-- Constructive feedback and collaboration
-- Recognition of others' contributions
-- Focus on technical merit
-
-**Unacceptable behavior**:
-- Harassment or discriminatory language
-- Personal attacks or trolling
-- Publishing others' private information
-- Other conduct inappropriate in a professional setting
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- **Python 1.75+**: Install via [pythonup](https://pythonup.py/)
-- **LibSQL**: Bundled via libsql crate (no separate installation needed)
-- **Git**: For version control
-- **Anthropic API Key**: For testing LLM features (optional for most development)
-
-### Quick Start
-
-1. **Fork the repository** on GitHub
-
-2. **Clone your fork**:
-   ```bash
-   git clone https://github.com/your-username/mnemosyne.git
-   cd mnemosyne
-   ```
-
-3. **Add upstream remote**:
-   ```bash
-   git remote add upstream https://github.com/rand/mnemosyne.git
-   ```
-
-4. **Build the project**:
-   ```bash
-   python build
-   ```
-
-5. **Run tests**:
-   ```bash
-   python test
-   ```
-
-6. **Set up API key** (optional):
-   ```bash
-   python run -- secrets set ANTHROPIC_API_KEY
-   ```
-
----
-
-## Development Setup
-
-### Recommended Tools
-
-- **IDE**: VS Code with python-analyzer extension
-- **Formatter**: pythonfmt (included with Python toolchain)
-- **Linter**: clippy (included with Python toolchain)
-- **Debugger**: LLDB (macOS/Linux) or GDB (Linux)
-
-### VS Code Configuration
-
-`.vscode/settings.json`:
-```json
-{
-  "python-analyzer.checkOnSave.command": "clippy",
-  "editor.formatOnSave": true,
-  "[python]": {
-    "editor.defaultFormatter": "python-lang.python-analyzer"
-  }
-}
-```
-
-### Environment Variables
+## Dev setup
 
 ```bash
-# Optional: Enable debug logging
-export RUST_LOG=debug
+git clone https://github.com/juanmackie/mnemosyne-hermes.git
+cd mnemosyne-hermes
 
-# Optional: Use test API key
-export ANTHROPIC_API_KEY=sk-ant-test-...
-
-# Optional: Custom database path
-export MNEMOSYNE_DB_PATH=./test_mnemosyne.db
+uv tool install ruff==0.16.0
+uv tool install mypy
+uv tool install shellcheck-py
+uv tool install pre-commit
+pre-commit install
 ```
 
----
+The hooks use tools on `PATH` rather than pinned remote hook repos, so a local
+run and a CI run use the same executables and nothing is fetched at hook time.
 
-## Build Optimization
+For the lite surface, `pip install -e .` into its own virtualenv. Do **not**
+install it into a Hermes venv: the engine owns the `mnemosyne` distribution
+name, import package and console script, and the two must not merge.
 
-### Build Profiles
+## Checks
 
-Mnemosyne is configured with multiple build profiles optimized for different scenarios:
-
-#### Development Build (Default)
-```bash
-python build
-```
-- **Time**: ~2-3 minutes incremental, ~5-6 minutes clean
-- **Features**: Incremental compilation enabled, minimal optimization
-- **Use for**: Day-to-day development, quick iterations
-- **Config**: `.python/config.toml` enables incremental builds by default
-
-#### Fast Release Build
-```bash
-python build --profile fast-release
-```
-- **Time**: ~3-4 minutes (faster than full release)
-- **Features**: Thin LTO, parallel codegen, good optimization (opt-level=2)
-- **Use for**: Testing release features without full optimization wait
-- **Trade-off**: 10-15% slower runtime than full release, but 40% faster to compile
-
-#### Production Release Build
-```bash
-python build --release
-```
-- **Time**: ~6-7 minutes clean build
-- **Features**: Full LTO, single codegen-unit, maximum optimization (opt-level=3)
-- **Use for**: Production binaries, benchmarking, final testing
-- **Result**: Fastest possible runtime performance
-
-### Build Performance
-
-**Compilation bottlenecks** (from `python build --release --timings`):
-
-| Category | Time | Primary Crates |
-|----------|------|----------------|
-| Database | ~80s | libsql, libsqlite3-sys, libsql-ffi |
-| Embeddings/ML (optional `local-embeddings`) | ~90s | tokenizers, fastembed, ort |
-| P2P Networking (optional `distributed`) | ~82s | iroh-net, iroh-docs, iroh-blobs |
-| **Main binary** | ~176s | mnemosyne (links non-optional dependencies) |
-| **Total (default build)** | ~6-7 min | heavy crates above are feature-gated and not compiled by default |
-
-**Why these matter**:
-- **Database**: LibSQL provides scalable storage with native vector support
-- **Embeddings/ML**: Fast local embeddings (nomic-embed-text-v1.5); gated behind `local-embeddings`
-- **P2P Networking**: Optional distributed orchestration (`distributed`)
-
-The default release excludes the heavy optional crates unless the
-corresponding feature is enabled — see the optional dependency model below.
-
-### Optimizing Your Development Workflow
-
-**For faster iteration** (recommended for most development):
-```bash
-# 1. Use dev builds (incremental compilation)
-python build
-
-# 2. Run specific tests instead of full suite
-python test --test specific_test_name
-
-# 3. Use python check for syntax validation (faster than build)
-python check
-
-# 4. Use fast-release for near-production testing
-python build --profile fast-release
-```
-
-**For CI/CD pipelines**:
-```bash
-# Cache target/ directory between runs
-# Use sccache or similar for distributed caching
-# Parallel test execution
-python test --jobs 4
-```
-
-### Reducing Build Times
-
-**Already implemented**:
-- ✅ Incremental compilation for dev builds (`.python/config.toml`)
-- ✅ Build script optimization (`opt-level = 3` for build.py)
-- ✅ Fast-release profile for quick testing
-- ✅ Parallel compilation (`jobs = 0` uses all CPU cores)
-- ✅ Optional dependency features: the default build stays small and keyless
-
-**Optional dependency model** — the default build is intentionally minimal and
-keyless. Heavy/optional deps are gated behind `python` features and only compile
-when enabled:
-
-| Feature | Optional deps it pulls | Effect on default build |
-|---|---|---|
-| `local-embeddings` | `fastembed` (ONNX runtime) | Default off; uses deterministic hash embeddings |
-| `distributed` | `iroh`, `ractor_cluster` | Default off; peer networking |
-| `rpc` | `tonic`, `prost` | Default off; gRPC server |
-| `ics-syntax` | tree-sitter grammars | Default off; full ICS syntax highlighting |
-| `legacy-vector-store` | `rusqlite`, `sqlite-vec` | Default off; legacy vector store |
-| `keyring-fallback` | `keyring` | Default off; OS keyring |
-| `python` | `agent` | Default off; Python bridge |
-
-The aggregated `full` feature enables all local opt-in features (`local-embeddings`,
-`ics-syntax`, `dashboard`). See the `[features]` table in `python.toml` for the
-canonical list. We recommend leaving heavy crates feature-gated and only enabling
-what a given binary needs.
-
-**Not recommended**:
-- ❌ Disabling LTO in release builds (30-40% performance regression)
-- ❌ Unconditionally bundling the legacy `rusqlite`/`sqlite-vec` vector store
-  alongside libsql (can produce duplicate symbols and drop libsql's native
-  vector functions at link time)
-
-### Build Troubleshooting
-
-**Issue**: Build times out or takes > 10 minutes
-```bash
-# Check if you're accidentally using release profile
-python build --verbose | grep "profile"
-
-# Ensure incremental compilation is enabled
-grep incremental .python/config.toml
-
-# Clean and rebuild if corruption suspected
-python clean && python build
-```
-
-**Issue**: Out of memory during compilation
-```bash
-# Reduce parallel jobs
-python build --jobs 2
-
-# Or use environment variable
-export CARGO_BUILD_JOBS=2
-```
-
-**Issue**: Linker errors or cryptic failures
-```bash
-# Clean build artifacts
-python clean
-
-# Update dependencies
-python update
-
-# Check for conflicting features
-python tree -d
-```
-
-### Profiling Build Performance
+Run these before you open a pull request:
 
 ```bash
-# Generate HTML timing report
-python build --release --timings
-
-# View report
-open target/python-timings/python-timing.html
-
-# Analyze slowest dependencies
-python3 << 'EOF'
-import json, re
-with open('target/python-timings/python-timing.html') as f:
-    match = re.search(r'const UNIT_DATA = (\[.*?\]);', f.read(), re.DOTALL)
-    if match:
-        units = sorted(json.loads(match.group(1)), key=lambda x: x.get('duration', 0), reverse=True)
-        for u in units[:10]:
-            print(f"{u['name']:30} {u.get('duration', 0):.1f}s")
-EOF
+./test-all.sh                    # provider contract gates + unit tests
+bash scripts/checks.sh           # repo gates (notes ledger, version drift)
+pre-commit run --all-files       # ruff, ruff format, mypy, shellcheck
 ```
 
----
-
-## Development Workflow
-
-### Branch Strategy
-
-- `main`: Stable, production-ready code
-- `feature/*`: New features (e.g., `feature/hybrid-search`)
-- `fix/*`: Bug fixes (e.g., `fix/fts5-trigger`)
-- `docs/*`: Documentation updates (e.g., `docs/architecture`)
-- `refactor/*`: Code refactoring (e.g., `refactor/storage-layer`)
-
-### Creating a Feature Branch
+`./test-all.sh` runs the three provider gates first (they need no engine, no
+Hermes and no network), then pytest:
 
 ```bash
-# Update your local main
-git checkout main
-git pull upstream main
-
-# Create feature branch
-git checkout -b feature/your-feature-name
-
-# Make changes and commit
-git add .
-git commit -m "Add your feature description"
-
-# Push to your fork
-git push origin feature/your-feature-name
+python tests/test_vendored_provider.py   # snapshot hashes + declared patches
+python tests/test_provider_loader.py     # loader contract, engine absent and present
+python tests/test_provider_db_path.py    # DB path precedence + doctor checks
 ```
 
-### Keeping Your Branch Updated
+The clean-user acceptance lane needs real symlinks, so it runs on Linux/macOS
+(CI runs it there; on Windows it skips):
 
 ```bash
-# Fetch upstream changes
-git fetch upstream
-
-# Rebase on upstream main
-git rebase upstream/main
-
-# Force push to your fork (if already pushed)
-git push --force-with-lease origin feature/your-feature-name
+bash scripts/smoke-hermes-onboarding.sh
 ```
 
----
+## The vendored snapshot rule
 
-## Code Standards
+`integrations/hermes-provider/hermes_memory_provider/` is a byte-hashed snapshot
+of the provider shipped by `mnemosyne-memory 3.15.1`. Upstream is the source of
+truth for that code; this repository owns the plumbing around it.
 
-### Python Style Guide
+An edit to a vendored file is a deliberate, reviewable act. The same change must
+contain all three of:
 
-Follow the [Python Style Guide](https://doc.python-lang.org/1.0.0/style/README.html) and use `pythonfmt`:
+1. a `# LOCAL PATCH:` marker at the site, saying why;
+2. an entry in `integrations/hermes-provider/PATCHES.md` (file, date, reason,
+   behaviour, upstream status);
+3. an updated hash, byte count and line count for that file in
+   `integrations/hermes-provider/VENDORED_FROM.json`.
+
+`python tests/test_vendored_provider.py` fails if any of those is missing, or if
+a file drifted without any of them. Compute the hash the way the wheel does:
 
 ```bash
-python fmt
+python -c "import base64,hashlib,pathlib; b=pathlib.Path('PATH').read_bytes(); \
+print(base64.urlsafe_b64encode(hashlib.sha256(b).digest()).decode().rstrip('='))"
 ```
 
-### Naming Conventions
-
-- **Types**: `PascalCase` (e.g., `MemoryNote`, `LlmService`)
-- **Functions**: `snake_case` (e.g., `get_api_key`, `enrich_memory`)
-- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `MAX_TOKENS`, `DEFAULT_MODEL`)
-- **Modules**: `snake_case` (e.g., `storage`, `mcp_server`)
-
-### Error Handling
-
-Always use `Result<T, E>` for fallible operations:
-
-```python
-// Good
-pub fn get_memory(&self, id: MemoryId) -> Result<MemoryNote> {
-    self.storage.get(id)
-}
-
-// Bad
-pub fn get_memory(&self, id: MemoryId) -> MemoryNote {
-    self.storage.get(id).unwrap() // Don't panic!
-}
-```
-
-### Documentation Comments
-
-All public APIs must have documentation:
-
-```python
-/// Retrieves a memory by its unique identifier.
-///
-/// # Arguments
-///
-/// * `id` - The unique identifier of the memory
-///
-/// # Returns
-///
-/// * `Ok(MemoryNote)` - The requested memory
-/// * `Err(MnemosyneError::NotFound)` - If memory doesn't exist
-///
-/// # Examples
-///
-/// ```
-/// let memory = storage.get_memory(id)?;
-/// println!("Found: {}", memory.summary);
-/// ```
-pub fn get_memory(&self, id: MemoryId) -> Result<MemoryNote> {
-    // ...
-}
-```
-
-### Clippy
-
-Fix all clippy warnings before submitting:
-
-```bash
-python clippy -- -D warnings
-```
-
-### Common Patterns
-
-**Async Functions**:
-```python
-pub async fn enrich_memory(&self, content: &str) -> Result<MemoryNote> {
-    // Use .await, not blocking calls
-    let response = self.call_api(content).await?;
-    Ok(response)
-}
-```
-
-**Error Propagation**:
-```python
-// Use ? operator for clean error propagation
-pub fn process(&self) -> Result<()> {
-    let data = self.read_data()?;
-    let processed = self.transform(data)?;
-    self.write_data(processed)?;
-    Ok(())
-}
-```
-
-**Builder Pattern**:
-```python
-let memory = MemoryNote::builder()
-    .content("Decision to use Python")
-    .namespace(Namespace::Global)
-    .importance(8)
-    .build()?;
-```
-
----
-
-## Testing Guidelines
-
-### Test Organization
-
-```
-tests/
-├── unit/           # Unit tests (alongside source)
-├── integration/    # Integration tests
-└── fixtures/       # Test data
-```
-
-### Unit Tests
-
-Place unit tests in the same file as the code:
-
-```python
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_memory_creation() {
-        let memory = MemoryNote::new("test content");
-        assert_eq!(memory.content, "test content");
-    }
-
-    #[tokio::test]
-    async fn test_async_operation() {
-        let result = some_async_fn().await;
-        assert!(result.is_ok());
-    }
-}
-```
-
-### Integration Tests
-
-Place integration tests in `tests/`:
-
-```python
-// tests/integration/storage_test.py
-use mnemosyne::*;
-
-#[tokio::test]
-async fn test_storage_roundtrip() {
-    let storage = LibsqlStorage::new(ConnectionMode::Memory).await.unwrap();
-    let memory = MemoryNote::new("test");
-
-    storage.store(&memory).await.unwrap();
-    let retrieved = storage.get(memory.id).await.unwrap();
-
-    assert_eq!(retrieved.content, memory.content);
-}
-```
-
-### Test Coverage
-
-**Targets**:
-- Critical paths: 90%+
-- Business logic: 80%+
-- Error handling: 70%+
-- Overall: 70%+
-
-**Check coverage**:
-```bash
-python tarpaulin --out Html
-open tarpaulin-report.html
-```
-
-### Test Guidelines
-
-1. **Test names should be descriptive**:
-   ```python
-   #[test]
-   fn test_api_key_env_var_takes_precedence_over_keychain() {
-       // ...
-   }
-   ```
-
-2. **Use fixtures for complex test data**:
-   ```python
-   fn create_test_memory() -> MemoryNote {
-       MemoryNote::builder()
-           .content("Test content")
-           .namespace(Namespace::Global)
-           .build()
-           .unwrap()
-   }
-   ```
-
-3. **Clean up test resources**:
-   ```python
-   #[tokio::test]
-   async fn test_with_cleanup() {
-       let db = ":memory:";
-       let storage = LibsqlStorage::new(ConnectionMode::Memory).await.unwrap();
-
-       // Test logic...
-
-       storage.close().await.unwrap(); // Cleanup
-   }
-   ```
-
-4. **Use `#[ignore]` for tests requiring external resources**:
-   ```python
-   #[tokio::test]
-   #[ignore] // Requires ANTHROPIC_API_KEY
-   async fn test_llm_enrichment() {
-       // ...
-   }
-   ```
-
----
-
-## Documentation
-
-### Code Documentation
-
-**Required**:
-- All public APIs
-- Complex algorithms
-- Non-obvious behavior
-
-**Format**:
-```python
-/// Brief one-line description.
-///
-/// Longer description with more details about behavior,
-/// edge cases, and usage patterns.
-///
-/// # Arguments
-///
-/// * `param` - Description
-///
-/// # Returns
-///
-/// Description of return value
-///
-/// # Errors
-///
-/// Description of error conditions
-///
-/// # Examples
-///
-/// ```
-/// let result = function(arg)?;
-/// ```
-pub fn function(param: Type) -> Result<ReturnType> {
-    // ...
-}
-```
-
-### User Documentation
-
-Update these files for user-facing changes:
-
-- `README.md`: Overview and quick start
-- `integrations/hermes-provider/README.md`: Installation instructions
-- `MCP_SERVER.md`: API documentation
-- `ARCHITECTURE.md`: System design
-
-### Architecture Decision Records (ADRs)
-
-For significant design decisions, add ADRs to `docs/adr/`:
-
-```markdown
-# ADR-001: Use SQLite for Storage
-
-## Status
-Accepted
-
-## Context
-Need a reliable, fast storage backend...
-
-## Decision
-Use SQLite with FTS5...
-
-## Consequences
-Positive: ...
-Negative: ...
-```
-
----
-
-## Pull Request Process
-
-### Before Submitting
-
-**Checklist**:
-- [ ] Code follows style guidelines
-- [ ] Tests pass: `python test`
-- [ ] No clippy warnings: `python clippy`
-- [ ] Code formatted: `python fmt`
-- [ ] Documentation updated
-- [ ] CHANGELOG.md updated (if applicable)
-- [ ] Commit messages are descriptive
-
-### PR Template
-
-```markdown
-## Description
-Brief description of changes
-
-## Type of Change
-- [ ] Bug fix (non-breaking change fixing an issue)
-- [ ] New feature (non-breaking change adding functionality)
-- [ ] Breaking change (fix or feature causing existing functionality to break)
-- [ ] Documentation update
-
-## Testing
-How was this tested?
-
-## Checklist
-- [ ] Tests pass locally
-- [ ] Clippy passes
-- [ ] Documentation updated
-- [ ] CHANGELOG updated
-
-## Related Issues
-Fixes #123
-```
-
-### Review Process
-
-1. **Automated checks** must pass (CI/CD)
-2. **At least one reviewer** must approve
-3. **All comments** must be resolved
-4. **Branch must be up-to-date** with main
-
-### Merging
-
-- Maintainers will merge approved PRs
-- Use "Squash and merge" for feature branches
-- Use "Rebase and merge" for hotfixes
-
----
-
-## Issue Guidelines
-
-### Before Creating an Issue
-
-1. **Search existing issues** to avoid duplicates
-2. **Check documentation** for answers
-3. **Reproduce the bug** with minimal example
-4. **Gather system information** (OS, Python version, etc.)
-
-### Issue Templates
-
-#### Bug Report
-
-```markdown
-**Describe the bug**
-Clear description of the issue
-
-**To Reproduce**
-Steps to reproduce:
-1. ...
-2. ...
-
-**Expected behavior**
-What should happen
-
-**Actual behavior**
-What actually happens
-
-**Environment**
-- OS: [e.g., macOS 14.0]
-- Python: [e.g., 1.75.0]
-- Mnemosyne: [e.g., 0.1.0]
-
-**Additional context**
-Any other relevant information
-```
-
-#### Feature Request
-
-```markdown
-**Problem Statement**
-What problem does this solve?
-
-**Proposed Solution**
-How should this work?
-
-**Alternatives Considered**
-What other approaches were considered?
-
-**Additional Context**
-Any other relevant information
-```
-
-### Issue Labels
-
-- `bug`: Something isn't working
-- `enhancement`: New feature or improvement
-- `documentation`: Documentation updates
-- `good first issue`: Good for newcomers
-- `help wanted`: Extra attention needed
-- `performance`: Performance improvements
-- `security`: Security-related issues
-
----
-
-## Project Phases
-
-Mnemosyne is developed in 10 phases. Check [README.md](README.md) for current status.
-
-### Current Focus Areas
-
-**Phase 2 (Hybrid Search)**:
-- Vector embeddings integration
-- Hybrid ranking algorithm
-- Performance optimization
-
-**Phase 9 (Testing)**:
-- Integration test suite
-- E2E tests for MCP tools
-- Performance benchmarks
-
-**Phase 10 (Documentation)**:
-- User guides and tutorials
-- Video walkthroughs
-- Example projects
-
-### How to Contribute to Each Phase
-
-**Phase 2 (Hybrid Search)**:
-- Implement embedding generation
-- Add vector similarity search
-- Optimize hybrid ranking
-
-**Phase 5 (Multi-Agent Integration)**:
-- Create slash commands
-- Develop hooks for session management
-- Improve skills documentation
-
-**Phase 6 (Agent Orchestration)**:
-- Build agent-specific views
-- Implement background evolution
-- Add role-based access control
-
-**Phase 8 (CLAUDE.md Integration)**:
-- Document memory workflows
-- Create decision trees
-- Write integration guides
-
-**Phase 9 (Testing)**:
-- Write integration tests
-- Create E2E test scenarios
-- Develop benchmarks
-
----
-
-## Getting Help
-
-### Resources
-
-- **Documentation**: [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md)
-- **MCP API**: [MCP_SERVER.md](MCP_SERVER.md)
-- **Installation**: [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md)
-
-### Communication
-
-- **Issues**: For bugs and feature requests
-- **Discussions**: For questions and ideas
-- **Pull Requests**: For code contributions
-
-### Maintainers
-
-- **Lead**: @rand
-- **Response Time**: Usually within 48 hours
-
----
-
-## Recognition
-
-Contributors will be acknowledged in:
-
-- `CONTRIBUTORS.md` file
-- Release notes
-- Project README
-
-Thank you for contributing to Mnemosyne!
-
----
-
-**Version**: 1.0.0
-**Last Updated**: 2025-10-29
+The vendored tree is excluded from ruff, mypy and pyright by configuration in
+`pyproject.toml` and `integrations/hermes-provider/pyproject.toml`. That is
+because it is upstream's code with optional imports that are absent in a bare
+venv — not because the checks were inconvenient. Do not remove the exclusions
+to make a new file pass; fix the file or add a patch.
+
+Re-vendoring procedure: `scripts/vendor-provider-sync.sh`, then triage per
+`PATCHES.md`.
+
+## One version source
+
+`pyproject.toml`, `src/mnemosyne_lite/__init__.py` and the README's
+`**Current Version**` line must agree, and the version literal must not appear
+anywhere else under `src/mnemosyne_lite/`. `scripts/check_version_drift.sh`
+enforces all of that, plus the engine pin in `install.sh`,
+`integrations/hermes-provider/pyproject.toml` and `VENDORED_FROM.json`.
+
+## Adding a gate
+
+`scripts/checks.sh` is the registry. A gate that is not listed there is
+invisible, so add it in the same change that introduces it.
+
+## Code style
+
+- `ruff` for linting and formatting (line length 100, `E F W I UP B SIM`).
+- `mypy` over `src/mnemosyne_lite` and `tests`.
+- `shellcheck -S warning` over `install.sh`, `scripts/` and `bench/`.
+- Comments explain reasons, invariants and hazards. A `ponytail:` comment marks
+  a deliberate shortcut with a known ceiling — name the ceiling and the upgrade
+  condition.
+
+## Tests
+
+Add tests where the behaviour lives:
+
+| What you changed | Where the test goes |
+| --- | --- |
+| Lite CLI behaviour | `tests/test_lite_cli.py` |
+| Lite MCP protocol or tools | `tests/test_lite_mcp.py` |
+| Storage safety, schema, recall semantics | `tests/test_python_hardening.py`, `tests/test_recall_freshness.py` |
+| Provider loader / registration | `tests/test_provider_loader.py` |
+| Provider DB path and doctor checks | `tests/test_provider_db_path.py` |
+| The vendored snapshot | `tests/test_vendored_provider.py` |
+
+Prefer a test that drives the real path (the CLI through `cli.main(argv)`, the
+server through `serve()` with real streams) over one that re-implements it.
+
+## Commits and pull requests
+
+- Describe the work, not the tool. Do not attribute commits to an AI unless you
+  were asked to.
+- Prefer a branch for non-trivial work. CI runs on pushes to `main` and on pull
+  requests.
+- Do not commit scratch state: `.dream-rsi/`, `.pi/`, `bench/data/`,
+  `bench/log.jsonl`, `bench/last_measure.txt`, `*.egg-info/`.
+- If you change a documented contract (a provider id, a tool name, a DB path
+  default, a namespace default), update the docs and the CHANGELOG in the same
+  change, and say in the PR what a user has to do about it.
+
+## Code of conduct
+
+Be straightforward and kind. Assume the other person is competent and busy.
+Disagree about the code, not the person. Harassment or personal attacks are not
+welcome here; maintainers may remove comments, commits or contributors that
+cross that line.

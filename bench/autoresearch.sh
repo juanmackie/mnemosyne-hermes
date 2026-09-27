@@ -15,7 +15,8 @@ case "$SCRIPT_DIR" in
     /*) : ;;
     *) SCRIPT_DIR="$PWD/$SCRIPT_DIR" ;;
 esac
-ROOT="$SCRIPT_DIR"
+# This script lives in bench/, one level below the repo root.
+ROOT="${SCRIPT_DIR%/*}"
 
 # Same pinned-python resolution as .auto/measure.sh (minimal-PATH bash safe).
 if [ -n "${MEASURE_PYTHON:-}" ]; then

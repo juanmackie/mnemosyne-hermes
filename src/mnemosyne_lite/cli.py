@@ -144,8 +144,9 @@ def _package_version():
     Read from the package rather than `importlib.metadata`, which the CLI also
     consults with the wrong name: the fallback to the `mnemosyne` distribution
     reported the *engine's* version (mnemosyne-memory owns that name) as this
-    CLI's. `scripts/check_version_drift.sh` gates this value against
-    pyproject.toml, and mcp.py reports it as `serverInfo.version`.
+    CLI's. It is the distribution's one version source — pyproject.toml reads
+    it dynamically and `scripts/check_version_drift.sh` gates it — and mcp.py
+    reports it as `serverInfo.version`.
     """
     from mnemosyne_lite import __version__
 

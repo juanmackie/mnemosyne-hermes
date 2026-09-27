@@ -1,4 +1,14 @@
-"""Freshness/semantics regression tests; runnable with stdlib unittest."""
+"""Freshness/semantics regression tests; runnable with stdlib unittest.
+
+Two things are pinned here:
+
+* **Freshness** — recall() must reflect the current database state, including
+  writes made by another connection, another thread, or the same connection
+  before a commit.
+* **Matching** — recall() is full-text search (FTS5, BM25-ranked). It matches
+  *tokens*, not substrings, and a query with no letters or digits falls back to
+  a literal substring scan because FTS5 would have no token to match.
+"""
 
 import random
 import sys
@@ -26,6 +36,18 @@ class RecallFreshnessTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def assert_sql_equivalent(self, query, namespace=None, limit=10, importance=None):
+        """recall() must agree with a direct SQL read of the same predicate.
+
+        Compared as an id -> row mapping, not a list: what this asserts is
+        *freshness* (the result reflects the current database state), not the
+        ranking order, which `test_recall_ranks_best_match_first` pins.
+
+        The predicate is the literal substring scan, which is only equivalent
+        here because every query in this file is a whole token or phrase.
+        Full-text search matches tokens, so a substring of a token is not the
+        same query. Keep `limit` above the number of matches, or the two orders
+        can select different top-N rows.
+        """
         conn = self.reader._conn()
         sql = "SELECT * FROM memories WHERE instr(content_lower, ?) > 0"
         params = [query.translate(PythonMemoryStorage.ASCII_LOWER)]
@@ -35,10 +57,10 @@ class RecallFreshnessTests(unittest.TestCase):
         if importance is not None:
             sql += " AND importance >= ?"
             params.append(importance)
-        sql += " ORDER BY importance DESC, created_at DESC LIMIT ?"
+        sql += " ORDER BY importance DESC, created_at DESC, id LIMIT ?"
         params.append(max(1, min(100, limit)))
-        expected = [self.reader._row_to_dict(row) for row in conn.execute(sql, params)]
-        actual = self.reader.recall(query, namespace, limit, importance)
+        expected = {row["id"]: self.reader._row_to_dict(row) for row in conn.execute(sql, params)}
+        actual = {r["id"]: r for r in self.reader.recall(query, namespace, limit, importance)}
         self.assertEqual(expected, actual)
 
     def test_second_instance_insert_update_delete(self):
@@ -136,46 +158,82 @@ class RecallFreshnessTests(unittest.TestCase):
         self.assertEqual(2, len(seen), seen)
         self.assert_sql_equivalent("perthread alpha")
 
-    def test_write_between_candidate_selection_and_fetch(self):
-        original = self.reader._search_candidates
+    def test_recall_ranks_best_match_first(self):
+        """Full-text ranking: the better match comes first, not the importanter one.
 
-        def candidates(conn, query):
-            result = original(conn, query)
-            self.writer.remember("racing freshness marker", "ns", 9)
-            return result
+        The old substring scan ordered by importance alone, so an unrelated but
+        important row could sit above the row actually asked for.
+        """
+        long_id = self.writer.remember("alpha beta gamma delta epsilon zeta", "ns", 10)["id"]
+        short_id = self.writer.remember("alpha", "ns", 1)["id"]
+        ranked = [r["id"] for r in self.reader.recall("alpha", max_results=10)]
+        self.assertEqual(2, len(ranked), ranked)
+        # BM25 normalizes by document length, so the denser document wins even
+        # though its importance is lower.
+        self.assertEqual(short_id, ranked[0])
+        self.assertEqual(long_id, ranked[1])
 
-        self.reader._search_candidates = candidates
-        self.assertEqual(1, len(self.reader.recall("racing freshness")))
+    def test_recall_matches_tokens_not_substrings(self):
+        """Matching is per token; only a query with no letters/digits is literal.
 
-    def test_equal_rank_order(self):
+        `al` used to find `alpha` because recall was a substring scan. It does
+        not now, which is the point of using full-text search. `%` and `_` have
+        no token at all, so they keep the old literal behaviour.
+        """
+        self.writer.remember("alpha beta", "ns", 5)
+        self.writer.remember("100% cotton", "ns", 5)
+        self.writer.remember("under_score", "ns", 5)
+        self.assertEqual([], self.reader.recall("al"))
+        self.assertEqual(1, len(self.reader.recall("alpha")))
+        self.assertEqual(1, len(self.reader.recall("100%")))
+        self.assertEqual(1, len(self.reader.recall("%")))
+        self.assertEqual(1, len(self.reader.recall("_")))
+
+    def test_equal_rank_order_is_deterministic(self):
+        """Equally-ranked rows must come back in the same order every time.
+
+        BM25 ties are the normal case for identical text, so without a unique
+        final key in the ORDER BY a `LIMIT` could drop a different row between
+        two identical queries.
+        """
         for i in range(20):
             self.writer.remember(f"tied rank marker {i}", "ns", 5)
         conn = self.writer._conn()
         conn.execute("UPDATE memories SET created_at=1, importance=5")
         conn.commit()
+        first = [r["id"] for r in self.reader.recall("tied rank marker", max_results=7)]
+        self.assertEqual(7, len(first), first)
+        self.assertEqual(
+            first, [r["id"] for r in self.reader.recall("tied rank marker", max_results=7)]
+        )
         self.assert_sql_equivalent("tied rank marker", limit=7)
 
-    def test_namespace_uses_sql_without_snapshot(self):
-        def unexpected_snapshot(*args):
-            self.fail("namespace-filtered recall must not scan the global snapshot")
-
-        self.reader._search_candidates = unexpected_snapshot
+    def test_namespace_filter_is_applied(self):
         self.writer.remember("namespace marker", "ns", 8)
         self.assert_sql_equivalent("namespace marker", namespace="ns")
         self.assert_sql_equivalent("namespace marker", namespace="other")
+        self.assertEqual([], self.reader.recall("namespace marker", namespace="other"))
 
-    def test_distinct_queries_filters_and_literal_matching(self):
+    def test_distinct_queries_filters_and_token_matching(self):
         rng = random.Random(42)
         terms = ["alpha", "beta", "gamma", "Café", "MÜNCHEN", "100%", "under_score", "back\\slash"]
         for i in range(120):
             text = " ".join(rng.sample(terms, 3)) + f" distinct-{i:04d}"
             self.writer.remember(text, "ns" if i % 2 else "other", i % 10 + 1)
+        # One row per distinct-NNNN token, with the namespace and importance
+        # filters applied. limit is high so the two orders cannot diverge.
         for i in range(120):
-            self.assert_sql_equivalent(
-                f"distinct-{i:04d}", "ns" if i % 3 else "", 1 + i % 20, i % 8
-            )
-        for query in terms + ["ALPHA", "münchen", "%", "_", "al", "absent-marker"]:
-            self.assert_sql_equivalent(query)
+            self.assert_sql_equivalent(f"distinct-{i:04d}", "ns" if i % 3 else "", 100, i % 8)
+        for query in ["alpha", "ALPHA", "gamma", "100%"]:
+            self.assert_sql_equivalent(query, limit=100)
+        # FTS5's unicode61 tokenizer folds case and diacritics, so these match.
+        # That is a deliberate change from the old ASCII-only substring scan.
+        self.assertTrue(self.reader.recall("cafe"))
+        self.assertTrue(self.reader.recall("munchen"))
+        # A query with no letter or digit has no token, so it stays literal.
+        self.assertTrue(self.reader.recall("%"))
+        self.assertTrue(self.reader.recall("_"))
+        self.assertEqual([], self.reader.recall("absent-marker"))
         with self.assertRaises(ValueError):
             self.reader.recall(" ")
 

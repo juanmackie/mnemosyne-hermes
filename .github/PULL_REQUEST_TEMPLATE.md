@@ -4,182 +4,83 @@
 
 **What does this PR do?**
 
-A clear and concise description of the changes.
+A clear and concise description of the change, and why it is needed.
 
 ## Type of Change
 
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
+- [ ] Bug fix (non-breaking change that fixes an issue)
+- [ ] New feature (non-breaking change that adds functionality)
+- [ ] Breaking change (existing behaviour changes)
 - [ ] Documentation update
-- [ ] Performance improvement
-- [ ] Code refactoring
-- [ ] Test improvements
-- [ ] Dependency updates
+- [ ] Refactor or cleanup
+- [ ] Test or CI improvement
+- [ ] Dependency or version bump
 
 ## Related Issues
 
 **Closes:** #[issue number]
-**Related:** #[issue number], #[issue number]
+**Related:** #[issue number]
 
 ## Changes Made
 
-**Summary of changes:**
+**Summary:**
 
 - Change 1: ...
 - Change 2: ...
-- Change 3: ...
 
 **Files changed:**
 
-- `path/to/file.rs`: [what changed]
-- `path/to/test.rs`: [tests added]
-- `docs/file.md`: [docs updated]
+- `src/mnemosyne_lite/<file>.py`: [what changed]
+- `tests/<file>.py`: [tests added]
+- `<doc>.md`: [docs updated]
 
 ## Testing
 
-**How has this been tested?**
+**How has this been verified?**
 
-- [ ] Unit tests added/updated
-- [ ] Integration tests added/updated
-- [ ] Manual testing performed
-- [ ] Tested on multiple platforms
+- [ ] `./test-all.sh` passes (provider contract gates + pytest)
+- [ ] `bash scripts/checks.sh` passes (notes, version drift)
+- [ ] `pre-commit run --all-files` is clean (ruff, mypy, shellcheck)
+- [ ] Manual verification performed
 
-**Test coverage:**
+**Manual verification steps:**
 
-```bash
-# Run tests
-cargo test
+1. Command run: ...
+2. Expected result: ...
+3. Actual result: ...
 
-# Check coverage (if applicable)
-cargo tarpaulin
-```
+**Platforms tested:**
 
-**Manual testing steps:**
-
-1. Step 1: ...
-2. Step 2: ...
-3. Expected result: ...
-4. Actual result: ...
-
-**Tested on:**
-
+- [ ] Linux
 - [ ] macOS
-- [ ] Linux (specify distro: ____________)
-- [ ] Windows (if applicable)
+- [ ] Windows
 
-## Breaking Changes
+## Provider changes
 
-**Does this PR introduce breaking changes?**
+Only fill this in when `integrations/hermes-provider/` changed.
 
-- [ ] No breaking changes
-- [ ] Yes (describe below)
-
-**If yes, describe the breaking changes:**
-
-- What breaks: ...
-- Migration path: ...
-- Deprecation warnings: ...
-
-**Updated documentation:**
-
-- [ ] CHANGELOG.md updated
-- [ ] Migration guide updated (if needed)
-- [ ] API documentation updated
-- [ ] README.md updated (if needed)
-
-## Performance Impact
-
-**Does this change affect performance?**
-
-- [ ] No performance impact
-- [ ] Performance improvement (describe below)
-- [ ] Potential performance regression (describe below)
-
-**If applicable, include benchmarks:**
-
-```
-Before:
-[benchmark results]
-
-After:
-[benchmark results]
-```
+- [ ] The vendored snapshot is byte-identical to upstream (drift gate passes)
+- [ ] If it is not, `PATCHES.md` documents the patch and `VENDORED_FROM.json`
+      hashes are updated in this same commit
+- [ ] `hermes mnemosyne doctor --no-fix` exits 0 after the change
+- [ ] The gateway was restarted before verifying in a live session
 
 ## Documentation
 
-**Documentation updated:**
-
-- [ ] Code comments added/updated
-- [ ] API documentation updated
-- [ ] User documentation updated
-- [ ] Examples added/updated
-- [ ] CHANGELOG.md entry added
-
-**Documentation changes:**
-
-- File 1: ...
-- File 2: ...
+- [ ] Code comments added where a constraint is not obvious
+- [ ] User-facing docs updated (README, QUICK_START, TROUBLESHOOTING, provider
+      README)
+- [ ] `CHANGELOG.md` entry added for a user-facing change
 
 ## Checklist
 
-**Before submitting:**
-
-- [ ] I've read [CONTRIBUTING.md](../CONTRIBUTING.md)
-- [ ] My code follows the project's style guidelines
-- [ ] I've run `cargo fmt` to format my code
-- [ ] I've run `cargo clippy` and addressed warnings
-- [ ] I've added tests that prove my fix/feature works
-- [ ] All existing tests pass (`cargo test`)
-- [ ] I've updated documentation as needed
-- [ ] I've added an entry to CHANGELOG.md (if user-facing change)
-- [ ] My commits have clear, descriptive messages
-- [ ] I've tested this on my local environment
-
-**For Rust changes:**
-
-- [ ] No new `unsafe` code (or justified in comments)
-- [ ] Error handling uses `Result<T, E>` appropriately
-- [ ] No new `unwrap()` or `expect()` in production code (use proper error handling)
-- [ ] Public APIs have doc comments
-- [ ] Breaking changes are documented
-
-**For Python bindings (if applicable):**
-
-- [ ] PyO3 bindings updated
-- [ ] Type hints added
-- [ ] Python tests added/updated
-- [ ] Python documentation updated
-
-**For MCP integration (if applicable):**
-
-- [ ] MCP tools tested with Claude Code
-- [ ] Tool descriptions are clear
-- [ ] Input validation added
-- [ ] Error messages are helpful
+- [ ] I have read [CONTRIBUTING.md](../CONTRIBUTING.md)
+- [ ] The change is scoped to one problem
+- [ ] Tests cover the new behaviour, or the PR body says why they cannot
+- [ ] No secrets, keys, tokens or private memory data are included
+- [ ] No generated or vendored file was edited by hand without a documented reason
+- [ ] Commit messages describe the work, not the tool that produced it
 
 ## Additional Context
 
-**Add any other context about the PR:**
-
-- Design decisions: ...
-- Alternative approaches considered: ...
-- Known limitations: ...
-- Future improvements: ...
-
-**Screenshots (if applicable):**
-
-[Add screenshots for UI changes or visual documentation]
-
----
-
-**For Maintainers:**
-
-**Review checklist:**
-- [ ] Code quality and style
-- [ ] Test coverage adequate
-- [ ] Documentation complete
-- [ ] Breaking changes properly communicated
-- [ ] CHANGELOG.md updated
-- [ ] No security concerns
-- [ ] Performance impact acceptable
+Design decisions, alternatives considered, known limitations, or follow-ups.
