@@ -96,9 +96,7 @@ class RecallFreshnessTests(unittest.TestCase):
         self.reader.remember("local freshness marker", "ns", 8)
         self.assert_sql_equivalent("freshness marker")
         conn = self.reader._conn()
-        conn.execute(
-            "UPDATE memories SET content='updated freshness marker'"
-        )
+        conn.execute("UPDATE memories SET content='updated freshness marker'")
         self.assert_sql_equivalent("updated freshness")  # uncommitted writes
         conn.commit()
         self.assert_sql_equivalent("updated freshness")

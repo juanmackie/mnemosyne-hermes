@@ -29,6 +29,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -222,6 +223,51 @@ def test_restore_takes_a_gzipped_dump_and_writes_a_safety_copy():
         assert _contents(str(safety[0])) == ["original"], "the safety copy is not the old store"
         # The staged temp file must not survive.
         assert not list(pathlib.Path(d).glob("memory.db.restore-tmp.*"))
+        migration_backups = list(pathlib.Path(d).glob("memory.db.pre-v3.*.bak"))
+        assert len(migration_backups) == 1
+        with contextlib.closing(sqlite3.connect(migration_backups[0])) as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+            assert conn.execute("SELECT content FROM memories").fetchall() == [("from the dump",)]
+
+
+def test_restore_v2_backup_preserves_source_and_leaves_no_staging_files():
+    with tempfile.TemporaryDirectory() as d:
+        source = pathlib.Path(d) / "v2.db"
+        dest = pathlib.Path(d) / "restored.db"
+        with contextlib.closing(sqlite3.connect(source)) as conn:
+            conn.executescript((ROOT / "tests/fixtures/lite-v2.sql").read_text(encoding="utf-8"))
+        before = source.read_bytes()
+        code, _, err = _run(["--db-path", str(dest), "restore", "--backup", str(source), "--yes"])
+        assert code == 0, (code, err)
+        assert set(_contents(str(dest))) == {
+            "Legacy xylophone alpha",
+            "Legacy zeppelin beta",
+            "Other xylophone gamma",
+        }
+        assert source.read_bytes() == before
+        assert not list(pathlib.Path(d).glob("restored.db.restore-tmp.*"))
+        backups = list(pathlib.Path(d).glob("restored.db.pre-v3.*.bak"))
+        assert len(backups) == 1
+        with contextlib.closing(sqlite3.connect(backups[0])) as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+            assert conn.execute("SELECT count(*) FROM memories").fetchone()[0] == 3
+
+
+def test_failed_restore_v2_backup_leaves_destination_and_no_staging_files():
+    with tempfile.TemporaryDirectory() as d:
+        source = pathlib.Path(d) / "v2.db"
+        dest = pathlib.Path(d) / "memory.db"
+        with contextlib.closing(sqlite3.connect(source)) as conn:
+            conn.executescript((ROOT / "tests/fixtures/lite-v2.sql").read_text(encoding="utf-8"))
+        assert _run(["--db-path", str(dest), "remember", "--content", "original"])[0] == 0
+        before = dest.read_bytes()
+        with mock.patch.object(CLI.os, "replace", side_effect=OSError("replacement refused")):
+            code, _, err = _run(
+                ["--db-path", str(dest), "restore", "--backup", str(source), "--yes"]
+            )
+        assert code == 1 and "replacement refused" in err, (code, err)
+        assert dest.read_bytes() == before
+        assert not list(pathlib.Path(d).glob("memory.db.restore-tmp.*"))
 
 
 def test_version_labels_come_from_this_package():
@@ -333,9 +379,11 @@ def test_format_json_emits_one_parseable_document():
         # Human-readable text uses aligned columns, not Python dict reprs.
         code, out, err = _run(["--db-path", db, "recall", "--query", "json"])
         assert code == 0, (code, err)
-        assert out.count("\n") == 2, out
-        assert "CONTENT" in out.splitlines()[0], out
-        assert "json please" in out, out
+        lines = out.splitlines()
+        assert len(lines) == 3, out  # header, separator, one result
+        assert "CONTENT" in lines[0], out
+        assert set(lines[1]) == {"-", " "}, out
+        assert "json please" in lines[2], out
 
 
 if __name__ == "__main__":

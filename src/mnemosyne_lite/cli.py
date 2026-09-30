@@ -85,14 +85,11 @@ def _emit_rows(args, rows):
         ]
         for row in rows
     ]
-    widths = [
-        max(len(label), max(len(row[i]) for row in values))
-        for i, label in enumerate(labels)
-    ]
-    print("  ".join(label.ljust(width) for label, width in zip(labels, widths)))
+    widths = [max(len(label), max(len(row[i]) for row in values)) for i, label in enumerate(labels)]
+    print("  ".join(label.ljust(width) for label, width in zip(labels, widths, strict=True)))
     print("  ".join("-" * width for width in widths))
     for row in values:
-        print("  ".join(value.ljust(width) for value, width in zip(row, widths)))
+        print("  ".join(value.ljust(width) for value, width in zip(row, widths, strict=True)))
 
 
 def cmd_init(args):
@@ -308,7 +305,10 @@ def cmd_restore(args):
 
         # Proves the staged file is a store this project can open: a foreign or
         # truncated source is refused here, before the destination is touched.
-        PythonMemoryStorage(staged).close()
+        # Older stores still get their required pre-upgrade backup. Name it
+        # after the permanent destination so it survives as a useful backup,
+        # rather than an orphan named after the temporary staging file.
+        PythonMemoryStorage(staged, migration_backup_base=dest).close()
         os.replace(staged, dest)
     except StorageError as e:
         print(f"ERROR: {backup_path} is not a Mnemosyne store: {e}", file=sys.stderr)

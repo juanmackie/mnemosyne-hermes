@@ -15,6 +15,8 @@ import os
 import sqlite3
 import sys
 import tempfile
+from contextlib import closing
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -38,7 +40,8 @@ def _sha(path):
 
 
 def _columns(path):
-    return [row[1] for row in sqlite3.connect(path).execute("PRAGMA table_info(memories)")]
+    with closing(sqlite3.connect(path)) as conn:
+        return [row[1] for row in conn.execute("PRAGMA table_info(memories)")]
 
 
 def test_recall_treats_wildcards_literally():
@@ -362,6 +365,92 @@ def test_v1_store_gains_the_full_text_index():
             s.close()
 
 
+def test_v2_store_migrates_with_existing_full_text_index():
+    """Upgrade the frozen c928a03 schema, including its FTS and content indexes."""
+    fixture = Path(__file__).with_name("fixtures") / "lite-v2.sql"
+    obsolete_indexes = {
+        "idx_memories_recall",
+        "idx_memories_rank",
+        "idx_memories_lower_null",
+    }
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "v2.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.executescript(fixture.read_text(encoding="utf-8"))
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+            indexes = {row[1] for row in conn.execute("PRAGMA index_list(memories)")}
+            assert obsolete_indexes <= indexes
+            assert conn.execute("SELECT rowid FROM memories ORDER BY rowid").fetchall() == [
+                (5,),
+                (17,),
+                (42,),
+            ]
+            assert conn.execute(
+                "SELECT rowid FROM memories_fts WHERE memories_fts MATCH 'zeppelin'"
+            ).fetchall() == [(17,)]
+            original_rows = conn.execute(
+                "SELECT id, content, namespace, importance, context, summary, keywords, "
+                "created_at, access_count, last_accessed FROM memories ORDER BY id"
+            ).fetchall()
+
+        store = PythonMemoryStorage(str(path))
+        try:
+            conn = store._conn()
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+            assert "content_lower" not in _columns(path)
+            assert [tuple(row) for row in conn.execute("SELECT * FROM memories ORDER BY id")] == (
+                original_rows
+            )
+            indexes = {row[1] for row in conn.execute("PRAGMA index_list(memories)")}
+            assert not obsolete_indexes & indexes
+            assert {
+                row[2] for row in conn.execute("PRAGMA index_info(idx_memories_ns_created)")
+            } == {
+                "namespace",
+                "created_at",
+            }
+            backups = list(Path(d).glob("v2.db.pre-v3.*.bak"))
+            assert len(backups) == 1
+            with closing(sqlite3.connect(backups[0])) as backup:
+                assert backup.execute("PRAGMA user_version").fetchone()[0] == 2
+                assert "content_lower" in _columns(backups[0])
+                assert backup.execute("SELECT * FROM memories ORDER BY id").fetchall() == [
+                    (*row, row[1].lower()) for row in original_rows
+                ]
+                assert obsolete_indexes <= {
+                    row[1] for row in backup.execute("PRAGMA index_list(memories)")
+                }
+
+            assert {row["id"] for row in store.recall("xylophone")} == {"v2-a", "v2-c"}
+            assert [row["id"] for row in store.recall("zeppelin", namespace="ns")] == ["v2-b"]
+            fresh = store.remember("Fresh xylophone delta", "ns", 5)
+            assert {row["id"] for row in store.recall("xylophone", namespace="ns")} == {
+                "v2-a",
+                fresh["id"],
+            }
+            conn.execute("UPDATE memories SET content = 'Updated marimba beta' WHERE id = 'v2-b'")
+            conn.execute("DELETE FROM memories WHERE id = 'v2-c'")
+            conn.commit()
+            assert store.recall("zeppelin") == []
+            assert [row["id"] for row in store.recall("marimba")] == ["v2-b"]
+            assert {row["id"] for row in store.recall("xylophone")} == {"v2-a", fresh["id"]}
+            # rank=1 also checks that the index agrees with its external content.
+            conn.execute(
+                "INSERT INTO memories_fts(memories_fts, rank) VALUES('integrity-check', 1)"
+            )
+            conn.commit()
+        finally:
+            store.close()
+
+        again = PythonMemoryStorage(str(path))
+        try:
+            assert again.count() == 3
+            assert [row["id"] for row in again.recall("marimba")] == ["v2-b"]
+            assert list(Path(d).glob("v2.db.pre-v3.*.bak")) == backups
+        finally:
+            again.close()
+
+
 def test_wal_stays_bounded_under_sustained_writes():
     """wal_autocheckpoint=0 must not mean an unbounded WAL.
 
@@ -543,7 +632,7 @@ def test_refusal_corpus_if_available():
         return
     lite_shapes = (
         list(PythonMemoryStorage.MEMORY_COLUMNS),
-        list(PythonMemoryStorage.MIGRATED_MEMORY_COLUMNS),
+        list(PythonMemoryStorage.PRE_V3_MEMORY_COLUMNS),
     )
     refused = 0
     with tempfile.TemporaryDirectory() as d:

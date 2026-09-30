@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Restoring an older lite store names its pre-upgrade backup after the permanent
+  destination, leaving no orphan backup named after the restore staging file.
+
 ### Changed
 
 - Lite stores migrate to schema v3, removing the duplicate content column and

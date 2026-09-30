@@ -170,12 +170,14 @@ class PythonMemoryStorage:
         "DROP INDEX IF EXISTS idx_memories_lower_null",
     )
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, migration_backup_base: str | None = None):
         """
         Initialize storage with database path.
 
         Args:
             db_path: Path to SQLite database file
+            migration_backup_base: Permanent path used to name pre-upgrade
+                backups when opening a staged restore. Defaults to db_path.
 
         Raises:
             StorageError: If the database directory cannot be created, or the
@@ -188,6 +190,7 @@ class PythonMemoryStorage:
         if db_path == ":memory:":
             raise ValueError(":memory: databases are not supported; use a filesystem path")
         self.db_path = db_path
+        self._migration_backup_base = migration_backup_base or db_path
         self._ensure_db_dir()
         self._local = threading.local()
         self._init_schema_resilient()
@@ -552,9 +555,13 @@ class PythonMemoryStorage:
                 "Nothing was modified."
             )
         columns = tuple(row[1] for row in conn.execute("PRAGMA table_info(memories)"))
-        accepted_columns = (self.MEMORY_COLUMNS,) if version == self.SCHEMA_VERSION else (
-            self.MEMORY_COLUMNS,
-            self.PRE_V3_MEMORY_COLUMNS,
+        accepted_columns = (
+            (self.MEMORY_COLUMNS,)
+            if version == self.SCHEMA_VERSION
+            else (
+                self.MEMORY_COLUMNS,
+                self.PRE_V3_MEMORY_COLUMNS,
+            )
         )
         if columns not in accepted_columns:
             extra = sorted(set(columns) - set(self.PRE_V3_MEMORY_COLUMNS))
@@ -578,7 +585,7 @@ class PythonMemoryStorage:
         try:
             kind, classified_version = self._classify_schema(init_conn)
             if kind == "ours" and classified_version < self.SCHEMA_VERSION:
-                backup_path = f"{self.db_path}.pre-v3.{time.time_ns()}.bak"
+                backup_path = f"{self._migration_backup_base}.pre-v3.{time.time_ns()}.bak"
                 backup_conn = sqlite3.connect(backup_path)
                 try:
                     init_conn.backup(backup_conn)
@@ -900,9 +907,7 @@ class PythonMemoryStorage:
             "access": "access_count DESC",
         }
         if sort_by not in sort_map:
-            raise ValueError(
-                f"unknown sort_by {sort_by!r}; choose recent, importance, or access"
-            )
+            raise ValueError(f"unknown sort_by {sort_by!r}; choose recent, importance, or access")
         limit = max(1, min(1000, limit))
         # This is where buffered access counts become visible (sort_by="access").
         self._flush_accesses()
