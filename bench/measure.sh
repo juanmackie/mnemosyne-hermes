@@ -31,7 +31,7 @@ fi
 }
 
 "$PYBIN" - "$CORPUS_DB" "$ROOT" <<'PYEOF'
-import sys, os, time, random, gc, re
+import sys, os, time, random, gc, re, statistics, tempfile
 sys.path.insert(0, os.path.join(sys.argv[2], "src"))
 
 from mnemosyne_lite.storage import PythonMemoryStorage
@@ -98,6 +98,29 @@ def corpus_valid(s):
         return have == want and not (have & gone)
     except Exception:
         return False
+
+# --- Cold-store path: fresh schema creation and a 5000-row write workload ---
+cold_init_ms, write_5000_ms, store_5000_bytes = [], [], []
+with tempfile.TemporaryDirectory(prefix="mnemosyne-cold-") as cold_dir:
+    for rep in range(3):
+        cold_path = os.path.join(cold_dir, f"cold-{rep}.db")
+        t0 = time.perf_counter()
+        cold = PythonMemoryStorage(cold_path)
+        cold_init_ms.append((time.perf_counter() - t0) * 1000)
+        t0 = time.perf_counter()
+        for i in range(5000):
+            cold.remember(
+                f"Cold benchmark memory {i}: compact row for measuring write cost.",
+                namespace="bench",
+                importance=i % 11,
+            )
+        write_5000_ms.append((time.perf_counter() - t0) * 1000)
+        cold.close()
+        store_5000_bytes.append(os.path.getsize(cold_path))
+
+print(f"METRIC cold_init_p50_ms={statistics.median(cold_init_ms):.4f}")
+print(f"METRIC write_5000_p50_ms={statistics.median(write_5000_ms):.2f}")
+print(f"METRIC store_5000_bytes={int(statistics.median(store_5000_bytes))}")
 
 # --- Open corpus, rebuild only when missing/stale ---
 s = PythonMemoryStorage(db_path)

@@ -330,12 +330,12 @@ def test_format_json_emits_one_parseable_document():
         maintenance = json.loads(out)
         assert maintenance["auto_applied"] is True and maintenance["removed"] == 1, maintenance
 
-        # Text mode is unchanged: one dict repr per line, not JSON.
+        # Human-readable text uses aligned columns, not Python dict reprs.
         code, out, err = _run(["--db-path", db, "recall", "--query", "json"])
         assert code == 0, (code, err)
-        assert out.count("\n") == 1, out
-        assert not out.lstrip().startswith("["), out
-        assert "'content': 'json please'" in out, out
+        assert out.count("\n") == 2, out
+        assert "CONTENT" in out.splitlines()[0], out
+        assert "json please" in out, out
 
 
 if __name__ == "__main__":

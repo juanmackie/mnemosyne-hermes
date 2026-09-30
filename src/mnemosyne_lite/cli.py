@@ -62,16 +62,37 @@ def _emit_value(args, value):
 
 
 def _emit_rows(args, rows):
-    """Print a row list: one JSON array, or one dict repr per line.
+    """Print a row list as one JSON array or a readable aligned text table.
 
     The shapes differ on purpose. A machine-readable caller wants a single
-    document it can parse; a human at a terminal wants one memory per line.
+    document it can parse; a human at a terminal wants labeled columns.
     """
     if getattr(args, "format", "text") == "json":
         print(json.dumps(rows, default=str))
-    else:
-        for row in rows:
-            print(row)
+        return
+    if not rows:
+        print("No memories found.")
+        return
+
+    columns = list(rows[0])
+    labels = [column.replace("_", " ").upper() for column in columns]
+    values = [
+        [
+            str(row.get(column) if row.get(column) is not None else "-")
+            .replace("\n", " ")
+            .replace("\t", " ")
+            for column in columns
+        ]
+        for row in rows
+    ]
+    widths = [
+        max(len(label), max(len(row[i]) for row in values))
+        for i, label in enumerate(labels)
+    ]
+    print("  ".join(label.ljust(width) for label, width in zip(labels, widths)))
+    print("  ".join("-" * width for width in widths))
+    for row in values:
+        print("  ".join(value.ljust(width) for value, width in zip(row, widths)))
 
 
 def cmd_init(args):
@@ -414,7 +435,7 @@ def main(argv=None):
         "--format",
         choices=("text", "json"),
         default="text",
-        help="Output: text (one dict repr per line, default) or json",
+        help="Output: text (aligned table, default) or json",
     )
     # Subcommands accept --db-path and --format too, so
     # `mnemosyne-lite recall --db-path X --format json` works as well as the
@@ -426,7 +447,7 @@ def main(argv=None):
         "--format",
         choices=("text", "json"),
         default=argparse.SUPPRESS,
-        help="Output: text (default) or json",
+        help="Output: text (aligned table, default) or json",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -446,11 +467,6 @@ def main(argv=None):
     p_rem.add_argument("--namespace", default="default")
     p_rem.add_argument("--importance", type=int, default=5)
     p_rem.add_argument("--context", default=None)
-    p_rem.add_argument(
-        "--no-enrich",
-        action="store_true",
-        help="Compatibility flag; core memory never calls an LLM",
-    )
     p_rem.set_defaults(func=cmd_remember)
 
     p_rec = sub.add_parser("recall", parents=[common], help="Search memories")

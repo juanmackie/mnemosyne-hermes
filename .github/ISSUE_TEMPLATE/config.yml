@@ -3,9 +3,9 @@ contact_links:
   - name: 📖 Documentation
     url: https://github.com/juanmackie/mnemosyne-hermes/blob/main/README.md
     about: What this repo is, how to install the provider, and how to verify it
-  - name: 🚀 Quick Start
-    url: https://github.com/juanmackie/mnemosyne-hermes/blob/main/QUICK_START.md
-    about: Get the provider installed and verified in a few minutes
+  - name: 🚀 Get started
+    url: https://github.com/juanmackie/mnemosyne-hermes/blob/main/README.md
+    about: Install the provider or run the standalone lite surface
   - name: 🤖 Agent setup
     url: https://github.com/juanmackie/mnemosyne-hermes/blob/main/docs/AGENT_SETUP.md  # yamllint disable-line rule:line-length
     about: The step-by-step runbook an agent should follow when setting this up

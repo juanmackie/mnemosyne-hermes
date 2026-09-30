@@ -1,8 +1,6 @@
 # Benchmarks
 
-Two things live here: the recall-latency benchmark, and the experiment loop that
-was run against it. The loop's ledgers are not kept in the repo (git history
-has them); only the reproducible harness and this record are.
+This directory contains the reproducible recall-latency harness and its record.
 
 ## `measure.sh` — recall latency
 
@@ -27,6 +25,13 @@ non-zero if recall semantics change:
 - `search_p50_ms`, `search_p99_ms` — median / tail over all shapes (60 reps each)
 - `q0_p50_ms` … `q5_p99_ms` — per-shape median and tail
 
+The same run also reports cold-store metrics from three fresh databases, each
+with 5000 writes:
+
+- `cold_init_p50_ms` — median time to create a new store and its schema
+- `write_5000_p50_ms` — median time to insert 5000 rows
+- `store_5000_bytes` — median database file size after closing the store
+
 ```bash
 bash bench/measure.sh
 MEASURE_PYTHON=/path/to/python bash bench/measure.sh   # pin the interpreter
@@ -34,33 +39,9 @@ MEASURE_PYTHON=/path/to/python bash bench/measure.sh   # pin the interpreter
 
 It needs only the stdlib plus `src/`; no engine, no Hermes, no network.
 
-## Noise
-
-Single-invocation noise at the microsecond scale measured ±8–20% on p50. A
-single run is not a result. `autoresearch.sh` runs the harness `AR_RUNS` times
-(default 3, forced odd) and reports the median per metric, and takes two more
-samples (median-of-5) when the median lands within 8% of `AR_BASELINE` so noise
-cannot flip a keep/discard decision.
-
-```bash
-bash bench/autoresearch.sh
-AR_RUNS=5 AR_BASELINE=0.0051 bash bench/autoresearch.sh
-```
-
-## `run.sh` — experiment ledger
-
-One iteration: measure, append to `bench/log.jsonl`, print the delta against the
-best kept run and the measured noise floor. Nothing is logged on a dry run.
-
-```bash
-./bench/run.sh                                       # dry run, no logging
-./bench/run.sh keep "candidate idea"
-./bench/run.sh discard "candidate idea" '{"why": "..."}'
-```
-
-A run whose measurement failed cannot be logged as `keep`: the harness exit code
-is captured before anything else runs. `bench/last_measure.txt` keeps the raw
-harness output of the last iteration.
+Cold metrics use a fresh database for each sample, so schema initialization and
+write timings do not inherit the persistent recall corpus. These are local
+measurements, not a guarantee about storage hardware or filesystem cache state.
 
 ## Recorded result
 

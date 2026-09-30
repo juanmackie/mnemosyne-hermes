@@ -49,8 +49,8 @@ class RecallFreshnessTests(unittest.TestCase):
         can select different top-N rows.
         """
         conn = self.reader._conn()
-        sql = "SELECT * FROM memories WHERE instr(content_lower, ?) > 0"
-        params = [query.translate(PythonMemoryStorage.ASCII_LOWER)]
+        sql = "SELECT * FROM memories WHERE instr(lower(content), lower(?)) > 0"
+        params = [query]
         if namespace:
             sql += " AND namespace = ?"
             params.append(namespace)
@@ -69,7 +69,7 @@ class RecallFreshnessTests(unittest.TestCase):
         self.assert_sql_equivalent("freshness marker")
         conn = self.writer._conn()
         conn.execute(
-            "UPDATE memories SET content='changed zebra marker', content_lower='changed zebra marker', importance=9 WHERE id=?",
+            "UPDATE memories SET content='changed zebra marker', importance=9 WHERE id=?",
             (mid,),
         )
         conn.commit()
@@ -84,8 +84,8 @@ class RecallFreshnessTests(unittest.TestCase):
         self.assertEqual("I prefer dark mode", self.reader.recall("I prefer")[0]["content"])
         conn = self.writer._conn()
         conn.execute(
-            "UPDATE memories SET content=?, content_lower=? WHERE id=?",
-            ("I prefer light mode", "i prefer light mode", mid),
+            "UPDATE memories SET content=? WHERE id=?",
+            ("I prefer light mode", mid),
         )
         conn.commit()
         self.assertEqual("I prefer light mode", self.reader.recall("I prefer")[0]["content"])
@@ -97,7 +97,7 @@ class RecallFreshnessTests(unittest.TestCase):
         self.assert_sql_equivalent("freshness marker")
         conn = self.reader._conn()
         conn.execute(
-            "UPDATE memories SET content_lower='updated freshness marker', content='updated freshness marker'"
+            "UPDATE memories SET content='updated freshness marker'"
         )
         self.assert_sql_equivalent("updated freshness")  # uncommitted writes
         conn.commit()

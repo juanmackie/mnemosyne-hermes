@@ -22,8 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from mnemosyne_lite.db_path import resolve_db_path
 from mnemosyne_lite.storage import PythonMemoryStorage, StorageSchemaError
 
-# The lite store's exact column list, including the migrated content_lower
-# column. Anything else is a foreign database (notably the mnemosyne-memory
+# The lite store's exact column list. Anything else is a foreign database
+# (notably the mnemosyne-memory
 # engine's 24-column `memories`).
 LEGACY_MEMORIES_DDL = (
     "CREATE TABLE memories ("
@@ -59,8 +59,7 @@ def test_recall_matches_fts_tokens_with_a_literal_fallback():
     This replaces a test that asserted recall() matched LIKE substring
     semantics. It does not any more: FTS5 matches tokens, folds case and
     diacritics, and ranks by BM25. A query with no letter or digit has no token
-    to match, so it falls back to the literal substring scan over
-    `content_lower` -- that is the only path that still uses it.
+    to match, so it falls back to the literal substring scan over `content`.
     """
     with tempfile.TemporaryDirectory() as d:
         s = PythonMemoryStorage(os.path.join(d, "m.db"))
@@ -103,32 +102,12 @@ def test_recall_matches_fts_tokens_with_a_literal_fallback():
         s.close()
 
 
-def test_recall_backfills_rows_missing_the_lowercase_copy():
-    """A row written by a pre-migration version has content_lower NULL; instr()
-    would return NULL for it and silently hide it, so opening the DB backfills.
-    """
+def test_fresh_schema_does_not_duplicate_memory_content():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "m.db")
         s = PythonMemoryStorage(path)
-        s.remember("xylophone keeper", "ns", 5)
-        # Same INSERT a pre-content_lower version would have written.
-        s._conn().execute(
-            "INSERT INTO memories (id, content, namespace, importance, created_at) "
-            "VALUES ('stale', 'stale xylophone row', 'ns', 9, 1.0)"
-        )
-        s._conn().commit()
+        assert "content_lower" not in _columns(path)
         s.close()
-
-        reopened = PythonMemoryStorage(path)
-        assert (
-            reopened._conn()
-            .execute("SELECT COUNT(*) FROM memories WHERE content_lower IS NULL")
-            .fetchone()[0]
-            == 0
-        )
-        ids = [m["id"] for m in reopened.recall("xylophone", namespace="ns")]
-        assert "stale" in ids, ids
-        reopened.close()
 
 
 def test_storage_reuses_one_connection_per_thread():
@@ -219,11 +198,8 @@ def test_resolve_db_path_rejects_non_sqlite():
 def test_foreign_schemas_are_refused_without_writing():
     """A database that is not a lite store is refused byte-identically.
 
-    This is the regression for the worst bug found: `_ensure_content_lower`
-    ALTERed and rewrote EVERY row before validating the file, and because
-    Python's sqlite3 autocommits DDL the damage survived the failure. On a live
-    engine bank (24-column `memories`) it did not even fail — it adopted the
-    bank silently and added a column to it.
+    Classification must reject a foreign file before the persistent WAL switch
+    or any migration DDL. A live engine bank must not acquire lite columns.
     """
     with tempfile.TemporaryDirectory() as d:
         cases = {}
@@ -283,7 +259,7 @@ def test_migration_rolls_back_atomically():
         c.commit()
         c.close()
 
-        # Fail AFTER the ALTER + backfill by making the index step invalid.
+        # Fail during migration by making the index step invalid.
         with mock.patch.object(
             PythonMemoryStorage,
             "INDEXES",
@@ -299,7 +275,7 @@ def test_migration_rolls_back_atomically():
         c = sqlite3.connect(db)
         try:
             columns = [row[1] for row in c.execute("PRAGMA table_info(memories)")]
-            assert "content_lower" not in columns, f"ALTER survived the rollback: {columns}"
+            assert columns == list(PythonMemoryStorage.MEMORY_COLUMNS), columns
             assert c.execute("PRAGMA user_version").fetchone()[0] == 0, (
                 "sentinel survived the rollback"
             )
@@ -326,7 +302,10 @@ def test_legacy_store_migrates_and_stamps_schema_version():
             assert (
                 c.execute("PRAGMA user_version").fetchone()[0] == PythonMemoryStorage.SCHEMA_VERSION
             )
-            assert c.execute("SELECT content_lower FROM memories").fetchone()[0] == "hello world"
+            assert [row[1] for row in c.execute("PRAGMA table_info(memories)")] == list(
+                PythonMemoryStorage.MEMORY_COLUMNS
+            )
+            assert len([name for name in os.listdir(d) if name.endswith(".bak")]) == 1
         finally:
             c.close()
         # Re-opening a migrated store must stay a no-op, not a re-migration.
@@ -344,8 +323,7 @@ def test_v1_store_gains_the_full_text_index():
     """
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "v1.db")
-        # Exactly what the previous release left behind: our columns including
-        # content_lower, a populated corpus, user_version=1, no FTS objects.
+        # A v1 store with the old content_lower column and no FTS objects.
         c = sqlite3.connect(path)
         c.execute(
             "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL, "
@@ -363,7 +341,8 @@ def test_v1_store_gains_the_full_text_index():
 
         s = PythonMemoryStorage(path)
         try:
-            assert s._conn().execute("PRAGMA user_version").fetchone()[0] == 2
+            assert s._conn().execute("PRAGMA user_version").fetchone()[0] == 3
+            assert "content_lower" not in _columns(path)
             assert s.count() == 1
             # The existing row is searchable, so the index was built, not just
             # declared.
@@ -376,7 +355,7 @@ def test_v1_store_gains_the_full_text_index():
             again = PythonMemoryStorage(path)
             try:
                 assert again.count() == 2
-                assert again._conn().execute("PRAGMA user_version").fetchone()[0] == 2
+                assert again._conn().execute("PRAGMA user_version").fetchone()[0] == 3
             finally:
                 again.close()
         finally:
@@ -529,8 +508,8 @@ def test_recall_cache_invalidates_on_writes_and_flushes():
 
         other = sqlite3.connect(db)
         other.execute(
-            "INSERT INTO memories (id, content, content_lower, namespace, importance, created_at) "
-            "VALUES ('zz', 'another widgets row', 'another widgets row', 'ns', 1, 1.0)"
+            "INSERT INTO memories (id, content, namespace, importance, created_at) "
+            "VALUES ('zz', 'another widgets row', 'ns', 1, 1.0)"
         )
         other.commit()
         other.close()

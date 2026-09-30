@@ -97,9 +97,15 @@ mnemosyne-lite diagnostics        # resolved DB path, counts, live PRAGMA state
 ```
 
 Commands: `init`, `remember`, `recall`, `list`, `bootstrap`, `backup`,
-`restore`, `maintenance`, `diagnostics`, `mcp`. Text mode preserves the existing
-command-specific output; pass `--format json` before or after a subcommand for
-one parseable JSON document on stdout.
+`restore`, `maintenance`, `diagnostics`, `mcp`. `recall` and `list` print an
+aligned text table by default; pass `--format json` before or after a subcommand
+for the same JSON document on stdout.
+
+The store uses schema v3, which removes a redundant copy of every memory's text.
+Opening an older lite store makes a timestamped `.pre-v3.*.bak` copy before
+upgrading it. This migration is one-way: older lite releases refuse v3 stores.
+Memory content is limited to 100,000 characters; unknown list sort orders and
+`:memory:` paths are rejected.
 
 `init`, `remember`, and an explicit `restore` from a backup can create the
 store. Read/maintenance commands refuse to invent an empty database at a mistyped
@@ -173,14 +179,13 @@ tests/                           contract and regression suites
 scripts/                         repo gates, the smoke lane, re-vendor
 bench/                           recall benchmark harness + its record
 docs/                            AGENT_SETUP, HERMES_INTEGRATION, MCP_CLIENT_CONFIGS
-plans/                           working plans, including the review this came from
 ```
 
 ## Contributing
 
 ```bash
 ./test-all.sh --skip-llm         # provider contract gates + local unit tests
-bash scripts/checks.sh           # repo gates (notes ledger, version drift)
+bash scripts/checks.sh           # repo gates (version drift)
 pre-commit run --all-files       # ruff, ruff format, mypy, shellcheck
 ```
 

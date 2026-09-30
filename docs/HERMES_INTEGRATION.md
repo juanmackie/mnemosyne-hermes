@@ -9,7 +9,7 @@ Two products ship here, and this page covers only the first:
 | Product | What it is | Doc |
 | --- | --- | --- |
 | Hermes provider | Engine-backed, provider id `mnemosyne` | this page |
-| Lite surface | Standalone SQLite store + MCP server | [QUICK_START.md](../QUICK_START.md) |
+| Lite surface | Standalone SQLite store + MCP server | [README.md](../README.md#the-lite-surface) |
 
 The provider is the only provider this repository registers; the lite surface has
 its own protocol notes in [MCP_SERVER.md](../MCP_SERVER.md). The provider is a vendored

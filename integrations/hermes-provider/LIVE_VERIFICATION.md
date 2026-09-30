@@ -79,8 +79,8 @@ Run in order; stop at the first failure and record it rather than continuing.
    `MNEMOSYNE_DB_PATH` / `hermes mnemosyne doctor` output.
 
 7. **No double-writes with the standalone surface.** If the lite CLI
-   (`src/mnemosyne`) is also pointed at the same file, confirm it refuses
-   (`not a Mnemosyne store`, exit 1) rather than adding `content_lower` to the
+   (`mnemosyne-lite`) is also pointed at the same file, confirm it refuses
+   (`not a Mnemosyne store`, exit 1) rather than adopting or changing the
    engine's bank. This is the storage-safety contract; verify it on the live
    bank rather than trusting the unit tests.
 

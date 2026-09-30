@@ -32,7 +32,6 @@ Describe your goal or use case:
 **Have you checked the documentation?**
 
 - [ ] [README.md](../../README.md)
-- [ ] [QUICK_START.md](../../QUICK_START.md)
 - [ ] [TROUBLESHOOTING.md](../../TROUBLESHOOTING.md)
 - [ ] [DOCUMENTATION.md](../../DOCUMENTATION.md) - Full docs index
 - [ ] [Common Workflows](../../docs/guides/workflows.md)

@@ -10,6 +10,24 @@ ship here. `3.0.0` is the pivot release, and it is breaking.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Lite stores migrate to schema v3, removing the duplicate content column and
+  its content-sized indexes. Older stores are backed up automatically before
+  migration; releases that predate v3 refuse the upgraded file.
+- `recall` and `list` print aligned tables in text mode. `--format json` keeps
+  its existing serialized output.
+- Reject memory content over 100,000 characters, unknown list sort orders, and
+  in-memory SQLite paths instead of truncating or silently falling back.
+
+### Removed
+
+- The resolved notes ledger and its history-dependent CI gate, finished
+  planning documents, duplicate `QUICK_START.md`, and retired benchmark loop.
+- The unused lite `graph()` method, `MemoryRecord` type, and `--no-enrich` flag.
+
 ## [3.0.0] - 2026-09-27
 
 The pivot release. This repository is a Hermes provider distribution now, so

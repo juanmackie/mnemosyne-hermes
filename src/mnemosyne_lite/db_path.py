@@ -16,27 +16,34 @@ from urllib.parse import urlparse
 DEFAULT_DB = os.path.expanduser("~/.mnemosyne-lite/mnemosyne.db")
 
 
+def _filesystem_path(path: str) -> str:
+    if path == ":memory:":
+        raise ValueError(":memory: databases are not supported; use a filesystem path")
+    return path
+
+
 def resolve_db_path(db_path: str | None = None) -> str:
     """Resolve a usable SQLite file path from an explicit path or DATABASE_URL.
 
-    SQLite only understands filesystem paths (and the ``:memory:`` special
-    case). A URL like ``sqlite:///var/lib/mnemosyne.db`` is stripped to its
-    path; any other scheme (``postgres://``, ``mysql://``, ...) is rejected
-    loudly instead of being silently used to create a bogus file whose name is
-    the URL.
+    SQLite paths must name a filesystem file. A URL like
+    ``sqlite:///var/lib/mnemosyne.db`` is stripped to its path; any other scheme
+    (``postgres://``, ``mysql://``, ...) and the connection-local ``:memory:``
+    database are rejected. The store opens one connection per thread, so an
+    in-memory database would give each thread a different store.
 
     Args:
         db_path: Explicit path. When omitted, ``DATABASE_URL`` is consulted,
             then ``~/.mnemosyne-lite/mnemosyne.db``.
 
     Returns:
-        A filesystem path (or ``:memory:``).
+        A filesystem path.
 
     Raises:
-        ValueError: If DATABASE_URL uses an unsupported scheme.
+        ValueError: If DATABASE_URL uses an unsupported scheme or selects
+            ``:memory:``.
     """
     if db_path:
-        return db_path
+        return _filesystem_path(db_path)
 
     raw = (os.getenv("DATABASE_URL") or "").strip()
     if not raw:
@@ -54,7 +61,7 @@ def resolve_db_path(db_path: str | None = None) -> str:
         if parsed.netloc and parsed.netloc != "localhost":
             path = parsed.netloc + parsed.path
         if path in ("", "/"):
-            return ":memory:"
-        return path
+            return _filesystem_path(":memory:")
+        return _filesystem_path(path)
 
-    return raw
+    return _filesystem_path(raw)

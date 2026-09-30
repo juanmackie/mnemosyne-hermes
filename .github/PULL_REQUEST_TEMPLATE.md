@@ -68,7 +68,7 @@ Only fill this in when `integrations/hermes-provider/` changed.
 ## Documentation
 
 - [ ] Code comments added where a constraint is not obvious
-- [ ] User-facing docs updated (README, QUICK_START, TROUBLESHOOTING, provider
+- [ ] User-facing docs updated (README, TROUBLESHOOTING, provider
       README)
 - [ ] `CHANGELOG.md` entry added for a user-facing change
 

@@ -48,7 +48,7 @@ Run these before you open a pull request:
 
 ```bash
 ./test-all.sh                    # provider contract gates + unit tests
-bash scripts/checks.sh           # repo gates (notes ledger, version drift)
+bash scripts/checks.sh           # repo gates (version drift)
 pre-commit run --all-files       # ruff, ruff format, mypy, shellcheck
 ```
 

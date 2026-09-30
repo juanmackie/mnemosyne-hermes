@@ -29,12 +29,11 @@ history keep it; do not restore it.
 | `integrations/hermes-provider/` | The vendored snapshot and every gate around it: `VENDORED_FROM.json` (hashes), `PATCHES.md`, `CONTRACT_AUDIT.md`, `LIVE_VERIFICATION.md`, `README.md`, `pyproject.toml` (engine pin) |
 | `src/mnemosyne_lite/` | `cli.py`, `mcp.py`, `tools.py`, `storage.py`, `db_path.py` |
 | `tests/` | Contract and regression suites (see Verification) |
-| `scripts/` | Repo gates and helpers: `checks.sh` (registry), `check_notes.sh`, `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh`, `upstream-drift-check.py` |
-| `bench/` | The recall-latency harness (`measure.sh`, `autoresearch.sh`, `run.sh`) and its record (`README.md`) |
+| `scripts/` | Repo gates and helpers: `checks.sh` (registry), `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh`, `upstream-drift-check.py` |
+| `bench/` | The recall-latency harness (`measure.sh`) and its record (`README.md`) |
 | `docs/` | `AGENT_SETUP.md`, `HERMES_INTEGRATION.md`, `MCP_CLIENT_CONFIGS.md`; `docs/archive/` is historical |
 | `examples/` | Runnable usage examples |
-| `plans/` | Working plans; historical context, not current contracts |
-| Root docs | `README.md`, `QUICK_START.md`, `TROUBLESHOOTING.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `MCP_SERVER.md`, `AGENTS.md`, `LICENSE`, `NOTICE` |
+| Root docs | `README.md`, `TROUBLESHOOTING.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `MCP_SERVER.md`, `AGENTS.md`, `LICENSE`, `NOTICE` |
 
 ## Contracts that must not drift
 
@@ -63,6 +62,12 @@ history keep it; do not restore it.
   `mnemosyne.remember` aliases; the `sync_turn` skip semantics.
 - **Lite default DB** `~/.mnemosyne-lite/mnemosyne.db`, and `DATABASE_URL`
   accepted only for `sqlite`/`sqlite3`/`file`.
+- **Lite schema v3** removes the duplicated `content_lower` column and its
+  content indexes. Before upgrading an older store, create a timestamped
+  `.pre-v3.*.bak` backup; older versions refuse v3. Reject content over 100,000
+  characters, unknown `sort_by` values, and `:memory:` paths.
+- **Lite CLI text output** for `recall` and `list` is an aligned table; JSON
+  output remains the machine-readable format.
 - **Storage safety.** Classification runs before any DDL/DML/persistent pragma,
   and a refusal leaves the file byte-identical. Do not move a write ahead of the
   classification. WAL stays bounded. One connection per thread, and the recall
@@ -88,7 +93,7 @@ history keep it; do not restore it.
 
 ```bash
 ./test-all.sh --skip-llm          # provider contract gates + local unit tests
-bash scripts/checks.sh            # repo gates (notes ledger, version drift)
+bash scripts/checks.sh            # repo gates (version drift)
 pre-commit run --all-files        # ruff, ruff format, mypy, shellcheck
 bash scripts/smoke-hermes-onboarding.sh   # clean-user acceptance (Linux/macOS)
 ```
@@ -121,13 +126,11 @@ there is invisible. Add new gates to it.
   an AI unless explicitly asked.
 - Prefer a branch for non-trivial work. CI runs on pushes to `main` and on pull
   requests.
-- Do not commit scratch state: `.dream-rsi/`, `.pi/`, `bench/data/`,
-  `bench/log.jsonl`, `bench/last_measure.txt`, `*.egg-info/`.
+- Do not commit scratch state: `.dream-rsi/`, `.pi/`, `bench/data/`, `*.egg-info/`.
 
 ## Documentation index
 
 - `README.md` — what ships, quickstart, verify, the lite surface, credits.
-- `QUICK_START.md` — the short version of the same.
 - `docs/AGENT_SETUP.md` — the step-by-step runbook an agent executes.
 - `integrations/hermes-provider/README.md` — the canonical provider document.
 - `docs/HERMES_INTEGRATION.md` — the longer Hermes integration guide.
@@ -137,8 +140,8 @@ there is invisible. Add new gates to it.
 
 ## Known gaps
 
-- `plans/` and `docs/archive/` are historical. Do not treat them as contracts
-  and do not update them unless a task targets them.
+- `docs/archive/` is historical. Do not treat it as a contract or update it
+  unless a task targets it.
 - `integrations/hermes-provider/LIVE_VERIFICATION.md` has not been executed
   against a live gateway in this repository's history. The CI smoke lane is the
   substitute evidence.

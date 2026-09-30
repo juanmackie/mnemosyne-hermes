@@ -18,7 +18,6 @@ import re
 import sqlite3
 import threading
 import time
-from dataclasses import asdict, dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -52,24 +51,6 @@ def _fts_match_expression(query: str) -> str | None:
     return " ".join('"' + token.replace('"', '""') + '"' for token in query.split())
 
 
-@dataclass
-class MemoryRecord:
-    id: str
-    content: str
-    namespace: str
-    importance: int
-    context: str | None = None
-    summary: str | None = None
-    keywords: list[str] | None = None
-    created_at: float | None = None
-    access_count: int = 0
-    last_accessed: float | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        return d
-
-
 class StorageError(RuntimeError):
     """Raised when the store cannot be opened at all (locked, unreadable)."""
 
@@ -98,14 +79,14 @@ class PythonMemoryStorage:
     # HIGHER version was written by a newer release: refuse it rather than
     # downgrade-migrate it.
     #
-    # 1 -> 2 added the FTS5 full-text index (`memories_fts`, see FTS_DDL).
-    SCHEMA_VERSION = 2
-    # Versions this release opens and migrates forward. 0 is a store written
-    # before the sentinel existed: a legacy lite table, or an empty file.
-    MIGRATABLE_SCHEMA_VERSIONS = (0, 1)
+    # 1 -> 2 added FTS5; 2 -> 3 removes content_lower and its redundant indexes.
+    SCHEMA_VERSION = 3
+    # Versions this release opens and migrates forward. 0 is a legacy lite
+    # store written before the sentinel existed, or an empty file.
+    MIGRATABLE_SCHEMA_VERSIONS = (0, 1, 2)
 
-    # The exact column set this store writes to `memories` (pre- and
-    # post-content_lower). Anything else is not ours and is refused untouched.
+    # The exact column set this store writes to `memories`. Anything else is
+    # not ours and is refused untouched.
     #
     # This is an allowlist, not a "required columns" check, on purpose: the
     # mnemosyne-memory engine's own `memories` table has 24 columns *including*
@@ -123,7 +104,7 @@ class PythonMemoryStorage:
         "access_count",
         "last_accessed",
     )
-    MIGRATED_MEMORY_COLUMNS = MEMORY_COLUMNS + ("content_lower",)
+    PRE_V3_MEMORY_COLUMNS = MEMORY_COLUMNS + ("content_lower",)
 
     SCHEMA = """
         CREATE TABLE IF NOT EXISTS memories (
@@ -136,11 +117,7 @@ class PythonMemoryStorage:
             keywords TEXT,
             created_at REAL DEFAULT 0,
             access_count INTEGER DEFAULT 0,
-            last_accessed REAL,
-            -- ASCII-lowered copy of content, written by remember() and
-            -- backfilled by _ensure_content_lower(). Trailing position so the
-            -- column order of SELECT * matches a migrated database.
-            content_lower TEXT
+            last_accessed REAL
         )
     """
 
@@ -169,36 +146,11 @@ class PythonMemoryStorage:
     # current, so opening stays O(1) instead of reindexing the corpus.
     FTS_SCHEMA_VERSION = 2
 
-    # Case folding for the content_lower column and for recall queries.
-    # Both SQLite's lower() (used by the backfill and by remember's INSERT) and
-    # LIKE's case-insensitivity are ASCII-only, so this table is the exact
-    # match. Python's str.lower() must not be used: it folds non-ASCII too,
-    # which would make a search match where LIKE would not.
-    ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
-
     # Tuples, not lists: shared class-level constants must not be mutable.
     INDEXES = (
         "CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)",
         "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_memories_ns_created ON memories(namespace, created_at)",
-        # Matches the recall query shape (namespace filter + ORDER BY importance
-        # DESC, created_at DESC) *and* carries the searched column, so the scan
-        # can filter and walk rows in output order without touching the table.
-        # Without it, every scanned row cost a table fetch (~0.4ms of the
-        # ~0.8ms tail for selective queries); with it, only the returned rows
-        # are fetched. Costs one content-sized index (see README notes).
-        "CREATE INDEX IF NOT EXISTS idx_memories_recall ON memories(namespace, importance, created_at, content_lower)",
-        # Same trick for UNFILTERED recall (no namespace): the ORDER BY streams
-        # straight from this index with no temp b-tree sort, the LIKE/instr
-        # filter is evaluated from the index columns, and LIMIT stops the scan
-        # as soon as enough matches are found (common terms match early:
-        # ~0.8ms -> ~0.1ms). ponytail: if the planner ever stops picking it,
-        # prefer dropping it over INDEXED BY heroics.
-        "CREATE INDEX IF NOT EXISTS idx_memories_rank ON memories(importance DESC, created_at DESC, content_lower, namespace)",
-        # Partial index over only the rows _ensure_content_lower() has to fix.
-        # Normally empty, which makes the "is a backfill needed?" probe an O(1)
-        # covering-index seek instead of a full table scan on every open.
-        "CREATE INDEX IF NOT EXISTS idx_memories_lower_null ON memories(content_lower) WHERE content_lower IS NULL",
     )
 
     # Obsolete indexes, dropped by name on open. Indexes whose *columns* change
@@ -213,6 +165,9 @@ class PythonMemoryStorage:
         # + temp b-tree sort is ~4x faster; list(sort=importance)
         # sorts cheaply without it at this scale.
         "DROP INDEX IF EXISTS idx_memories_importance",
+        "DROP INDEX IF EXISTS idx_memories_recall",
+        "DROP INDEX IF EXISTS idx_memories_rank",
+        "DROP INDEX IF EXISTS idx_memories_lower_null",
     )
 
     def __init__(self, db_path: str):
@@ -230,6 +185,8 @@ class PythonMemoryStorage:
         """
         if not db_path:
             raise ValueError("db_path is required")
+        if db_path == ":memory:":
+            raise ValueError(":memory: databases are not supported; use a filesystem path")
         self.db_path = db_path
         self._ensure_db_dir()
         self._local = threading.local()
@@ -595,8 +552,12 @@ class PythonMemoryStorage:
                 "Nothing was modified."
             )
         columns = tuple(row[1] for row in conn.execute("PRAGMA table_info(memories)"))
-        if columns not in (self.MEMORY_COLUMNS, self.MIGRATED_MEMORY_COLUMNS):
-            extra = sorted(set(columns) - set(self.MIGRATED_MEMORY_COLUMNS))
+        accepted_columns = (self.MEMORY_COLUMNS,) if version == self.SCHEMA_VERSION else (
+            self.MEMORY_COLUMNS,
+            self.PRE_V3_MEMORY_COLUMNS,
+        )
+        if columns not in accepted_columns:
+            extra = sorted(set(columns) - set(self.PRE_V3_MEMORY_COLUMNS))
             missing = sorted(set(self.MEMORY_COLUMNS) - set(columns))
             detail = f"unexpected columns {extra}" if extra else f"missing columns {missing}"
             raise StorageSchemaError(
@@ -609,19 +570,25 @@ class PythonMemoryStorage:
         """Create or migrate the store in ONE transaction, or change nothing.
 
         Ordering matters. The classification reads first (so a foreign file is
-        refused before the persistent WAL switch), and the DDL + backfill + the
-        user_version bump commit together. Python's sqlite3 autocommits DDL not
-        DML, so without the explicit BEGIN IMMEDIATE an ALTER TABLE survives a
-        later failure — the bug that permanently rewrote foreign databases.
+        refused before the persistent WAL switch). Older lite stores receive an
+        automatic backup before any write; schema DDL and the version bump then
+        commit together.
         """
         init_conn = self._connect(self.CLASSIFY_BUSY_TIMEOUT_MS)
         try:
-            _kind, classified_version = self._classify_schema(init_conn)
+            kind, classified_version = self._classify_schema(init_conn)
+            if kind == "ours" and classified_version < self.SCHEMA_VERSION:
+                backup_path = f"{self.db_path}.pre-v3.{time.time_ns()}.bak"
+                backup_conn = sqlite3.connect(backup_path)
+                try:
+                    init_conn.backup(backup_conn)
+                finally:
+                    backup_conn.close()
             self._configure(init_conn)
             init_conn.execute("BEGIN IMMEDIATE")
+            compact_after_migration = False
             try:
                 init_conn.execute(self.SCHEMA)
-                self._ensure_content_lower(init_conn)
                 for ddl in self.FTS_DDL:
                     init_conn.execute(ddl)
                 if classified_version < self.FTS_SCHEMA_VERSION:
@@ -632,6 +599,10 @@ class PythonMemoryStorage:
                     init_conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
                 for drop_sql in self.DROPPED_INDEXES:
                     init_conn.execute(drop_sql)
+                columns = {row[1] for row in init_conn.execute("PRAGMA table_info(memories)")}
+                if "content_lower" in columns:
+                    compact_after_migration = True
+                    init_conn.execute("ALTER TABLE memories DROP COLUMN content_lower")
                 for ddl in self.INDEXES:
                     name = ddl.split("IF NOT EXISTS", 1)[1].split()[0]
                     row = init_conn.execute(
@@ -647,6 +618,14 @@ class PythonMemoryStorage:
                     init_conn.execute(ddl)
                 init_conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 init_conn.commit()
+                if compact_after_migration:
+                    # DROP COLUMN releases the old pages to SQLite's freelist;
+                    # VACUUM returns that space to the filesystem, but may
+                    # renumber hidden rowids. Rebuild the external-content FTS
+                    # index so its rowid mapping stays aligned afterwards.
+                    init_conn.execute("VACUUM")
+                    init_conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+                    init_conn.commit()
             except Exception:
                 init_conn.rollback()
                 raise
@@ -657,32 +636,6 @@ class PythonMemoryStorage:
             raise
         finally:
             init_conn.close()
-
-    def _ensure_content_lower(self, conn: sqlite3.Connection) -> None:
-        """Create and backfill the ASCII-lowered copy of content.
-
-        recall() searches the FTS5 index built over `content`; this column is
-        only used by the literal-substring fallback for queries with no letters
-        or digits (see _recall_substring). The two must agree: LIKE folds ASCII
-        case only, and instr() needs the query folded the same way. Non-ASCII
-        stays case-sensitive (LIKE does not fold it), and '%'/'_'/'\\' stay
-        literal.
-
-        Rows written by a pre-migration version leave the column NULL, and
-        instr(NULL, ...) is NULL, which would silently drop those rows from
-        results, so any NULL row triggers a backfill.
-        """
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
-        if "content_lower" not in columns:
-            conn.execute("ALTER TABLE memories ADD COLUMN content_lower TEXT")
-        # Fast probe: served by the partial index on content_lower IS NULL once
-        # it exists, and returns on the first row right after the ALTER above.
-        if conn.execute("SELECT 1 FROM memories WHERE content_lower IS NULL LIMIT 1").fetchone():
-            conn.execute(
-                "UPDATE memories SET content_lower = lower(content) WHERE content_lower IS NULL"
-            )
-        # No commit here: the caller owns the transaction so the ALTER and the
-        # backfill land with the schema version bump or not at all.
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Convert a database row to a memory dict, by column NAME.
@@ -717,6 +670,8 @@ class PythonMemoryStorage:
             raise ValueError("content cannot be empty")
         if not namespace or not namespace.strip():
             raise ValueError("namespace cannot be empty")
+        if len(content) > 100_000:
+            raise ValueError("content cannot exceed 100000 characters")
         if not (0 <= importance <= 10):
             raise ValueError(f"importance must be 0-10, got {importance}")
 
@@ -726,12 +681,11 @@ class PythonMemoryStorage:
         try:
             conn.execute(
                 """INSERT INTO memories
-                   (id, content, content_lower, namespace, importance, context, created_at)
-                   VALUES (?, ?, lower(?), ?, ?, ?, ?)""",
+                   (id, content, namespace, importance, context, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     mem_id,
-                    content[:100000],
-                    content[:100000],
+                    content,
                     namespace,
                     importance,
                     context,
@@ -746,12 +700,11 @@ class PythonMemoryStorage:
             ).hexdigest()[:16]
             conn.execute(
                 """INSERT INTO memories
-                   (id, content, content_lower, namespace, importance, context, created_at)
-                   VALUES (?, ?, lower(?), ?, ?, ?, ?)""",
+                   (id, content, namespace, importance, context, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     mem_id,
-                    content[:100000],
-                    content[:100000],
+                    content,
                     namespace,
                     importance,
                     context,
@@ -816,15 +769,12 @@ class PythonMemoryStorage:
 
         A query with no letters or digits (`%`, `_`, `***`) has no FTS token to
         match, and FTS5 answers it with an empty result rather than an error —
-        indistinguishable from a real miss. `instr()` on `content_lower` takes
-        it literally, which is also what every query did before the full-text
-        index existed.
+        indistinguishable from a real miss. `instr(lower(content), lower(?))`
+        takes the punctuation literally while folding ASCII case without a
+        duplicated text column.
         """
-        sql = "SELECT * FROM memories WHERE instr(content_lower, ?) > 0"
-        # instr() is case-sensitive, so fold the query the same way the stored
-        # column was folded (ASCII-only, like LIKE). instr also takes the query
-        # literally, so '%' and '_' need no escaping.
-        params: list[Any] = [query.translate(self.ASCII_LOWER)]
+        sql = "SELECT * FROM memories WHERE instr(lower(content), lower(?)) > 0"
+        params: list[Any] = [query]
         if namespace:
             sql += " AND namespace = ?"
             params.append(namespace)
@@ -944,6 +894,15 @@ class PythonMemoryStorage:
         Returns:
             List of memories
         """
+        sort_map = {
+            "recent": "created_at DESC",
+            "importance": "importance DESC",
+            "access": "access_count DESC",
+        }
+        if sort_by not in sort_map:
+            raise ValueError(
+                f"unknown sort_by {sort_by!r}; choose recent, importance, or access"
+            )
         limit = max(1, min(1000, limit))
         # This is where buffered access counts become visible (sort_by="access").
         self._flush_accesses()
@@ -957,12 +916,7 @@ class PythonMemoryStorage:
                 sql += " WHERE namespace = ?"
                 params.append(namespace)
 
-            sort_map = {
-                "recent": "created_at DESC",
-                "importance": "importance DESC",
-                "access": "access_count DESC",
-            }
-            sql += f" ORDER BY {sort_map.get(sort_by, 'created_at DESC')}"
+            sql += f" ORDER BY {sort_map[sort_by]}"
 
             sql += " LIMIT ?"
             params.append(limit)
@@ -1056,44 +1010,6 @@ class PythonMemoryStorage:
             "removed": removed,
             "auto_applied": auto_apply,
         }
-
-    def graph(
-        self, query: str | None = None, namespace: str | None = None, depth: int = 1
-    ) -> dict[str, Any]:
-        """
-        Get memory graph structure.
-
-        Args:
-            query: Optional search query (not implemented, reserved)
-            namespace: Optional namespace filter
-            depth: Graph depth (0 = no edges, 1 = namespace edges)
-
-        Returns:
-            Graph structure with nodes and edges
-        """
-        memories = self.list_memories(namespace=namespace, limit=1000, sort_by="recent")
-
-        nodes = [
-            {
-                "id": m["id"],
-                "content": m["content"][:100],
-                "namespace": m["namespace"],
-                "importance": m["importance"],
-            }
-            for m in memories
-        ]
-
-        edges = []
-        if depth > 0:
-            by_namespace: dict[str, list[str]] = {}
-            for mem in memories:
-                by_namespace.setdefault(mem["namespace"], []).append(mem["id"])
-
-            for ids in by_namespace.values():
-                for i in range(len(ids) - 1):
-                    edges.append({"source": ids[i], "target": ids[i + 1], "type": "namespace"})
-
-        return {"nodes": nodes, "edges": edges, "total_memories": len(memories)}
 
     def count(self, namespace: str | None = None) -> int:
         """
