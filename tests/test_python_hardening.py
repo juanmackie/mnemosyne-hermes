@@ -472,6 +472,65 @@ def test_v2_upgrade_rebuilds_an_index_with_stale_columns():
             store.close()
 
 
+def test_v2_migration_rolls_back_the_table_swap_and_fts_objects():
+    fixture = Path(__file__).with_name("fixtures") / "lite-v2.sql"
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "v2.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.executescript(fixture.read_text(encoding="utf-8"))
+            schema = conn.execute(
+                "SELECT type, name, sql FROM sqlite_master ORDER BY name"
+            ).fetchall()
+            rows = conn.execute("SELECT rowid, * FROM memories ORDER BY id").fetchall()
+
+        with mock.patch.object(
+            PythonMemoryStorage,
+            "INDEXES",
+            ("CREATE INDEX IF NOT EXISTS bogus ON memories(no_such_column)",),
+        ):
+            try:
+                PythonMemoryStorage(str(path))
+            except sqlite3.OperationalError as exc:
+                assert "no_such_column" in str(exc)
+            else:
+                raise AssertionError("a failing v2 migration must raise")
+
+        with closing(sqlite3.connect(path)) as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+            assert conn.execute("SELECT rowid, * FROM memories ORDER BY id").fetchall() == rows
+            assert (
+                conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+                == schema
+            )
+            assert conn.execute(
+                "SELECT rowid FROM memories_fts WHERE memories_fts MATCH 'zeppelin'"
+            ).fetchall() == [(17,)]
+
+
+def test_v2_table_swap_preserves_foreign_key_references():
+    fixture = Path(__file__).with_name("fixtures") / "lite-v2.sql"
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "v2.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.executescript(fixture.read_text(encoding="utf-8"))
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute(
+                "CREATE TABLE memory_links (memory_id TEXT REFERENCES memories(id) ON DELETE CASCADE)"
+            )
+            conn.execute("INSERT INTO memory_links VALUES ('v2-a')")
+            conn.commit()
+
+        store = PythonMemoryStorage(str(path))
+        try:
+            conn = store._conn()
+            assert [tuple(row) for row in conn.execute("SELECT * FROM memory_links")] == [("v2-a",)]
+            assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert store.count() == 3
+        finally:
+            store.close()
+
+
 def test_wal_stays_bounded_under_sustained_writes():
     """wal_autocheckpoint=0 must not mean an unbounded WAL.
 

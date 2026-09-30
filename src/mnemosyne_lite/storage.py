@@ -573,6 +573,29 @@ class PythonMemoryStorage:
             )
         return "ours", version
 
+    def _remove_content_lower(self, conn: sqlite3.Connection) -> None:
+        """Rebuild the table without relying on SQLite's DROP COLUMN parser.
+
+        The v2 CREATE TABLE contains comments before its final column, which
+        older SQLite versions rewrite into invalid SQL when dropping it.
+        Preserve rowids and associated objects while swapping in the v3 table;
+        the caller's transaction makes the swap atomic.
+        """
+        objects = [
+            row[0]
+            for row in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE tbl_name = 'memories' "
+                "AND type IN ('index', 'trigger') AND sql IS NOT NULL"
+            )
+        ]
+        conn.execute(self.SCHEMA.replace("IF NOT EXISTS memories", "memories_v3", 1))
+        columns = ", ".join(("rowid", *self.MEMORY_COLUMNS))
+        conn.execute(f"INSERT INTO memories_v3 ({columns}) SELECT {columns} FROM memories")
+        conn.execute("DROP TABLE memories")
+        conn.execute("ALTER TABLE memories_v3 RENAME TO memories")
+        for ddl in objects:
+            conn.execute(ddl)
+
     def _init_schema(self):
         """Create or migrate the store in ONE transaction, or change nothing.
 
@@ -592,6 +615,11 @@ class PythonMemoryStorage:
                 finally:
                     backup_conn.close()
             self._configure(init_conn)
+            if classified_version < self.SCHEMA_VERSION:
+                # Table replacement must not cascade into referencing tables.
+                # This connection closes after migration; live connections
+                # enable foreign keys in _connect. Check them before commit.
+                init_conn.execute("PRAGMA foreign_keys=OFF")
             init_conn.execute("BEGIN IMMEDIATE")
             compact_after_migration = False
             try:
@@ -609,7 +637,7 @@ class PythonMemoryStorage:
                 columns = {row[1] for row in init_conn.execute("PRAGMA table_info(memories)")}
                 if "content_lower" in columns:
                     compact_after_migration = True
-                    init_conn.execute("ALTER TABLE memories DROP COLUMN content_lower")
+                    self._remove_content_lower(init_conn)
                 for ddl in self.INDEXES:
                     name = ddl.split("IF NOT EXISTS", 1)[1].split()[0]
                     row = init_conn.execute(
@@ -623,10 +651,15 @@ class PythonMemoryStorage:
                     if row and " ".join((row[0] or "").split()) != desired:
                         init_conn.execute(f"DROP INDEX {name}")
                     init_conn.execute(ddl)
+                if (
+                    compact_after_migration
+                    and init_conn.execute("PRAGMA foreign_key_check").fetchone()
+                ):
+                    raise sqlite3.IntegrityError("schema migration would violate a foreign key")
                 init_conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 init_conn.commit()
                 if compact_after_migration:
-                    # DROP COLUMN releases the old pages to SQLite's freelist;
+                    # Table replacement releases old pages to SQLite's freelist;
                     # VACUUM returns that space to the filesystem, but may
                     # renumber hidden rowids. Rebuild the external-content FTS
                     # index so its rowid mapping stays aligned afterwards.
