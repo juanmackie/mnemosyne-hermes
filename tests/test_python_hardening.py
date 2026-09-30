@@ -398,17 +398,15 @@ def test_v2_store_migrates_with_existing_full_text_index():
             conn = store._conn()
             assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
             assert "content_lower" not in _columns(path)
-            assert [tuple(row) for row in conn.execute("SELECT * FROM memories ORDER BY id")] == (
-                original_rows
-            )
+            migrated_rows = [
+                tuple(row) for row in conn.execute("SELECT * FROM memories ORDER BY id")
+            ]
+            assert migrated_rows == original_rows
             indexes = {row[1] for row in conn.execute("PRAGMA index_list(memories)")}
-            assert not obsolete_indexes & indexes
-            assert {
+            assert obsolete_indexes.isdisjoint(indexes)
+            assert [
                 row[2] for row in conn.execute("PRAGMA index_info(idx_memories_ns_created)")
-            } == {
-                "namespace",
-                "created_at",
-            }
+            ] == ["namespace", "created_at"]
             backups = list(Path(d).glob("v2.db.pre-v3.*.bak"))
             assert len(backups) == 1
             with closing(sqlite3.connect(backups[0])) as backup:
@@ -449,6 +447,29 @@ def test_v2_store_migrates_with_existing_full_text_index():
             assert list(Path(d).glob("v2.db.pre-v3.*.bak")) == backups
         finally:
             again.close()
+
+
+def test_v2_upgrade_rebuilds_an_index_with_stale_columns():
+    fixture = Path(__file__).with_name("fixtures") / "lite-v2.sql"
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "v2.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.executescript(fixture.read_text(encoding="utf-8"))
+            conn.execute("DROP INDEX idx_memories_ns_created")
+            conn.execute(
+                "CREATE INDEX idx_memories_ns_created ON memories(namespace, importance, created_at)"
+            )
+            conn.commit()
+
+        store = PythonMemoryStorage(str(path))
+        try:
+            assert [
+                row[2]
+                for row in store._conn().execute("PRAGMA index_info(idx_memories_ns_created)")
+            ] == ["namespace", "created_at"]
+            assert [row["id"] for row in store.recall("zeppelin", namespace="ns")] == ["v2-b"]
+        finally:
+            store.close()
 
 
 def test_wal_stays_bounded_under_sustained_writes():
