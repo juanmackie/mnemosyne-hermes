@@ -1,4 +1,4 @@
 # Development/test dependencies. The lite runtime itself needs only the Python
 # stdlib (sqlite3, threading, hashlib). The vendored provider's own dependency
 # (the engine pin) is declared in integrations/hermes-provider/pyproject.toml.
-pytest>=7.4.0
+pytest>=9.1.1
