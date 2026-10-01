@@ -14,9 +14,11 @@ import json
 import os
 import pathlib
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
+import types
 from typing import Any
 from unittest.mock import patch
 
@@ -211,6 +213,153 @@ def test_on_delegation_is_opt_in_and_bounded():
     assert call["source"] == "conversation_delegation"
     assert call["metadata"]["child_session_id"] == "child"
     assert len(call["content"]) <= provider.DELEGATION_MAX_CHARS
+
+
+class _PausedTransactionBeam:
+    """A real SQLite transaction held open by a failing background turn."""
+
+    def __init__(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.conn.execute(
+            "CREATE TABLE working_memory (content, importance, timestamp, source, session_id)"
+        )
+        self.session_id = "test-session"
+        self.inserted = threading.Event()
+        self.release = threading.Event()
+
+    def remember(self, *, content, source, **kwargs):
+        self.conn.execute(
+            "INSERT INTO working_memory VALUES (?, 0.95, '', 'identity', ?)",
+            (content, self.session_id),
+        )
+        if source == "conversation":
+            self.inserted.set()
+            if not self.release.wait(5):
+                raise RuntimeError("background transaction was not released")
+            self.conn.rollback()
+            raise sqlite3.OperationalError("injected write failure")
+        self.conn.commit()
+
+    def recall(self, *args, **kwargs):
+        return [
+            {"content": row[0]} for row in self.conn.execute("SELECT content FROM working_memory")
+        ]
+
+
+def _during_failed_sync(operation):
+    """Run an actual provider entry point while sync_turn owns a transaction."""
+    provider = provider_mod.MnemosyneMemoryProvider()
+    beam = _PausedTransactionBeam()
+    provider._beam = beam
+    provider._auto_sleep_enabled = False
+    provider._sync_roles = {"user"}
+    started = threading.Event()
+    finished = threading.Event()
+    results = []
+    errors = []
+
+    def call():
+        started.set()
+        try:
+            results.append(operation(provider))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    sync = threading.Thread(target=provider.sync_turn, args=("uncommitted turn", ""), daemon=True)
+    caller = threading.Thread(target=call, daemon=True)
+    try:
+        sync.start()
+        assert beam.inserted.wait(5), "sync_turn did not start its transaction"
+        caller.start()
+        assert started.wait(5), "concurrent provider call did not start"
+        # Give an unguarded caller time to read/commit the pending transaction.
+        overlapped = finished.wait(0.2)
+    finally:
+        beam.release.set()
+        sync.join(timeout=5)
+        if caller.ident is not None:
+            caller.join(timeout=5)
+    try:
+        assert not sync.is_alive() and not caller.is_alive(), "provider access deadlocked"
+        assert not errors, errors
+        assert not overlapped, (
+            f"provider call bypassed the in-flight sync transaction: "
+            f"result={results}, durable rows={beam.recall()}"
+        )
+        assert provider._sync_turn_diagnostics()["failed"] == 1
+        return results[0], beam.recall()
+    finally:
+        beam.conn.close()
+
+
+def test_recall_tool_waits_for_background_transaction():
+    result, rows = _during_failed_sync(
+        lambda provider: provider.handle_tool_call("mnemosyne_recall", {"query": "turn"})
+    )
+    assert json.loads(result)["results"] == [], "recall exposed an uncommitted memory"
+    assert rows == []
+
+
+def test_memory_write_cannot_commit_a_failed_background_turn():
+    _, rows = _during_failed_sync(
+        lambda provider: provider.on_memory_write("add", "user", "durable mirror")
+    )
+    assert rows == [{"content": "durable mirror"}], "mirror committed another turn's transaction"
+
+
+def test_identity_prefetch_waits_for_background_transaction():
+    def prefetch(provider):
+        # Isolate always-injected identity context: the bank already has a lock.
+        with patch.object(provider, "_prefetch_bank", return_value=""):
+            return provider.prefetch("")
+
+    result, rows = _during_failed_sync(prefetch)
+    assert result == "", "identity prefetch exposed an uncommitted memory"
+    assert rows == []
+
+
+def test_model_prefetch_waits_for_background_transaction():
+    class ModelStore:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def list(self, owner_id, *, category):
+            if category != "model:user":
+                return []
+            return [
+                {"category": category, "name": "test", "body": row[0], "confidence": 1.0}
+                for row in self.conn.execute("SELECT content FROM working_memory")
+            ]
+
+    def prefetch(provider):
+        provider._beam.canonical = ModelStore(provider._beam.conn)
+        with patch.object(provider, "_prefetch_bank", return_value=""):
+            return provider.prefetch("uncommitted")
+
+    result, rows = _during_failed_sync(prefetch)
+    assert result == "", "model prefetch exposed an uncommitted memory"
+    assert rows == []
+
+
+def test_diagnostic_tool_can_reenter_the_beam_lock():
+    provider = provider_mod.MnemosyneMemoryProvider()
+    provider._beam = types.SimpleNamespace(db_path=None)
+    provider._read_config_key = lambda key: ["*"] if key == "tools" else None
+    diagnostic_module = types.SimpleNamespace(run_diagnostics=lambda **kwargs: {"status": "ok"})
+    results = []
+    with patch.dict(sys.modules, {"mnemosyne.diagnose": diagnostic_module}):
+        caller = threading.Thread(
+            target=lambda: results.append(provider.handle_tool_call("mnemosyne_diagnose", {})),
+            daemon=True,
+        )
+        caller.start()
+        caller.join(timeout=5)
+    assert not caller.is_alive(), "diagnostic tool deadlocked while reacquiring the Beam lock"
+    payload = json.loads(results[0])
+    assert payload["status"] == "ok", payload
+    assert payload["sync_turn"]["in_flight"] == 0
 
 
 def test_on_pre_compress_writes_required_checkpoint_and_returns_context():
@@ -449,6 +598,11 @@ if __name__ == "__main__":
         test_tool_surface_allows_explicit_subset_and_rejects_mixed_wildcard,
         test_on_session_switch_resets_session_scoped_state_only,
         test_on_delegation_is_opt_in_and_bounded,
+        test_recall_tool_waits_for_background_transaction,
+        test_memory_write_cannot_commit_a_failed_background_turn,
+        test_identity_prefetch_waits_for_background_transaction,
+        test_model_prefetch_waits_for_background_transaction,
+        test_diagnostic_tool_can_reenter_the_beam_lock,
         test_on_pre_compress_writes_required_checkpoint_and_returns_context,
         test_on_pre_compress_required_checkpoint_fails_on_write_error,
         test_spawn_context_thread_propagates_contextvars,

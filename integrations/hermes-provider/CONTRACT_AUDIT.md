@@ -238,6 +238,23 @@ and an empty list remain supported, while a mixed wildcard or unknown name is
 rejected. `docs/HERMES_INTEGRATION.md` owns the canonical 40-name table and the
 provider suite covers default, wildcard, subset, and invalid configuration.
 
+### F16 — shared SQLite access bypassed turn-sync serialization (addressed)
+
+Hermes `MemoryManager.handle_tool_call()` dispatches directly without flushing
+its background `sync_all()` worker. The engine's active Beam connection permits
+cross-thread use (`check_same_thread=False`), so provider entry points must
+serialize complete operations, not only individual SQLite statements. The
+existing lock covered turn sync, bank recall, and diagnostics, but omitted
+explicit tools, identity/model prefetch, and built-in
+memory mirroring.
+
+P19 extends that lock to those entry points and makes it reentrant for nested
+diagnostic access. Custom prefetch callbacks run outside the lock. Five
+engine-free regressions in `tests/test_provider_db_path.py` cover paused real
+SQLite transactions, failed turn rollback, and diagnostic reentrancy. This is
+provider-boundary evidence; the changed provider has not been exercised on a
+live gateway.
+
 ## Status
 
 | Finding | Disposition / evidence |
@@ -257,6 +274,7 @@ provider suite covers default, wildcard, subset, and invalid configuration.
 | F13 | Deliberate concurrency contract: Hermes serializes provider sync on its background executor; no second provider worker is added. Run 36311054419 passed all four real-Hermes variants; injected-delay dispatch measured 0.8–1.9 ms vs 217.3–318.4 ms direct. |
 | F14 | End-to-end verified: plugin metadata and collision assertions pass on Ubuntu/macOS with Hermes 0.18.2/0.19.0 in run 36311054419; doctor exits 0 and exactly one provider is discovered. |
 | F15 | Fixed: four-tool default, explicit all-tools opt-in, and one canonical 40-tool table. |
+| F16 | Fixed: shared-connection tools, prompt reads, and mirror writes serialize with background turn capture (P19); real SQLite transaction and nested-lock regressions pass locally. |
 
 Every future local provider change must go through `PATCHES.md` +
 `VENDORED_FROM.json` (enforced by `tests/test_vendored_provider.py`).

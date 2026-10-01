@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Provider tools, identity/model prompt reads, and built-in memory
+  mirroring serialize with background turn capture, preventing uncommitted
+  reads and accidental commits of another turn's transaction.
 - Restoring an older lite store names its pre-upgrade backup after the permanent
   destination, leaving no orphan backup named after the restore staging file.
 - Schema v3 upgrades handle the historical v2 table's inline comments on older

@@ -201,6 +201,16 @@ The remaining vendored files are byte-identical to the 3.15.1 wheel RECORD.
 | Behaviour | Default exposure is the four core tools: remember, recall, stats, and forget. Existing explicit subsets and `[]` remain supported. `memory.mnemosyne.tools: ["*"]` opts into the full 40-tool list; wildcard mixed with names is rejected. Unknown names still fail loudly. The canonical name/default table lives in `docs/HERMES_INTEGRATION.md`; README and AGENTS link to it. |
 | Upstream | Not sent yet — local exposure policy. |
 
+### P19 — serialize shared Beam access with background turn capture
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_beam_access_lock`, tool dispatch, prefetch, `on_memory_write`) |
+| Date | 2026-10-01 |
+| Reason | Hermes dispatches `sync_turn` on a background worker without draining it before tools or prompt reads. Those paths reused the active Beam's SQLite connection outside its existing lock. A concurrent recall could expose uncommitted content, and a built-in mirror write could commit a failed turn's transaction. |
+| Behaviour | Tool dispatch, built-in prefetch reads (including identity/model slots), and built-in memory mirroring share the turn-sync lock. Custom prefetch callbacks run outside the lock. The lock is reentrant so diagnostics can keep their existing internal critical section. Hermes still owns asynchronous turn dispatch and flushing. Engine-free regressions use a paused real SQLite transaction to verify isolation and rollback, and exercise the nested diagnostic lock. |
+| Upstream | Not sent yet — shared-connection concurrency fix. |
+
 Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 (they need a product decision, not a mechanical fix).
 

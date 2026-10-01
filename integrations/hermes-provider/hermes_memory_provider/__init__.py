@@ -1441,7 +1441,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # the same WAL database can trigger a NULL-pointer SEGV in
         # sqlite3_clear_bindings when a checkpoint invalidates an active
         # statement on the other connection (#498).
-        self._beam_access_lock = threading.Lock()
+        # LOCAL PATCH: P19 also guards tool and prompt entry points. Reentrant
+        # because the diagnostic tool handler takes this lock internally.
+        self._beam_access_lock = threading.RLock()
         self._sync_turn_telemetry: Dict[str, Any] = {
             "pending_queue_length": 0,
             "max_queue_length": 0,
@@ -2216,12 +2218,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # it is talking to. Inject them deterministically at the FRONT, scoped
         # strictly to the active session_id, deduplicated against whatever
         # recall already surfaced. No identity rows == no-op (legacy behavior).
-        model_block = self._prefetch_model_slots(query, profile)
-        if model_block:
-            blocks.insert(0, model_block)
-        identity_block = self._prefetch_identity(blocks, profile)
-        if identity_block:
-            blocks.insert(0, identity_block)
+        # LOCAL PATCH: P19 identity/model reads need the same protection as bank recall.
+        with self._ensure_beam_access_lock():
+            model_block = self._prefetch_model_slots(query, profile)
+            if model_block:
+                blocks.insert(0, model_block)
+            identity_block = self._prefetch_identity(blocks, profile)
+            if identity_block:
+                blocks.insert(0, identity_block)
         if profile.dedup:
             blocks = _dedup_blocks(blocks)
         return "\n\n".join(b for b in blocks if b)
@@ -2469,7 +2473,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         except AttributeError:
             # setdefault atomically publishes one per-instance lock when
             # concurrent __new__ callers both need lazy initialization.
-            return self.__dict__.setdefault("_beam_access_lock", threading.Lock())
+            # LOCAL PATCH: P19 preserve reentrancy for lazily constructed instances.
+            return self.__dict__.setdefault("_beam_access_lock", threading.RLock())
 
     def _sync_turn_diagnostics(self) -> Dict[str, Any]:
         """Return a PII-safe snapshot of sync_turn telemetry."""
@@ -2674,6 +2679,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return self._configured_tool_schemas()
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        # LOCAL PATCH: P19 tools must not read or commit sync_turn's open transaction.
+        with self._ensure_beam_access_lock():
+            return self._dispatch_tool_call(tool_name, args, **kwargs)
+
+    def _dispatch_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         try:
             if not self.has_tool(tool_name):
                 return json.dumps({"error": f"Unknown Mnemosyne tool: {tool_name}"})
@@ -4088,13 +4098,15 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             return
         try:
             scope = "global" if target == "user" else "session"
-            self._beam.remember(
-                content=content,
-                source=f"builtin_memory_{target}",
-                importance=0.7 if target == "user" else 0.5,
-                scope=scope,
-                metadata=dict(metadata or {}),
-            )
+            # LOCAL PATCH: P19 mirror writes cannot commit an in-flight turn's transaction.
+            with self._ensure_beam_access_lock():
+                self._beam.remember(
+                    content=content,
+                    source=f"builtin_memory_{target}",
+                    importance=0.7 if target == "user" else 0.5,
+                    scope=scope,
+                    metadata=dict(metadata or {}),
+                )
         except Exception as e:
             logger.debug("Mnemosyne mirror write failed: %s", e)
 
