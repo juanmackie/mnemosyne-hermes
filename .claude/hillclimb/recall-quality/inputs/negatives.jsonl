@@ -1,0 +1,8 @@
+{"id": "neg_bitcoin", "query": "what's my bitcoin balance?", "probe_token": "bitcoin"}
+{"id": "neg_beehive", "query": "where do I keep the beehive?", "probe_token": "beehive"}
+{"id": "neg_sourdough", "query": "how do I bake sourdough bread?", "probe_token": "sourdough"}
+{"id": "neg_physio", "query": "when is my physiotherapy appointment?", "probe_token": "physiotherapy"}
+{"id": "neg_compost", "query": "where does the compost bin live?", "probe_token": "compost"}
+{"id": "neg_bonsai", "query": "when did I start the bonsai pine?", "probe_token": "bonsai"}
+{"id": "neg_optician", "query": "which optician did I pick for glasses?", "probe_token": "optician"}
+{"id": "neg_mortgage", "query": "which bank holds my mortgage?", "probe_token": "mortgage"}

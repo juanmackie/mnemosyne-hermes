@@ -1,0 +1,13 @@
+{
+  "metrics": [
+    { "id": "hit_at_5", "label": "hit@5", "kind": "binary", "better": "higher" },
+    { "id": "hit_at_1", "label": "hit@1", "kind": "binary", "better": "higher" },
+    { "id": "mrr", "label": "MRR", "kind": "float", "scale": 1, "better": "higher" },
+    { "id": "precision_at_5", "label": "no-junk@5", "kind": "binary", "better": "higher" }
+  ],
+  "perf_fields": [
+    { "id": "recall_ms", "label": "recall", "unit": "ms" },
+    { "id": "results_returned", "label": "rows out" }
+  ],
+  "harness_paths": ["runner.py", "build_cases.py", "cases.jsonl", "corpus.jsonl"]
+}
