@@ -32,7 +32,6 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 SRC = REPO / "src"
 DATA = HERE / "data"
-CORPUS_DB = DATA / "corpus.db"
 HARNESS_SHA = DATA / "harness.sha"
 CASES = HERE / "cases.jsonl"
 CORPUS = HERE / "corpus.jsonl"
@@ -83,23 +82,30 @@ def source_sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def ensure_store(force=False):
-    """Build the corpus DB if missing or stale. Returns the DB path."""
+def ensure_store(variant, force=False):
+    """Build the corpus DB for `variant`, if missing or stale.
+
+    One DB per variant, not one shared DB: a variant may change the schema or
+    migrations, and scoring it against a database built by *baseline* code would
+    measure the wrong artifact. Each variant's DB also makes its own build
+    auditable, which is the larger term in this eval's noise.
+    """
     from mnemosyne_lite.storage import PythonMemoryStorage
 
+    db_path = DATA / variant / "corpus.db"
     rows = read_jsonl(CORPUS)
     sha = source_sha(CORPUS)
-    if CORPUS_DB.exists() and not force:
-        recorded = dict(read_meta(CORPUS_DB))
+    if db_path.exists() and not force:
+        recorded = dict(read_meta(db_path))
         if recorded.get("corpus_sha") == sha and recorded.get("corpus_rows") == str(len(rows)):
-            return CORPUS_DB
+            return db_path
         print(f"corpus changed ({recorded.get('corpus_sha')} -> {sha}); rebuilding",
               file=sys.stderr)
 
-    DATA.mkdir(parents=True, exist_ok=True)
-    if CORPUS_DB.exists():
-        CORPUS_DB.unlink()
-    store = PythonMemoryStorage(str(CORPUS_DB))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        db_path.unlink()
+    store = PythonMemoryStorage(str(db_path))
     ages = []
     try:
         now = time.time()
@@ -119,7 +125,7 @@ def ensure_store(force=False):
     # shares a timestamp and the "correction" cases (a recent fact superseding
     # an older one) cannot test anything. Written on our own connection so the
     # runner never touches a private attribute of the store.
-    conn = sqlite3.connect(str(CORPUS_DB))
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executemany("UPDATE memories SET created_at = ? WHERE id = ?", ages)
         conn.execute("CREATE TABLE IF NOT EXISTS eval_meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -130,8 +136,8 @@ def ensure_store(force=False):
         conn.commit()
     finally:
         conn.close()
-    print(f"built {CORPUS_DB} from {len(rows)} memories", file=sys.stderr)
-    return CORPUS_DB
+    print(f"built {db_path} from {len(rows)} memories", file=sys.stderr)
+    return db_path
 
 
 def read_meta(db_path):
@@ -276,10 +282,10 @@ def main():
     cases = read_jsonl(CASES)
     if args.only != "all":
         cases = [c for c in cases if c["split"] == args.only]
-    db = ensure_store(args.rebuild)
-
     if args.probe:
-        return probe(cases, db, args)
+        # its own database, so probing never disturbs a variant's corpus
+        return probe(cases, ensure_store("_probe"), args)
+    db = ensure_store(args.variant, args.rebuild)
 
     out_dir = HERE / args.variant
     (out_dir / "traces").mkdir(parents=True, exist_ok=True)
@@ -423,10 +429,12 @@ def summarise(variant, cases, k):
               f" = {p:.3f} [95% CI {lo:.3f}-{hi:.3f}]  reps/case={reps}")
 
     pos = [c["id"] for c in cases if c["expect"] == "hit"]
-    neg = [c["id"] for c in cases if c["expect"] == "empty"]
     report_group("POSITIVE (train)", [c["id"] for c in cases if c["split"] == "train" and c["expect"] == "hit"])
     report_group("POSITIVE (test)", [c["id"] for c in cases if c["split"] == "test" and c["expect"] == "hit"])
-    report_group("NEGATIVE (test)", neg)
+    # Negatives sit in both splits: the held-out ones are the honest final
+    # specificity number, the train ones are the guardrail a round can see.
+    report_group("NEGATIVE (train)", [c["id"] for c in cases if c["split"] == "train" and c["expect"] == "empty"])
+    report_group("NEGATIVE (test)", [c["id"] for c in cases if c["split"] == "test" and c["expect"] == "empty"])
 
     categories = {}
     for c in cases:

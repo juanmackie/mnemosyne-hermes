@@ -23,7 +23,9 @@ import pathlib
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from runner import grade, wilson, read_jsonl, CORPUS_DB, CASES  # noqa: E402
+from runner import grade, wilson, read_jsonl, CASES  # noqa: E402
+
+DB = pathlib.Path(__file__).resolve().parent / "data" / "baseline" / "corpus.db"
 
 TOKEN = re.compile(r"[^\W_]+")
 
@@ -52,7 +54,7 @@ def run(conn, case, k):
 
 def main():
     k = 5
-    conn = sqlite3.connect(str(CORPUS_DB))
+    conn = sqlite3.connect(str(DB))
     conn.row_factory = sqlite3.Row
     cases = read_jsonl(CASES)
     groups = {}

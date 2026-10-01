@@ -72,7 +72,11 @@ def build():
             "id": item["id"],
             "prompt": item["query"],
             "tags": ["negative", "negative"],
-            "split": "test",
+            # Negatives live in BOTH splits on purpose: the held-out ones are the
+            # honest final specificity number, the train ones are the guardrail a
+            # hillclimb can actually see. With every negative held out, a round
+            # optimising recall would be blind to over-retrieval until the end.
+            "split": item.get("split", "test"),
             "expect": "empty",
             "relevant": [],
             "meta": {
@@ -156,6 +160,16 @@ def main():
     for split, ids in sorted(by_split.items()):
         print(f"  {split:5s} {len(ids):3d}  {ids[0]}..{ids[-1]}")
     print(f"  cases sha256[:12] = {digest}")
+    # the report builder reads train_ids/test_ids from _state.json to group rows
+    # by split; without them every row renders as split "all".
+    state_path = HERE / "_state.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    for split in ("train", "test"):
+        state[f"{split}_ids"] = [c["id"] for c in cases if c["split"] == split]
+    state.setdefault("reps", 2)
+    state.setdefault("current_round", 0)
+    state_path.write_text(json.dumps(state, indent=2) + "\n")
+    print(f"updated {state_path} (train_ids, test_ids, reps, current_round)")
     if args.inputs_md:
         (HERE / "inputs.md").write_text(render_inputs_md(cases))
         print(f"wrote {HERE / 'inputs.md'}")
