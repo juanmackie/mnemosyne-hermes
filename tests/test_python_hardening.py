@@ -685,7 +685,12 @@ def test_recall_cache_invalidates_on_writes_and_flushes():
         assert len(s.recall("widgets", max_results=10)) == 7, "concurrent write not seen"
 
         # The cache must not become a separate source of truth for content.
-        assert len(s.recall("widgets number 3", max_results=10)) == 1
+        # The discriminating query is the single token "3", not "widgets number
+        # 3": recall() ORs a query's tokens, and every row here contains
+        # "widgets", so the three-token form is a union of all seven rows. The
+        # intent - a targeted query returns exactly its own row, not a merged or
+        # stale set - needs a query that is unique to one row.
+        assert len(s.recall("3", max_results=10)) == 1
         s.close()
 
 

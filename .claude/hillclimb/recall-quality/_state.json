@@ -142,5 +142,21 @@
     "neg_mortgage"
   ],
   "reps": 2,
-  "current_round": 0
+  "current_round": 1,
+  "approve_each_round": false,
+  "goal": {
+    "target": "hit_at_5",
+    "direction": "higher",
+    "scope": "positives (train during rounds, held out at the end)",
+    "hold": [
+      "NEGATIVE specificity: recover to 1.000 before the final winner",
+      "bench/measure.sh assert_ok == 1",
+      "tests/ green"
+    ]
+  },
+  "build_variance_train_hit5": {
+    "rebuilds": 3,
+    "spread_points": 0.0,
+    "note": "measured at v1; at the 0.000 baseline every metric was constant and the check was vacuous"
+  }
 }

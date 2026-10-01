@@ -11,6 +11,7 @@ Two things are pinned here:
 """
 
 import random
+import re
 import sys
 import tempfile
 import threading
@@ -42,30 +43,72 @@ class RecallFreshnessTests(unittest.TestCase):
         *freshness* (the result reflects the current database state), not the
         ranking order, which `test_recall_ranks_best_match_first` pins.
 
-        The predicate is the literal substring scan, which is only equivalent
-        here because every query in this file is a whole token or phrase.
-        Full-text search matches tokens, so a substring of a token is not the
-        same query. Keep `limit` above the number of matches, or the two orders
-        can select different top-N rows.
+        The predicate mirrors recall()'s: a row matches when it contains ANY of
+        the query's tokens (see `_fts_match_expression` - space-joined terms were
+        an implicit AND, which made every natural-language query match nothing).
+        Matching is whole-token on both sides, as FTS5's tokenizer does it: a
+        substring test would call `100` a match inside `distinct-0100`, which is
+        not the query anyone wrote. The reference is computed in Python from a
+        direct row read, so it stays an independent check of the predicate rather
+        than a second call into the FTS index recall already uses. Case folding
+        is Python's Unicode-aware lower(); FTS5 additionally folds diacritics, so
+        a query on an accented word would need the reference spelled that way -
+        none in this file is. When `limit` is below the match count the two sides
+        can pick different rows, because this helper does not model ranking; see
+        the branch below.
         """
         conn = self.reader._conn()
-        sql = "SELECT * FROM memories WHERE instr(lower(content), lower(?)) > 0"
-        params = [query]
+        want = {t.lower() for t in re.findall(r"[^\W_]+", query)} or {query.lower()}
+
+        def content_tokens(text):
+            return {w.lower() for w in re.findall(r"[^\W_]+", text)}
+
+        sql = "SELECT id, content FROM memories WHERE 1=1"
+        params = []
         if namespace:
             sql += " AND namespace = ?"
             params.append(namespace)
         if importance is not None:
             sql += " AND importance >= ?"
             params.append(importance)
-        sql += " ORDER BY importance DESC, created_at DESC, id LIMIT ?"
-        params.append(max(1, min(100, limit)))
-        expected = {row["id"]: self.reader._row_to_dict(row) for row in conn.execute(sql, params)}
-        actual = {r["id"]: r for r in self.reader.recall(query, namespace, limit, importance)}
-        self.assertEqual(expected, actual)
+        sql += " ORDER BY importance DESC, created_at DESC, id"
+        matched = {r["id"]: r["content"] for r in conn.execute(sql, params)
+                   if content_tokens(r["content"]) & want}
+        # Compared on id and content, not on the whole row dict: recall()
+        # records the access (access_count / last_accessed change as a side
+        # effect of searching), so those fields are a write-back rather than the
+        # searchable state this helper checks. Freshness is "the right rows,
+        # with the right text, right now".
+        actual = {r["id"]: r["content"]
+                  for r in self.reader.recall(query, namespace, limit, importance)}
+        if len(matched) <= limit:
+            # Both sides return every match, so identity is the right assertion.
+            self.assertEqual(dict(list(matched.items())[:limit]), actual)
+        else:
+            # The cut is decided by ranking, and this helper deliberately does
+            # not model ranking - it orders by importance/created_at/id while
+            # recall orders by BM25 first. Comparing the two top-N sets would be
+            # asserting a ranking claim this test exists to avoid. What still
+            # holds, and what this asserts, is the guarantee that matters here:
+            # recall returns only rows a direct read of the same predicate would
+            # return - so no stale row, and no row the namespace or importance
+            # filter excluded.
+            self.assertLessEqual(
+                set(actual), set(matched),
+                f"recall returned {len(set(actual) - set(matched))} row(s) a direct "
+                "read of the same predicate would not: stale, or filter-violating",
+            )
 
     def test_second_instance_insert_update_delete(self):
         mid = self.writer.remember("freshness marker", "ns", 8)["id"]
-        self.assertEqual([mid], [r["id"] for r in self.reader.recall("freshness marker")])
+        # setUp seeded "existing amber marker", which contains "marker" - so
+        # recall("freshness marker") is a union of both rows under the OR rule.
+        # The intent is that the new write is visible through the second
+        # instance, and that it outranks a row matching only one of the query's
+        # terms; that is what is asserted here.
+        found = [r["id"] for r in self.reader.recall("freshness marker")]
+        self.assertIn(mid, found)
+        self.assertEqual(mid, found[0], "the row matching both terms should rank first")
         self.assert_sql_equivalent("freshness marker")
         conn = self.writer._conn()
         conn.execute(
@@ -89,7 +132,12 @@ class RecallFreshnessTests(unittest.TestCase):
         )
         conn.commit()
         self.assertEqual("I prefer light mode", self.reader.recall("I prefer")[0]["content"])
-        self.assertEqual([], self.reader.recall("dark mode"))
+        # The updated token must be gone from the index. Asserted on "dark"
+        # alone rather than on "dark mode": recall() ORs the query's tokens, and
+        # "mode" is still in the row, so the pair legitimately matches now.
+        # Under the old AND-every-token rule this assertion passed for the wrong
+        # reason - `mode` alone would have kept the row visible too.
+        self.assertEqual([], self.reader.recall("dark"))
         self.assertEqual(mid, self.reader.recall("light mode")[0]["id"])
 
     def test_same_connection_changes_and_reopen(self):
@@ -231,7 +279,11 @@ class RecallFreshnessTests(unittest.TestCase):
         # A query with no letter or digit has no token, so it stays literal.
         self.assertTrue(self.reader.recall("%"))
         self.assertTrue(self.reader.recall("_"))
-        self.assertEqual([], self.reader.recall("absent-marker"))
+        # "quokka" is absent from every row in this class, so the query is
+        # genuinely absent: recall() ORs a query's tokens, so a name like
+        # "absent-marker" would match the seeded "existing amber marker" row on
+        # the word "marker" and prove nothing about absence.
+        self.assertEqual([], self.reader.recall("quokka-token"))
         with self.assertRaises(ValueError):
             self.reader.recall(" ")
 

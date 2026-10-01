@@ -33,39 +33,14 @@ def _is_lock_error(exc: Exception) -> bool:
 # deliberately excluded because that tokenizer treats it as a separator.
 _FTS_TOKEN_CHAR = re.compile(r"[^\W_]")
 
-# A whole token, on the same rules: letters and digits, split on everything else.
-# `query.split()` is wrong for this: it leaves "hermes-dashboard" as one piece,
-# which the tokenizer has already split in two.
-_FTS_WORD = re.compile(r"[^\W_]+")
-
-# Words that carry no retrieval signal in a question. Deliberately short: "all",
-# "no", "not" and "only" are content-bearing in a stored memory, and a longer
-# list would delete real matches. These matter more than they look - an OR over
-# "my", "i" or "what" matches a large share of the corpus, which both buries the
-# relevant row and makes BM25's ranking meaningless.
-_FTS_STOPWORDS = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "am", "be", "been", "being",
-    "do", "does", "did", "doing", "have", "has", "had", "i", "me", "my", "we",
-    "our", "you", "your", "it", "its", "that", "this", "these", "those", "what",
-    "which", "who", "whom", "whose", "when", "where", "why", "how", "again",
-    "still", "now", "currently", "please", "and", "or", "for", "to", "of", "in",
-    "on", "at", "by", "with", "about", "from",
-})
-
 
 def _fts_match_expression(query: str) -> str | None:
     """Build an FTS5 MATCH expression from user text, or None to fall back.
 
-    The terms are OR-ed. Space-joined FTS5 terms are an implicit AND, which made
-    this path answer no question at all: "what's my email address again?"
-    required the corpus to contain `what`, `what's` and `again` as well as
-    `email` before a single row could match, so every natural-language query
-    returned empty. Stopwords are dropped before the OR, since including them
-    matches most of the corpus and leaves nothing to rank.
-
-    Every term is quoted, so FTS5 operators in the input (`AND`, `OR`, `NEAR`,
-    `*`, `^`, `:`, `-`) are read as text rather than syntax, and a double quote
-    in the input is doubled instead of ending the term.
+    Every whitespace-separated token is emitted as a quoted phrase, so FTS5
+    operators in the input (`AND`, `OR`, `NEAR`, `*`, `^`, `:`, `-`) are read as
+    text rather than syntax, and a double quote in the input is doubled instead
+    of ending the phrase.
 
     None means the query has no letter or digit at all. FTS5's tokenizer would
     find nothing to match and return an empty result, which is
@@ -73,9 +48,7 @@ def _fts_match_expression(query: str) -> str | None:
     """
     if not _FTS_TOKEN_CHAR.search(query):
         return None
-    words = _FTS_WORD.findall(query)
-    terms = [w for w in words if w.lower() not in _FTS_STOPWORDS] or words
-    return " OR ".join('"' + w.replace('"', '""') + '"' for w in terms)
+    return " ".join('"' + token.replace('"', '""') + '"' for token in query.split())
 
 
 class StorageError(RuntimeError):
