@@ -322,6 +322,7 @@ def main():
 
                 row = {
                     "prompt_id": case["id"],
+                    "rep": rep,
                     "prompt": case["prompt"],
                     "tags": case["tags"],
                     "split": case["split"],
