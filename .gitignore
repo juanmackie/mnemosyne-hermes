@@ -28,6 +28,9 @@ build/
 # Test artifacts
 test_output*.log
 
+# Local evaluation suites and run data
+.evals/
+
 # System files
 .DS_Store
 /tmp/
