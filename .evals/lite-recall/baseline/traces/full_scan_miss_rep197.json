@@ -1,0 +1,19 @@
+[
+  {
+    "content": "Recall query: zzzqqqnomatch",
+    "role": "user"
+  },
+  {
+    "content": "{\"max_results\": 100, \"min_importance\": null, \"namespace\": null}",
+    "name": "PythonMemoryStorage.recall",
+    "role": "tool_call"
+  },
+  {
+    "content": "{\"count\": 0, \"ids\": []}",
+    "role": "tool_result"
+  },
+  {
+    "content": "Measured warm recall in 0.016200 ms; correctness=pass: All checks passed.",
+    "role": "assistant"
+  }
+]

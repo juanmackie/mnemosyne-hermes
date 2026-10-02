@@ -1,0 +1,19 @@
+[
+  {
+    "content": "Recall query: project",
+    "role": "user"
+  },
+  {
+    "content": "{\"max_results\": 10, \"min_importance\": 5, \"namespace\": \"agent:hermes\"}",
+    "name": "PythonMemoryStorage.recall",
+    "role": "tool_call"
+  },
+  {
+    "content": "{\"count\": 10, \"ids\": [\"3bc5e485f1730f87\", \"0d7e898dd387e4a7\", \"2b92de9d0981ae73\", \"2324055fbcaa3312\", \"0056e255cce29da1\", \"93990fdfe09bead1\", \"77c2275c084b4724\", \"bc481b1424903548\", \"49a700bf1cb010e5\", \"6fe761aeb4e34bfa\"]}",
+    "role": "tool_result"
+  },
+  {
+    "content": "Measured warm recall in 0.025400 ms; correctness=pass: All checks passed.",
+    "role": "assistant"
+  }
+]

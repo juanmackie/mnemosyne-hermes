@@ -1,0 +1,146 @@
+{
+  "by_case": {
+    "common_term_namespace": {
+      "correct": 300,
+      "correct_rate": 1.0,
+      "mean_ms": 0.024336666666666663,
+      "p50_ms": 0.0203,
+      "p95_ms": 0.044065000000000014,
+      "p99_ms": 0.06286099999999994,
+      "reps": 300
+    },
+    "full_scan_miss": {
+      "correct": 300,
+      "correct_rate": 1.0,
+      "mean_ms": 0.020877666666666662,
+      "p50_ms": 0.0185,
+      "p95_ms": 0.034825,
+      "p99_ms": 0.04281099999999999,
+      "reps": 300
+    },
+    "importance_floor": {
+      "correct": 300,
+      "correct_rate": 1.0,
+      "mean_ms": 0.02271033333333335,
+      "p50_ms": 0.0209,
+      "p95_ms": 0.03453500000000001,
+      "p99_ms": 0.04530699999999999,
+      "reps": 300
+    },
+    "multiword_phrase": {
+      "correct": 300,
+      "correct_rate": 1.0,
+      "mean_ms": 0.022981666666666668,
+      "p50_ms": 0.01915,
+      "p95_ms": 0.039310000000000005,
+      "p99_ms": 0.07336299999999994,
+      "reps": 300
+    },
+    "rare_term": {
+      "correct": 300,
+      "correct_rate": 1.0,
+      "mean_ms": 0.03580766666666668,
+      "p50_ms": 0.02175,
+      "p95_ms": 0.042335000000000005,
+      "p99_ms": 0.36596699999999993,
+      "reps": 300
+    },
+    "wide_limit": {
+      "correct": 300,
+      "correct_rate": 1.0,
+      "mean_ms": 0.06350266666666662,
+      "p50_ms": 0.026750000000000003,
+      "p95_ms": 0.1075650000000053,
+      "p99_ms": 0.7495279999999996,
+      "reps": 300
+    }
+  },
+  "by_trial": [
+    {
+      "correct": 360,
+      "correct_rate": 1.0,
+      "p50_ms": 0.02,
+      "p95_ms": 0.044470000000000016,
+      "p99_ms": 0.32670400000001565,
+      "rows": 360,
+      "trial": 1
+    },
+    {
+      "correct": 360,
+      "correct_rate": 1.0,
+      "p50_ms": 0.0193,
+      "p95_ms": 0.038520000000000006,
+      "p99_ms": 0.2522520000000109,
+      "rows": 360,
+      "trial": 2
+    },
+    {
+      "correct": 360,
+      "correct_rate": 1.0,
+      "p50_ms": 0.0248,
+      "p95_ms": 0.046325000000000005,
+      "p99_ms": 0.19943500000000736,
+      "rows": 360,
+      "trial": 3
+    },
+    {
+      "correct": 360,
+      "correct_rate": 1.0,
+      "p50_ms": 0.0191,
+      "p95_ms": 0.04030500000000002,
+      "p99_ms": 0.19934600000000702,
+      "rows": 360,
+      "trial": 4
+    },
+    {
+      "correct": 360,
+      "correct_rate": 1.0,
+      "p50_ms": 0.02375,
+      "p95_ms": 0.04562000000000001,
+      "p99_ms": 0.22058300000000616,
+      "rows": 360,
+      "trial": 5
+    }
+  ],
+  "cases": 6,
+  "cases_hash": "e23fe7098b8abf3e8b254ee6b15650671a39ee22f5c0d0b446cf40e9fe364b5a",
+  "correct": 1800,
+  "correct_rate": 1.0,
+  "description": "Warm repeated-query recall latency; independent-process median is the decision metric",
+  "environment": {
+    "cases_sha256": "e23fe7098b8abf3e8b254ee6b15650671a39ee22f5c0d0b446cf40e9fe364b5a",
+    "commit": "21f0db7957a039beaa88f62a1f742caa19f4ae60",
+    "corpus_rows": 3000,
+    "platform": "Windows-10-10.0.26100-SP0",
+    "python": "3.11.15",
+    "reps_per_trial": 60,
+    "retries": 0,
+    "runner_sha256": "001316387fc0b97892b201373d97c2975008b56aa302292c6a0914e89b48bf2a",
+    "seed": 42,
+    "sqlite": "3.53.1",
+    "storage_sha256": "bfdcc4a2ace46d4e9af83bfdc6f39ea8cd41de5b73b46cbfbd1ad00ec0460f49",
+    "trials": 5
+  },
+  "latency_ms": {
+    "max_trial_p50": 0.0248,
+    "mean_trial_p50": 0.02139,
+    "median_trial_p50": 0.02,
+    "min_trial_p50": 0.0191,
+    "pooled_p50": 0.0217,
+    "pooled_p95": 0.044,
+    "pooled_p99": 0.36596699999999993,
+    "trial_p50_values": [
+      0.02,
+      0.0193,
+      0.0248,
+      0.0191,
+      0.02375
+    ]
+  },
+  "median_trial_p50_ms": 0.02,
+  "reps": 300,
+  "reps_per_trial": 60,
+  "rows": 1800,
+  "target": "code",
+  "trials": 5
+}

@@ -1,0 +1,19 @@
+[
+  {
+    "content": "Recall query: memory",
+    "role": "user"
+  },
+  {
+    "content": "{\"max_results\": 10, \"min_importance\": null, \"namespace\": \"agent:hermes\"}",
+    "name": "PythonMemoryStorage.recall",
+    "role": "tool_call"
+  },
+  {
+    "content": "{\"count\": 10, \"ids\": [\"ac206abc0fb3d5e9\", \"dd237513bf897bdf\", \"04dd5140396990f3\", \"3eb37f7d5195c128\", \"ba84985948a1c626\", \"a7c784fcf7cfb536\", \"491dc6bdf97b57e7\", \"3d4d011da67b6219\", \"5a495b2b2eca88b8\", \"b7d9c60b846d91a9\"]}",
+    "role": "tool_result"
+  },
+  {
+    "content": "Measured warm recall in 0.020900 ms; correctness=pass: All checks passed.",
+    "role": "assistant"
+  }
+]

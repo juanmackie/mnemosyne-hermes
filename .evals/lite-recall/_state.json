@@ -1,0 +1,30 @@
+{
+  "current_round": 0,
+  "reps": 300,
+  "trials": 5,
+  "reps_per_trial": 60,
+  "paired_protocol": {
+    "pairs": 15,
+    "reps_per_case_per_process": 60,
+    "noise_calibration": "baseline/evidence/paired/calibration-15pair-20261002/summary.json"
+  },
+  "goal": {"target": "median_trial_p50_ms", "direction": "lower", "hold": ["correct"]},
+  "action_bar": {"target": "median_trial_p50_ms", "relative_improvement": 0.2, "minimum_correct_rate": 1.0},
+  "metrics": [
+    {"id": "latency_ms", "label": "Warm recall latency (ms)", "kind": "float", "better": "lower"}
+  ],
+  "perf_fields": [
+    {"id": "latency_s", "label": "Latency", "unit": "s"},
+    {"id": "correct", "label": "Correct", "unit": "fraction"},
+    {"id": "median_trial_p50_ms", "label": "Median run p50", "unit": "ms"}
+  ],
+  "harness_paths": [
+    ".evals/lite-recall/runner.py",
+    ".evals/lite-recall/replicate.py",
+    ".evals/lite-recall/paired.py",
+    ".evals/lite-recall/cases.jsonl",
+    ".evals/lite-recall/cases.md",
+    ".evals/lite-recall/metrics.md",
+    "src/mnemosyne_lite/storage.py"
+  ]
+}

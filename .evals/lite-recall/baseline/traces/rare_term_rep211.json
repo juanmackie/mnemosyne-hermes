@@ -1,0 +1,19 @@
+[
+  {
+    "content": "Recall query: xylophone",
+    "role": "user"
+  },
+  {
+    "content": "{\"max_results\": 100, \"min_importance\": null, \"namespace\": null}",
+    "name": "PythonMemoryStorage.recall",
+    "role": "tool_call"
+  },
+  {
+    "content": "{\"count\": 7, \"ids\": [\"c36d6b8ad6ee9111\", \"5d39f01d943ab4ec\", \"3289f96ea026f228\", \"421e8ff61385fefe\", \"ebd4ff83453a9edb\", \"720ff87ffe218a38\", \"f174c4563947127b\"]}",
+    "role": "tool_result"
+  },
+  {
+    "content": "Measured warm recall in 0.023300 ms; correctness=pass: All checks passed.",
+    "role": "assistant"
+  }
+]

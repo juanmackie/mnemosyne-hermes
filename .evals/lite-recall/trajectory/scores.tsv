@@ -1,0 +1,7 @@
+id	split	baseline
+common_term_namespace	all	0.024
+rare_term	all	0.036
+multiword_phrase	all	0.023
+full_scan_miss	all	0.021
+importance_floor	all	0.023
+wide_limit	all	0.064

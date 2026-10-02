@@ -1,0 +1,19 @@
+[
+  {
+    "content": "Recall query: memory",
+    "role": "user"
+  },
+  {
+    "content": "{\"max_results\": 50, \"min_importance\": null, \"namespace\": null}",
+    "name": "PythonMemoryStorage.recall",
+    "role": "tool_call"
+  },
+  {
+    "content": "{\"count\": 50, \"ids\": [\"ac206abc0fb3d5e9\", \"dd237513bf897bdf\", \"04dd5140396990f3\", \"3eb37f7d5195c128\", \"ba84985948a1c626\", \"b72475778f5db4e9\", \"5a0160d45301bdb1\", \"a7c784fcf7cfb536\", \"491dc6bdf97b57e7\", \"3d4d011da67b6219\", \"5a495b2b2eca88b8\", \"ee2657a6c20d9b1e\", \"b7d9c60b846d91a9\", \"b1946b944c01f763\", \"ba29e363b3aeeddf\", \"72c4d047297122ca\", \"8cd816aa7b1e3ddc\", \"b479d39e2bd033ee\", \"1391c9fac8280bdd\", \"1e53735edefe85da\", \"65fc088f936f600a\", \"d7e1ac1a551b7677\", \"3b8623df5a71edce\", \"90d659f753f9cefa\", \"3c3ccc0cc3734cb3\", \"c1f2d7aca7ff2e65\", \"d31463d641402454\", \"89ca84ae824dba70\", \"29560bb874c9ac1d\", \"7cbb17a9873a7a5b\", \"5d9da608203341a5\", \"9fcb647385c04fc5\", \"cfdaec5a9a1d3590\", \"5f20ead563441fb2\", \"e1c817b5620f0508\", \"f3a15540b1eb94f2\", \"7fac31d67b80fbe4\", \"5884f883e493c5e5\", \"2fc18b5f375928ae\", \"c08d23e1df8e1ee2\", \"85bb04f8233c523e\", \"e260ad3a762cdb69\", \"3b4e2c0a38995201\", \"71515e9078c2ecd6\", \"a61cef1c0a434e8d\", \"191241442001779f\", \"a66dfb17ef21e5dc\", \"b57d874034cf003f\", \"9baf11f1fd26ca6b\", \"29df9bcc23bf50a0\"]}",
+    "role": "tool_result"
+  },
+  {
+    "content": "Measured warm recall in 0.046300 ms; correctness=pass: All checks passed.",
+    "role": "assistant"
+  }
+]

@@ -1,0 +1,19 @@
+[
+  {
+    "content": "Recall query: midnight lantern protocol",
+    "role": "user"
+  },
+  {
+    "content": "{\"max_results\": 100, \"min_importance\": null, \"namespace\": null}",
+    "name": "PythonMemoryStorage.recall",
+    "role": "tool_call"
+  },
+  {
+    "content": "{\"count\": 2, \"ids\": [\"0ede2e246bcc590e\", \"aca5b2bf0729b8b6\"]}",
+    "role": "tool_result"
+  },
+  {
+    "content": "Measured warm recall in 0.015600 ms; correctness=pass: All checks passed.",
+    "role": "assistant"
+  }
+]

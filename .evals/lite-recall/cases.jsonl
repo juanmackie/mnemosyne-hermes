@@ -1,0 +1,6 @@
+{"id":"common_term_namespace","tags":["common","namespace_filter"],"query":"memory","namespace":"agent:hermes","max_results":10,"warmup":10,"expected":{"min_count":10,"max_count":10,"content_tokens":["memory"],"namespace":"agent:hermes"}}
+{"id":"rare_term","tags":["rare","positive"],"query":"xylophone","namespace":null,"max_results":100,"warmup":10,"expected":{"exact_count":7,"content_tokens":["xylophone"]}}
+{"id":"multiword_phrase","tags":["phrase","positive"],"query":"midnight lantern protocol","namespace":null,"max_results":100,"warmup":10,"expected":{"exact_count":2,"content_tokens":["midnight","lantern","protocol"]}}
+{"id":"full_scan_miss","tags":["miss","negative"],"query":"zzzqqqnomatch","namespace":null,"max_results":100,"warmup":10,"expected":{"exact_count":0}}
+{"id":"importance_floor","tags":["filtered","importance_floor"],"query":"project","namespace":"agent:hermes","max_results":10,"min_importance":5,"warmup":10,"expected":{"min_count":1,"max_count":10,"content_tokens":["project"],"namespace":"agent:hermes","min_importance":5}}
+{"id":"wide_limit","tags":["common","wide_limit"],"query":"memory","namespace":null,"max_results":50,"warmup":10,"expected":{"exact_count":50,"content_tokens":["memory"]}}
