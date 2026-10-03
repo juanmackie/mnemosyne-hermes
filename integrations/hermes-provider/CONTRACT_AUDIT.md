@@ -255,6 +255,48 @@ SQLite transactions, failed turn rollback, and diagnostic reentrancy. This is
 provider-boundary evidence; the changed provider has not been exercised on a
 live gateway.
 
+### F17 — provider ↔ engine behaviour is now covered by a CI-enforced lane
+
+`CONTRACT_AUDIT.md` up to F16 audits provider ↔ Hermes signatures. Nothing
+audited provider ↔ engine behaviour: the CI tests job installs only
+`pytest pytest-cov`, every provider test uses `FakeBeam`, the one
+engine-present case in `tests/test_provider_loader.py` prints "skip" and
+returns without the engine, and the onboarding smoke only exercises doctor,
+registration and one `sync_turn → remember` round trip. No tool handler was
+called against the real engine. The `mnemosyne_update` / `mnemosyne_get`
+mismatch (P20) reached a live agent for exactly this reason, and the same
+investigation found `mnemosyne_forget` has the same gap for episodic rows.
+
+`tests/test_provider_engine_contract.py` closes the gap. Against the pinned
+real engine in a temp dir, through the public `handle_tool_call` (so the P19
+lock and `has_tool` are covered):
+
+- Check A (static): AST-scan of the snapshot for every
+  `self._beam.<attr>` / `self._surface_beam.<attr>`; each must exist on a real
+  `BeamMemory` instance. Catches engine renames on a pin bump with no
+  hand-maintained list.
+- Check B: a minimal-valid-args table covering exactly `ALL_TOOL_SCHEMAS` (a
+  new upstream tool cannot be skipped). Each call must return parseable JSON
+  with no `memory_unavailable` and no unhandled-exception shape. Sleep, import,
+  export and model_refresh use `dry_run` / temp paths.
+- Check C: ID visibility matrix over own-session working, global-from-another-
+  session, private-from-another-session, episodic (via real `sleep force`
+  consolidation), and shared-surface rows. Recorded divergence: `forget` on
+  episodic rows returns `not_found` while `get` resolves them, because the
+  engine's `forget_working` is working-only. Asserted strictly so it fails when
+  fixed. Whether to patch episodic forget is a product decision (deletion);
+  the lane records it rather than changing it.
+- Check D: write → read coherence (remember, update, invalidate, forget
+  reflected by recall and get).
+
+The lane runs in `test-all.sh` (skips with a visible line when the engine is
+absent), strict under `./test-all.sh --require-engine`
+(`MNEMOSYNE_REQUIRE_ENGINE=1`: missing engine fails), as the `engine-contract`
+CI job (Python 3.11 and 3.13, provider + pinned engine installed), and weekly
+against the newest engine release (ignoring the pin) with the result in the
+drift issue body, so a pin bump becomes a checked decision. A re-vendor or pin
+change must pass `./test-all.sh --require-engine`.
+
 ## Status
 
 | Finding | Disposition / evidence |
@@ -275,6 +317,7 @@ live gateway.
 | F14 | End-to-end verified: plugin metadata and collision assertions pass on Ubuntu/macOS with Hermes 0.18.2/0.19.0 in run 36311054419; doctor exits 0 and exactly one provider is discovered. |
 | F15 | Fixed: four-tool default, explicit all-tools opt-in, and one canonical 40-tool table. |
 | F16 | Fixed: shared-connection tools, prompt reads, and mirror writes serialize with background turn capture (P19); real SQLite transaction and nested-lock regressions pass locally. |
+| F17 | Covered: provider ↔ engine behaviour is driven by the engine-backed contract lane (Checks A–D; episodic-forget divergence recorded strictly). |
 
 Every future local provider change must go through `PATCHES.md` +
 `VENDORED_FROM.json` (enforced by `tests/test_vendored_provider.py`).

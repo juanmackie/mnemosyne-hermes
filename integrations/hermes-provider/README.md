@@ -158,4 +158,6 @@ python tests/test_vendored_provider.py
 Triage per `PATCHES.md`, then re-vendor the changed files and update
 `VENDORED_FROM.json` in the same commit. The engine pin
 (`mnemosyne-memory[embeddings]>=3.15.1,<3.16`) may only be widened after
-re-running the contract audit.
+re-running the contract audit. A re-vendor or pin change must pass
+`./test-all.sh --require-engine` (the engine-backed contract lane:
+every tool against the real engine, never skips when strict).

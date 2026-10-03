@@ -93,7 +93,8 @@ history keep it; do not restore it.
 
 ```bash
 ./test-all.sh --skip-llm          # provider contract gates + local unit tests
-bash scripts/checks.sh            # repo gates (version drift)
+./test-all.sh --require-engine    # same, with the engine-backed lane strict (needs ./integrations/hermes-provider installed)
+bash scripts/checks.sh            # repo gates (version drift, engine-contract presence)
 pre-commit run --all-files        # ruff, ruff format, mypy, shellcheck
 bash scripts/smoke-hermes-onboarding.sh   # clean-user acceptance (Linux/macOS)
 ```
@@ -104,6 +105,8 @@ The provider gates, runnable on their own in a bare venv:
 python tests/test_vendored_provider.py   # snapshot hashes + declared patches
 python tests/test_provider_loader.py     # loader contract, engine absent and present
 python tests/test_provider_db_path.py    # DB path precedence + doctor checks
+python tests/test_provider_engine_contract.py   # engine-backed tool contract (skips without the engine)
+MNEMOSYNE_REQUIRE_ENGINE=1 python tests/test_provider_engine_contract.py  # strict: fail when the engine is missing
 ```
 
 Health checks after an install: `hermes mnemosyne doctor --no-fix` (must exit 0)
@@ -143,8 +146,14 @@ there is invisible. Add new gates to it.
 - `docs/archive/` is historical. Do not treat it as a contract or update it
   unless a task targets it.
 - `integrations/hermes-provider/LIVE_VERIFICATION.md` has not been executed
-  against a live gateway in this repository's history. The CI smoke lane is the
-  substitute evidence.
+  against a live gateway in this repository's history. Provider ↔ engine
+  behaviour is covered by the engine-backed contract lane
+  (`tests/test_provider_engine_contract.py`: every tool against the pinned
+  engine, ID visibility matrix, write→read coherence; strict in CI via
+  `./test-all.sh --require-engine`, weekly against the newest engine via the
+  upstream-drift workflow). What the lane does not cover: a live gateway run
+  (LIVE_VERIFICATION.md), Hermes-version discovery beyond the smoke matrix,
+  and LLM-gated consolidation paths exercised only with dry_run.
 - The local patches in `PATCHES.md` have not been sent upstream; the sync
   procedure in `scripts/vendor-provider-sync.sh` re-applies them.
 - There is no browser/UI harness: the CLI and MCP server are exercised by

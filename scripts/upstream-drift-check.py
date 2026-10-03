@@ -241,6 +241,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print only the newest hermes-agent version and exit",
     )
+    parser.add_argument(
+        "--latest-engine",
+        action="store_true",
+        help="print only the newest mnemosyne-memory version and exit",
+    )
     args = parser.parse_args(argv)
 
     if args.latest_hermes:
@@ -248,6 +253,17 @@ def main(argv: list[str] | None = None) -> int:
         # lane against whatever is newest on PyPI.
         try:
             print(latest_release("hermes-agent")["version"])
+        except RuntimeError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.latest_engine:
+        # Used by .github/workflows/upstream-drift.yml, which runs the
+        # engine-backed provider contract against the newest engine release
+        # (ignoring the pin) so a pin bump becomes a checked decision.
+        try:
+            print(latest_release("mnemosyne-memory")["version"])
         except RuntimeError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 2

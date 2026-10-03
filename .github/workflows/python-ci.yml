@@ -75,7 +75,35 @@ jobs:
       - name: Types (mypy)
         run: mypy
       - name: Shell (shellcheck)
-        run: shellcheck -S warning install.sh scripts/*.sh bench/*.sh
+        run: shellcheck -S warning install.sh scripts/*.sh bench/*.sh test-all.sh
+
+  engine-contract:
+    name: engine-contract (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      # actions/checkout v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # astral-sh/setup-uv v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+
+      - name: Create venv and install the pinned engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python ${{ matrix.python }} .venv
+          py="$PWD/.venv/bin/python"
+          echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
+          # The pin comes from integrations/hermes-provider/pyproject.toml
+          # (single source); installing the provider pulls the pinned engine.
+          uv pip install --python "$py" ./integrations/hermes-provider pytest
+
+      - name: Engine-backed provider contract (strict, never skips)
+        shell: bash
+        run: ./test-all.sh --require-engine
 
   hermes-onboarding:
     name: onboarding (${{ matrix.os }}, hermes ${{ matrix.hermes }})

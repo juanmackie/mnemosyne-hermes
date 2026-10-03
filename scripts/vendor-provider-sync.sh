@@ -5,6 +5,9 @@
 #   scripts/vendor-provider-sync.sh /path/to/site-packages/hermes_memory_provider
 #   scripts/vendor-provider-sync.sh /path/to/extracted/wheel
 #
+# A re-vendor or engine pin change must pass ./test-all.sh --require-engine
+# (the engine-backed contract lane) before it is accepted.
+#
 # Exit status:
 #   0  vendored snapshot matches upstream byte-for-byte
 #   1  drift found (per-file report printed) — triage via PATCHES.md

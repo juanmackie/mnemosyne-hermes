@@ -4,13 +4,17 @@
 # local/keyless. Any future LLM-marked lane must use the Hermes proxy first.
 #
 # Usage:
-#   ./test-all.sh [--skip-llm]
+#   ./test-all.sh [--skip-llm] [--require-engine]
+#
+# --require-engine exports MNEMOSYNE_REQUIRE_ENGINE=1 so the engine-backed
+# contract lane fails (never skips) when the engine is missing.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 SKIP_LLM=false
+REQUIRE_ENGINE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -18,8 +22,13 @@ while [[ $# -gt 0 ]]; do
     SKIP_LLM=true
     shift
     ;;
+  --require-engine)
+    REQUIRE_ENGINE=true
+    export MNEMOSYNE_REQUIRE_ENGINE=1
+    shift
+    ;;
   --help | -h)
-    sed -n '2,7p' "$0"
+    sed -n '2,10p' "$0"
     exit 0
     ;;
   *)
@@ -37,10 +46,11 @@ if [[ ! -f pyproject.toml ]]; then
 fi
 
 run_contract_tests() {
-  printf '\n== Provider contract gates (vendored drift, loader, db path) ==\n'
+  printf '\n== Provider contract gates (vendored drift, loader, db path, engine contract) ==\n'
   "$PYTHON_BIN" tests/test_vendored_provider.py
   "$PYTHON_BIN" tests/test_provider_loader.py
   "$PYTHON_BIN" tests/test_provider_db_path.py
+  "$PYTHON_BIN" tests/test_provider_engine_contract.py
 }
 
 run_non_llm_tests() {

@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Engine-backed provider contract lane (`tests/test_provider_engine_contract.py`):
+  every provider tool runs against the pinned real engine in CI
+  (`./test-all.sh --require-engine`), with a weekly run against the newest
+  engine release so a pin bump becomes a checked decision.
+
 ### Fixed
 
 - `mnemosyne_update` edits every memory `mnemosyne_get` can return, including

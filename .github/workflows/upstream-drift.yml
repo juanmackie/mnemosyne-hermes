@@ -24,6 +24,8 @@ jobs:
   check:
     name: PyPI drift check
     runs-on: ubuntu-latest
+    needs: [contract-latest-engine]
+    if: always()
     steps:
       # actions/checkout v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -39,8 +41,15 @@ jobs:
           python3 scripts/upstream-drift-check.py | tee drift-report.md
           echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch the latest-engine contract report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: contract-latest-engine
+          path: ./drift-artifacts
+
       - name: Open or update an issue
-        if: steps.drift.outputs.status != '0'
+        if: steps.drift.outputs.status != '0' || needs.contract-latest-engine.outputs.status != '0'
         env:
           GH_TOKEN: ${{ github.token }}
           TITLE: "Upstream drift: an upstream release needs triage"
@@ -52,11 +61,18 @@ jobs:
           $(cat drift-report.md)
 
           ---
+          Engine contract against the newest mnemosyne-memory
+          (ignoring the pin; see the contract-latest-engine job):
+
+          $(cat drift-artifacts/contract-latest-engine.md 2>/dev/null || echo "(contract-latest-engine did not report)")
+
+          ---
           Run: \`python scripts/upstream-drift-check.py\`
 
           Triage per \`integrations/hermes-provider/PATCHES.md\`. The sync
           procedure is \`scripts/vendor-provider-sync.sh\`, documented in
-          \`integrations/hermes-provider/README.md\`.
+          \`integrations/hermes-provider/README.md\`. A re-vendor or pin change
+          must pass \`./test-all.sh --require-engine\`.
           EOF
 
           existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
@@ -70,6 +86,48 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
               --body-file issue-body.md
           fi
+
+  contract-latest-engine:
+    name: contract against the latest engine
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.contract.outputs.status }}
+    steps:
+      # actions/checkout v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      # astral-sh/setup-uv v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+
+      - name: Resolve the newest mnemosyne-memory on PyPI
+        id: latest
+        run: |
+          set -euo pipefail
+          version="$(python3 scripts/upstream-drift-check.py --latest-engine)"
+          echo "Resolved mnemosyne-memory $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Provider contract against mnemosyne-memory ${{ steps.latest.outputs.version }} (ignoring the pin)
+        id: contract
+        continue-on-error: true
+        run: |
+          set +e
+          uv venv --python 3.11 .venv
+          py="$PWD/.venv/bin/python"
+          echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
+          # Newest engine, not the pin: a green run here (plus the drift diff)
+          # is the evidence a pin bump needs; a red run blocks it.
+          uv pip install --python "$py" "mnemosyne-memory[embeddings]==${{ steps.latest.outputs.version }}" pytest
+          uv pip install --python "$py" --no-deps ./integrations/hermes-provider
+          MNEMOSYNE_REQUIRE_ENGINE=1 "$py" tests/test_provider_engine_contract.py 2>&1 | tee contract-latest-engine.md
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload contract report
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-latest-engine
+          path: contract-latest-engine.md
 
   smoke-latest-hermes:
     name: smoke against the latest hermes-agent
