@@ -1,0 +1,2 @@
+{"description": "OR the query's content tokens instead of AND-ing every token",
+ "label": "content-token OR", "target": "code"}

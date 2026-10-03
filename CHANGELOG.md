@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Deterministic natural-language recall evaluation harness under
+  `.claude/hillclimb/recall-quality/` (94 labelled cases, held-out splits,
+  real-CLI grader and offline candidate screen). Round 1 exposed the AND/OR
+  recall-specificity tradeoff; its OR candidate did not clear the negative
+  specificity gate and is retained as an experiment, not shipped behavior.
 - Engine-backed provider contract lane (`tests/test_provider_engine_contract.py`):
   every provider tool runs against the pinned real engine in CI
   (`./test-all.sh --require-engine`), with a weekly run against the newest

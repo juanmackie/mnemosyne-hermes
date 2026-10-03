@@ -685,7 +685,9 @@ def test_recall_cache_invalidates_on_writes_and_flushes():
         assert len(s.recall("widgets", max_results=10)) == 7, "concurrent write not seen"
 
         # The cache must not become a separate source of truth for content.
-        assert len(s.recall("widgets number 3", max_results=10)) == 1
+        # Use the unique token "3" so this assertion continues to test a
+        # targeted row even if multi-token matching semantics change.
+        assert len(s.recall("3", max_results=10)) == 1
         s.close()
 
 

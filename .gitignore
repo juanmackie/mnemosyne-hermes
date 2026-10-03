@@ -62,3 +62,12 @@ docs/VALIDATION_RESULTS.md
 
 # Dream-RSI run state (self-ignores its bulky work/ + trace_pool/; this entry hides everything)
 .dream-rsi/
+
+# recall-quality eval: derived output only. The runner, inputs, grader and
+# _state.json are committed; the corpus DB, transcripts and report are not.
+.claude/hillclimb/*/data/
+.claude/hillclimb/*/traces/
+.claude/hillclimb/*/**/traces/
+.claude/hillclimb/*/report.html
+.claude/hillclimb/*/state.json
+.claude/hillclimb/*/trajectory/
