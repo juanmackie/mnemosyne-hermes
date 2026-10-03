@@ -3671,11 +3671,98 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             return json.dumps({"error": "memory_id is required"})
         content = args.get("content")
         importance = args.get("importance")
+        # LOCAL PATCH: P20 the engine returns False both for "no such row" and
+        # for "nothing to change"; only the first one is a not_found.
+        if content is None and importance is None:
+            return json.dumps({"error": "content or importance is required", "memory_id": memory_id})
         ok = self._beam.update_working(memory_id, content=content, importance=importance)
-        return json.dumps({
+        memory_store: Optional[str] = "working"
+        if not ok:
+            # LOCAL PATCH: P20 update_working only matches working rows owned by
+            # this session, while get/invalidate/forget also resolve global rows
+            # and get/invalidate fall back to episodic memory.
+            memory_store = self._update_get_visible_memory(memory_id, content, importance)
+            ok = memory_store is not None
+        result: Dict[str, Any] = {
             "status": "updated" if ok else "not_found",
             "memory_id": memory_id,
-        })
+        }
+        if ok:
+            result["memory_store"] = memory_store
+        return json.dumps(result)
+
+    def _update_get_visible_memory(self, memory_id: str, content: Optional[str],
+                                   importance: Optional[float]) -> Optional[str]:
+        """LOCAL PATCH: P20 update a row that `get` resolves but `update_working` misses.
+
+        Uses the engine's own visibility predicate (`session_id = ? OR
+        scope = 'global'`) over working memory first, then episodic memory, so
+        an ID returned by `mnemosyne_get` is always editable. Returns the store
+        that was updated, or None when the ID is not visible to this session.
+        """
+        beam = self._beam
+        conn = getattr(beam, "conn", None)
+        if conn is None:
+            return None
+        session_id = getattr(beam, "session_id", self._session_id)
+        visible = "id = ? AND (session_id = ? OR scope = 'global')"
+        updates: List[str] = []
+        params: List[Any] = []
+        if content is not None:
+            updates.append("content = ?")
+            params.append(content)
+        if importance is not None:
+            updates.append("importance = ?")
+            params.append(importance)
+        for table, store in (("working_memory", "working"), ("episodic_memory", "episodic")):
+            row = conn.execute(
+                f"SELECT rowid FROM {table} WHERE {visible}", (memory_id, session_id)
+            ).fetchone()
+            if row is None:
+                continue
+            try:
+                conn.execute(
+                    f"UPDATE {table} SET {', '.join(updates)} WHERE {visible}",
+                    (*params, memory_id, session_id),
+                )
+                if content is not None:
+                    self._refresh_updated_embedding(store, memory_id, int(row[0]), content)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            invalidate_cache = getattr(beam, "_invalidate_query_cache", None)
+            if callable(invalidate_cache):
+                invalidate_cache()
+            return store
+        return None
+
+    def _refresh_updated_embedding(self, store: str, memory_id: str, rowid: int, content: str) -> None:
+        """LOCAL PATCH: P20 keep dense recall in step with edited content.
+
+        FTS is maintained by the engine's wm_au/em_au triggers; vectors are not.
+        Best effort, like the engine's own update_working: a failed refresh must
+        not lose the content edit.
+        """
+        try:
+            if store == "episodic":
+                refresh = getattr(self._beam, "_refresh_episodic_embedding", None)
+                if callable(refresh):
+                    refresh(memory_id, rowid, content)
+                return
+            from mnemosyne.core import beam as engine_beam
+            embeddings = getattr(engine_beam, "_embeddings", None)
+            store_embedding = getattr(engine_beam, "_store_working_embedding", None)
+            if embeddings is None or store_embedding is None or not embeddings.available():
+                return
+            vec = embeddings.embed([content])
+            if vec is not None and len(vec) > 0:
+                store_embedding(self._beam.conn, memory_id, vec[0])
+        except Exception as exc:
+            logger.warning(
+                "mnemosyne_update: embedding refresh failed for %s (%s): %s",
+                memory_id, type(exc).__name__, exc,
+            )
 
     def _handle_forget(self, args: Dict[str, Any]) -> str:
         memory_id = args.get("memory_id", "").strip()

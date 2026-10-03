@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mnemosyne_update` edits every memory `mnemosyne_get` can return, including
+  global memories written by another session and consolidated (episodic)
+  memories, instead of answering `not_found`.
 - Provider tools, identity/model prompt reads, and built-in memory
   mirroring serialize with background turn capture, preventing uncommitted
   reads and accidental commits of another turn's transaction.

@@ -362,6 +362,85 @@ def test_diagnostic_tool_can_reenter_the_beam_lock():
     assert payload["sync_turn"]["in_flight"] == 0
 
 
+class _SessionScopedBeam:
+    """Real SQLite rows behind the engine's `get`/`update_working` predicates."""
+
+    def __init__(self, session_id="hermes_a"):
+        self.session_id = session_id
+        self.conn = sqlite3.connect(":memory:")
+        for table in ("working_memory", "episodic_memory"):
+            self.conn.execute(
+                f"CREATE TABLE {table} (id TEXT PRIMARY KEY, content TEXT, "
+                "importance REAL, session_id TEXT, scope TEXT)"
+            )
+        self.refreshed = []
+        self.cache_invalidations = 0
+
+    def add(self, table, memory_id, session_id, scope):
+        self.conn.execute(
+            f"INSERT INTO {table} VALUES (?, 'old', 0.5, ?, ?)", (memory_id, session_id, scope)
+        )
+        self.conn.commit()
+
+    def update_working(self, memory_id, content=None, importance=None):
+        # Upstream predicate: working memory only, owning session only.
+        cursor = self.conn.execute(
+            "UPDATE working_memory SET content = COALESCE(?, content), "
+            "importance = COALESCE(?, importance) WHERE id = ? AND session_id = ?",
+            (content, importance, memory_id, self.session_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def get(self, memory_id):
+        for table, store in (("working_memory", "working"), ("episodic_memory", "episodic")):
+            row = self.conn.execute(
+                f"SELECT content, importance FROM {table} "
+                "WHERE id = ? AND (session_id = ? OR scope = 'global')",
+                (memory_id, self.session_id),
+            ).fetchone()
+            if row:
+                return {"id": memory_id, "content": row[0], "importance": row[1], "memory_store": store}
+        return None
+
+    def _refresh_episodic_embedding(self, memory_id, rowid, new_content):
+        self.refreshed.append((memory_id, new_content))
+
+    def _invalidate_query_cache(self):
+        self.cache_invalidations += 1
+
+
+def test_update_resolves_every_row_get_resolves():
+    provider = provider_mod.MnemosyneMemoryProvider()
+    beam = _SessionScopedBeam()
+    provider.__dict__["_beam"] = beam
+    beam.add("working_memory", "own", "hermes_a", "session")
+    beam.add("working_memory", "global-other", "hermes_b", "global")
+    beam.add("working_memory", "private-other", "hermes_b", "session")
+    beam.add("episodic_memory", "episodic", "hermes_a", "session")
+
+    def call(tool, **args):
+        return json.loads(getattr(provider, f"_handle_{tool}")(args))
+
+    for memory_id, store in (("own", "working"), ("global-other", "working"), ("episodic", "episodic")):
+        assert call("get", memory_id=memory_id)["status"] == "ok"
+        result = call("update", memory_id=memory_id, content="new", importance=0.9)
+        assert result == {"status": "updated", "memory_id": memory_id, "memory_store": store}, result
+        memory = call("get", memory_id=memory_id)["memory"]
+        assert (memory["content"], memory["importance"]) == ("new", 0.9), memory
+    assert beam.refreshed == [("episodic", "new")]
+    assert beam.cache_invalidations == 2
+
+    # Another session's private row stays invisible to both paths.
+    assert call("get", memory_id="private-other")["status"] == "not_found"
+    assert call("update", memory_id="private-other", content="new")["status"] == "not_found"
+    row = beam.conn.execute("SELECT content FROM working_memory WHERE id = 'private-other'").fetchone()
+    assert row[0] == "old"
+    assert call("update", memory_id="missing", content="new")["status"] == "not_found"
+    # Nothing to change is a caller error, not a missing row.
+    assert call("update", memory_id="own") == {"error": "content or importance is required", "memory_id": "own"}
+
+
 def test_on_pre_compress_writes_required_checkpoint_and_returns_context():
     provider = provider_mod.MnemosyneMemoryProvider()
     with tempfile.TemporaryDirectory() as tmp:
@@ -603,6 +682,7 @@ if __name__ == "__main__":
         test_identity_prefetch_waits_for_background_transaction,
         test_model_prefetch_waits_for_background_transaction,
         test_diagnostic_tool_can_reenter_the_beam_lock,
+        test_update_resolves_every_row_get_resolves,
         test_on_pre_compress_writes_required_checkpoint_and_returns_context,
         test_on_pre_compress_required_checkpoint_fails_on_write_error,
         test_spawn_context_thread_propagates_contextvars,

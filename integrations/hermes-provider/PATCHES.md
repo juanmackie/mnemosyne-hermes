@@ -211,6 +211,16 @@ The remaining vendored files are byte-identical to the 3.15.1 wheel RECORD.
 | Behaviour | Tool dispatch, built-in prefetch reads (including identity/model slots), and built-in memory mirroring share the turn-sync lock. Custom prefetch callbacks run outside the lock. The lock is reentrant so diagnostics can keep their existing internal critical section. Hermes still owns asynchronous turn dispatch and flushing. Engine-free regressions use a paused real SQLite transaction to verify isolation and rollback, and exercise the nested diagnostic lock. |
 | Upstream | Not sent yet — shared-connection concurrency fix. |
 
+### P20 — `mnemosyne_update` resolves every row `mnemosyne_get` resolves
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_handle_update`, `_update_get_visible_memory`, `_refresh_updated_embedding`) |
+| Date | 2026-10-03 |
+| Reason | The engine's `update_working` matches `working_memory WHERE id = ? AND session_id = ?`, while `get` (and `invalidate`) match `session_id = ? OR scope = 'global'` and fall back to `episodic_memory`. An ID that `mnemosyne_get` had just returned therefore came back `not_found` from `mnemosyne_update` whenever the row was a global memory written by another session (every new CLI session has a new `session_id`) or had been consolidated to episodic memory. Agents worked around it with remember + invalidate, leaving duplicates. |
+| Behaviour | On an engine miss the handler retries with the engine's own visibility predicate over working then episodic memory, refreshes the row's embedding (best effort, as upstream) and clears the query cache. A row private to another session stays `not_found` for both tools. The success payload gains `memory_store`. An update with neither `content` nor `importance` returns an error instead of `not_found`. |
+| Upstream | Not sent yet — engine bug (`BeamMemory.update_working` predicate); the real fix belongs in the engine, after which this patch can be dropped. |
+
 Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 (they need a product decision, not a mechanical fix).
 
