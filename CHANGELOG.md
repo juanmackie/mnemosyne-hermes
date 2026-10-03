@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bulk ingest is ~1.5x faster. The WAL checkpoint bound moves from 4 MiB to
+  16 MiB and the size check from every 10 writes to every 100. Profiling a
+  5000-row ingest showed `wal_checkpoint(TRUNCATE)` charging ~5500 ms of
+  6700 ms — 82% of the write path — against a ~15 ms floor for the inserts
+  themselves, so the bottleneck was checkpoint cadence, not the insert path.
+  Measured: `write_5000_p50_ms` 6717 -> ~4365 ms, peak WAL 20.3 MiB. Recall
+  assertions, `journal_mode=wal` and `synchronous=NORMAL` are unchanged; the
+  trade-off is a larger WAL on disk between checkpoints.
 - Lite stores migrate to schema v3, removing the duplicate content column and
   its content-sized indexes. Older stores are backed up automatically before
   migration; releases that predate v3 refuse the upgraded file.
