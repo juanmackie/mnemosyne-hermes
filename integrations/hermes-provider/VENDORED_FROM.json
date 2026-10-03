@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "lohea-sj_eQsH5D_52sbibiEvHCsxzAsajkv69kfuAA",
-      "bytes": 200838,
-      "lines": 4300
+      "sha256": "IMSDeYsSOwFt0IsIj8X-2AVZ9aG3FoCTjejK6ByNCBg",
+      "bytes": 201686,
+      "lines": 4313
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "XeICgiLqwwywBK5h03zPG5g4_uG-TwagKex3UJzn_Sk",
@@ -73,7 +73,8 @@
       "P17 implement session/compression hooks; checkpoint JSON is bounded to 256 KiB, uses owner-only permissions and remains best effort because Hermes catches callback exceptions",
       "P18 curated four-tool default; full 40-tool surface requires tools: ['*']",
       "P19 serialize tool dispatch, built-in prefetch reads, and built-in memory mirroring with background turn sync using a reentrant Beam lock",
-      "P20 mnemosyne_update resolves every row mnemosyne_get resolves: global rows from other sessions and episodic rows; an update with no fields is an error, not not_found"
+      "P20 mnemosyne_update resolves every row mnemosyne_get resolves: global rows from other sessions and episodic rows; an update with no fields is an error, not not_found",
+      "P21 mnemosyne_validate honours session/global visibility: the existence check and all mutations use the engine predicate, so private rows of other sessions are not_found"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",

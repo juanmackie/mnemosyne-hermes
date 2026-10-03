@@ -19,6 +19,7 @@ Run with:
 """
 
 import ast
+import contextlib
 import json
 import os
 import pathlib
@@ -44,9 +45,7 @@ def _require_engine():
     install hint.
     """
     try:
-        from mnemosyne.core.beam import BeamMemory  # noqa: F401
-
-        import mnemosyne.core.beam as beam_mod  # noqa: F401
+        import mnemosyne.core.beam as beam_mod
 
         return beam_mod.BeamMemory
     except ImportError:
@@ -60,28 +59,84 @@ def _require_engine():
                 "MNEMOSYNE_REQUIRE_ENGINE=1 but the mnemosyne-memory engine is "
                 "not importable. Install it with: "
                 "uv pip install ./integrations/hermes-provider"
-            )
+            ) from None
         print(message)
         return None
+
+
+@contextlib.contextmanager
+def _contract_env(tmp):
+    """Hold the contract-lane environment for a whole test body.
+
+    The engine reads ``MNEMOSYNE_EMBEDDINGS_OFF`` on every call (not just at
+    init), so it must stay set while tools run: it keeps recall on the keyword
+    path, fast and network-independent. ``MNEMOSYNE_DATA_DIR`` and
+    ``HERMES_HOME`` point at the throwaway dir so diagnostics and pending
+    writes never touch the real home directory.
+    """
+    keys = ("MNEMOSYNE_DATA_DIR", "MNEMOSYNE_EMBEDDINGS_OFF", "HERMES_HOME")
+    saved = {key: os.environ.get(key) for key in keys}
+    os.environ["MNEMOSYNE_DATA_DIR"] = os.path.join(tmp, "_engine_data")
+    os.environ["MNEMOSYNE_EMBEDDINGS_OFF"] = "1"
+    os.environ["HERMES_HOME"] = tmp
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+@contextlib.contextmanager
+def _stub_hermes_constants():
+    """Provide the ``hermes_constants.get_hermes_home`` helper without Hermes.
+
+    The strict CI jobs install only the provider, the engine and pytest, so
+    the ``hermes_constants`` package (shipped with hermes-agent) is absent and
+    ``mnemosyne_apply_pending`` would fail with ``No module named
+    'hermes_constants'``. The stub answers from ``HERMES_HOME`` (which
+    ``_contract_env`` points at the throwaway dir), keeping the lane hermetic.
+    Restores any pre-existing module afterwards so pytest siblings are
+    unaffected.
+    """
+    import types
+
+    mod = types.ModuleType("hermes_constants")
+
+    def get_hermes_home():
+        return pathlib.Path(os.environ.get("HERMES_HOME", ""))
+
+    mod.get_hermes_home = get_hermes_home
+    saved = sys.modules.get("hermes_constants")
+    sys.modules["hermes_constants"] = mod
+    try:
+        yield
+    finally:
+        if saved is None:
+            sys.modules.pop("hermes_constants", None)
+        else:
+            sys.modules["hermes_constants"] = saved
 
 
 def _init_contract_provider(tmp, session_id="contract_primary", **kwargs):
     """Build a real engine-backed provider with the full tool surface open.
 
-    Mirrors the ``_init`` pattern from tests/test_provider_db_path.py (throwaway
-    MNEMOSYNE_DATA_DIR, stubbed audit log) but does NOT patch ``_get_beam_class``:
-    the real BeamMemory is constructed. ``_read_config_key`` is overridden so
-    ``tools`` resolves to ``["*"]``; every other key falls through to the real
-    implementation. ``MNEMOSYNE_EMBEDDINGS_OFF=1`` keeps recall on the
-    keyword path so the lane is fast and network-independent.
+    Mirrors the ``_init`` pattern from tests/test_provider_db_path.py (stubbed
+    audit log) but does NOT patch ``_get_beam_class``: the real BeamMemory is
+    constructed. ``_read_config_key`` is overridden for the provider's
+    lifetime so ``tools`` keeps resolving to ``["*"]`` — ``has_tool`` re-reads
+    it on every call, so removing the override after init would silently close
+    the surface back to the four core tools. Every other key falls through to
+    the real implementation. The shared surface is pointed inside the
+    throwaway dir so no state persists in the checkout. Environment
+    (``MNEMOSYNE_DATA_DIR``, ``MNEMOSYNE_EMBEDDINGS_OFF``, ``HERMES_HOME``) is
+    owned by ``_contract_env``, which must wrap the whole test body.
     """
     BeamMemory = _require_engine()
     assert BeamMemory is not None, "engine guard must have failed first"
     provider = provider_mod.MnemosyneMemoryProvider()
-    original_data_dir = os.environ.get("MNEMOSYNE_DATA_DIR")
-    original_embeddings_off = os.environ.get("MNEMOSYNE_EMBEDDINGS_OFF")
-    os.environ["MNEMOSYNE_DATA_DIR"] = os.path.join(tmp, "_engine_data")
-    os.environ["MNEMOSYNE_EMBEDDINGS_OFF"] = "1"
     provider.__dict__["_init_audit_log"] = lambda: None
     real_read_config = provider._read_config_key
 
@@ -92,19 +147,14 @@ def _init_contract_provider(tmp, session_id="contract_primary", **kwargs):
 
     provider.__dict__["_read_config_key"] = _open_all_tools
     try:
-        init_kwargs = {"agent_context": "primary", **kwargs}
+        init_kwargs = {
+            "agent_context": "primary",
+            "shared_surface_path": os.path.join(tmp, "shared", "mnemosyne.db"),
+            **kwargs,
+        }
         provider.initialize(session_id=session_id, hermes_home=str(tmp), **init_kwargs)
     finally:
         provider.__dict__.pop("_init_audit_log", None)
-        provider.__dict__.pop("_read_config_key", None)
-        if original_data_dir is None:
-            os.environ.pop("MNEMOSYNE_DATA_DIR", None)
-        else:
-            os.environ["MNEMOSYNE_DATA_DIR"] = original_data_dir
-        if original_embeddings_off is None:
-            os.environ.pop("MNEMOSYNE_EMBEDDINGS_OFF", None)
-        else:
-            os.environ["MNEMOSYNE_EMBEDDINGS_OFF"] = original_embeddings_off
     assert provider._beam is not None, (
         f"provider failed to initialize against the real engine: {provider._init_error!r}"
     )
@@ -123,7 +173,7 @@ def _call(provider, tool_name, args):
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
-        raise AssertionError(f"{tool_name} returned non-JSON: {raw[:300]!r}")
+        raise AssertionError(f"{tool_name} returned non-JSON: {raw[:300]!r}") from None
     assert isinstance(payload, dict), f"{tool_name} returned non-object JSON: {raw[:300]!r}"
     return payload
 
@@ -132,8 +182,7 @@ def _assert_answered(tool_name, payload, raw_hint=""):
     """Every tool must answer without the hollow-provider or crash shapes."""
     status = payload.get("status")
     assert status != "memory_unavailable", (
-        f"{tool_name} returned memory_unavailable (hollow provider): "
-        f"{payload} {raw_hint}"
+        f"{tool_name} returned memory_unavailable (hollow provider): {payload} {raw_hint}"
     )
     err = payload.get("error", "")
     assert "Mnemosyne unavailable" not in str(err), (
@@ -145,9 +194,7 @@ def _assert_answered(tool_name, payload, raw_hint=""):
 
 
 def _remember_id(provider, content, scope="session", **extra):
-    payload = _call(
-        provider, "mnemosyne_remember", {"content": content, "scope": scope, **extra}
-    )
+    payload = _call(provider, "mnemosyne_remember", {"content": content, "scope": scope, **extra})
     _assert_answered("mnemosyne_remember", payload)
     assert payload.get("status") == "stored", f"remember failed: {payload}"
     memory_id = payload.get("memory_id")
@@ -183,7 +230,7 @@ def _provider_beam_attrs():
 def test_engine_api_surface_matches_snapshot():
     if _require_engine() is None:
         return
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp), _stub_hermes_constants():
         provider = _init_contract_provider(tmp)
         # Surface beam is lazy; force it so its attribute set is checkable.
         _call(provider, "mnemosyne_shared_remember", {"content": "surface probe"})
@@ -218,7 +265,9 @@ def _check_b_args(provider, tmp, seed):
     _assert_answered("mnemosyne_export(setup)", plotted)
     assert os.path.exists(export_path), f"setup export wrote nothing: {plotted}"
 
-    fresh = lambda tag: _remember_id(provider, f"contract check-B {tag}")
+    def fresh(tag):
+        return _remember_id(provider, f"contract check-B {tag}")
+
     shared_throwaway = _call(
         provider, "mnemosyne_shared_remember", {"content": "contract check-B shared"}
     )
@@ -356,7 +405,7 @@ def _check_b_args(provider, tmp, seed):
 def test_every_tool_answers():
     if _require_engine() is None:
         return
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp), _stub_hermes_constants():
         provider = _init_contract_provider(tmp)
         seed = _remember_id(provider, "contract check-B seed memory")
         table = _check_b_args(provider, tmp, seed)
@@ -382,16 +431,14 @@ def test_every_tool_answers():
                 continue
             if name == "mnemosyne_recall_diagnostics" and payload.get("status") == "disabled":
                 continue
-            if graph_unavailable_ok and name in (
-                "mnemosyne_graph_query",
-                "mnemosyne_graph_link",
+            if (
+                graph_unavailable_ok
+                and name in ("mnemosyne_graph_query", "mnemosyne_graph_link")
+                and payload.get("error") == "Episodic graph not available"
             ):
-                if payload.get("error") == "Episodic graph not available":
-                    continue
+                continue
             assert "error" not in payload, f"{name} returned an error: {payload}"
-            assert payload.get("status") != "error", (
-                f"{name} returned status=error: {payload}"
-            )
+            assert payload.get("status") != "error", f"{name} returned status=error: {payload}"
 
 
 # ---------------------------------------------------------------------------
@@ -404,12 +451,43 @@ def test_every_tool_answers():
 # 1. forget/episodic: the engine's forget_working is working-only, while get
 #    falls back to episodic_memory. Found by the P20 investigation; whether to
 #    patch deletion is a product decision, so the lane records it.
+# 2. validate/episodic: mnemosyne_validate only looks in working_memory, while
+#    get, update and invalidate fall back to episodic_memory. Found by the
+#    first engine-backed run of this lane.
 KNOWN_DIVERGENCES = {
     ("episodic", "forget"): (
         "engine forget_working deletes from working_memory only; "
         "mnemosyne_get resolves episodic rows"
     ),
+    ("episodic", "validate"): (
+        "mnemosyne_validate only queries working_memory; get, update and "
+        "invalidate fall back to episodic_memory"
+    ),
 }
+
+# Explicit per-cell expectations: True means the tool must resolve the ID.
+# After P21 (validate honours the same session/global visibility as
+# get/update/invalidate/forget), every private-bank tool agrees on found vs
+# not_found except the two recorded episodic divergences above.
+_MATRIX_TOOLS = [
+    "mnemosyne_get",
+    "mnemosyne_update",
+    "mnemosyne_invalidate",
+    "mnemosyne_validate",
+    "mnemosyne_forget",
+]
+_EXPECTED = {}
+for _tool in _MATRIX_TOOLS:
+    _EXPECTED[("own", _tool)] = True
+    _EXPECTED[("global-other", _tool)] = True
+    _EXPECTED[("private-other", _tool)] = False
+    _EXPECTED[("shared-surface", _tool)] = False
+    _EXPECTED[("episodic", _tool)] = _tool in (
+        "mnemosyne_get",
+        "mnemosyne_update",
+        "mnemosyne_invalidate",
+    )
+del _tool
 
 
 def _other_session_id(provider, content, scope):
@@ -423,59 +501,27 @@ def _other_session_id(provider, content, scope):
     try:
         return other.remember(content=content, scope=scope)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             other.close()
-        except Exception:
-            pass
 
 
 def _consolidate_to_episodic(provider, memory_id):
-    """Move one working row to episodic memory through the real engine.
+    """Write one episodic row through the real engine and return its new ID.
 
-    Prefers the engine's own consolidation path (sleep with force); falls back
-    to no-op detection via the episodic table so the test names the missing
-    capability instead of silently passing.
+    Engine consolidation is additive: ``consolidate_to_episodic`` writes a new
+    episodic summary row (new ID) and leaves the working source row in place,
+    so this never disturbs the working-visibility probes sharing the DB.
     """
-    payload = _call(provider, "mnemosyne_sleep", {"force": True})
-    _assert_answered("mnemosyne_sleep(consolidate)", payload)
-    conn = provider._beam.conn
-    row = conn.execute(
-        "SELECT id FROM episodic_memory WHERE id = ?", (memory_id,)
-    ).fetchone()
-    if row is not None:
-        return memory_id
-    # Force consolidation did not move this row (e.g. LLM-gated summarization
-    # is unavailable with embeddings off). Sleep with all_sessions as a second
-    # real-engine attempt before giving up with a loud failure.
-    payload = _call(provider, "mnemosyne_sleep", {"force": True, "all_sessions": True})
-    _assert_answered("mnemosyne_sleep(consolidate all)", payload)
-    row = conn.execute(
-        "SELECT id FROM episodic_memory WHERE id = ?", (memory_id,)
-    ).fetchone()
-    assert row is not None, (
-        "could not consolidate a working row to episodic_memory via "
-        "mnemosyne_sleep force (tried current and all sessions). "
-        "The visibility matrix needs a real episodic row."
+    new_id = provider._beam.consolidate_to_episodic(
+        summary=f"contract episodic summary for {memory_id}",
+        source_wm_ids=[memory_id],
     )
-    return memory_id
-
-
-def _visibility_matrix_smoke(provider):
-    """Smoke that each visibility class can be built; returns one id per class.
-
-    Runs against throwaway DBs where needed so the global sleep used for the
-    episodic probe cannot consolidate the working rows other probes need.
-    Only used as a setup assertion; the per-tool matrix below builds fresh
-    isolated rows per operation.
-    """
-    own = _remember_id(provider, "contract visibility own-session")
-    glob = _other_session_id(provider, "contract visibility global-other", "global")
-    priv = _other_session_id(provider, "contract visibility private-other", "session")
-    shared_row = _call(
-        provider, "mnemosyne_shared_remember", {"content": "contract visibility shared"}
-    )
-    _assert_answered("mnemosyne_shared_remember(visibility)", shared_row)
-    return {"own": own, "global-other": glob, "private-other": priv}
+    assert isinstance(new_id, str) and new_id, f"consolidate_to_episodic returned no id: {new_id!r}"
+    row = provider._beam.conn.execute(
+        "SELECT id FROM episodic_memory WHERE id = ?", (new_id,)
+    ).fetchone()
+    assert row is not None, f"consolidated episodic row {new_id} missing from episodic_memory"
+    return new_id
 
 
 def _is_found(tool_name, payload):
@@ -496,13 +542,6 @@ def _is_found(tool_name, payload):
 def test_id_visibility_matrix():
     if _require_engine() is None:
         return
-    tools = [
-        "mnemosyne_get",
-        "mnemosyne_update",
-        "mnemosyne_invalidate",
-        "mnemosyne_validate",
-        "mnemosyne_forget",
-    ]
     failures = []
 
     def _probe(provider, tool, memory_id):
@@ -516,47 +555,34 @@ def test_id_visibility_matrix():
         _assert_answered(f"{tool}", payload)
         return payload
 
-    def _expect(label, tool):
-        if label in ("own", "global-other"):
-            return True
-        if label in ("private-other", "shared-surface"):
-            return False
-        # episodic
-        if (label, tool.split("_", 1)[1]) in KNOWN_DIVERGENCES:
-            return False
-        return True
+    def _build(provider, label, tool):
+        # Fresh rows per probe: the matrix tests visibility while Check D
+        # tests lifecycle, so no probe may destroy another probe's row.
+        if label == "own":
+            return _remember_id(provider, f"contract matrix own for {tool}")
+        if label == "global-other":
+            return _other_session_id(provider, f"contract matrix global for {tool}", "global")
+        if label == "private-other":
+            return _other_session_id(provider, f"contract matrix private for {tool}", "session")
+        if label == "episodic":
+            source = _remember_id(provider, f"contract matrix episodic for {tool}")
+            return _consolidate_to_episodic(provider, source)
+        # shared-surface: private-bank tools must all miss these rows.
+        row = _call(
+            provider,
+            "mnemosyne_shared_remember",
+            {"content": f"contract matrix shared for {tool}"},
+        )
+        return row["memory_id"]
 
-    # Working/global/private/shared rows share one DB: no sleep runs there, so
-    # no consolidation can move rows between classes mid-matrix.
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp), _stub_hermes_constants():
         provider = _init_contract_provider(tmp)
-        smoke = _visibility_matrix_smoke(provider)
-        assert all(smoke.values()), f"visibility setup produced no ids: {smoke}"
-
-        for label in ("own", "global-other", "private-other", "shared-surface"):
-            for tool in tools:
-                if label == "own":
-                    memory_id = _remember_id(
-                        provider, f"contract matrix own for {tool}"
-                    )
-                elif label == "global-other":
-                    memory_id = _other_session_id(
-                        provider, f"contract matrix global for {tool}", "global"
-                    )
-                elif label == "private-other":
-                    memory_id = _other_session_id(
-                        provider, f"contract matrix private for {tool}", "session"
-                    )
-                else:  # shared-surface: private tools must all miss these rows.
-                    row = _call(
-                        provider,
-                        "mnemosyne_shared_remember",
-                        {"content": f"contract matrix shared for {tool}"},
-                    )
-                    memory_id = row["memory_id"]
+        for label in ("own", "global-other", "private-other", "episodic", "shared-surface"):
+            for tool in _MATRIX_TOOLS:
+                memory_id = _build(provider, label, tool)
                 payload = _probe(provider, tool, memory_id)
                 found = _is_found(tool, payload)
-                expect = _expect(label, tool)
+                expect = _EXPECTED[(label, tool)]
                 if found != expect:
                     reason = KNOWN_DIVERGENCES.get((label, tool.split("_", 1)[1]), "")
                     failures.append(
@@ -564,27 +590,7 @@ def test_id_visibility_matrix():
                         f"{'found' if expect else 'not_found'} got {payload} {reason}"
                     )
 
-    # Episodic rows live in an isolated DB: mnemosyne_sleep force consolidates
-    # every unconsolidated working row, so it must never run in the DB that
-    # holds the working-visibility probes above.
-    with tempfile.TemporaryDirectory() as tmp:
-        provider = _init_contract_provider(tmp)
-        for tool in tools:
-            source = _remember_id(provider, f"contract matrix episodic for {tool}")
-            memory_id = _consolidate_to_episodic(provider, source)
-            payload = _probe(provider, tool, memory_id)
-            found = _is_found(tool, payload)
-            expect = _expect("episodic", tool)
-            if found != expect:
-                reason = KNOWN_DIVERGENCES.get(("episodic", tool.split("_", 1)[1]), "")
-                failures.append(
-                    f"{tool} on episodic: expected "
-                    f"{'found' if expect else 'not_found'} got {payload} {reason}"
-                )
-
-    assert not failures, (
-        "ID visibility matrix diverged:\n  - " + "\n  - ".join(failures)
-    )
+    assert not failures, "ID visibility matrix diverged:\n  - " + "\n  - ".join(failures)
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +601,7 @@ def test_id_visibility_matrix():
 def test_write_read_coherence():
     if _require_engine() is None:
         return
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp), _stub_hermes_constants():
         provider = _init_contract_provider(tmp)
         token = "coherence kraken-01 xyzzy"
         memory_id = _remember_id(provider, f"contract {token} original")
@@ -607,9 +613,7 @@ def test_write_read_coherence():
         recalled = _call(provider, "mnemosyne_recall", {"query": token, "limit": 10})
         _assert_answered("mnemosyne_recall(coherence)", recalled)
         ids = [r.get("id") for r in recalled.get("results", [])]
-        assert memory_id in ids, (
-            f"recall did not return the remembered row (ids={ids}): {recalled}"
-        )
+        assert memory_id in ids, f"recall did not return the remembered row (ids={ids}): {recalled}"
 
         updated = _call(
             provider,
@@ -619,26 +623,30 @@ def test_write_read_coherence():
         _assert_answered("mnemosyne_update(coherence)", updated)
         assert updated.get("status") == "updated", updated
         got = _call(provider, "mnemosyne_get", {"memory_id": memory_id})
-        assert got.get("status") == "ok" and "edited" in got["memory"].get(
-            "content", ""
-        ), got
+        assert got.get("status") == "ok" and "edited" in got["memory"].get("content", ""), got
+        recalled = _call(provider, "mnemosyne_recall", {"query": token, "limit": 10})
+        ids = [r.get("id") for r in recalled.get("results", [])]
+        assert memory_id in ids, f"recall lost the row after update (ids={ids}): {recalled}"
 
         invalidated = _call(provider, "mnemosyne_invalidate", {"memory_id": memory_id})
         _assert_answered("mnemosyne_invalidate(coherence)", invalidated)
         assert invalidated.get("status") == "invalidated", invalidated
+        # Invalidate is expiry, not deletion: the row still exists for get
+        # but must drop out of recall results.
+        got = _call(provider, "mnemosyne_get", {"memory_id": memory_id})
+        assert got.get("status") == "ok", f"get lost an invalidated (not forgotten) row: {got}"
+        recalled = _call(provider, "mnemosyne_recall", {"query": token, "limit": 10})
+        ids = [r.get("id") for r in recalled.get("results", [])]
+        assert memory_id not in ids, f"recall still returns an invalidated row: {recalled}"
 
         forgotten = _call(provider, "mnemosyne_forget", {"memory_id": memory_id})
         _assert_answered("mnemosyne_forget(coherence)", forgotten)
         assert forgotten.get("status") == "deleted", forgotten
         got = _call(provider, "mnemosyne_get", {"memory_id": memory_id})
-        assert got.get("status") == "not_found", (
-            f"get still resolves a forgotten row: {got}"
-        )
+        assert got.get("status") == "not_found", f"get still resolves a forgotten row: {got}"
         recalled = _call(provider, "mnemosyne_recall", {"query": token, "limit": 10})
         ids = [r.get("id") for r in recalled.get("results", [])]
-        assert memory_id not in ids, (
-            f"recall still returns a forgotten row: {recalled}"
-        )
+        assert memory_id not in ids, f"recall still returns a forgotten row: {recalled}"
 
 
 if __name__ == "__main__":

@@ -280,12 +280,18 @@ lock and `has_tool` are covered):
   with no `memory_unavailable` and no unhandled-exception shape. Sleep, import,
   export and model_refresh use `dry_run` / temp paths.
 - Check C: ID visibility matrix over own-session working, global-from-another-
-  session, private-from-another-session, episodic (via real `sleep force`
-  consolidation), and shared-surface rows. Recorded divergence: `forget` on
+  session, private-from-another-session, episodic (via the engine's own
+  `consolidate_to_episodic`, which writes a new summary row and leaves the
+  working source in place), and shared-surface rows. Two recorded
+  divergences, both asserted strictly so they fail when fixed: `forget` on
   episodic rows returns `not_found` while `get` resolves them, because the
-  engine's `forget_working` is working-only. Asserted strictly so it fails when
-  fixed. Whether to patch episodic forget is a product decision (deletion);
-  the lane records it rather than changing it.
+  engine's `forget_working` is working-only; `validate` on episodic rows
+  returns `memory_not_found` for the same reason (it only queries
+  `working_memory`). Whether to patch episodic deletion is a product
+  decision; the lane records both rather than changing them. A third
+  candidate divergence — `validate` resolving private rows from other
+  sessions through its unscoped lookup — is patched as P21 instead, because
+  it returned another session's content to any caller.
 - Check D: write → read coherence (remember, update, invalidate, forget
   reflected by recall and get).
 
@@ -317,7 +323,7 @@ change must pass `./test-all.sh --require-engine`.
 | F14 | End-to-end verified: plugin metadata and collision assertions pass on Ubuntu/macOS with Hermes 0.18.2/0.19.0 in run 36311054419; doctor exits 0 and exactly one provider is discovered. |
 | F15 | Fixed: four-tool default, explicit all-tools opt-in, and one canonical 40-tool table. |
 | F16 | Fixed: shared-connection tools, prompt reads, and mirror writes serialize with background turn capture (P19); real SQLite transaction and nested-lock regressions pass locally. |
-| F17 | Covered: provider ↔ engine behaviour is driven by the engine-backed contract lane (Checks A–D; episodic-forget divergence recorded strictly). |
+| F17 | Covered: provider ↔ engine behaviour is driven by the engine-backed contract lane (Checks A–D; episodic forget/validate divergences recorded strictly, validate visibility patched as P21). Lane passes against the pinned engine (3.15.1, verified 2026-10-03); CI enforcement pending the branch push. |
 
 Every future local provider change must go through `PATCHES.md` +
 `VENDORED_FROM.json` (enforced by `tests/test_vendored_provider.py`).

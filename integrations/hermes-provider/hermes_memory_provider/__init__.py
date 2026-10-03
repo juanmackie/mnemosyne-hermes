@@ -3190,10 +3190,17 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         conn = target_beam.conn
 
-        # Verify the memory exists in this bank
+        # LOCAL PATCH: P21 validate honours the same session/global visibility
+        # as get/update/invalidate/forget. The unscoped `WHERE id = ?` let any
+        # session attest (and read the content of) private rows owned by
+        # another session. `session_id = ? OR scope = 'global'` is the
+        # engine's own visibility predicate.
+        _visible = "id = ? AND (session_id = ? OR scope = 'global')"
+        _beam_session = getattr(target_beam, "session_id", self._session_id)
+        # Verify the memory exists (and is visible) in this bank
         existing = conn.execute(
-            "SELECT id, author_id, content FROM working_memory WHERE id = ?",
-            (memory_id,),
+            "SELECT id, author_id, content FROM working_memory WHERE " + _visible,
+            (memory_id, _beam_session),
         ).fetchone()
         if not existing:
             return json.dumps({
@@ -3205,33 +3212,38 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         author_id = existing[1]
         prev_content = existing[2]
 
-        # Apply the action atomically
+        # Apply the action atomically. Every mutation carries the same
+        # visibility predicate (LOCAL PATCH: P21), so a row that fails the
+        # check above can never be written through a raced or reused ID.
         try:
             if action == "delete":
-                conn.execute("DELETE FROM working_memory WHERE id = ?", (memory_id,))
+                conn.execute(
+                    "DELETE FROM working_memory WHERE " + _visible,
+                    (memory_id, _beam_session),
+                )
             elif action == "update":
                 conn.execute(
                     "UPDATE working_memory SET content = ?, validator = ?, "
                     "validated_at = CURRENT_TIMESTAMP, "
                     "validation_count = COALESCE(validation_count, 0) + 1 "
-                    "WHERE id = ?",
-                    (new_content, validator, memory_id),
+                    "WHERE " + _visible,
+                    (new_content, validator, memory_id, _beam_session),
                 )
             elif action == "invalidate":
                 conn.execute(
                     "UPDATE working_memory SET valid_until = CURRENT_TIMESTAMP, "
                     "validator = ?, validated_at = CURRENT_TIMESTAMP, "
                     "validation_count = COALESCE(validation_count, 0) + 1 "
-                    "WHERE id = ?",
-                    (validator, memory_id),
+                    "WHERE " + _visible,
+                    (validator, memory_id, _beam_session),
                 )
             else:  # attest
                 conn.execute(
                     "UPDATE working_memory SET validator = ?, "
                     "validated_at = CURRENT_TIMESTAMP, "
                     "validation_count = COALESCE(validation_count, 0) + 1 "
-                    "WHERE id = ?",
-                    (validator, memory_id),
+                    "WHERE " + _visible,
+                    (validator, memory_id, _beam_session),
                 )
 
             # Append to ring buffer (trigger trims to last 3 per memory_id)

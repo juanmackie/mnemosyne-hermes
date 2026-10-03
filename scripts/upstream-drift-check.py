@@ -262,6 +262,9 @@ def main(argv: list[str] | None = None) -> int:
         # Used by .github/workflows/upstream-drift.yml, which runs the
         # engine-backed provider contract against the newest engine release
         # (ignoring the pin) so a pin bump becomes a checked decision.
+        # Note: PyPI's info.version reports the latest STABLE release and
+        # ignores pre-releases (e.g. 4.0.0b1-b3), so this resolves to the pin
+        # until a newer stable ships. Pre-release triage is a manual step.
         try:
             print(latest_release("mnemosyne-memory")["version"])
         except RuntimeError as e:

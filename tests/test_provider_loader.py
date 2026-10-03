@@ -142,6 +142,14 @@ def test_engine_present_registers_one_available_provider():
     try:
         import mnemosyne.core.beam  # noqa: F401
     except ImportError:
+        import os as _os
+
+        if _os.environ.get("MNEMOSYNE_REQUIRE_ENGINE", "0") == "1":
+            raise AssertionError(
+                "MNEMOSYNE_REQUIRE_ENGINE=1 but the mnemosyne-memory engine is "
+                "not importable, so the engine-present case cannot run. Install "
+                "it with: uv pip install ./integrations/hermes-provider"
+            ) from None
         print("skip: engine not importable in this process (bare-venv case covers it)")
         return
 

@@ -18,7 +18,7 @@ run() {
 }
 
 run bash scripts/check_version_drift.sh
-run python3 scripts/check_engine_contract.py
+run "${PYTHON_BIN:-python3}" scripts/check_engine_contract.py
 
 if [ "$failed" -gt 0 ]; then
     echo "FAILED: $failed gate(s)"

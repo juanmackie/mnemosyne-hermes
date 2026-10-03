@@ -105,6 +105,10 @@ jobs:
         shell: bash
         run: ./test-all.sh --require-engine
 
+      - name: Repo gates (strict engine-contract gate runs against the engine)
+        shell: bash
+        run: bash scripts/checks.sh
+
   hermes-onboarding:
     name: onboarding (${{ matrix.os }}, hermes ${{ matrix.hermes }})
     runs-on: ${{ matrix.os }}

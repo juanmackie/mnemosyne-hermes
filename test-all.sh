@@ -14,7 +14,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 SKIP_LLM=false
-REQUIRE_ENGINE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,7 +22,6 @@ while [[ $# -gt 0 ]]; do
     shift
     ;;
   --require-engine)
-    REQUIRE_ENGINE=true
     export MNEMOSYNE_REQUIRE_ENGINE=1
     shift
     ;;

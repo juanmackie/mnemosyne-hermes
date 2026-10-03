@@ -400,7 +400,12 @@ class _SessionScopedBeam:
                 (memory_id, self.session_id),
             ).fetchone()
             if row:
-                return {"id": memory_id, "content": row[0], "importance": row[1], "memory_store": store}
+                return {
+                    "id": memory_id,
+                    "content": row[0],
+                    "importance": row[1],
+                    "memory_store": store,
+                }
         return None
 
     def _refresh_episodic_embedding(self, memory_id, rowid, new_content):
@@ -422,10 +427,16 @@ def test_update_resolves_every_row_get_resolves():
     def call(tool, **args):
         return json.loads(getattr(provider, f"_handle_{tool}")(args))
 
-    for memory_id, store in (("own", "working"), ("global-other", "working"), ("episodic", "episodic")):
+    for memory_id, store in (
+        ("own", "working"),
+        ("global-other", "working"),
+        ("episodic", "episodic"),
+    ):
         assert call("get", memory_id=memory_id)["status"] == "ok"
         result = call("update", memory_id=memory_id, content="new", importance=0.9)
-        assert result == {"status": "updated", "memory_id": memory_id, "memory_store": store}, result
+        assert result == {"status": "updated", "memory_id": memory_id, "memory_store": store}, (
+            result
+        )
         memory = call("get", memory_id=memory_id)["memory"]
         assert (memory["content"], memory["importance"]) == ("new", 0.9), memory
     assert beam.refreshed == [("episodic", "new")]
@@ -434,11 +445,16 @@ def test_update_resolves_every_row_get_resolves():
     # Another session's private row stays invisible to both paths.
     assert call("get", memory_id="private-other")["status"] == "not_found"
     assert call("update", memory_id="private-other", content="new")["status"] == "not_found"
-    row = beam.conn.execute("SELECT content FROM working_memory WHERE id = 'private-other'").fetchone()
+    row = beam.conn.execute(
+        "SELECT content FROM working_memory WHERE id = 'private-other'"
+    ).fetchone()
     assert row[0] == "old"
     assert call("update", memory_id="missing", content="new")["status"] == "not_found"
     # Nothing to change is a caller error, not a missing row.
-    assert call("update", memory_id="own") == {"error": "content or importance is required", "memory_id": "own"}
+    assert call("update", memory_id="own") == {
+        "error": "content or importance is required",
+        "memory_id": "own",
+    }
 
 
 def test_on_pre_compress_writes_required_checkpoint_and_returns_context():
