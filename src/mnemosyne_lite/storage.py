@@ -219,6 +219,15 @@ class PythonMemoryStorage:
         self._migration_backup_base = migration_backup_base or db_path
         self._ensure_db_dir()
         self._local = threading.local()
+        # Background WAL drain (see _drain_wal). Started lazily from the WRITE
+        # path, so a read-only store never spawns a thread or a second
+        # connection. _fold_now is the writer's side of the handshake: the drain
+        # stands down while it is set.
+        self._drain_guard = threading.Lock()
+        self._drain_thread: threading.Thread | None = None
+        self._drain_stop: threading.Event | None = None
+        self._fold_now = threading.Event()
+        self._committed_writes = 0
         self._init_schema_resilient()
 
     @property
@@ -399,8 +408,9 @@ class PythonMemoryStorage:
         return conn
 
     def close(self) -> None:
-        """Flush buffered access counts and close this thread's connection."""
+        """Flush buffered access counts, stop the reaper, close this connection."""
         self._flush_accesses()
+        self._stop_drain()
         conn = getattr(self._local, "conn", None)
         if conn is not None:
             conn.close()
@@ -415,10 +425,21 @@ class PythonMemoryStorage:
     # Raising the bound amortises the fixed cost over ~4x more bytes per
     # checkpoint. Measured here at 5000 rows: 6717 ms -> 4297 ms (1.56x) with a
     # 20.3 MiB peak WAL, recall assertions and synchronous=NORMAL unchanged.
-    WAL_CHECKPOINT_BYTES = 16 * 1024 * 1024
+    #
+    # That is the fold POINT, and with the background drain below it is also
+    # the log's footprint ceiling: the drain copies frames while remember()
+    # commits, so what a remember() finally pays is the reset, and the file
+    # never passes this number by more than the frames written since the last
+    # test (100 writes, ~1.1 MiB here) plus one reset's residual.
+    WAL_CHECKPOINT_BYTES = 20 * 1024 * 1024
     # Only check WAL size every N writes to avoid expensive stat calls on every remember.
-    # Paired with the bound above: at every-10 the WAL never reaches 16 MiB
+    # Paired with the bound above: at every-10 the WAL never reaches 20 MiB
     # between stat calls, so the check fires but mostly finds nothing to fold.
+    # Every-100 is also the right cadence now that the fold BLOCKS until it
+    # lands (see _fold): a fold that lost its first attempt is retried in place,
+    # so the writer does not need to re-test the size on every single write to
+    # come back for it. The worst a missed test can do is overshoot the bound by
+    # 100 writes of frames (~1.1 MiB at this schema's ~11.4 frames/row).
     WAL_CHECKPOINT_INTERVAL = 100
 
     # Page geometry for a database file this store creates.
@@ -459,6 +480,216 @@ class PythonMemoryStorage:
             # store that cannot take it still opens and still writes.
             logger.debug("page size not applied", exc_info=True)
 
+# ---- background WAL drain + writer-side reset --------------------------
+    #
+    # A checkpoint has two halves. The COPY puts frames back into the database
+    # file; the RESET makes the log reusable. Measured on this store's own
+    # 5000-row ingest, the whole `wal_checkpoint(TRUNCATE)` is ~82% of the
+    # write phase, and a bulk ingest is charged the entire bill in one lump to
+    # whichever remember() happens to cross the bound.
+    #
+    # The two halves are not equally movable, and this file splits them:
+    #
+    #   * The COPY is any connection's job and needs no lock a writer wants.
+    #     It runs on a daemon thread (`_drain_wal`) from a short-lived
+    #     connection while `remember()` keeps committing; the sqlite3 call
+    #     releases the GIL, so the copy overlaps the insert loop instead of
+    #     delaying it.
+    #   * The RESET is the writing connection's: it needs the log's exclusive
+    #     checkpoint lock, and a live writer holds it almost continuously.
+    #     Measured on this host: a background thread attempting FULL/RESTART
+    #     came back SQLITE_BUSY in 85 of 103 attempts and the log only grew
+    #     (to 45 MiB). So the reset stays here -- but it is all that is left
+    #     of the checkpoint by the time it runs, which is the whole point.
+    #
+    # What is new relative to "drain in the background and hope the writer's
+    # single TRUNCATE wins the lock": the fold is now a *negotiated* operation.
+    # (1) The writer sets a flag the drain checks before every pass, so the
+    # copy thread stands down instead of racing the reset -- but the writer
+    # never WAITS on it; an in-flight pass simply finishes. (2) The writer
+    # drains the residual itself (PASSIVE, on its own connection, so the
+    # blocking step below has nothing left to copy), then (3) issues TRUNCATE
+    # and re-issues it while SQLite reports busy, up to a bounded deadline.
+    # A single best-effort TRUNCATE under a live drain is a coin flip against
+    # a 2 ms poll and a copy that runs for tens of milliseconds -- measured in
+    # 1441 of 1443 attempts it came back busy, copied nothing, resized
+    # nothing, and the log kept growing. Re-issuing is what makes the bound
+    # bind instead of being hoped for.
+    #
+    # Bounded by construction: WAL_CHECKPOINT_BYTES is the same hard ceiling
+    # the seed used, the drain stands down *at* it (a copy that keeps running
+    # past the writer's bound holds the log for a whole pass and starves the
+    # reset -- measured as a 16 MiB bound overshooting to 29 MiB), and if the
+    # drain thread never starts (fork without exec, a host that forbids it) or
+    # never wins, `_maybe_checkpoint` still folds inline exactly as the seed
+    # does. Worst case is the old code, not an unbounded log.
+
+    # Drain cadence, in WRITES rather than bytes: between two resets the log
+    # never shrinks, so size alone cannot tell "the log is filling again" from
+    # "the drain already copied everything and the log is idle until the next
+    # reset". A write counter says what is actually true -- "there is new work
+    # to copy" -- and doubles as the anti-spin backoff after a busy pass.
+    WAL_DRAIN_WRITES = 16
+    # ...but only once there is at least this much log on disk, or the drain
+    # would churn the database file for a handful of frames.
+    WAL_DRAIN_BYTES = 4 * 1024 * 1024
+    # Idle poll. Reached when the store is not writing, or when the drain is
+    # standing down for the writer's reset. Only ever a stat.
+    WAL_DRAIN_POLL = 0.002
+    # The writer's fold blocks until the reset lands or this long has passed.
+    # Generous, because the alternative is a log that is not bounded by
+    # anything but luck; it is bounded because a `remember()` must never hang.
+    WAL_FOLD_DEADLINE = 10.0
+    # Pause between TRUNCATE re-issues. Each attempt is a real attempt, so this
+    # is only there to keep a losing fold from spinning a core.
+    WAL_FOLD_RETRY_SLEEP = 0.0005
+    # close() waits this long for the drain, so the last pass lands before the
+    # caller walks away from the store.
+    WAL_DRAIN_JOIN_TIMEOUT = 30.0
+
+    def _ensure_drain(self) -> None:
+        """Start the drain on the first write. Idempotent, thread-safe."""
+        if self._drain_thread is not None:
+            return
+        with self._drain_guard:
+            if self._drain_thread is None:
+                stop = self._drain_stop = threading.Event()
+                thread = self._drain_thread = threading.Thread(
+                    target=self._drain_wal,
+                    args=(stop,),
+                    name="mnemosyne-wal-drain",
+                    daemon=True,
+                )
+                thread.start()
+
+    def _stop_drain(self, timeout: float | None = None) -> None:
+        """Stop the drain thread and wait for its last pass."""
+        thread, stop = self._drain_thread, self._drain_stop
+        self._drain_thread = self._drain_stop = None
+        if thread is None or stop is None:
+            return
+        stop.set()
+        # Daemon thread: a store that is never closed cannot wedge the process.
+        # A join that runs out of patience only means the copy outlived its
+        # grace period -- SQLite still checkpoints when the last connection to
+        # the file closes.
+        thread.join(self.WAL_DRAIN_JOIN_TIMEOUT if timeout is None else timeout)
+
+    def _note_write(self) -> None:
+        """Count one committed write. The drain's trigger, nothing else.
+
+        Deliberately three cheap operations and no lock: a lost increment under
+        a race only delays a copy by one slice, and WAL_CHECKPOINT_BYTES
+        remains the guarantee that bounds the log.
+        """
+        self._committed_writes += 1
+        self._ensure_drain()
+
+    def _drain_wal(self, stop: threading.Event) -> None:
+        """Copy the log back into the database, off the write path.
+
+        PASSIVE only, and never a reset: PASSIVE takes no lock a writer or a
+        reader needs, so this can run for the whole ingest while `remember()`
+        keeps committing.
+
+        The connection is opened and closed per pass. A checkpointer that stays
+        connected keeps a read mark on the log, and while any reader holds one
+        the writer's TRUNCATE returns busy -- which would turn the writer's
+        reset into the coin flip this mechanism exists to remove.
+
+        busy_timeout is 0, so a pass can never wait on -- or hold up -- a real
+        writer or reader. Losing that race costs one poll, not correctness.
+        """
+        wal = self.db_path + "-wal"
+        copied_at = 0
+        ceiling = self.WAL_CHECKPOINT_BYTES
+        poll = self.WAL_DRAIN_POLL
+        try:
+            while not stop.is_set():
+                try:
+                    committed = self._committed_writes
+                    # Two ways to stand down: the writer has signalled that it
+                    # is folding (do not compete for the checkpoint lock), or
+                    # not enough new writes have landed since the last pass.
+                    if (
+                        not self._fold_now.is_set()
+                        and committed - copied_at >= self.WAL_DRAIN_WRITES
+                    ):
+                        try:
+                            size = os.path.getsize(wal)
+                        except OSError:
+                            size = 0
+                        # Inside the band BELOW the writer's own fold point, and
+                        # stand down at it: see the header note on why.
+                        if self.WAL_DRAIN_BYTES <= size < ceiling:
+                            row = None
+                            conn = self._connect(busy_timeout_ms=0)
+                            try:
+                                row = conn.execute(
+                                    "PRAGMA wal_checkpoint(PASSIVE)"
+                                ).fetchone()
+                            finally:
+                                conn.close()
+                            # A busy pass copied nothing. Back off by a further
+                            # slice rather than re-issuing on the next poll:
+                            # the file size does not shrink between resets, so a
+                            # size-gated drain re-enters this branch forever.
+                            copied_at = (
+                                committed
+                                if not (row and row[0])
+                                else committed - self.WAL_DRAIN_WRITES
+                            )
+                except (OSError, sqlite3.Error):
+                    # A locked, closing or unreadable file is not fatal: the next
+                    # pass reopens. The writer's own bound is the backstop.
+                    pass
+                stop.wait(poll)
+        except Exception:  # pragma: no cover - a drain must never escape
+            logger.debug("WAL drain stopped", exc_info=True)
+
+    def _fold(self) -> None:
+        """Reset the log: the one half of a checkpoint the writer must pay.
+
+        Three steps, in this order, on the writing connection:
+
+        1. tell the drain to stand down, so nothing new competes for the log;
+        2. drain the residual ourselves, so the blocking call below has almost
+           nothing left to copy -- the drain thread may simply be behind;
+        3. TRUNCATE, re-issued while SQLite reports busy, until it lands or
+           WAL_FOLD_DEADLINE expires.
+
+        Step 3 is the difference between a bound and a hope. TRUNCATE needs the
+        log's exclusive checkpoint lock; with a copy thread running, a single
+        attempt was measured busy in 1441 of 1443 tries. Re-issuing costs a
+        pragma while it loses and nothing when it wins, and a reset that does
+        not land leaves the log exactly where it was.
+
+        Bounded, not open-ended: on giving up the flag is cleared, the next
+        write re-tests the size, and the log is still under
+        WAL_CHECKPOINT_BYTES + the frames written since.
+        """
+        conn = self._conn()
+        self._fold_now.set()
+        try:
+            try:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            except sqlite3.Error:
+                # Best effort: the TRUNCATE below copies whatever is left.
+                pass
+            deadline = time.monotonic() + self.WAL_FOLD_DEADLINE
+            while True:
+                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                # (busy, frames-in-log, frames-backfilled): busy == 0 means the
+                # reset landed and the file is back to zero bytes.
+                if not row or not row[0]:
+                    return
+                if time.monotonic() >= deadline:
+                    logger.debug("WAL fold gave up: log still busy")
+                    return
+                time.sleep(self.WAL_FOLD_RETRY_SLEEP)
+        finally:
+            self._fold_now.clear()
+
     def _maybe_checkpoint(self) -> None:
         """Fold a large WAL back into the database once it outgrows a bound.
 
@@ -466,9 +697,7 @@ class PythonMemoryStorage:
         and an ingest of a few thousand memories was measured leaving a 71MB
         WAL next to a 700KB database. Checkpointing is called from the write
         paths and from a flush, never from the read work itself, so a recall
-        only ever pays it once per several thousand calls. TRUNCATE is
-        best-effort: it returns busy without raising if a reader is active,
-        and the next write retries.
+        only ever pays it once per several thousand calls.
         """
         try:
             # The counter lives on the thread-local (one per connection), NOT on
@@ -482,7 +711,10 @@ class PythonMemoryStorage:
                 return
             wal = self.db_path + "-wal"
             if os.path.exists(wal) and os.path.getsize(wal) >= self.WAL_CHECKPOINT_BYTES:
-                self._conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                # The drain has already copied the frames; what is left is the
+                # reset. See _fold and the header note on why the reset is the
+                # writer's job and the copy is not.
+                self._fold()
         except (OSError, sqlite3.Error):
             logger.warning("WAL checkpoint skipped", exc_info=True)
 
@@ -551,6 +783,9 @@ class PythonMemoryStorage:
             logger.warning("Failed to apply buffered access counts", exc_info=True)
             committed = False
         if committed:
+            # An access-count flush is a real write to the log, so it counts
+            # towards the reaper's fold cadence like any other commit.
+            self._note_write()
             # Patch memoized rows in place instead of clearing the memo.
             # The flush knows exactly which ids changed and by how much, and
             # a version-valid row was read from this same DB state: a local
@@ -831,6 +1066,7 @@ class PythonMemoryStorage:
             logger.exception("Failed to store memory")
             raise
 
+        self._note_write()
         self._flush_accesses()
         self._maybe_checkpoint()
 
