@@ -13,8 +13,16 @@ not need to run it; the runtime scores your workspace after every attempt.
 
 ## Baseline
 
-The unmodified seed measures **≈6700 ms** for 5000 rows (measured here 6371 / 6717 /
-6782 ms — treat ~6700 ms as the number to beat). Profiling the seed shows:
+The unmodified seed measures **4870 ms** for 5000 rows on this machine (peak WAL
+20.3 MiB, `search_p50_ms` 0.0075). **That is the number to beat.**
+
+History: an earlier seed with a 4 MiB / every-10-writes checkpoint policy measured
+≈6700 ms, and raising the knobs to 16 MiB / every 100 writes was the known-good
+change that reached 4870 ms. **That change is already in the seed** — do not re-derive
+it, and do not spend a branch rediscovering it. Re-tuning those two constants will
+not move the score much further; look for a different mechanism.
+
+Profiling the original 4 MiB seed showed:
 
 | component | cost | share |
 |---|---|---|
@@ -30,9 +38,9 @@ writes. Checkpoint cost scales with WAL size, so total checkpoint cost grows wit
 ingest volume, and it is charged to whichever `remember()` call happens to land
 on the interval.
 
-A known-good change already measured in this repo: raising the two knobs to
-16 MiB / every 100 writes scores **4297 ms (1.56×) with a 20.3 MiB peak WAL** and
-passes every gate. Treat that as the floor to beat, not the ceiling.
+The remaining cost is therefore checkpoint work on a ~16 MiB WAL plus the
+per-row `conn.commit()` durability contract. The insert path itself is already
+within ~1% of raw sqlite, so there is no win hiding in the INSERT itself.
 
 ## Correctness is non-negotiable — three gates
 
@@ -55,6 +63,24 @@ cheats were measured before this task was configured:
 
 Both are ~5x "wins" that are regressions. Do not attempt them; the scorer will
 throw the candidate away.
+
+## Time budget — read this first
+
+You have **30 minutes of wall clock, and the attempt is killed at the limit.** An
+attempt that runs out is recorded as a failure and its work is thrown away, even
+if the code was correct. Budget accordingly:
+
+* **The runtime scores your workspace after you finish.** You never need to run
+  the metric yourself. Do not re-implement the harness — that is what burned
+  earlier attempts.
+* If you do want local evidence, **cap yourself at ~4 timed runs total** and keep
+  each under 3 minutes. Prefer static reasoning (frame counts, page geometry,
+  pragma semantics) plus **one** confirmation run.
+* **Write a stub `proposal.md` in your first few minutes**, then refine it. A
+  finished proposal with thin evidence beats a perfect one that never lands.
+* Leave the workspace in its final intended state with ~5 minutes to spare.
+
+A correct change that lands is worth more than a better change that times out.
 
 ## In scope / off limits
 
