@@ -17,3 +17,10 @@ integrations/hermes-provider/hermes_memory_provider/
 
     Local modifications are licensed under the MIT License, the same terms as
     the rest of this repository (see LICENSE).
+
+integrations/engine-patches/
+    Audited diffs against mnemosyne-memory 3.15.1,
+    Copyright (c) 2026 Abdias J (AxDSan), MIT License.
+    Original and patched source hashes: manifest.json
+    Scope and application procedure: README.md
+    Full upstream license text: integrations/hermes-provider/LICENSE.upstream

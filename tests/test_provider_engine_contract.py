@@ -23,8 +23,10 @@ import contextlib
 import json
 import os
 import pathlib
+import sqlite3
 import sys
 import tempfile
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PROVIDER_ROOT = ROOT / "integrations" / "hermes-provider"
@@ -79,9 +81,27 @@ def _contract_env(tmp):
     os.environ["MNEMOSYNE_DATA_DIR"] = os.path.join(tmp, "_engine_data")
     os.environ["MNEMOSYNE_EMBEDDINGS_OFF"] = "1"
     os.environ["HERMES_HOME"] = tmp
+    connections = []
+    real_connect = sqlite3.connect
+
+    def tracked_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        connections.append(conn)
+        return conn
+
     try:
-        yield
+        with patch.object(sqlite3, "connect", side_effect=tracked_connect):
+            yield
     finally:
+        # Engine connections are thread-local; close them before Windows
+        # attempts to remove the temporary database directory.
+        for conn in connections:
+            conn.close()
+        for name in ("mnemosyne.core.beam", "mnemosyne.core.memory"):
+            module = sys.modules.get(name)
+            local = getattr(module, "_thread_local", None)
+            if local is not None:
+                local.conn = None
         for key, value in saved.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -649,12 +669,308 @@ def test_write_read_coherence():
         assert memory_id not in ids, f"recall still returns a forgotten row: {recalled}"
 
 
+def test_engine_global_update_and_bind_order():
+    """Exercise BEAM itself: P20 cannot hide an engine update failure."""
+    BeamMemory = _require_engine()
+    if BeamMemory is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        from mnemosyne.core import beam as beam_mod
+
+        with patch.object(beam_mod, "_cross_session_enabled", return_value=False):
+            writer = BeamMemory(session_id="writer", db_path=os.path.join(tmp, "probe.db"))
+            target = writer.remember("oldtoken global target", scope="global")
+            private = writer.remember("private target", scope="session")
+            # A reversed ID/session bind would update this decoy instead.
+            writer.conn.execute(
+                "UPDATE working_memory SET id = ?, session_id = ? WHERE id = ?",
+                ("reader", target, private),
+            )
+            writer.conn.commit()
+            reader = BeamMemory(session_id="reader", db_path=writer.db_path)
+            assert reader.get(target) is not None
+            for fields in (
+                {"content": "newtoken global target"},
+                {"importance": 0.91},
+                {"content": "finaltoken global target", "importance": 0.83},
+            ):
+                assert reader.update_working(target, **fields), (
+                    "get found global ID, update missed it"
+                )
+                got = reader.get(target)
+                for key, value in fields.items():
+                    assert got[key] == value
+            decoy = reader.conn.execute(
+                "SELECT content FROM working_memory WHERE id = 'reader'"
+            ).fetchone()
+            assert decoy[0] == "private target", "misordered binds changed the decoy"
+            assert not reader.update_working("reader", content="denied")
+            assert not reader.update_working("missing", content="missing")
+            assert not reader.update_working(target)
+            assert reader.conn.execute("SELECT COUNT(*) FROM working_memory").fetchone()[0] == 2
+            recalled = reader.recall("finaltoken", top_k=10)
+            assert any(row["id"] == target and "finaltoken" in row["content"] for row in recalled)
+
+
+def test_engine_mcp_update_reports_beam_success():
+    """The actual MCP handler must report BEAM edits even without a legacy row."""
+    BeamMemory = _require_engine()
+    if BeamMemory is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        from mnemosyne import mcp_tools
+        from mnemosyne.core import beam as beam_mod
+        from mnemosyne.core.memory import Mnemosyne
+
+        with patch.object(beam_mod, "_cross_session_enabled", return_value=False):
+            caller = Mnemosyne(session_id="reader", db_path=os.path.join(tmp, "mcp.db"))
+            writer = BeamMemory(session_id="writer", db_path=caller.db_path)
+            target = writer.remember("mcpglobal old content", scope="global")
+            private = writer.remember("private mcp content", scope="session")
+            events = []
+            with (
+                patch.object(mcp_tools, "_create_instance", return_value=caller),
+                patch.object(caller, "_emit_wrapper", side_effect=lambda *a, **k: events.append(a)),
+            ):
+                result = mcp_tools._handle_update(
+                    {"memory_id": target, "content": "mcpglobal edited"}
+                )
+                assert result["status"] == "updated", result
+                assert caller.beam.get(target)["content"] == "mcpglobal edited"
+                assert caller.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+                assert len(events) == 1
+                denied = mcp_tools._handle_update({"memory_id": private, "content": "denied"})
+                assert denied["status"] == "not_found", denied
+                assert len(events) == 1, "failed update emitted a success event"
+                # Legacy content alone must not bypass BEAM visibility.
+                caller.conn.execute(
+                    "INSERT INTO memories (id, content, session_id) VALUES (?, ?, ?)",
+                    (private, "legacy private", "reader"),
+                )
+                caller.conn.commit()
+                assert not caller.update(private, content="denied again")
+                assert (
+                    caller.conn.execute(
+                        "SELECT content FROM memories WHERE id = ?", (private,)
+                    ).fetchone()[0]
+                    == "legacy private"
+                )
+                assert len(events) == 1
+                caller.conn.execute(
+                    "INSERT INTO memories (id, content, session_id) VALUES (?, ?, ?)",
+                    (target, "legacy old", "writer"),
+                )
+                caller.conn.commit()
+                assert caller.update(target, content="mcpglobal mirrored")
+                assert caller.conn.execute(
+                    "SELECT content, session_id FROM memories WHERE id = ?", (target,)
+                ).fetchone()[:] == ("mcpglobal mirrored", "writer")
+                no_fields = mcp_tools._handle_update({"memory_id": target})
+                assert no_fields.get("error") == "content or importance is required"
+                # A mirror failure rolls back the BEAM edit as well.
+                caller.conn.execute(
+                    "CREATE TRIGGER reject_mirror BEFORE UPDATE ON memories "
+                    "BEGIN SELECT RAISE(ABORT, 'mirror blocked'); END"
+                )
+                caller.conn.commit()
+                try:
+                    caller.update(target, content="must roll back")
+                except sqlite3.IntegrityError:
+                    pass
+                else:
+                    raise AssertionError("mirror failure was swallowed")
+                assert caller.beam.get(target)["content"] == "mcpglobal mirrored"
+                assert len(events) == 2, "rolled-back update emitted a success event"
+
+
+def test_cross_session_id_tools_share_runtime_scope():
+    """Both scope modes apply to BEAM ID tools and provider P20/P21."""
+    if _require_engine() is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp), _stub_hermes_constants():
+        from mnemosyne.core import beam as beam_mod
+
+        provider = _init_contract_provider(tmp)
+        for enabled in (False, True):
+            with patch.object(beam_mod, "_cross_session_enabled", return_value=enabled):
+                for tool in _MATRIX_TOOLS:
+                    target = _other_session_id(provider, f"toggle {enabled} {tool}", "session")
+                    args = {"memory_id": target}
+                    if tool == "mnemosyne_update":
+                        args["content"] = "toggle edited"
+                    if tool == "mnemosyne_validate":
+                        args["action"] = "attest"
+                    result = _call(provider, tool, args)
+                    assert _is_found(tool, result) is enabled, (enabled, tool, result)
+                # P20's episodic fallback must use the same toggle.
+                target = _other_session_id(provider, f"episodic toggle {enabled}", "session")
+                episodic = _consolidate_to_episodic(provider, target)
+                provider._beam.conn.execute(
+                    "UPDATE episodic_memory SET session_id = 'foreign', scope = 'session' WHERE id = ?",
+                    (episodic,),
+                )
+                provider._beam.conn.commit()
+                result = _call(
+                    provider,
+                    "mnemosyne_update",
+                    {
+                        "memory_id": episodic,
+                        "content": "episodic toggle edited",
+                    },
+                )
+                assert _is_found("mnemosyne_update", result) is enabled, result
+
+
+def test_engine_scope_uses_one_runtime_snapshot():
+    BeamMemory = _require_engine()
+    if BeamMemory is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        from mnemosyne.core import beam as beam_mod
+
+        beam = BeamMemory(session_id="reader", db_path=os.path.join(tmp, "snapshot.db"))
+        for operation in ("get", "update_working", "invalidate", "forget_working"):
+            target = beam.remember(f"snapshot {operation}")
+            with patch.object(
+                beam_mod, "_cross_session_enabled", side_effect=[False, True]
+            ) as toggle:
+                kwargs = {"content": "snapshot edit"} if operation == "update_working" else {}
+                assert getattr(beam, operation)(target, **kwargs)
+                assert toggle.call_count == 1, f"{operation} sampled runtime more than once"
+
+
+def test_provider_validate_actions_use_runtime_scope():
+    if _require_engine() is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp), _stub_hermes_constants():
+        from mnemosyne.core import beam as beam_mod
+
+        provider = _init_contract_provider(tmp)
+        for enabled in (False, True):
+            for action in ("attest", "update", "invalidate", "delete"):
+                target = _other_session_id(provider, f"validate {enabled} {action}", "session")
+                args = {"memory_id": target, "action": action, "new_content": "validation edit"}
+                with patch.object(
+                    beam_mod, "_cross_session_enabled", side_effect=[enabled, not enabled]
+                ) as toggle:
+                    result = _call(provider, "mnemosyne_validate", args)
+                    assert _is_found("mnemosyne_validate", result) is enabled, result
+                    assert toggle.call_count == 1
+                row = provider._beam.conn.execute(
+                    "SELECT content, valid_until, validation_count FROM working_memory WHERE id = ?",
+                    (target,),
+                ).fetchone()
+                if not enabled:
+                    assert row[0] == f"validate {enabled} {action}"
+                    assert row[1] is None and not row[2]
+                elif action == "delete":
+                    assert row is None
+                elif action == "update":
+                    assert row[0] == "validation edit"
+
+
+def test_engine_mcp_batch_update_preserves_outer_transaction():
+    if _require_engine() is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        from mnemosyne import mcp_tools
+        from mnemosyne.core.memory import Mnemosyne
+
+        caller = Mnemosyne(session_id="reader", db_path=os.path.join(tmp, "batch.db"))
+        target = caller.beam.remember("batch before")
+        events = []
+        with (
+            patch.object(mcp_tools, "_create_instance", return_value=caller),
+            patch.object(caller, "_emit_wrapper", side_effect=lambda *a, **k: events.append(a)),
+        ):
+            result = mcp_tools._handle_batch(
+                {
+                    "operations": [
+                        {"action": "update", "memory_id": target, "content": "batch rollback"},
+                        {"action": "forget", "memory_id": "missing"},
+                    ]
+                }
+            )
+            assert result["status"] == "error", result
+            assert caller.beam.get(target)["content"] == "batch before"
+            assert events == [], "rolled-back batch emitted wrapper events"
+
+
+def test_engine_update_refreshes_vectors_and_cached_recall():
+    BeamMemory = _require_engine()
+    if BeamMemory is None:
+        return
+    with (
+        tempfile.TemporaryDirectory() as tmp,
+        _contract_env(tmp),
+        patch.dict(os.environ, {"MNEMOSYNE_ENHANCED_RECALL": "1"}),
+    ):
+        from mnemosyne.core import beam as beam_mod
+
+        writer = BeamMemory(session_id="writer", db_path=os.path.join(tmp, "cache.db"))
+        target = writer.remember("cachetoken before", scope="global")
+        reader = BeamMemory(session_id="reader", db_path=writer.db_path)
+        options = {
+            "use_weibull": False,
+            "use_mmr": False,
+            "use_intent": False,
+            "use_synonyms": False,
+        }
+        before = reader.recall_enhanced("cachetoken", top_k=10, **options)
+        assert any(r["id"] == target and r["content"] == "cachetoken before" for r in before)
+        # Prime and inspect the actual enhanced-recall cache before editing.
+        cache = reader._query_cache
+        cached_key = next(iter(cache._opaque))
+        assert cache.get_opaque(cached_key) is not None
+        with (
+            patch.object(beam_mod._embeddings, "available", return_value=True),
+            patch.object(beam_mod._embeddings, "embed", return_value=[[0.5] * 384]) as embed,
+        ):
+            assert reader.update_working(target, content="cachetoken edited")
+            assert reader.update_working(target, importance=0.85)
+            assert embed.call_count == 1
+        assert cache.get_opaque(cached_key) is None, "content edit retained stale cached results"
+        stored = reader.conn.execute(
+            "SELECT embedding_json FROM memory_embeddings WHERE memory_id = ?", (target,)
+        ).fetchone()
+        assert stored is not None, "global content edit did not refresh the embedding"
+        assert len(json.loads(stored[0])) == 384
+        after = reader.recall_enhanced("cachetoken", top_k=10, **options)
+        assert any(r["id"] == target and r["content"] == "cachetoken edited" for r in after)
+
+
+def test_remember_dedup_stays_session_local():
+    BeamMemory = _require_engine()
+    if BeamMemory is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        from mnemosyne.core import beam as beam_mod
+
+        first = BeamMemory(session_id="first", db_path=os.path.join(tmp, "dedup.db"))
+        second = BeamMemory(session_id="second", db_path=first.db_path)
+        with patch.object(beam_mod, "_cross_session_enabled", return_value=True):
+            original = first.remember("identical dedup content", scope="global", importance=0.6)
+            assert first.remember("identical dedup content", importance=0.9) == original
+            other = second.remember("identical dedup content", importance=0.7)
+            assert other != original
+            assert first.get(original)["importance"] == 0.9
+            assert second.get(other)["importance"] == 0.7
+
+
 if __name__ == "__main__":
     tests = [
         test_engine_api_surface_matches_snapshot,
         test_every_tool_answers,
         test_id_visibility_matrix,
         test_write_read_coherence,
+        test_engine_global_update_and_bind_order,
+        test_engine_mcp_update_reports_beam_success,
+        test_cross_session_id_tools_share_runtime_scope,
+        test_engine_scope_uses_one_runtime_snapshot,
+        test_provider_validate_actions_use_runtime_scope,
+        test_engine_mcp_batch_update_preserves_outer_transaction,
+        test_engine_update_refreshes_vectors_and_cached_recall,
+        test_remember_dedup_stays_session_local,
     ]
     for fn in tests:
         fn()

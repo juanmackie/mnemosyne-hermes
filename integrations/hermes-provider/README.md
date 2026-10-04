@@ -28,6 +28,7 @@ Docker default).
 ```bash
 # 1. Install the provider AND the engine it imports into the Hermes venv.
 uv pip install --python "$HERMES_VENV/bin/python" ./integrations/hermes-provider
+"$HERMES_VENV/bin/python" scripts/apply_engine_patches.py
 
 # 2. Make Hermes discover it as a memory provider plugin.
 #    A symlink must point at the directory containing __init__.py.

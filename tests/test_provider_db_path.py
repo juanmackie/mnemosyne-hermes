@@ -419,6 +419,12 @@ def test_update_resolves_every_row_get_resolves():
     provider = provider_mod.MnemosyneMemoryProvider()
     beam = _SessionScopedBeam()
     provider.__dict__["_beam"] = beam
+    # This engine-free test isolates fallback mutations. The engine-backed
+    # lane exercises the real scope helpers and runtime toggle.
+    provider.__dict__["_visible_memory_clause"] = lambda target, memory_id: (
+        "id = ? AND (session_id = ? OR scope = 'global')",
+        (memory_id, target.session_id),
+    )
     beam.add("working_memory", "own", "hermes_a", "session")
     beam.add("working_memory", "global-other", "hermes_b", "global")
     beam.add("working_memory", "private-other", "hermes_b", "session")

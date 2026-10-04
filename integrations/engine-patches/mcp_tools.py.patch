@@ -1,0 +1,12 @@
+--- a/mnemosyne/mcp_tools.py
++++ b/mnemosyne/mcp_tools.py
+@@ -869,6 +869,9 @@
+         return {"error": "memory_id is required"}
+     content = arguments.get("content")
+     importance = arguments.get("importance")
++    # LOCAL PATCH: an empty edit is a caller error, not a missing row.
++    if content is None and importance is None:
++        return {"error": "content or importance is required", "memory_id": memory_id}
+     bank = _resolve_bank(arguments)
+     mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+     ok = mem.update(memory_id, content=content, importance=importance)

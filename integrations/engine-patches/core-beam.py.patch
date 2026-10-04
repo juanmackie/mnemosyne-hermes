@@ -1,0 +1,148 @@
+--- a/mnemosyne/core/beam.py
++++ b/mnemosyne/core/beam.py
+@@ -1332,6 +1332,10 @@
+         yield
+         return
+ 
++    # LOCAL PATCH: nested wrapper updates must preserve batch atomicity.
++    if conn._defer_commit:
++        yield
++        return
+     conn._defer_commit = True
+     try:
+         yield
+@@ -3290,6 +3294,9 @@
+             # Conservative policy: only upgrade if the new call passes a
+             # non-'unknown' veracity (preserves per-row trust on
+             # backfills that don't carry a meaningful veracity arg).
++            # LOCAL PATCH: dedup intentionally remains session-local: the
++            # _find_duplicate lookup selects only this session. ID-based
++            # edits use the shared visibility helper instead.
+             cursor.execute("""
+                 UPDATE working_memory
+                 SET importance = MAX(importance, ?), timestamp = ?, source = ?,
+@@ -4017,24 +4024,28 @@
+         If replacement_id is provided, sets superseded_by.
+         Otherwise sets valid_until to now (immediate expiry).
+         """
++        # LOCAL PATCH: keep ID reads/mutations aligned with runtime visibility.
++        cross_session = _cross_session_enabled()
++        scope_sql = _session_scope_filter(cross_session=cross_session)
++        scope_params = _session_scope_params(self.session_id, cross_session=cross_session)
+         cursor = self.conn.cursor()
+         now = datetime.now().isoformat()
+         # Try working_memory first
+-        cursor.execute("""
++        cursor.execute(f"""
+             UPDATE working_memory
+             SET valid_until = ?, superseded_by = ?
+-            WHERE id = ? AND (session_id = ? OR scope = 'global')
+-        """, (now, replacement_id, memory_id, self.session_id))
++            WHERE id = ? AND {scope_sql}
++        """, (now, replacement_id, memory_id, *scope_params))
+         if cursor.rowcount > 0:
+             self.conn.commit()
+             self._invalidate_query_cache()
+             return True
+         # Try episodic_memory
+-        cursor.execute("""
++        cursor.execute(f"""
+             UPDATE episodic_memory
+             SET valid_until = ?, superseded_by = ?
+-            WHERE id = ? AND (session_id = ? OR scope = 'global')
+-        """, (now, replacement_id, memory_id, self.session_id))
++            WHERE id = ? AND {scope_sql}
++        """, (now, replacement_id, memory_id, *scope_params))
+         invalidated = cursor.rowcount > 0
+         self.conn.commit()
+         if invalidated:
+@@ -4237,9 +4248,13 @@
+             params.append(importance)
+         if not updates:
+             return False
+-        params.extend([memory_id, self.session_id])
++        # LOCAL PATCH: match get/recall visibility, using one runtime snapshot.
++        cross_session = _cross_session_enabled()
++        scope_sql = _session_scope_filter(cross_session=cross_session)
++        scope_params = _session_scope_params(self.session_id, cross_session=cross_session)
++        params.extend([memory_id, *scope_params])
+         cursor.execute(
+-            f"UPDATE working_memory SET {', '.join(updates)} WHERE id = ? AND session_id = ?",
++            f"UPDATE working_memory SET {', '.join(updates)} WHERE id = ? AND {scope_sql}",
+             params
+         )
+         affected = cursor.rowcount
+@@ -4260,6 +4275,8 @@
+                 )
+ 
+         self.conn.commit()
++        if affected > 0:
++            self._invalidate_query_cache()
+         return affected > 0
+ 
+     def get(self, memory_id: str) -> Optional[Dict]:
+@@ -4272,15 +4289,19 @@
+ 
+         Returns None if not found in either table.
+         """
++        # LOCAL PATCH: keep ID reads/mutations aligned with runtime visibility.
++        cross_session = _cross_session_enabled()
++        scope_sql = _session_scope_filter(cross_session=cross_session)
++        scope_params = _session_scope_params(self.session_id, cross_session=cross_session)
+         cursor = self.conn.cursor()
+ 
+         # Working memory first (fast path)
+-        cursor.execute("""
++        cursor.execute(f"""
+             SELECT id, content, source, timestamp, session_id,
+                    importance, metadata_json, veracity, created_at
+             FROM working_memory
+-            WHERE id = ? AND (session_id = ? OR scope = 'global')
+-        """, (memory_id, self.session_id))
++            WHERE id = ? AND {scope_sql}
++        """, (memory_id, *scope_params))
+         row = cursor.fetchone()
+         if row:
+             return {
+@@ -4297,12 +4318,12 @@
+             }
+ 
+         # Episodic memory (fallback)
+-        cursor.execute("""
++        cursor.execute(f"""
+             SELECT id, content, source, timestamp, session_id,
+                    importance, metadata_json, veracity, created_at
+             FROM episodic_memory
+-            WHERE id = ? AND (session_id = ? OR scope = 'global')
+-        """, (memory_id, self.session_id))
++            WHERE id = ? AND {scope_sql}
++        """, (memory_id, *scope_params))
+         row = cursor.fetchone()
+         if row:
+             return {
+@@ -4338,17 +4359,21 @@
+         # rolls back the working_memory DELETE rather than leaving it
+         # uncommitted on the connection for a later unrelated commit to
+         # silently include.
++        # LOCAL PATCH: keep ID reads/mutations aligned with runtime visibility.
++        cross_session = _cross_session_enabled()
++        scope_sql = _session_scope_filter(cross_session=cross_session)
++        scope_params = _session_scope_params(self.session_id, cross_session=cross_session)
+         cursor = self.conn.cursor()
+         with _guarded_transaction(self.conn):
+             authorized_row = cursor.execute(
+-                "SELECT rowid FROM working_memory WHERE id = ? AND (session_id = ? OR scope = 'global')",
+-                (memory_id, self.session_id),
++                f"SELECT rowid FROM working_memory WHERE id = ? AND {scope_sql}",
++                (memory_id, *scope_params),
+             ).fetchone()
+             if authorized_row is not None and _wm_vec_available(self.conn):
+                 cursor.execute("DELETE FROM vec_working WHERE rowid = ?", (int(authorized_row["rowid"]),))
+             cursor.execute(
+-                "DELETE FROM working_memory WHERE id = ? AND (session_id = ? OR scope = 'global')",
+-                (memory_id, self.session_id),
++                f"DELETE FROM working_memory WHERE id = ? AND {scope_sql}",
++                (memory_id, *scope_params),
+             )
+             wm_rows = cursor.rowcount
+             if wm_rows > 0:
