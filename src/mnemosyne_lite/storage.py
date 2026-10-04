@@ -147,8 +147,33 @@ class PythonMemoryStorage:
     FTS_SCHEMA_VERSION = 2
 
     # Tuples, not lists: shared class-level constants must not be mutable.
+    # idx_memories_namespace(namespace) used to sit here. It is a strict PREFIX
+    # of idx_memories_ns_created(namespace, created_at) below, so it stored a
+    # second copy of the same key and every remember() dirtied one more b-tree
+    # leaf to keep it current -- pure WAL traffic that the checkpoint then
+    # copies back. It is plan-neutral: count(namespace=?) and
+    # list_memories(namespace, "recent") both reach the same rows through the
+    # composite, and list_memories(namespace, "access") already had to add a
+    # temp b-tree sort. Retired to DROPPED_INDEXES so a migrated store
+    # converges on the same index set a fresh one gets.
+    #
+    # This matters because a WAL commit bills `pages dirtied x page size`, and
+    # wal_checkpoint pays that bill a second time when it copies the frames
+    # back into the database: total ingest cost is ~linear in dirty pages per
+    # remember(). Measured at 1 KiB pages / 5000 rows: 12.3 KiB and ~12 dirty
+    # pages per row with the index, 8.5 KiB and ~8 without.
+    #
+    # The obvious next step in that direction -- retiring
+    # idx_memories_created(created_at) as well, to go to a single secondary
+    # b-tree -- was MEASURED in this workspace and REJECTED: it moves the same
+    # predicted ~1 of ~8 dirty pages per row (smaller database, 1.13 -> 1.04
+    # MiB after 5000 rows) and yet the interleaved A/B of the store's own
+    # 5000-row cold write came out slower with the index gone (2427 / 2727 ms)
+    # than with it (2279 / 2217 ms), twice in a row. Fewer dirty pages is not
+    # the whole cost: an append-ordered created_at index costs one hot tail
+    # page, and paying for a b-tree the checkpoint re-copies turns out to
+    # buy back more than it bills on this schema. Not shipped.
     INDEXES = (
-        "CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)",
         "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_memories_ns_created ON memories(namespace, created_at)",
     )
@@ -158,6 +183,7 @@ class PythonMemoryStorage:
     # rebuilds), because IF NOT EXISTS matches on the name only.
     DROPPED_INDEXES = (
         "DROP INDEX IF EXISTS idx_memories_ns_rank",
+        "DROP INDEX IF EXISTS idx_memories_namespace",
         # idx_memories_importance lured the planner into walking
         # the importance index in random row order for unfiltered
         # recall (a bound LIKE hid the leading wildcard, so the
@@ -395,6 +421,44 @@ class PythonMemoryStorage:
     # between stat calls, so the check fires but mostly finds nothing to fold.
     WAL_CHECKPOINT_INTERVAL = 100
 
+    # Page geometry for a database file this store creates.
+    #
+    # A WAL commit bills `pages dirtied x page size`, and `wal_checkpoint`
+    # pays that same bill a second time when it copies every frame back. The
+    # dirty set is fixed by the schema (one page in the table, one per index
+    # leaf, one per FTS posting list the row's terms land in), so the only
+    # multiplier left is the page size -- and SQLite's 4096 default is sized
+    # for blobs, not for the sentence-or-paragraph rows this store holds. A
+    # row that fits in a quarter of a page still costs a whole 4 KiB frame,
+    # written once and copied once.
+    #
+    # 1024, not 512: below it the byte saving stops converting into time --
+    # each structure grows another b-tree level, so frames per commit rise
+    # faster than frames get cheaper, and scans walk more pages for the same
+    # rows.
+    #
+    # Only applied while the file still has no pages (`page_count == 0`),
+    # because that is the only moment SQLite honours it. An existing store
+    # keeps whatever geometry it was created with: silently rewriting a
+    # user's whole database on open would be a far worse surprise than a
+    # slower ingest. No VACUUM is issued to force it.
+    PAGE_SIZE_BYTES = 1024
+
+    def _apply_page_size(self, conn: sqlite3.Connection) -> None:
+        """Choose the page geometry of a still-empty file. No-op once it has pages.
+
+        Must run BEFORE `journal_mode=WAL`: the switch creates the first page
+        of the file, after which `PRAGMA page_size` is silently ignored.
+        """
+        try:
+            if conn.execute("PRAGMA page_count").fetchone()[0]:
+                return
+            conn.execute(f"PRAGMA page_size={self.PAGE_SIZE_BYTES}")
+        except sqlite3.Error:
+            # Geometry is an optimisation, never a correctness requirement: a
+            # store that cannot take it still opens and still writes.
+            logger.debug("page size not applied", exc_info=True)
+
     def _maybe_checkpoint(self) -> None:
         """Fold a large WAL back into the database once it outgrows a bound.
 
@@ -624,6 +688,7 @@ class PythonMemoryStorage:
                     init_conn.backup(backup_conn)
                 finally:
                     backup_conn.close()
+            self._apply_page_size(init_conn)
             self._configure(init_conn)
             if classified_version < self.SCHEMA_VERSION:
                 # Table replacement must not cascade into referencing tables.

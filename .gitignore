@@ -30,6 +30,8 @@ test_output*.log
 
 # Local evaluation suites and run data
 .evals/
+# Scorer output written into the workspace by task/score.py (derived only)
+src/eval/
 
 # System files
 .DS_Store
