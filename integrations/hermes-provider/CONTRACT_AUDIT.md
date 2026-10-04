@@ -295,6 +295,20 @@ lock and `has_tool` are covered):
 - Check D: write → read coherence (remember, update, invalidate, forget
   reflected by recall and get).
 
+2026-10-04 engine visibility audit extension: the strict lane additionally
+calls BEAM update and the engine MCP handler directly, so P20 cannot hide an
+engine failure. Regressions cover foreign-session global updates, ID/session
+bind decoys, both cross-session modes, all P21 mutations, one runtime snapshot,
+absent/foreign legacy mirrors, mirror rollback and event behavior, nested MCP
+batch rollback, and session-local remember dedup. The engine diffs and original/
+patched hashes live in `../engine-patches/`; `install.sh` and the pinned-engine
+CI lane apply them. The cross-session toggle explicitly authorizes these ID
+operations across sessions as well as recall; disabled preserves private-row
+isolation. Bank isolation and working-only forget/validate remain unchanged.
+Engine parity accepts only these exact audited diffs, checking original hashes
+against wheel RECORD; other engine drift still fails. The dependency pin and
+Hermes loader/type/lint exclusions are unchanged.
+
 The lane runs in `test-all.sh` (skips with a visible line when the engine is
 absent), strict under `./test-all.sh --require-engine`
 (`MNEMOSYNE_REQUIRE_ENGINE=1`: missing engine fails), as the `engine-contract`

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify the installed mnemosyne-memory engine is byte-identical to its wheel.
+# Verify wheel parity, permitting only the exact audited engine patch hashes.
 #
 # Run this in the Hermes venv before the provider swap (D6): the review of
 # 2026-09-18 suspected local engine patches that the wheel does not ship. On the
@@ -10,6 +10,7 @@
 #
 # Exit 0 = full parity, 1 = drift found (report printed), 2 = cannot locate a venv.
 set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -32,8 +33,10 @@ PY="$(venv_python "$VENV")"
 [[ -n "$PY" ]] || { echo "Error: $VENV has no python" >&2; exit 2; }
 
 echo "venv: $VENV"
-"$PY" - <<'PYEOF'
-import base64, glob, hashlib, pathlib, sys
+"$PY" - "$ROOT/integrations/engine-patches/manifest.json" <<'PYEOF'
+import base64, glob, hashlib, json, pathlib, sys
+
+audited = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["files"]
 
 site = pathlib.Path(glob.glob(str(pathlib.Path(sys.prefix) / "lib" / "**" / "site-packages"), recursive=True)[0]) \
     if glob.glob(str(pathlib.Path(sys.prefix) / "lib" / "**" / "site-packages"), recursive=True) \
@@ -49,7 +52,7 @@ if not records:
 record = records[0]
 version = record.parent.name
 
-matching = modified = missing = 0
+matching = modified = missing = patched = 0
 drift = []
 for line in record.read_text(encoding="utf-8").splitlines():
     parts = line.split(",")
@@ -59,11 +62,19 @@ for line in record.read_text(encoding="utf-8").splitlines():
     p = site / path
     if not p.exists():
         missing += 1; drift.append(f"MISSING  {path}"); continue
-    got = "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(p.read_bytes()).digest()).decode().rstrip("=")
+    actual = hashlib.sha256(p.read_bytes())
+    got = "sha256=" + base64.urlsafe_b64encode(actual.digest()).decode().rstrip("=")
     if got == want:
         matching += 1
     else:
-        modified += 1; drift.append(f"MODIFIED {path}")
+        entry = audited.get(path.removeprefix("mnemosyne/"), {})
+        original = entry.get("original_sha256", "")
+        original_record = "sha256=" + base64.urlsafe_b64encode(bytes.fromhex(original)).decode().rstrip("=")
+        if actual.hexdigest() == entry.get("patched_sha256") and want == original_record:
+            patched += 1
+            print(f"AUDITED PATCH {path}")
+        else:
+            modified += 1; drift.append(f"MODIFIED {path}")
 
 shipped = {l.split(",")[0] for l in record.read_text(encoding="utf-8").splitlines() if l.startswith("mnemosyne/")}
 on_disk = {str(p.relative_to(site)).replace("\\", "/") for p in (site / "mnemosyne").rglob("*.py")}
@@ -73,6 +84,7 @@ print(f"engine           : {version}")
 print(f"site-packages    : {site}")
 print(f"files matching   : {matching}")
 print(f"files modified   : {modified}")
+print(f"audited patches  : {patched}")
 print(f"files missing    : {missing}")
 print(f"files not shipped: {len(extra)}")
 for line in drift[:20]:
@@ -85,5 +97,8 @@ if modified or missing or extra:
     print("  - reinstall the pinned engine into the venv, or")
     print("  - accept the divergence explicitly and record it (D6).")
     sys.exit(1)
-print("\nPARITY: every engine file matches its wheel RECORD.")
+if patched:
+    print("\nVERIFIED: every engine file matches its wheel or an exact audited patch.")
+else:
+    print("\nPARITY: every engine file matches its wheel RECORD.")
 PYEOF

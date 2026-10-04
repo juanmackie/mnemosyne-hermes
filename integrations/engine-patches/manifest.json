@@ -1,0 +1,24 @@
+{
+  "distribution": "mnemosyne-memory",
+  "version": "3.15.1",
+  "files": {
+    "core/beam.py": {
+      "original_sha256": "00d79c0642a01b666473fd6e36749ed012802930ea8694eb24f3b17593a20aa0",
+      "patched_sha256": "b5b66c7590093de7d92bbed6ce980424d3bbf31c01d90d4f9438151c6858f677",
+      "patch": "core-beam.py.patch",
+      "patch_sha256": "ee2119b5de2ee146eb6da683bbf6b8ff4e6b44706d9d0f9148d916473a0f2003"
+    },
+    "core/memory.py": {
+      "original_sha256": "c7088c7bbe84054ad66b97b6c281d15b1ee00dc9b08811a28852034a86dcf1fc",
+      "patched_sha256": "e2a0e57068d82e7c1a7384200a30d2ea542ec76e1655d4a5ed5b45dbb51678a2",
+      "patch": "core-memory.py.patch",
+      "patch_sha256": "9a5051beff52fe418dc220cd9196b55ecd6395d2daecb6f5c541ad8bacbd1a39"
+    },
+    "mcp_tools.py": {
+      "original_sha256": "65b766bd2d4a09401c1c0b2ab492ee254cc97fccf493140c2455de12e64c1dda",
+      "patched_sha256": "8d540920eb006a9edbb2f7983572d68ee438a4257445159bf3eea664e738afcd",
+      "patch": "mcp_tools.py.patch",
+      "patch_sha256": "1b400601bd772a4167760e4323f3ba374a6979007ec4b2c3541eac6bb856870b"
+    }
+  }
+}

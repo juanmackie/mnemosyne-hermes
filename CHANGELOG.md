@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Engine MCP updates now edit foreign-session global working rows and report
+  BEAM success even when the legacy mirror is absent. Audited engine patches
+  are applied by the installer; legacy mirror failures roll back the edit.
+- Engine ID operations and provider P20/P21 use shared scope helpers and a
+  single runtime snapshot, including the cross-session toggle. Remember dedup
+  intentionally remains session-local.
 - `mnemosyne_update` edits every memory `mnemosyne_get` can return, including
   global memories written by another session and consolidated (episodic)
   memories, instead of answering `not_found`.

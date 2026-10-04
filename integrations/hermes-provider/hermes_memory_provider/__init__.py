@@ -3193,14 +3193,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # LOCAL PATCH: P21 validate honours the same session/global visibility
         # as get/update/invalidate/forget. The unscoped `WHERE id = ?` let any
         # session attest (and read the content of) private rows owned by
-        # another session. `session_id = ? OR scope = 'global'` is the
-        # engine's own visibility predicate.
-        _visible = "id = ? AND (session_id = ? OR scope = 'global')"
-        _beam_session = getattr(target_beam, "session_id", self._session_id)
+        # another session. The engine helpers also honour cross-session mode
+        # from one runtime snapshot (P20/P21).
+        _visible, _visible_params = self._visible_memory_clause(target_beam, memory_id)
         # Verify the memory exists (and is visible) in this bank
         existing = conn.execute(
             "SELECT id, author_id, content FROM working_memory WHERE " + _visible,
-            (memory_id, _beam_session),
+            _visible_params,
         ).fetchone()
         if not existing:
             return json.dumps({
@@ -3219,7 +3218,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             if action == "delete":
                 conn.execute(
                     "DELETE FROM working_memory WHERE " + _visible,
-                    (memory_id, _beam_session),
+                    _visible_params,
                 )
             elif action == "update":
                 conn.execute(
@@ -3227,7 +3226,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     "validated_at = CURRENT_TIMESTAMP, "
                     "validation_count = COALESCE(validation_count, 0) + 1 "
                     "WHERE " + _visible,
-                    (new_content, validator, memory_id, _beam_session),
+                    (new_content, validator, *_visible_params),
                 )
             elif action == "invalidate":
                 conn.execute(
@@ -3235,7 +3234,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     "validator = ?, validated_at = CURRENT_TIMESTAMP, "
                     "validation_count = COALESCE(validation_count, 0) + 1 "
                     "WHERE " + _visible,
-                    (validator, memory_id, _beam_session),
+                    (validator, *_visible_params),
                 )
             else:  # attest
                 conn.execute(
@@ -3243,7 +3242,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     "validated_at = CURRENT_TIMESTAMP, "
                     "validation_count = COALESCE(validation_count, 0) + 1 "
                     "WHERE " + _visible,
-                    (validator, memory_id, _beam_session),
+                    (validator, *_visible_params),
                 )
 
             # Append to ring buffer (trigger trims to last 3 per memory_id)
@@ -3707,8 +3706,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                                    importance: Optional[float]) -> Optional[str]:
         """LOCAL PATCH: P20 update a row that `get` resolves but `update_working` misses.
 
-        Uses the engine's own visibility predicate (`session_id = ? OR
-        scope = 'global'`) over working memory first, then episodic memory, so
+        Uses the engine's visibility helpers and runtime cross-session mode
+        over working memory first, then episodic memory, so
         an ID returned by `mnemosyne_get` is always editable. Returns the store
         that was updated, or None when the ID is not visible to this session.
         """
@@ -3716,8 +3715,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         conn = getattr(beam, "conn", None)
         if conn is None:
             return None
-        session_id = getattr(beam, "session_id", self._session_id)
-        visible = "id = ? AND (session_id = ? OR scope = 'global')"
+        visible, visible_params = self._visible_memory_clause(beam, memory_id)
         updates: List[str] = []
         params: List[Any] = []
         if content is not None:
@@ -3728,14 +3726,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             params.append(importance)
         for table, store in (("working_memory", "working"), ("episodic_memory", "episodic")):
             row = conn.execute(
-                f"SELECT rowid FROM {table} WHERE {visible}", (memory_id, session_id)
+                f"SELECT rowid FROM {table} WHERE {visible}", visible_params
             ).fetchone()
             if row is None:
                 continue
             try:
                 conn.execute(
                     f"UPDATE {table} SET {', '.join(updates)} WHERE {visible}",
-                    (*params, memory_id, session_id),
+                    (*params, *visible_params),
                 )
                 if content is not None:
                     self._refresh_updated_embedding(store, memory_id, int(row[0]), content)
@@ -3748,6 +3746,17 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 invalidate_cache()
             return store
         return None
+
+    def _visible_memory_clause(self, beam: Any, memory_id: str):
+        # LOCAL PATCH: P20/P21 use canonical engine scope and matching binds.
+        from mnemosyne.core.beam import (
+            _cross_session_enabled, _session_scope_filter, _session_scope_params,
+        )
+        cross_session = _cross_session_enabled()
+        session_id = getattr(beam, "session_id", self._session_id)
+        clause = _session_scope_filter(cross_session=cross_session)
+        params = _session_scope_params(session_id, cross_session=cross_session)
+        return f"id = ? AND {clause}", (memory_id, *params)
 
     def _refresh_updated_embedding(self, store: str, memory_id: str, rowid: int, content: str) -> None:
         """LOCAL PATCH: P20 keep dense recall in step with edited content.

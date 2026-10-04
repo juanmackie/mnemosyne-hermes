@@ -46,6 +46,7 @@ fi
 run_contract_tests() {
   printf '\n== Provider contract gates (vendored drift, loader, db path, engine contract) ==\n'
   "$PYTHON_BIN" tests/test_vendored_provider.py
+  "$PYTHON_BIN" tests/test_engine_patches.py
   "$PYTHON_BIN" tests/test_provider_loader.py
   "$PYTHON_BIN" tests/test_provider_db_path.py
   "$PYTHON_BIN" tests/test_provider_engine_contract.py

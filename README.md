@@ -53,6 +53,12 @@ to overwrite or remove an unverified directory; re-run the installer after
 editing a copy. The installer never creates or opens the memory database — the
 resolved DB path is printed up front so you can check it first.
 
+The installer also applies the [audited engine fixes](integrations/engine-patches/README.md)
+so the engine's standalone `mnemosyne mcp` update path can edit foreign-session
+global working memories. Source hashes are verified before patching; unreviewed
+engine revisions are refused. Restart engine MCP processes as well as the
+gateway after an update.
+
 ## Verify
 
 ```bash

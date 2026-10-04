@@ -427,6 +427,12 @@ echo "== Installing the vendored provider and the pinned engine"
 "${INSTALL[@]}" "$PROVIDER_SRC"
 "${INSTALL[@]}" "$ENGINE_PIN"
 
+# Patch the engine itself: the standalone `mnemosyne mcp` process bypasses
+# hermes_memory_provider. Refuse unreviewed source drift before plugin/config
+# changes; the applier keeps verified originals and is idempotent.
+echo "== Applying the audited engine visibility fixes"
+"$VENV_PY" "$ROOT/scripts/apply_engine_patches.py"
+
 # --- 3b. engine must stay the engine ----------------------------------------
 # The engine owns the `mnemosyne` package. Two things can still break it here:
 # this repo's lite distribution was once named `mnemosyne` too (it is

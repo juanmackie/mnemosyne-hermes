@@ -221,6 +221,13 @@ The remaining vendored files are byte-identical to the 3.15.1 wheel RECORD.
 | Behaviour | On an engine miss the handler retries with the engine's own visibility predicate over working then episodic memory, refreshes the row's embedding (best effort, as upstream) and clears the query cache. A row private to another session stays `not_found` for both tools. The success payload gains `memory_store`. An update with neither `content` nor `importance` returns an error instead of `not_found`. |
 | Upstream | Not sent yet — engine bug (`BeamMemory.update_working` predicate); the real fix belongs in the engine, after which this patch can be dropped. |
 
+2026-10-04 amendment: the fallback now obtains its predicate and bind parameters
+from `_session_scope_filter` / `_session_scope_params`, using a single captured
+runtime cross-session setting. The engine fix is carried in
+[`../engine-patches/`](../engine-patches/README.md) and applied by `install.sh`,
+so engine MCP benefits too. P20's episodic fallback and caller validation remain
+necessary; a working-row engine fix does not retire all of this patch.
+
 ### P21 — `mnemosyne_validate` honours session/global visibility
 
 | | |
@@ -230,6 +237,11 @@ The remaining vendored files are byte-identical to the 3.15.1 wheel RECORD.
 | Reason | The existence check used an unscoped `WHERE id = ?`, so any session could attest — and read the content of — private rows owned by another session, while `get`/`update`/`invalidate`/`forget` all returned `not_found` for the same IDs. Found by the first engine-backed run of the contract lane (Check C). |
 | Behaviour | The check and every mutation use the engine's own visibility predicate (`session_id = ? OR scope = 'global'`), so validate agrees with the other ID tools on found / not found. Collaborative attestation of visible (own and global) rows is unchanged; shared-surface rows keep working through the surface beam (scope `global`). |
 | Upstream | Not sent yet — upstream visibility decision; the real fix belongs in the engine, after which this patch can be dropped. |
+
+2026-10-04 amendment: the existence check and all four mutations share a clause
+and matching binds built by the engine scope helpers from one runtime snapshot.
+Cross-session enabled permits foreign-session private rows consistently with
+the patched engine ID tools; disabled preserves session/global visibility.
 
 Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 (they need a product decision, not a mechanical fix).
