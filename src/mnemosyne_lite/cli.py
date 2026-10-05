@@ -15,19 +15,13 @@ import os
 import sys
 import time
 
-from .db_path import DEFAULT_DB, resolve_db_path
+from . import __version__  # one version source; never importlib.metadata("mnemosyne")
+from .db_path import DEFAULT_DB, resolve_db_path  # (that name is the engine's distribution)
 from .storage import PythonMemoryStorage, StorageError
 
 # Commands that may create a store. Every other command must NOT fabricate an
 # empty database at a mistyped path and then report "0 memories".
 CREATING_COMMANDS = {"init", "remember"}
-
-
-def _default_db_path():
-    """MNEMOSYNE_DB_PATH if set, else None so resolve_db_path can consult and
-    VALIDATE DATABASE_URL (passing the URL through as a path skipped the
-    scheme check and produced a file literally named 'postgres://...')."""
-    return os.getenv("MNEMOSYNE_DB_PATH") or None
 
 
 def _storage(args):
@@ -177,21 +171,6 @@ def cmd_backup(args):
     except Exception as e:
         print(f"ERROR: backup failed: {e}", file=sys.stderr)
         return 1
-
-
-def _package_version():
-    """This package's version — one source, no stale literal.
-
-    Read from the package rather than `importlib.metadata`, which the CLI also
-    consults with the wrong name: the fallback to the `mnemosyne` distribution
-    reported the *engine's* version (mnemosyne-memory owns that name) as this
-    CLI's. It is the distribution's one version source — pyproject.toml reads
-    it dynamically and `scripts/check_version_drift.sh` gates it — and mcp.py
-    reports it as `serverInfo.version`.
-    """
-    from mnemosyne_lite import __version__
-
-    return __version__
 
 
 def cmd_mcp(args):
@@ -392,7 +371,7 @@ def cmd_diagnostics(args):
         "db_path": db_path,
         "db_exists": os.path.exists(db_path),
         "db_size_bytes": os.path.getsize(db_path) if os.path.exists(db_path) else 0,
-        "version": _package_version(),
+        "version": __version__,
         "storage": "PythonMemoryStorage",
         # Filled from the live connection below; they used to be hardcoded
         # ("synchronous": "FULL") while every connection ran NORMAL.
@@ -423,12 +402,13 @@ def main(argv=None):
         prog="mnemosyne-lite",
         description="Mnemosyne lite CLI (standalone store; not a Hermes provider)",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"mnemosyne-lite {_package_version()}"
-    )
+    parser.add_argument("--version", action="version", version=f"mnemosyne-lite {__version__}")
     parser.add_argument(
         "--db-path",
-        default=_default_db_path(),
+        # None so resolve_db_path can consult and VALIDATE DATABASE_URL
+        # (passing the URL through as a path skipped the scheme check and
+        # produced a file literally named 'postgres://...').
+        default=(os.getenv("MNEMOSYNE_DB_PATH") or None),
         help=f"SQLite database path (default: {DEFAULT_DB})",
     )
     parser.add_argument(

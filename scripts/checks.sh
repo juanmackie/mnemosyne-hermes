@@ -19,6 +19,7 @@ run() {
 
 run bash scripts/check_version_drift.sh
 run "${PYTHON_BIN:-python3}" tests/test_engine_patches.py
+run "${PYTHON_BIN:-python3}" tests/test_engine_recall_perf.py
 run "${PYTHON_BIN:-python3}" scripts/check_engine_contract.py
 
 if [ "$failed" -gt 0 ]; then

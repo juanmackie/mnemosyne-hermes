@@ -20,9 +20,9 @@ regressions the benchmark's correctness asserts cannot see:
      0 miss / 100 saturation).
   2. durability contract -- journal_mode=wal and synchronous=NORMAL on the
      connection the candidate actually opens.
-  3. WAL bound -- peak WAL across the run stays under WAL_PEAK_LIMIT. Removing
-     checkpointing is a 5x win on the metric and a 200 MiB WAL on disk; this is
-     the gate that catches it.
+  3. WAL bound -- peak WAL across the run stays under WAL_PEAK_LIMIT. Disabling
+     checkpointing scores ~28% better than the seed and writes a ~41 MiB WAL on
+     disk; this is the gate that catches it.
 """
 import json
 import os
@@ -37,10 +37,14 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HARNESS = os.path.join(REPO, "bench", "measure.sh")
 FIELD = os.environ.get("MNEMOSYNE_METRIC", "write_5000_p50_ms")
 
-# The corpus itself is 3000 rows; shipped policy keeps the WAL in single-digit
-# MiB. 64 MiB is ~16x the shipped steady state and still far under the 200 MiB
-# an unbounded WAL reaches, so this fails cheaters without failing honest work.
-WAL_PEAK_LIMIT = int(os.environ.get("MNEMOSYNE_WAL_PEAK_LIMIT", 64 * 1024 * 1024))
+# Calibrated against the CURRENT seed, not the one this gate was written for.
+# Measured on the seed: peak WAL 17.0-17.9 MiB. Measured with checkpointing
+# disabled (the cheat this gate exists to catch): 40.8-42.9 MiB. The old 64 MiB
+# limit was calibrated before the 1 KiB page geometry landed; smaller pages
+# shrank the unbounded WAL under the limit, so the cheat scored 535 ms against a
+# 744 ms seed and won. 28 MiB sits ~1.5x above honest work and well below the
+# cheat. Re-measure both numbers if the checkpoint policy or page size changes.
+WAL_PEAK_LIMIT = int(os.environ.get("MNEMOSYNE_WAL_PEAK_LIMIT", 28 * 1024 * 1024))
 
 
 def _wal_bytes(root):
@@ -87,6 +91,27 @@ def check_contract(workspace, scratch):
     return None
 
 
+def link_or_copy(workspace, src_dir):
+    """Expose the attempt workspace at <tmp>/src for the harness.
+
+    measure.sh does sys.path.insert(0, ROOT + "/src"), so the workspace has to
+    appear there. A symlink is cheapest, but Windows only grants it with
+    Developer Mode or the SeCreateSymbolicLinkPrivilege privilege; without
+    either, os.symlink raises WinError 1314 and the whole scorer is unrunnable.
+    Fall back to copying the (small) package tree so the scorer works on both.
+    """
+    try:
+        os.symlink(workspace, src_dir, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError, AttributeError):
+        pass
+    shutil.copytree(
+        workspace,
+        src_dir,
+        ignore=shutil.ignore_patterns("__pycache__", "eval", "*.pyc"),
+    )
+
+
 def fail(fail_class, detail):
     out = os.path.join(os.getcwd(), "eval", "score.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
@@ -107,7 +132,7 @@ def main():
         os.makedirs(os.path.join(tmp, "bench"))
         os.makedirs(os.path.join(tmp, "bench", "data"))
         shutil.copy2(HARNESS, os.path.join(tmp, "bench", "measure.sh"))
-        os.symlink(workspace, os.path.join(tmp, "src"))
+        link_or_copy(workspace, os.path.join(tmp, "src"))
 
         stop, peak = threading.Event(), [0]
         watcher = threading.Thread(target=watch_wal, args=(tmp, stop, peak), daemon=True)

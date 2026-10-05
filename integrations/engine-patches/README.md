@@ -8,7 +8,8 @@ plugin discovery or Hermes configuration. The engine dependency range remains
 
 | Patch | Behavior |
 | --- | --- |
-| `core-beam.py.patch` | Update, get, invalidate, and forget use the existing scope helpers with one runtime snapshot and matching binds. Global working rows are editable across sessions. Successful updates clear recall caches; FTS/vector refresh stays intact. Remember dedup remains session-local, with a comment explaining that boundary. |
+| `core-beam.py.patch` | Update, get, invalidate, and forget use the existing scope helpers with one runtime snapshot and matching binds. Global working rows are editable across sessions. Successful updates clear recall caches; FTS/vector refresh stays intact. Remember dedup remains session-local, with a comment explaining that boundary. Entity recall extracts capped candidate phrases instead of fuzzy-matching the raw query string, then unions per-candidate matches (raw query kept as the fallback when extraction yields nothing). |
+| `core-entities.py.patch` | Entity fuzzy-match keeps its exact match set with a content-aware pre-filter and a threshold-bounded banded Levenshtein: substring containment selects the loose prefix bound, other pairs are capped at length-ratio (disjoint alphabets score 0), and the surviving matrix aborts outside a Ukkonen band of ±max_dist. Long queries no longer fan out to hundreds of full Python matrices per recall. |
 | `core-memory.py.patch` | The wrapper reports BEAM update success. BEAM authorizes the mutation; an existing legacy mirror is updated through the same connection and deferred transaction. Missing legacy rows do not turn a successful BEAM edit into `not_found`; denied IDs and rolled-back edits emit no wrapper update event. |
 | `mcp_tools.py.patch` | An update with no fields returns a validation error before constructing a memory instance. |
 

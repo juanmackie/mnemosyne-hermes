@@ -271,8 +271,16 @@ def test_failed_restore_v2_backup_leaves_destination_and_no_staging_files():
 
 
 def test_version_labels_come_from_this_package():
-    assert CLI._package_version() == mnemosyne_lite.__version__
-    assert CLI._package_version() != "unknown"
+    assert not hasattr(CLI, "_package_version")
+    assert not hasattr(CLI, "_default_db_path")
+    with tempfile.TemporaryDirectory() as d:
+        db = str(pathlib.Path(d) / "memory.db")
+        assert _run(["--db-path", db, "init"])[0] == 0
+        code, out, err = _run(["--db-path", db, "diagnostics", "--format", "json"])
+        assert code == 0, (code, err)
+        diag = json.loads(out)
+        assert diag["version"] == mnemosyne_lite.__version__, diag
+        assert diag["version"] != "unknown", diag
 
 
 def test_mcp_announces_itself_as_mnemosyne_lite():

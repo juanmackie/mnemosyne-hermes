@@ -13,34 +13,44 @@ not need to run it; the runtime scores your workspace after every attempt.
 
 ## Baseline
 
-The unmodified seed measures **4870 ms** for 5000 rows on this machine (peak WAL
-20.3 MiB, `search_p50_ms` 0.0075). **That is the number to beat.**
+The unmodified seed measures **≈700 ms** for 5000 rows on this machine: 595, 611,
+627, 708 and 733 ms over five scorer runs, with a peak WAL of 17.0–17.1 MiB and
+`search_p50_ms` 0.0055. **That is the number to beat.**
 
-History: an earlier seed with a 4 MiB / every-10-writes checkpoint policy measured
-≈6700 ms, and raising the knobs to 16 MiB / every 100 writes was the known-good
-change that reached 4870 ms. **That change is already in the seed** — do not re-derive
-it, and do not spend a branch rediscovering it. Re-tuning those two constants will
-not move the score much further; look for a different mechanism.
+**Absolute numbers drift with machine state.** A control batch measured later the
+same day returned 710–930 ms for the same unchanged seed. Treat the baseline as
+≈700 ms with a **±25% noise floor**. Do not believe a win under ~15% unless a
+mechanism explains it, and re-measure before you trust any comparison.
 
-Profiling the original 4 MiB seed showed:
+History: the objective has been worked already, and both mechanism wins are in
+the seed. Do not spend a branch rediscovering them:
+
+| change | effect on 5000-row ingest |
+|---|---|
+| WAL checkpoint bound 4 → 16 MiB, interval 10 → 100 writes | 6717 → ~4900 ms |
+| 1 KiB page geometry + one redundant index retired | → ~700 ms |
+
+Checkpoint policy is no longer the bottleneck. `wal_autocheckpoint` is off, and
+`_maybe_checkpoint` still checkpoints manually when the WAL crosses
+`WAL_CHECKPOINT_BYTES` (16 MiB), checked every `WAL_CHECKPOINT_INTERVAL` (100)
+writes.
+
+What is left, measured on the current seed:
 
 | component | cost | share |
 |---|---|---|
-| `PRAGMA wal_checkpoint(TRUNCATE)` in `_maybe_checkpoint` | ~5500 ms | **~82%** |
-| per-row `conn.commit()` (durability contract) | ~1250 ms | ~18% |
-| FTS5 index maintenance + Python | ~15 ms | <1% |
+| per-row `conn.commit()` (durability contract) | ~506 ms | **~63%** |
+| `execute()` — INSERT, FTS5 and index writes | ~204 ms | ~25% |
+| `_maybe_checkpoint` | ~100 ms | ~12% |
+| everything else (hashing, bookkeeping, connection lookup) | <5 ms | <1% |
 
-**The insert path itself is not the problem — it is already within ~1% of raw
-sqlite.** The bottleneck is the checkpoint policy. `wal_autocheckpoint` is off, so
-`_maybe_checkpoint` checkpoints manually when the WAL crosses
-`WAL_CHECKPOINT_BYTES` (4 MiB), checked every `WAL_CHECKPOINT_INTERVAL` (10)
-writes. Checkpoint cost scales with WAL size, so total checkpoint cost grows with
-ingest volume, and it is charged to whichever `remember()` call happens to land
-on the interval.
+**The insert path is not the problem — it is already within ~1% of raw sqlite.**
+The remaining cost is the per-row commit, and the per-row commit is the
+durability contract. Relaxing it is the rejected cheat below, not a mechanism
+change.
 
-The remaining cost is therefore checkpoint work on a ~16 MiB WAL plus the
-per-row `conn.commit()` durability contract. The insert path itself is already
-within ~1% of raw sqlite, so there is no win hiding in the INSERT itself.
+**This objective is close to exhausted.** Any honest win left is small, so a new
+cycle needs a reason to exist beyond "make writes faster".
 
 ## Correctness is non-negotiable — three gates
 
@@ -51,18 +61,22 @@ A candidate gets `fail_class != "ok"` and **no score** if any gate fails:
    the 100-result cap.
 2. **`contract_broken`** — `journal_mode=wal` and `synchronous=NORMAL` on the
    connection the store actually opens.
-3. **`wal_unbounded`** — peak WAL across the run exceeds 64 MiB.
+3. **`wal_unbounded`** — peak WAL across the run exceeds 28 MiB. The honest seed
+   peaks at 17.1 MiB and disabling checkpointing reaches ~41 MiB. The limit was
+   recalibrated after the 1 KiB page geometry shrank the unbounded WAL: the old
+   64 MiB limit let that cheat through, and it scored 535 ms against a 744 ms seed.
 
 Gates 2 and 3 exist because write throughput is trivially cheatable, and the
 cheats were measured before this task was configured:
 
-| cheat | score | verdict |
+| cheat | measured | verdict |
 |---|---|---|
-| `synchronous=OFF` | 1297 ms | rejected — writes no longer survive a power loss |
-| remove checkpointing | 1370 ms | rejected — 146.6 MiB peak WAL |
+| `synchronous=OFF` | ~12% faster | rejected — writes no longer survive a power loss |
+| disable checkpointing | 535–570 ms, 40.9 MiB peak WAL | rejected — the WAL grows without bound |
 
-Both are ~5x "wins" that are regressions. Do not attempt them; the scorer will
-throw the candidate away.
+Both are regressions dressed as wins. Do not attempt them; the scorer throws the
+candidate away. For reference, the honest direction still passes: a tighter
+4 MiB checkpoint bound scores 698 ms at a 4.2 MiB peak WAL and is accepted.
 
 ## Time budget — read this first
 

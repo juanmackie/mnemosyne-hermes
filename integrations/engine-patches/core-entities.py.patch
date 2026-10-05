@@ -1,0 +1,167 @@
+--- a/mnemosyne/core/entities.py
++++ b/mnemosyne/core/entities.py
+@@ -9,7 +9,7 @@
+ """
+ 
+ import re
+-from typing import List, Set, Tuple
++from typing import List, Optional, Set, Tuple
+ 
+ 
+ # =============================================================================
+@@ -66,10 +66,16 @@
+ # 1. PURE PYTHON LEVENSHTEIN
+ # =============================================================================
+ 
+-def levenshtein_distance(s1: str, s2: str) -> int:
++def levenshtein_distance(s1: str, s2: str, max_dist: Optional[int] = None) -> int:
+     """
+     Compute the Levenshtein edit distance between two strings.
+     Pure Python, zero dependencies.  O(len(s1) * len(s2)) time, O(min) space.
++
++    # LOCAL PATCH: optional max_dist early-exit. When set, rows whose minimum
++    # already exceeds max_dist abort with max_dist + 1 instead of completing
++    # the full matrix. Callers that only test score >= threshold use this to
++    # skip the expensive tail of unrelated pairs; exact scores for matches
++    # (dist <= max_dist) are unchanged. None preserves upstream behavior.
+     """
+     if len(s1) < len(s2):
+         s1, s2 = s2, s1  # ensure s2 is the shorter one
+@@ -80,6 +86,35 @@
+     # Use two rows (current and previous) to keep space O(min(len1, len2))
+     previous_row = list(range(len(s2) + 1))
+     current_row = [0] * (len(s2) + 1)
++
++    # LOCAL PATCH: banded (Ukkonen) computation when max_dist is set. Only
++    # the diagonal band of width 2*max_dist+1 can contain an optimal path of
++    # cost <= max_dist; cells outside it are +inf. When the true distance is
++    # <= max_dist the banded result is exact, otherwise we return max_dist+1
++    # without completing the matrix. (A row-minimum abort is unsound here:
++    # row minima can decrease, e.g. "he"->"hallo" costs 4 but "hel"->"hallo"
++    # costs 3, so aborting on min > max_dist would miss true matches.)
++    if max_dist is not None:
++        if abs(len(s1) - len(s2)) > max_dist:
++            return max_dist + 1
++        inf = max_dist + 1
++        previous_row = [j if j <= max_dist else inf for j in range(len(s2) + 1)]
++        for i, c1 in enumerate(s1, start=1):
++            current_row[0] = i if i <= max_dist else inf
++            lo = max(1, i - max_dist)
++            hi = min(len(s2), i + max_dist)
++            for j in range(1, lo):
++                current_row[j] = inf
++            for j in range(lo, hi + 1):
++                c2 = s2[j - 1]
++                insertions = previous_row[j] + 1
++                deletions = current_row[j - 1] + 1
++                substitutions = previous_row[j - 1] + (0 if c1 == c2 else 1)
++                current_row[j] = min(insertions, deletions, substitutions)
++            for j in range(hi + 1, len(s2) + 1):
++                current_row[j] = inf
++            previous_row, current_row = current_row, previous_row
++        return previous_row[len(s2)]
+ 
+     for i, c1 in enumerate(s1):
+         current_row[0] = i + 1
+@@ -97,12 +132,17 @@
+     return previous_row[len(s2)]
+ 
+ 
+-def similarity(s1: str, s2: str) -> float:
++def similarity(s1: str, s2: str, threshold: float = 0.0) -> float:
+     """
+     Entity-aware similarity score: 1.0 = identical, 0.0 = completely different.
+ 
+     Uses case-insensitive comparison with prefix/substring bonuses for
+     entity name matching (e.g., "Abdias" vs "Abdias J" = 0.925).
++
++    # LOCAL PATCH: optional threshold bounds the Levenshtein tail. Scores at
++    # or above threshold are exact; pairs that cannot reach it return 0.0
++    # without completing the matrix. The default 0.0 preserves upstream
++    # behavior for callers that do not pass a threshold.
+     """
+     s1_lower = s1.lower().strip()
+     s2_lower = s2.lower().strip()
+@@ -130,7 +170,17 @@
+         shorter = min(len(s1_lower), len(s2_lower))
+         return 0.5 + (shorter / longer) * 0.3
+ 
+-    dist = levenshtein_distance(s1_lower, s2_lower)
++    # LOCAL PATCH: only the non-prefix/substring branch reaches Levenshtein,
++    # where score <= min_len/max_len. Bound it by the caller's threshold.
++    # The 1e-9 epsilon corrects binary float error at integer boundaries:
++    # (1.0 - 0.8) * 5 is 0.9999999999999998 in float, but the true bound is 1.
++    if threshold > 0.0:
++        max_dist = int((1.0 - threshold) * max_len + 1e-9)
++        dist = levenshtein_distance(s1_lower, s2_lower, max_dist=max_dist)
++        if dist > max_dist:
++            return 0.0
++    else:
++        dist = levenshtein_distance(s1_lower, s2_lower)
+     return 1.0 - (dist / max_len)
+ 
+ 
+@@ -210,25 +260,52 @@
+     Find known entities similar to the given entity.
+ 
+     Returns list of (entity_name, similarity_score) tuples, sorted by score descending.
++
++    # LOCAL PATCH: content-aware pre-filter before the O(n*m) Levenshtein.
++    # similarity() branches are: exact 1.0, prefix 0.7 + ratio*0.3,
++    # substring 0.5 + ratio*0.3, else Levenshtein 1 - dist/max <= ratio.
++    # The old guard applied the loose prefix bound (0.7 + ratio*0.3) to every
++    # pair, so any length-ratio >= 0.334 was never pruned regardless of
++    # content -- it pruned the cheap short pairs and kept the expensive long
++    # ones, which then scored 0.04-0.23 (below threshold). The new guard
++    # checks substring containment first (C-level, microseconds): pairs with
++    # no containment are capped at ratio and pruned when ratio < threshold;
++    # disjoint alphabets (score 0) are pruned as well. Pruned pairs provably
++    # score below threshold, so the match set is unchanged. The surviving
++    # Levenshtein tail is bounded by threshold via similarity().
+     """
+     matches: List[Tuple[str, float]] = []
+-    entity_len = len(entity.strip())
++    entity_stripped = entity.strip()
++    entity_len = len(entity_stripped)
++    entity_lower = entity_stripped.lower()
++    entity_chars = set(entity_lower)
+     for known in known_entities:
+         if known == entity:
+             matches.append((known, 1.0))
+             continue
+-        # Cheap upper bound before the O(n*m) levenshtein in similarity():
+-        # the edit-distance score is capped at min_len/max_len and the
+-        # prefix/substring bonuses at 0.7 + ratio*0.3, so when the length
+-        # ratio alone puts every branch below the threshold the pair can
+-        # never match. Critical when callers pass long free-text queries
+-        # against thousands of short entity names.
+-        known_len = len(known.strip())
++        known_stripped = known.strip()
++        known_len = len(known_stripped)
+         max_len = max(entity_len, known_len, 1)
+         ratio = min(entity_len, known_len) / max_len
+-        if ratio < threshold and (0.7 + ratio * 0.3) < threshold:
+-            continue
+-        sim = similarity(entity, known)
++        known_lower = known_stripped.lower()
++        # LOCAL PATCH: cheap containment check selects the tight bound.
++        has_substring = (
++            (known_lower in entity_lower or entity_lower in known_lower)
++            if (entity_lower and known_lower)
++            else False
++        )
++        if has_substring:
++            # Prefix/substring branch possible: loose upper bound.
++            if (0.7 + ratio * 0.3) < threshold:
++                continue
++        else:
++            # Levenshtein-only branch: score <= ratio. Disjoint alphabets
++            # score 0 without reaching the matrix at all.
++            if ratio < threshold:
++                continue
++            if entity_chars.isdisjoint(known_lower):
++                continue
++        sim = similarity(entity, known, threshold)
+         if sim >= threshold:
+             matches.append((known, sim))
+ 

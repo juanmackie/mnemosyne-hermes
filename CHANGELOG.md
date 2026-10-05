@@ -23,9 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every provider tool runs against the pinned real engine in CI
   (`./test-all.sh --require-engine`), with a weekly run against the newest
   engine release so a pin bump becomes a checked decision.
+- Engine recall-perf regression lane (`tests/test_engine_recall_perf.py`):
+  the entity fuzzy-match guard keeps the exact upstream match set, the
+  banded Levenshtein stays exact for matches, the recall lane extracts
+  capped candidates with a raw-query fallback, and a 300-mention recall
+  fans out to a fraction of the full matrices with its rank-1 hit intact.
 
 ### Fixed
 
+- Engine entity recall no longer fuzzy-matches the raw query string against
+  every known entity with a full Python Levenshtein per pair (~340 calls,
+  ~72% of `recall()`). The guard is content-aware (substring containment
+  selects the bound, other pairs are capped at length-ratio), the surviving
+  matrix runs banded within ±max_dist, and the lane extracts capped
+  candidates with a raw-query fallback. Measured on a 332-mention synthetic
+  bank: recall p50 61 ms -> 3 ms with the rank-1 hit intact and the match
+  set byte-identical to upstream. Audited engine patches are applied by the
+  installer; the dense lane was verified working (fastembed available,
+  `dense_score` 0.94 on a clean hit) and needs no patch.
 - Engine MCP updates now edit foreign-session global working rows and report
   BEAM success even when the legacy mirror is absent. Audited engine patches
   are applied by the installer; legacy mirror failures roll back the edit.
