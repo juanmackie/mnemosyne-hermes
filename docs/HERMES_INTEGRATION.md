@@ -104,7 +104,7 @@ keyless; optional LLM work goes through the active Hermes model configured in
 | --- | --- |
 | `memory.provider` | Must be `mnemosyne` |
 | `memory.mnemosyne.db_path` | Explicit store path; beats the env var |
-| `memory.mnemosyne.tools` | Omit/null for four core tools; `['*']` opts into all 40; `[]` disables tool exposure |
+| `memory.mnemosyne.tools` | Omit/null for four core tools; `['*']` opts into the full set; `[]` disables tool exposure |
 | `memory.mnemosyne.profile_isolation` | Bank per Hermes profile |
 
 Unknown tool names in `memory.mnemosyne.tools` fail loudly at startup; `'*'`

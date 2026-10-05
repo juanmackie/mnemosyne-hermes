@@ -11,7 +11,61 @@
      conn._defer_commit = True
      try:
          yield
-@@ -3290,6 +3294,9 @@
+@@ -1676,21 +1680,49 @@
+     now all surface (silent-destruction bug fixed) -- the pre-E6 path
+     against TripleStore returned only the last-written mention per memory
+     because of auto-invalidation on (subject, predicate).
++
++    # LOCAL PATCH: extract capped candidate entities instead of fuzzy-matching
++    # the entire raw query string. Passing a 48-char question as the entity
++    # name fans out to one O(len(query) x len(known)) Levenshtein per known
++    # entity (~340 calls per recall, ~72% of recall latency), yet any pair
++    # with length-ratio < 0.333 provably scores below the 0.8 threshold, so
++    # the raw pass spends ~100 ms to conclude "no match". Candidates are
++    # short extractor phrases (capped at 8); when the extractor yields nothing
++    # (lowercase free text, short queries, paths) the raw name is kept as the
++    # single fallback candidate, preserving legacy behavior on that path.
+     """
+     try:
+-        from mnemosyne.core.entities import find_similar_entities
++        from mnemosyne.core.entities import extract_entities_regex, find_similar_entities
++
++        # LOCAL PATCH: candidate cap before the O(candidates x entities x len^2)
++        # fuzzy work. Fall back to the raw query when extraction yields nothing.
++        try:
++            extracted = extract_entities_regex(entity_name)
++        except Exception:
++            extracted = []
++        candidates = [c for c in extracted if c and len(c.strip()) >= 2][:8]
++        if not candidates:
++            candidates = [entity_name]
+ 
+         # Get all known entities (uses BeamMemory's cached AnnotationStore)
+         known_entities = beam.annotations.get_distinct_values("mentions")
+         if not known_entities:
+             return []
+ 
+-        # Find similar entities
+-        matches = find_similar_entities(entity_name, known_entities, threshold=threshold)
++        # Find similar entities across candidates, deduplicating matches.
++        seen_entities: Set[str] = set()
++        matched: List[str] = []
++        for candidate in candidates:
++            for matched_entity, _ in find_similar_entities(
++                candidate, known_entities, threshold=threshold
++            ):
++                if matched_entity not in seen_entities:
++                    seen_entities.add(matched_entity)
++                    matched.append(matched_entity)
+ 
+         # Collect memory IDs for all matched entities
+         memory_ids: Set[str] = set()
+-        for matched_entity, _ in matches:
++        for matched_entity in matched:
+             results = beam.annotations.query_by_kind("mentions", value=matched_entity)
+             for row in results:
+                 memory_ids.add(row["memory_id"])
+@@ -3290,6 +3322,9 @@
              # Conservative policy: only upgrade if the new call passes a
              # non-'unknown' veracity (preserves per-row trust on
              # backfills that don't carry a meaningful veracity arg).
@@ -21,7 +75,7 @@
              cursor.execute("""
                  UPDATE working_memory
                  SET importance = MAX(importance, ?), timestamp = ?, source = ?,
-@@ -4017,24 +4024,28 @@
+@@ -4017,24 +4052,28 @@
          If replacement_id is provided, sets superseded_by.
          Otherwise sets valid_until to now (immediate expiry).
          """
@@ -56,7 +110,7 @@
          invalidated = cursor.rowcount > 0
          self.conn.commit()
          if invalidated:
-@@ -4237,9 +4248,13 @@
+@@ -4237,9 +4276,13 @@
              params.append(importance)
          if not updates:
              return False
@@ -72,7 +126,7 @@
              params
          )
          affected = cursor.rowcount
-@@ -4260,6 +4275,8 @@
+@@ -4260,6 +4303,8 @@
                  )
  
          self.conn.commit()
@@ -81,7 +135,7 @@
          return affected > 0
  
      def get(self, memory_id: str) -> Optional[Dict]:
-@@ -4272,15 +4289,19 @@
+@@ -4272,15 +4317,19 @@
  
          Returns None if not found in either table.
          """
@@ -104,7 +158,7 @@
          row = cursor.fetchone()
          if row:
              return {
-@@ -4297,12 +4318,12 @@
+@@ -4297,12 +4346,12 @@
              }
  
          # Episodic memory (fallback)
@@ -120,7 +174,7 @@
          row = cursor.fetchone()
          if row:
              return {
-@@ -4338,17 +4359,21 @@
+@@ -4338,17 +4387,21 @@
          # rolls back the working_memory DELETE rather than leaving it
          # uncommitted on the connection for a later unrelated commit to
          # silently include.
