@@ -9,6 +9,28 @@ from .storage import PythonMemoryStorage, StorageError
 from .tools import call_tool, tool_schemas
 
 
+def _dataset_suffix(storage: PythonMemoryStorage) -> str:
+    """One-line store summary for tool descriptions (~1 line, not 640 tokens).
+
+    Best effort: a broken store must not break `tools/list`. Callers get the
+    static descriptions unchanged in that case.
+    """
+    try:
+        doc = storage.describe()
+    except Exception:
+        return ""
+    total = doc.get("memory_count", 0)
+    namespaces = doc.get("namespaces", {})
+    if not total:
+        return " Store is empty (0 memories)."
+    names = ", ".join(f"{ns} ({n})" for ns, n in list(namespaces.items())[:5])
+    suffix = f" Store holds {total} memories"
+    if names:
+        suffix += f" across {len(namespaces)} namespaces: {names}"
+    suffix += ". Run mnemosyne-lite describe for the full summary."
+    return suffix
+
+
 def serve(db_path, stdin=None, stdout=None):
     """Serve MCP over stdin/stdout against an EXISTING store.
 
@@ -60,7 +82,7 @@ def serve(db_path, stdin=None, stdout=None):
                         "tools": [
                             {
                                 "name": t["name"],
-                                "description": t["description"],
+                                "description": t["description"] + _dataset_suffix(storage),
                                 "inputSchema": t["parameters"],
                             }
                             for t in tool_schemas()

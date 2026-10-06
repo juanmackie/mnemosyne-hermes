@@ -62,6 +62,8 @@ Returns `{"jsonrpc": "2.0", "id": <id>, "result": {}}`.
 
 Returns every lite tool as `{"name", "description", "inputSchema"}`, where
 `inputSchema` is a JSON Schema object with `additionalProperties: false`.
+Each description carries a one-line store summary (memory count and
+namespaces); run `mnemosyne-lite describe` for the full summary.
 
 ### tools/call
 
@@ -83,9 +85,11 @@ silently ignored field.
 ### `mnemosyne_memory_search`
 
 Arguments: `query` (required), `namespace`, `max_results` (1-100, default 10),
-`min_importance` (0-10).
+`min_importance` (0-10), `max_chars` (50-2000, default 500).
 
-Literal substring search over the store.
+Ranked full-text search (FTS5/BM25). Returns the ranked `results` plus card
+`text` with a `shown N of M` header, `shown`/`total` counts, and per-card
+`match:` snippets. Truncation is marked with `…`.
 
 ### `mnemosyne_memory_remember`
 
@@ -98,9 +102,10 @@ Stores a memory. No enrichment, no LLM.
 
 Arguments: same as `mnemosyne_memory_search`.
 
-Recall for a conversation. It adds a bullet-list `text` field for injection.
-When the literal search finds nothing it retries on the 4+ letter words of the
-query and returns the top results by importance and recency.
+Recall for a conversation. It returns the same ranked cards plus a `text`
+field for injection. When the ranked search finds nothing it retries on the
+4+ letter words of the query and returns the top results by importance and
+recency.
 
 ### `mnemosyne_sync_turn`
 

@@ -3,9 +3,9 @@
 Not the Hermes provider (see integrations/hermes-provider/) and not the engine
 CLI (mnemosyne-memory ships `mnemosyne`).
 
-Provides: init, remember, recall, list, bootstrap, backup, restore, maintenance
-and diagnostics. No external LLM is required and there is no subprocess
-overhead.
+Provides: init, remember, recall, list, describe, bootstrap, backup, restore,
+maintenance and diagnostics. No external LLM is required and there is no
+subprocess overhead.
 """
 
 import argparse
@@ -60,6 +60,8 @@ def _emit_rows(args, rows):
 
     The shapes differ on purpose. A machine-readable caller wants a single
     document it can parse; a human at a terminal wants labeled columns.
+    `cards` is handled by the recall/list commands, which know the query
+    and the totals the header needs.
     """
     if getattr(args, "format", "text") == "json":
         print(json.dumps(rows, default=str))
@@ -113,7 +115,19 @@ def cmd_recall(args):
         max_results=args.max_results,
         min_importance=args.min_importance,
     )
-    _emit_rows(args, results)
+    if getattr(args, "format", "text") == "cards":
+        from .cards import DEFAULT_CARD_CHARS, render_recall_cards
+
+        total = s.count_matching(
+            args.query,
+            namespace=args.namespace,
+            min_importance=args.min_importance,
+        )
+        indexed = s.count()
+        max_chars = getattr(args, "max_chars", None) or DEFAULT_CARD_CHARS
+        print(render_recall_cards(results, args.query, total, indexed, max_chars))
+    else:
+        _emit_rows(args, results)
     s.close()
     return 0
 
@@ -121,8 +135,47 @@ def cmd_recall(args):
 def cmd_list(args):
     s = _storage(args)
     results = s.list_memories(namespace=args.namespace, limit=args.limit, sort_by=args.sort_by)
-    _emit_rows(args, results)
+    if getattr(args, "format", "text") == "cards":
+        from .cards import DEFAULT_CARD_CHARS, render_list_cards
+
+        indexed = s.count()
+        max_chars = getattr(args, "max_chars", None) or DEFAULT_CARD_CHARS
+        print(render_list_cards(results, indexed, max_chars))
+    else:
+        _emit_rows(args, results)
     s.close()
+    return 0
+
+
+def cmd_describe(args):
+    """Summarise the store so an agent knows what to ask for.
+
+    Read-only like the other inspect commands: a missing path is refused,
+    never fabricated into an empty store.
+    """
+    s = _storage(args)
+    doc = s.describe()
+    doc = {"ok": True, "db_path": args.db_path, **doc}
+    s.close()
+    if getattr(args, "format", "text") == "json":
+        print(json.dumps(doc, default=str))
+        return 0
+    print(f"Store: {doc['db_path']} · {doc['memory_count']} memories")
+    namespaces = doc["namespaces"]
+    if namespaces:
+        print("Namespaces:")
+        for ns, count in namespaces.items():
+            print(f"  {ns}: {count}")
+    else:
+        print("Namespaces: (none)")
+    date_range = doc.get("date_range", {})
+    print(
+        f"Date range: {date_range.get('min_created_at', '-')} .. "
+        f"{date_range.get('max_created_at', '-')}"
+    )
+    print("Example calls:")
+    for call in doc.get("example_calls", []):
+        print(f"  {call}")
     return 0
 
 
@@ -413,9 +466,9 @@ def main(argv=None):
     )
     parser.add_argument(
         "--format",
-        choices=("text", "json"),
+        choices=("text", "json", "cards"),
         default="text",
-        help="Output: text (aligned table, default) or json",
+        help="Output: text (aligned table, default), json, or cards (capped cited cards)",
     )
     # Subcommands accept --db-path and --format too, so
     # `mnemosyne-lite recall --db-path X --format json` works as well as the
@@ -425,9 +478,9 @@ def main(argv=None):
     common.add_argument("--db-path", default=argparse.SUPPRESS, help="SQLite database path")
     common.add_argument(
         "--format",
-        choices=("text", "json"),
+        choices=("text", "json", "cards"),
         default=argparse.SUPPRESS,
-        help="Output: text (aligned table, default) or json",
+        help="Output: text (aligned table, default), json, or cards",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -454,13 +507,30 @@ def main(argv=None):
     p_rec.add_argument("--namespace", default=None)
     p_rec.add_argument("--max-results", type=int, default=10)
     p_rec.add_argument("--min-importance", type=int, default=0)
+    p_rec.add_argument(
+        "--max-chars",
+        type=int,
+        default=500,
+        help="Per-card content cap for --format cards (truncation marked with …)",
+    )
     p_rec.set_defaults(func=cmd_recall)
 
     p_lst = sub.add_parser("list", parents=[common], help="List memories")
     p_lst.add_argument("--namespace", default=None)
     p_lst.add_argument("--limit", type=int, default=20)
     p_lst.add_argument("--sort-by", default="recent")
+    p_lst.add_argument(
+        "--max-chars",
+        type=int,
+        default=500,
+        help="Per-card content cap for --format cards (truncation marked with …)",
+    )
     p_lst.set_defaults(func=cmd_list)
+
+    p_desc = sub.add_parser(
+        "describe", parents=[common], help="Summarise the store before searching"
+    )
+    p_desc.set_defaults(func=cmd_describe)
 
     p_boot = sub.add_parser(
         "bootstrap",
