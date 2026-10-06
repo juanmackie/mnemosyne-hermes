@@ -17,9 +17,15 @@ def tool_schemas():
         "namespace": namespace,
         "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
         "min_importance": {"type": "integer", "minimum": 0, "maximum": 10},
+        "max_chars": {"type": "integer", "minimum": 50, "maximum": 2000},
     }
     definitions = [
-        ("mnemosyne_memory_search", "Search local memory by literal substring", search, ["query"]),
+        (
+            "mnemosyne_memory_search",
+            "Search local memory by ranked full-text (FTS5/BM25). Returns capped cited cards.",
+            search,
+            ["query"],
+        ),
         (
             "mnemosyne_memory_remember",
             "Store a local memory without enrichment",
@@ -31,7 +37,12 @@ def tool_schemas():
             },
             ["content"],
         ),
-        ("mnemosyne_prefetch", "Recall context for a conversation", search, ["query"]),
+        (
+            "mnemosyne_prefetch",
+            "Recall context for a conversation. Same ranked search plus card text for injection.",
+            search,
+            ["query"],
+        ),
         (
             "mnemosyne_sync_turn",
             "Capture user-authored text from a completed turn",
@@ -120,6 +131,7 @@ def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"
     )
     # ponytail: bounded keyword fallback for conversational prefetch; use ranked
     # semantic retrieval only when measured recall quality justifies it.
+    used_fallback = False
     if not results and name == "mnemosyne_prefetch":
         import re
 
@@ -137,7 +149,34 @@ def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"
         results = sorted(results, key=lambda r: (r["importance"], r["created_at"]), reverse=True)[
             : arguments.get("max_results", 10)
         ]
-    result = {"ok": True, "results": results, "count": len(results), "namespace": namespace}
-    if name == "mnemosyne_prefetch":
-        result["text"] = "\n".join("- " + row["content"][:2000] for row in results)
+        used_fallback = True
+    from .cards import DEFAULT_CARD_CHARS, render_recall_cards
+
+    max_chars = arguments.get("max_chars", DEFAULT_CARD_CHARS)
+    try:
+        total = (
+            len(results)
+            if used_fallback
+            else storage.count_matching(
+                arguments["query"],
+                namespace=namespace,
+                min_importance=arguments.get("min_importance"),
+            )
+        )
+    except Exception:
+        total = len(results)
+    try:
+        indexed = storage.count()
+    except Exception:
+        indexed = len(results)
+    cards = render_recall_cards(results, arguments["query"], total, indexed, max_chars)
+    result = {
+        "ok": True,
+        "results": results,
+        "count": len(results),
+        "shown": len(results),
+        "total": total,
+        "namespace": namespace,
+        "text": cards,
+    }
     return result

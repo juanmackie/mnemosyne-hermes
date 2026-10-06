@@ -1382,3 +1382,77 @@ class PythonMemoryStorage:
         except sqlite3.Error as e:
             logger.exception("Count query failed")
             raise StorageError(f"count failed on {self.db_path}: {e}") from e
+
+    def count_matching(
+        self,
+        query: str,
+        namespace: str | None = None,
+        min_importance: int | None = None,
+    ) -> int:
+        """Count all rows `recall` would find, without the LIMIT.
+
+        The header of a card answer reports `shown N of M`: N is
+        `len(recall(...))` and M is this. Keeping the predicates identical
+        to `_recall_fulltext` / `_recall_substring` is what keeps the two
+        consistent.
+        """
+        if not query or query.isspace():
+            raise ValueError("query cannot be empty")
+        conn = self._conn()
+        try:
+            match = _fts_match_expression(query)
+            if match is None:
+                sql = "SELECT COUNT(*) FROM memories WHERE instr(lower(content), lower(?)) > 0"
+                params: list[Any] = [query]
+            else:
+                sql = (
+                    "SELECT COUNT(*) FROM memories_fts "
+                    "JOIN memories m ON m.rowid = memories_fts.rowid "
+                    "WHERE memories_fts MATCH ?"
+                )
+                params = [match]
+            if namespace:
+                sql += " AND m.namespace = ?" if match is not None else " AND namespace = ?"
+                params.append(namespace)
+            if min_importance is not None:
+                sql += " AND m.importance >= ?" if match is not None else " AND importance >= ?"
+                params.append(min_importance)
+            row = conn.execute(sql, params).fetchone()
+            return row[0] if row else 0
+        except sqlite3.Error as e:
+            logger.exception("Count-matching query failed")
+            raise StorageError(f"count failed on {self.db_path}: {e}") from e
+
+    def describe(self) -> dict[str, Any]:
+        """Summarise the store for an agent that has not searched it yet.
+
+        Read-only: no flush, no checkpoint. A broken store raises
+        `StorageError` instead of reporting a healthy empty store.
+        """
+        conn = self._conn()
+        try:
+            total_row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
+            total = total_row[0] if total_row else 0
+            namespaces: dict[str, int] = {
+                row[0]: row[1]
+                for row in conn.execute(
+                    "SELECT namespace, COUNT(*) FROM memories GROUP BY namespace ORDER BY 2 DESC"
+                ).fetchall()
+            }
+            range_row = conn.execute(
+                "SELECT MIN(created_at), MAX(created_at) FROM memories"
+            ).fetchone()
+            lo, hi = (range_row[0], range_row[1]) if range_row else (None, None)
+        except sqlite3.Error as e:
+            logger.exception("Describe query failed")
+            raise StorageError(f"describe failed on {self.db_path}: {e}") from e
+        return {
+            "memory_count": total,
+            "namespaces": namespaces,
+            "date_range": {"min_created_at": lo, "max_created_at": hi},
+            "example_calls": [
+                "mnemosyne-lite recall --query <words>",
+                "mnemosyne-lite recall --query <words> --format cards",
+                "mnemosyne-lite list --limit 20",
+            ],
+        }

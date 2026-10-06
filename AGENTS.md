@@ -27,7 +27,8 @@ history keep it; do not restore it.
 | --- | --- |
 | `install.sh` | Provider install, `--copy`, `--uninstall`, `--purge`, `--dry-run` |
 | `integrations/hermes-provider/` | The vendored snapshot and every gate around it: `VENDORED_FROM.json` (hashes), `PATCHES.md`, `CONTRACT_AUDIT.md`, `LIVE_VERIFICATION.md`, `README.md`, `pyproject.toml` (engine pin) |
-| `src/mnemosyne_lite/` | `cli.py`, `mcp.py`, `tools.py`, `storage.py`, `db_path.py` |
+| `src/mnemosyne_lite/` | `cli.py`, `mcp.py`, `tools.py`, `storage.py`, `db_path.py`, `cards.py` |
+| `skills/mnemosyne-lite/` | Agent runbook (`SKILL.md`): describe-first search, card reading, no-store fabrication |
 | `tests/` | Contract and regression suites (see Verification) |
 | `scripts/` | Repo gates and helpers: `checks.sh` (registry), `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh`, `upstream-drift-check.py` |
 | `bench/` | The recall-latency harness (`measure.sh`) and its record (`README.md`) |

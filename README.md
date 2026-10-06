@@ -98,14 +98,19 @@ provider module for the life of the process.
 pip install -e .                  # installs `mnemosyne-lite`
 mnemosyne-lite init               # creates ~/.mnemosyne-lite/mnemosyne.db
 mnemosyne-lite remember --content "decided to use SQLite" --importance 8
-mnemosyne-lite recall --query SQLite
+mnemosyne-lite describe           # what the store holds, before searching
+mnemosyne-lite recall --query SQLite --format cards
 mnemosyne-lite diagnostics        # resolved DB path, counts, live PRAGMA state
 ```
 
-Commands: `init`, `remember`, `recall`, `list`, `bootstrap`, `backup`,
-`restore`, `maintenance`, `diagnostics`, `mcp`. `recall` and `list` print an
-aligned text table by default; pass `--format json` before or after a subcommand
-for the same JSON document on stdout.
+Commands: `init`, `remember`, `recall`, `list`, `describe`, `bootstrap`,
+`backup`, `restore`, `maintenance`, `diagnostics`, `mcp`. `recall` and `list`
+print an aligned text table by default; pass `--format json` before or after
+a subcommand for the same JSON document on stdout, or `--format cards` for
+capped cited cards with a `shown N of M` header (`--max-chars N` caps each
+card; truncation is marked with `…`). Copy `skills/mnemosyne-lite/SKILL.md`
+into `~/.claude/skills/` (or paste it into `AGENTS.md`) for the agent
+runbook: it costs 0 tokens until used.
 
 The store uses schema v3, which removes a redundant copy of every memory's text.
 Opening an older lite store makes a timestamped `.pre-v3.*.bak` copy before
