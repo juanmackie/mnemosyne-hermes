@@ -204,7 +204,8 @@ def test_patched_hook_signatures_and_accept_and_store():
     # 3. F2 stores metadata instead of dropping it.
     provider._beam = FakeBeam()
     provider.on_memory_write("add", "user", "prefers local storage", {"origin": "builtin"})
-    assert provider._beam.calls[-1]["metadata"] == {"origin": "builtin"}
+    assert provider._beam.calls[-1]["metadata"]["origin"] == "builtin"
+    assert provider._beam.calls[-1]["metadata"]["hermes_native_mirror"]["target"] == "user"
 
     # 4. F1 stores tool turns only when the operator opts in via sync_roles.
     turns = [

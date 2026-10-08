@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -284,9 +285,10 @@ _PREFETCH_TOP_K = 5                # final injected count: compact, relevance-fi
 # Prompt-usefulness filter for automatic memory-context injection. Manual recall
 # tools can stay broad; prefetch is silently injected into every model call, so
 # it should be conservative and favor distilled memories over raw transcript.
-_PREFETCH_RAW_PREFIXES = ("[USER]", "[ASSISTANT]", "[IDENTITY]")
+# LOCAL PATCH: P23 classifies opt-in tool/delegation captures as raw evidence.
+_PREFETCH_RAW_PREFIXES = ("[USER]", "[ASSISTANT]", "[IDENTITY]", "[TOOL]", "[DELEGATION]")
 _PREFETCH_EXCLUDED_PREFIXES = ("[ASSISTANT]",)
-_PREFETCH_RAW_SOURCES = {"conversation"}
+_PREFETCH_RAW_SOURCES = {"conversation", "conversation_tool", "conversation_delegation"}
 _PREFETCH_DISTILLED_SOURCES = {
     "preference", "correction", "fact", "identity", "insight", "sleep_consolidation",
 }
@@ -299,6 +301,89 @@ _PREFETCH_DEDUP_STOPWORDS = _PREFETCH_FRAGMENT_STOPWORDS | frozenset({
 _PREFETCH_MODEL_SLOT_STOPWORDS = _PREFETCH_DEDUP_STOPWORDS | frozenset({
     "and", "are", "for", "how", "should", "the", "with", "what", "why",
 })
+
+
+# LOCAL PATCH: P23 puts a hard ceiling on the complete block returned to
+# Hermes. It includes identity and model context, which used to bypass the
+# per-memory limit entirely.
+def _prefetch_total_char_budget() -> int:
+    raw = os.environ.get("MNEMOSYNE_PREFETCH_TOTAL_CHARS", "8000").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid MNEMOSYNE_PREFETCH_TOTAL_CHARS=%r; using 8000", raw)
+        return 8000
+    # Keep enough room for useful context and prevent accidental unbounded
+    # injection through configuration typos.
+    return min(max(value, 256), 65536)
+
+
+def _budget_prefetch_blocks(blocks: List[str], budget: int) -> Tuple[str, bool]:
+    """Keep the highest-priority complete lines within a visible char budget.
+
+    Callers order blocks by priority (identity, model, then relevance-ranked
+    sources). A single oversized line is shortened at a word boundary and
+    marked; later lower-priority lines are omitted with an explicit marker.
+    """
+    output: List[str] = []
+    used = 0
+    truncated = False
+    omitted = False
+    per_line_cap = min(2000, max(128, budget // 4))
+    for block in blocks:
+        if not block:
+            continue
+        for line_index, line in enumerate(block.splitlines()):
+            separator = "\n\n" if line_index == 0 and output else ("\n" if output else "")
+            candidate = separator + line
+            remaining = budget - used
+            if len(candidate) <= remaining:
+                output.append(candidate)
+                used += len(candidate)
+                continue
+            suffix = " … [truncated]"
+            if len(line) > per_line_cap and remaining >= len(separator) + per_line_cap + len(suffix):
+                # Keep a long identity or recall item from consuming the entire
+                # aggregate budget; the next high-priority rows still get a
+                # chance to contribute.
+                room = per_line_cap - len(suffix)
+                cut = line[:room].rstrip()
+                boundary = cut.rfind(" ")
+                if boundary >= max(8, room // 2):
+                    cut = cut[:boundary].rstrip()
+                piece = separator + cut + suffix
+                output.append(piece)
+                used += len(piece)
+                truncated = True
+                continue
+            truncated = True
+            room = remaining - len(separator) - len(suffix)
+            if room > 16 and line.strip():
+                cut = line[:room].rstrip()
+                boundary = cut.rfind(" ")
+                if boundary >= max(8, room // 2):
+                    cut = cut[:boundary].rstrip()
+                output.append(separator + cut + suffix)
+                used += len(separator) + len(cut) + len(suffix)
+            omitted = True
+            break
+        if omitted:
+            break
+    rendered = "".join(output)
+    if omitted and "[additional context omitted]" not in rendered:
+        # If the remaining space cannot hold a shortened row, make omission
+        # visible by reserving the tail of the last complete line for a marker.
+        marker = " … [additional context omitted]"
+        room = max(0, budget - len(marker))
+        cut = rendered[:room].rstrip()
+        boundary = cut.rfind(" ")
+        if boundary >= max(8, room // 2):
+            cut = cut[:boundary].rstrip()
+        rendered = cut + marker
+    if len(rendered) > budget:  # Defensive guard for separator accounting.
+        rendered = rendered[:budget]
+        truncated = True
+    return rendered, truncated
 
 
 def _is_low_quality_prefetch(content: str) -> bool:
@@ -381,6 +466,15 @@ def _prefetch_source_quality(row: Dict[str, Any]) -> float:
     if upper.startswith(_PREFETCH_EXCLUDED_PREFIXES):
         return 0.0
 
+    # Tool output and child-agent transcripts are useful searchable evidence,
+    # but are noisy and may contain secrets. Keep them out of silent injection
+    # unless an operator explicitly opts in; manual recall remains unchanged.
+    # LOCAL PATCH: P23 keep operational transcript captures out of silent
+    # prefetch by default; operators can opt in without changing manual recall.
+    if source in {"conversation_tool", "conversation_delegation"}:
+        if not _parse_env_bool("MNEMOSYNE_PREFETCH_INCLUDE_RAW_TOOL_CAPTURE", False):
+            return 0.0
+
     quality = 1.0
     if source in _PREFETCH_DISTILLED_SOURCES:
         quality *= 1.12
@@ -395,10 +489,15 @@ def _prefetch_source_quality(row: Dict[str, Any]) -> float:
     return quality
 
 
+# LOCAL PATCH: P23 recognize tool/delegation records and explicit transcript tags.
 def _prefetch_is_raw(row: Dict[str, Any]) -> bool:
     content = (row.get("content") or "").strip().upper()
     source = str(row.get("source") or "").lower()
-    return source in _PREFETCH_RAW_SOURCES or content.startswith("[USER]") or content.startswith("[IDENTITY]")
+    return (
+        source in _PREFETCH_RAW_SOURCES
+        or source.startswith("conversation_")
+        or content.startswith(("[USER]", "[IDENTITY]", "[TOOL]", "[DELEGATION]"))
+    )
 
 
 def _prefetch_adjusted_score(row: Dict[str, Any]) -> float:
@@ -1334,10 +1433,20 @@ DEFAULT_TOOL_NAMES = (
 # ---------------------------------------------------------------------------
 
 try:
-    from agent.memory_provider import MemoryProvider
+    from agent import memory_provider as _hermes_memory_provider_module
+    MemoryProvider = _hermes_memory_provider_module.MemoryProvider
+    # LOCAL PATCH: P24 advertise checkpoint v2 only to Hermes releases that
+    # define the v2 host contract. Older managers keep the legacy best-effort
+    # hook and never receive the new strict-mode kwargs.
+    _HERMES_CHECKPOINT_API_VERSION = int(
+        getattr(_hermes_memory_provider_module, "PRE_COMPRESS_CHECKPOINT_API_VERSION", 1)
+    )
+    _HERMES_RECALL_STATUS = getattr(_hermes_memory_provider_module, "RecallStatus", None)
 except ImportError:
     # Graceful fallback if ABC not available (shouldn't happen in practice)
     MemoryProvider = object  # type: ignore
+    _HERMES_CHECKPOINT_API_VERSION = 1
+    _HERMES_RECALL_STATUS = None
 
 
 def _parse_env_float(key: str, default: float) -> float:
@@ -1391,6 +1500,11 @@ def _parse_env_optional_int(key: str, default: Optional[int]) -> Optional[int]:
 class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     """Mnemosyne native memory — local SQLite with vector + FTS5 hybrid search."""
 
+    # LOCAL PATCH: P24 API-v2 is advertised only when the installed Hermes
+    # provider contract exposes it. The v2 hook durably stores all normalized
+    # evidence before it returns successfully.
+    pre_compress_checkpoint_api_version = _HERMES_CHECKPOINT_API_VERSION
+
     # How long on_session_end will wait for sleep/consolidation to finish before
     # giving up and letting the daemon thread continue in the background. Tests
     # may shorten this to keep the suite fast. Override via MNEMOSYNE_SESSION_END_TIMEOUT.
@@ -1438,6 +1552,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._platform = "cli"
         self._agent_context = "primary"
         self._turn_count = 0
+        # LOCAL PATCH: P24 this is per-turn provenance only. In group chats the
+        # startup user_id/agent identity does not identify the current speaker.
+        self._current_turn_author: Dict[str, Any] = {}
         self._sync_turn_lock = threading.Lock()
         # Serialize callers sharing the provider's Beam/SQLite handle (#498).
         # LOCAL PATCH: P22 consolidation owns a separate worker connection;
@@ -1491,6 +1608,22 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # Generic extra-source registry: name -> fn(query, *, session_id) -> hits|str.
         # A profile opts a source in via its `sources`. "bank" is built in.
         self._prefetch_sources: Dict[str, Callable[..., Any]] = {}
+        # LOCAL PATCH: P23 keeps only a tiny exact-query warm cache. Hermes
+        # already serializes provider callbacks on its background lane.
+        self._prefetch_cache: OrderedDict = OrderedDict()
+        self._prefetch_cache_lock = threading.Lock()
+        self._prefetch_stats: Dict[str, Any] = {
+            "cache_hits": 0, "cache_misses": 0, "queued": 0,
+            "calls": 0, "last_chars": 0, "max_chars": 0,
+            "truncations": 0, "last_duration_ms": 0.0,
+            "last_lock_wait_ms": 0.0, "last_recall_ms": 0.0,
+            "errors": 0, "last_error": None,
+        }
+        self._prefetch_errors: Dict[str, int] = {}
+        self._prefetch_last_context = ""
+        self._prefetch_last_bank_counts: Dict[str, int] = {}
+        self._prefetch_recall_changes = 0
+        self._prefetch_conn_identity = None
         # Profile memory isolation: when enabled, each Hermes profile gets its own
         # Mnemosyne bank (separate SQLite DB). Default OFF for backward compatibility.
         self._profile_isolation_enabled = False
@@ -1900,22 +2033,111 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return None
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
+        # LOCAL PATCH: P24 keep Hermes' first-run setup focused on the four
+        # choices that change data placement or user-visible memory behavior.
+        # Advanced options remain accepted by _apply_provider_config and are
+        # documented in the provider config reference, without becoming setup
+        # wizard prompts.
         return [
-            {"key": "auto_sleep", "description": "Auto-run sleep() when working memory exceeds threshold. Set false to disable. Backward-compatible with MNEMOSYNE_AUTO_SLEEP_ENABLED env var.", "default": True},
-            {"key": "sleep_threshold", "description": "Working memory count before auto-sleep triggers", "default": 50},
             {"key": "db_path", "description": "Explicit SQLite DB path for this provider. Precedence: memory.mnemosyne.db_path > MNEMOSYNE_DB_PATH env > engine default (MNEMOSYNE_DATA_DIR > $HERMES_HOME > ~/.hermes). Set only when the DB must live outside $HERMES_HOME; the provider warns and doctor flags that case.", "default": None},
-            {"key": "reflect", "description": "Reflection/sleep guardrails. Supports disabled_for_cron (default true) and max_calls_per_session (default 3; negative disables cap). Env: MNEMOSYNE_REFLECT_DISABLED_FOR_CRON, MNEMOSYNE_REFLECT_MAX_CALLS_PER_SESSION.", "default": {"disabled_for_cron": True, "max_calls_per_session": 3}},
-            {"key": "vector_type", "description": "Vector storage type (note: not yet wired to BeamMemory at runtime; reserved for future use)", "choices": ["float32", "int8", "bit"], "default": "int8"},
-            {"key": "ignore_patterns", "description": "Regex patterns to filter from memory storage (one per line in config, or comma-separated). Memories matching any pattern are skipped.", "default": []},
             {"key": "profile_isolation", "description": "Enable per-profile memory isolation via Mnemosyne banks. Each Hermes profile gets its own SQLite database under mnemosyne/data/banks/<profile>/. Default false for backward compatibility.", "default": False},
-            {"key": "shared_surface_path", "description": "SQLite path for shared surface memories. Default is <mnemosyne>/data/shared/mnemosyne.db.", "default": "data/shared/mnemosyne.db"},
-            {"key": "shared_surface_read", "description": "When true, mnemosyne_recall merges shared-surface results into private bank recall, tagging each result with its bank ('private' or 'surface'). Default false.", "default": False},
-            {"key": "skip_contexts", "description": "Agent contexts where Mnemosyne should skip initialization. Comma-separated list. Defaults to 'cron,flush,subagent,background,skill_loop'. Set to empty string to enable all contexts. Also configurable via MNEMOSYNE_SKIP_CONTEXTS env var.", "default": "cron,flush,subagent,background,skill_loop"},
-            {"key": "sync_roles", "description": "Conversation roles to autosave in sync_turn(). Role names: 'user', 'assistant', 'tool', 'delegation'. Default ['user'] saves user turns only. 'tool' opts into tool/function turns; 'delegation' opts into parent-side subagent task/result capture. Set [] to disable conversation autosave. Does not affect explicit mnemosyne_remember calls. Identity signal capture is gated by user sync — excluding 'user' also disables identity extraction. Also configurable via MNEMOSYNE_SYNC_ROLES env var.", "default": ["user"]},
-            {"key": "require_checkpoint", "description": "When true, on_pre_compress writes a bounded, atomic local snapshot of user/assistant text to $HERMES_HOME/mnemosyne/checkpoints. The hook raises CheckpointError if the snapshot cannot be written. Hermes 0.18.2/0.19.0 MemoryManager catches provider hook exceptions, so this cannot abort compression itself; do not treat it as a fail-closed guard.", "default": False},
             {"key": "default_scope", "description": "Default scope for remember() calls when not explicitly specified. 'session' (default) limits memories to the current session. 'global' persists memories across sessions.", "choices": ["session", "global"], "default": "session"},
             {"key": "tools", "description": "List of Mnemosyne tool names exposed to Hermes. Omit or set null for the curated core set (remember, recall, stats, forget). Set ['*'] to explicitly expose all tools, or [] to expose none while keeping memory context/prefetch enabled. Unknown names raise a clear startup/config error.", "default": list(DEFAULT_TOOL_NAMES)},
         ]
+
+    # LOCAL PATCH: P24 discover a configured external SQLite store before
+    # Hermes initializes the provider. Hermes itself filters paths to the
+    # operating-system home, so arbitrary external volumes remain ineligible.
+    def backup_paths(self) -> List[str]:
+        try:
+            from hermes_memory_provider.cli import resolve_effective_db_path
+        except ImportError:
+            try:
+                from .cli import resolve_effective_db_path
+            except ImportError:
+                return []
+        hermes_home = (
+            getattr(self, "_hermes_home", "")
+            or os.environ.get("HERMES_HOME")
+            or str(Path.home() / ".hermes")
+        )
+        try:
+            db_path = resolve_effective_db_path(hermes_home)
+            if not db_path or str(db_path) == ":memory:":
+                return []
+            user_home = Path.home().resolve()
+            resolved_hermes_home = Path(hermes_home).expanduser().resolve()
+
+            def eligible(raw_path: Any) -> Optional[str]:
+                if not raw_path or str(raw_path) == ":memory:":
+                    return None
+                resolved = Path(str(raw_path)).expanduser().resolve()
+                try:
+                    resolved.relative_to(user_home)
+                except ValueError:
+                    return None
+                try:
+                    resolved.relative_to(resolved_hermes_home)
+                except ValueError:
+                    return str(resolved)
+                return None
+
+            paths: List[str] = []
+            external_db = eligible(db_path)
+            if external_db:
+                paths.append(external_db)
+            # The optional shared surface is a second provider-owned SQLite
+            # store. Only an explicit configured path can be resolved without
+            # initialization; its package-default path is outside user home.
+            try:
+                shared_path = read_hermes_config_key(hermes_home, "shared_surface_path") if read_hermes_config_key else None
+            except Exception:
+                shared_path = None
+            external_shared = eligible(shared_path)
+            if external_shared and external_shared not in paths:
+                paths.append(external_shared)
+            return paths
+        except (OSError, RuntimeError, ValueError):
+            return []
+
+    # LOCAL PATCH: P24 expose read-only configuration that changes provider
+    # identity so Hermes gateway caches are invalidated without opening a DB.
+    def identity_signature(self) -> Dict[str, Any]:
+        home = (
+            getattr(self, "_hermes_home", "")
+            or os.environ.get("HERMES_HOME")
+            or str(Path.home() / ".hermes")
+        )
+        configured: Dict[str, Any] = {}
+        for key in ("profile_isolation", "default_scope", "tools", "shared_surface_path", "shared_surface_read"):
+            try:
+                value = read_hermes_config_key(home, key) if read_hermes_config_key is not None else None
+            except Exception:
+                value = None
+            if value is not None:
+                configured[key] = value
+        try:
+            from hermes_memory_provider.cli import resolve_effective_db_path
+        except ImportError:
+            try:
+                from .cli import resolve_effective_db_path
+            except ImportError:
+                resolve_effective_db_path = None
+        try:
+            db_path = resolve_effective_db_path(home) if resolve_effective_db_path else None
+        except Exception:
+            db_path = None
+        if db_path:
+            configured["db_path"] = str(Path(str(db_path)).expanduser())
+        configured.setdefault("profile_isolation", False)
+        configured.setdefault("default_scope", "session")
+        configured.setdefault("tools", list(DEFAULT_TOOL_NAMES))
+        try:
+            # Normalize unusual YAML objects into stable JSON-compatible values.
+            configured = json.loads(json.dumps(configured, sort_keys=True, default=str))
+        except (TypeError, ValueError):
+            configured = {"db_path": str(db_path or "")}
+        return {"mnemosyne": configured}
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """Persist provider-specific config values."""
@@ -2168,22 +2390,37 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def system_prompt_block(self) -> str:
         if self._beam:
-            # Merge resolution (PR #106 + C27): keep PR #106's description
-            # update that adds "identity" to the recognized memory kinds
-            # (matches the auto-capture for identity-significant feelings
-            # added in that PR), and keep C27's three-branch structure
-            # (working / init-failed-visible / skip-context-silent).
+            # LOCAL PATCH: P23 accurately describes Hermes' native memory and
+            # advertises only tools that this configuration actually exposes.
+            tools: Optional[List[str]]
+            try:
+                tools = sorted(self._configured_tool_names())
+            except Exception as exc:
+                logger.warning("Could not resolve configured Mnemosyne tools for prompt: %s", exc)
+                tools = None
+            tool_line = (
+                "Configured Mnemosyne tools: " + ", ".join(tools) + ".\n"
+                if tools else
+                "Mnemosyne tool exposure could not be resolved from configuration.\n"
+                if tools is None else
+                "No Mnemosyne tools are exposed; automatic memory context may still be available.\n"
+            )
+            tool_guidance: List[str] = []
+            if tools and "mnemosyne_remember" in tools:
+                tool_guidance.append("Use mnemosyne_remember for useful durable facts and corrections.")
+            if tools and "mnemosyne_recall" in tools:
+                tool_guidance.append("Use mnemosyne_recall when injected context does not answer the question.")
             base = (
                 "# Mnemosyne Memory\n"
-                "Active (native local memory). Use mnemosyne_remember to store ANY "
-                "durable fact, preference, identity, or insight. Use mnemosyne_recall to search. "
-                "Use mnemosyne_shared_* tools for manual shared surface CRUD. "
-                "The legacy memory tool is deprecated for durable storage — Mnemosyne is primary.\n"
-                "\n"
-                "When a `## Mnemosyne Context` block is injected into the current turn, "
-                "read it before calling retrieval tools. If it answers the user's question, "
-                "answer directly. Use session_search only when the injected Mnemosyne "
-                "context is missing, stale, or insufficient."
+                "Hermes native memory (MEMORY.md and USER.md) remains active; keep it concise and use it for stable profile anchors. "
+                "Use Mnemosyne for searchable episodic evidence and durable facts, and skills for procedural instructions.\n"
+                + tool_line
+                + "Call a Mnemosyne tool only when it appears in the configured tool list above. "
+                + (" ".join(tool_guidance) + " " if tool_guidance else "")
+                + "\n"
+                + "When a `## Mnemosyne Context` block is injected into the current turn, "
+                + "read it before calling retrieval tools. If it answers the user's question, "
+                + "answer directly. Use session_search when both injected context and exposed Mnemosyne recall are missing, stale, or insufficient."
             )
             return self._with_persona_block(base)
         # C27: when init failed (as opposed to a deliberate skip-context),
@@ -2208,17 +2445,191 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         built-in memory-bank source and cannot be overridden here."""
         if name and name != "bank":
             self._prefetch_sources[name] = fn
+            self._ensure_prefetch_state()
+            with self._prefetch_cache_lock:
+                self._prefetch_cache.clear()
+
+    # LOCAL PATCH: P23 exact-query cache stays opt-in until a deployment
+    # measures a useful next-turn hit rate.
+    def _prefetch_cache_enabled(self) -> bool:
+        # Exact-query prewarming is opt-in until a deployment measures a useful
+        # next-turn hit rate. The regular provider path remains unchanged.
+        return _parse_env_bool("MNEMOSYNE_PREFETCH_CACHE_ENABLED", False)
+
+    # LOCAL PATCH: P23 key on visibility, database generation and render knobs.
+    def _prefetch_cache_key(self, query: str, session_id: str, profile: "PrefetchProfile") -> Optional[Tuple[Any, ...]]:
+        """Build a private exact-query key including SQLite visibility state."""
+        beam = self._beam
+        if beam is None:
+            return None
+        try:
+            cur = beam.conn.cursor()
+            data_version = int(cur.execute("PRAGMA data_version").fetchone()[0])
+            connection_identity = id(beam.conn)
+            if getattr(self, "_prefetch_conn_identity", None) != connection_identity:
+                self._prefetch_conn_identity = connection_identity
+                self._prefetch_recall_changes = 0
+                cache_lock = getattr(self, "_prefetch_cache_lock", None)
+                if cache_lock is not None:
+                    with cache_lock:
+                        self._prefetch_cache.clear()
+            local_changes = max(
+                0,
+                int(getattr(beam.conn, "total_changes", 0))
+                - int(getattr(self, "_prefetch_recall_changes", 0)),
+            )
+        except Exception:
+            # A broken/unsupported connection must never turn into a stale hit.
+            return None
+        try:
+            db_path = str(Path(beam.db_path).resolve()) if getattr(beam, "db_path", None) else ""
+        except Exception:
+            db_path = str(getattr(beam, "db_path", "") or "")
+        try:
+            owner_id = self._canonical_owner()
+        except Exception:
+            owner_id = ""
+        runtime_visibility = (
+            str(getattr(beam, "session_id", "") or ""),
+            str(getattr(beam, "author_id", "") or ""),
+            str(getattr(beam, "channel_id", "") or ""),
+            str(getattr(self, "_current_session_id", "") or ""),
+            str(getattr(self, "_agent_context", "") or ""),
+            bool(getattr(self, "_profile_isolation_enabled", False)),
+        )
+        source_revisions = []
+        for source in profile.sources:
+            if source == "bank":
+                continue
+            fn = getattr(self, "_prefetch_sources", {}).get(source)
+            revision = getattr(fn, "cache_revision", None) if fn is not None else None
+            if revision is None:
+                # External sources may change without touching Mnemosyne's DB.
+                return None
+            source_revisions.append((source, str(revision)))
+        render_knobs = tuple(
+            (name, os.environ.get(name, ""))
+            for name in (
+                "MNEMOSYNE_PREFETCH_CONTENT_CHARS",
+                "MNEMOSYNE_PREFETCH_TOTAL_CHARS",
+                "MNEMOSYNE_PREFETCH_MODEL_SLOT_LIMIT",
+                "MNEMOSYNE_PREFETCH_MODEL_SLOT_MIN_OVERLAP",
+                "MNEMOSYNE_PREFETCH_INCLUDE_RAW_TOOL_CAPTURE",
+                "MNEMOSYNE_PREFETCH_CACHE_TTL_SECONDS",
+            )
+        )
+        query_digest = hashlib.sha256(query.encode("utf-8", errors="replace")).hexdigest()
+        return (
+            query_digest, str(session_id), repr(profile), db_path, runtime_visibility,
+            tuple(source_revisions), render_knobs,
+            str(owner_id or ""), data_version, local_changes,
+        )
+
+    # LOCAL PATCH: P23 diagnostics expose aggregate counts and timings only.
+    def _prefetch_cache_snapshot(self) -> Dict[str, Any]:
+        """PII-safe cache and output telemetry for doctor/evaluation."""
+        self._ensure_prefetch_state()
+        stats = getattr(self, "_prefetch_stats", {})
+        lock = getattr(self, "_prefetch_cache_lock", None)
+        with lock:
+            snapshot = dict(stats)
+        snapshot["cache_enabled"] = self._prefetch_cache_enabled()
+        snapshot["cache_entries"] = len(getattr(self, "_prefetch_cache", {}))
+        snapshot["total_char_budget"] = _prefetch_total_char_budget()
+        try:
+            snapshot["cache_ttl_seconds"] = min(
+                max(float(os.environ.get("MNEMOSYNE_PREFETCH_CACHE_TTL_SECONDS", "30")), 1.0), 300.0
+            )
+        except ValueError:
+            snapshot["cache_ttl_seconds"] = 30.0
+        snapshot["bank"] = dict(getattr(self, "_prefetch_last_bank_counts", {}))
+        snapshot["last_source_chars"] = dict(getattr(self, "_prefetch_last_source_chars", {}))
+        snapshot["errors_by_source"] = dict(getattr(self, "_prefetch_errors", {}))
+        return snapshot
+
+    # LOCAL PATCH: P23 diagnose provider failures without storing query or
+    # memory text; Hermes can distinguish a broken store from a no-match.
+    def _record_prefetch_error(self, source: str, exc: BaseException) -> None:
+        self._ensure_prefetch_state()
+        with self._prefetch_cache_lock:
+            self._prefetch_stats["errors"] = int(self._prefetch_stats.get("errors", 0)) + 1
+            self._prefetch_stats["last_error"] = f"{source}: {type(exc).__name__}"
+            self._prefetch_errors[source] = self._prefetch_errors.get(source, 0) + 1
+
+    def get_prefetch_diagnostics(self) -> Dict[str, Any]:
+        """Return prefetch timings, budget and cache counters without content."""
+        return self._prefetch_cache_snapshot()
+
+    # LOCAL PATCH: P24 emit Hermes' deterministic recall indicator only after
+    # successful non-empty injection; failed recall and no-match stay distinct.
+    def recall_status(self) -> Optional[Any]:
+        status_type = _HERMES_RECALL_STATUS
+        if status_type is None:
+            try:
+                from agent.memory_provider import RecallStatus as status_type
+            except ImportError:
+                return None
+        stats = self._prefetch_cache_snapshot()
+        if stats.get("last_error") or not str(getattr(self, "_prefetch_last_context", "") or "").strip():
+            return None
+        bank = getattr(self, "_prefetch_last_bank_counts", {})
+        count = int(bank.get("selected", 0)) if isinstance(bank, dict) else 0
+        try:
+            return status_type(provider_label="Mnemosyne", count=count, glyph="🧠")
+        except (TypeError, ValueError):
+            return None
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall relevant context for injection, driven by the active profile.
 
         The profile selects which sources to merge (default: just the memory
         ``bank``), the recall knobs, and the filter/dedup toggles. The default
-        ``general`` profile reproduces the prior single-source behavior exactly."""
+        ``general`` profile retains the prior ranking thresholds; P23 source
+        classification and aggregate budgeting apply to all profiles."""
+        self._ensure_prefetch_state()
+        with self._prefetch_cache_lock:
+            self._prefetch_stats["last_error"] = None
+            self._prefetch_last_context = ""
+            self._prefetch_last_bank_counts = {}
+            self._prefetch_last_recall_ids = []
         if not self._beam or self._agent_context in self._skip_contexts:
             return ""
+        started = time.perf_counter()
         profile = _resolve_profile(self._prefetch_profile)
+        key: Optional[Tuple[Any, ...]] = None
+        if self._prefetch_cache_enabled():
+            with self._ensure_beam_access_lock():
+                key = self._prefetch_cache_key(query, session_id, profile)
+                if key is not None:
+                    with self._prefetch_cache_lock:
+                        cached = self._prefetch_cache.get(key)
+                        ttl = min(max(_parse_env_float("MNEMOSYNE_PREFETCH_CACHE_TTL_SECONDS", 30.0), 1.0), 300.0)
+                        if cached is not None and time.monotonic() - cached[0] <= ttl:
+                            self._prefetch_cache.move_to_end(key)
+                        else:
+                            if cached is not None:
+                                self._prefetch_cache.pop(key, None)
+                            cached = None
+                    if cached is not None and self._bump_cached_prefetch_recall(cached[3]):
+                        with self._prefetch_cache_lock:
+                            self._prefetch_stats["cache_hits"] += 1
+                            self._prefetch_stats["calls"] += 1
+                            self._prefetch_stats["last_chars"] = len(cached[1])
+                            self._prefetch_stats["max_chars"] = max(
+                                self._prefetch_stats["max_chars"], len(cached[1])
+                            )
+                            self._prefetch_stats["last_duration_ms"] = (time.perf_counter() - started) * 1000
+                            self._prefetch_last_context = cached[1]
+                            self._prefetch_last_bank_counts = dict(cached[2])
+                            self._prefetch_last_recall_ids = list(cached[3])
+                            return cached[1]
+                    if cached is not None:
+                        with self._prefetch_cache_lock:
+                            self._prefetch_cache.pop(key, None)
+                    with self._prefetch_cache_lock:
+                        self._prefetch_stats["cache_misses"] += 1
         blocks: List[str] = []
+        source_chars: Dict[str, int] = {}
         for src in profile.sources:
             try:
                 if src == "bank":
@@ -2231,9 +2642,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     ) if fn else ""
             except Exception as e:
                 logger.debug("Mnemosyne prefetch source %r failed: %s", src, e)
+                self._record_prefetch_error(src, e)
                 block = ""
             if block:
                 blocks.append(block)
+                source_chars[src] = len(block)
         # Per-contact identity memories must surface on EVERY turn, independent
         # of the semantic recall query. Routing them through recall is a latent
         # bug: a short/generic opener ("Hi", a nickname) does not match the
@@ -2247,12 +2660,96 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             model_block = self._prefetch_model_slots(query, profile)
             if model_block:
                 blocks.insert(0, model_block)
+                source_chars["model"] = len(model_block)
             identity_block = self._prefetch_identity(blocks, profile)
             if identity_block:
                 blocks.insert(0, identity_block)
+                source_chars["identity"] = len(identity_block)
         if profile.dedup:
             blocks = _dedup_blocks(blocks)
-        return "\n\n".join(b for b in blocks if b)
+        rendered, was_truncated = _budget_prefetch_blocks(
+            [b for b in blocks if b], _prefetch_total_char_budget()
+        )
+        # Cache only if no writer changed the SQLite view during assembly.
+        with self._ensure_beam_access_lock():
+            fresh_key = self._prefetch_cache_key(query, session_id, profile) if key is not None else None
+            if key is not None and fresh_key == key:
+                with self._prefetch_cache_lock:
+                    self._prefetch_cache[key] = (
+                        time.monotonic(), rendered,
+                        dict(getattr(self, "_prefetch_last_bank_counts", {})),
+                        list(getattr(self, "_prefetch_last_recall_ids", [])),
+                    )
+                    self._prefetch_cache.move_to_end(key)
+                    while len(self._prefetch_cache) > 8:
+                        self._prefetch_cache.popitem(last=False)
+            with self._prefetch_cache_lock:
+                self._prefetch_stats["calls"] += 1
+                self._prefetch_stats["last_chars"] = len(rendered)
+                self._prefetch_stats["max_chars"] = max(self._prefetch_stats["max_chars"], len(rendered))
+                if was_truncated:
+                    self._prefetch_stats["truncations"] += 1
+                self._prefetch_stats["last_duration_ms"] = (time.perf_counter() - started) * 1000
+                self._prefetch_last_source_chars = source_chars
+                self._prefetch_last_context = rendered
+        return rendered
+
+    def _ensure_prefetch_state(self) -> None:
+        """Support older/new test instances created without __init__()."""
+        if not hasattr(self, "_prefetch_cache_lock"):
+            self._prefetch_cache_lock = threading.Lock()
+        if not hasattr(self, "_prefetch_cache"):
+            self._prefetch_cache = OrderedDict()
+        if not hasattr(self, "_prefetch_stats"):
+            self._prefetch_stats = {
+                "cache_hits": 0, "cache_misses": 0, "queued": 0,
+                "calls": 0, "last_chars": 0, "max_chars": 0,
+                "truncations": 0, "last_duration_ms": 0.0,
+                "last_lock_wait_ms": 0.0, "last_recall_ms": 0.0,
+                "errors": 0, "last_error": None,
+            }
+        if not hasattr(self, "_prefetch_errors"):
+            self._prefetch_errors = {}
+        if not hasattr(self, "_prefetch_last_context"):
+            self._prefetch_last_context = ""
+        if not hasattr(self, "_prefetch_last_bank_counts"):
+            self._prefetch_last_bank_counts = {}
+        if not hasattr(self, "_prefetch_last_recall_ids"):
+            self._prefetch_last_recall_ids = []
+        if not hasattr(self, "_prefetch_recall_changes"):
+            self._prefetch_recall_changes = 0
+        if not hasattr(self, "_prefetch_conn_identity"):
+            self._prefetch_conn_identity = None
+
+    # LOCAL PATCH: P23 retain BeamMemory's recall_count/last_recalled side
+    # effects on cache hits, while treating those provider-owned updates as
+    # recall bookkeeping rather than a content-generation change.
+    def _bump_cached_prefetch_recall(self, recall_ids: List[Tuple[str, str]]) -> bool:
+        if not recall_ids or self._beam is None:
+            return True
+        before = int(getattr(self._beam.conn, "total_changes", 0))
+        now = datetime.now().isoformat()
+        try:
+            by_table: Dict[str, List[str]] = {"working_memory": [], "episodic_memory": []}
+            for memory_id, tier in recall_ids:
+                table = {"working": "working_memory", "episodic": "episodic_memory"}.get(tier)
+                if table and memory_id:
+                    by_table[table].append(memory_id)
+            for table, ids in by_table.items():
+                if not ids:
+                    continue
+                placeholders = ",".join("?" * len(ids))
+                self._beam.conn.execute(
+                    f"UPDATE {table} SET recall_count = recall_count + 1, last_recalled = ? "
+                    f"WHERE id IN ({placeholders})",
+                    (now, *ids),
+                )
+            self._beam.conn.commit()
+            self._prefetch_recall_changes += int(self._beam.conn.total_changes) - before
+            return True
+        except Exception as exc:
+            self._record_prefetch_error("cache_recall_tracking", exc)
+            return False
 
     def _prefetch_identity(self, existing_blocks: List[str], profile: "PrefetchProfile") -> str:
         """Render the always-inject identity block for the active session.
@@ -2321,6 +2818,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 rows.extend(store.list(owner_id, category=category))
         except Exception as e:
             logger.debug("Mnemosyne model-slot prefetch failed (non-fatal): %s", e)
+            self._record_prefetch_error("model", e)
             return ""
         scored: List[tuple] = []
         for row in rows:
@@ -2381,6 +2879,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 })
         except Exception as e:
             logger.debug("Mnemosyne identity read failed (non-fatal): %s", e)
+            self._record_prefetch_error("identity", e)
         return out
 
     def _prefetch_bank(self, query: str, session_id: str, profile: "PrefetchProfile") -> str:
@@ -2414,27 +2913,57 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # sessions) should never bypass session scoping.
             if author_id:
                 recall_kwargs["author_id"] = author_id
+            # LOCAL PATCH: P23 separates database lock wait from engine recall,
+            # and records BeamMemory's attribution writes for cache generation.
+            lock_started = time.perf_counter()
             with self._ensure_beam_access_lock():
+                lock_wait_ms = (time.perf_counter() - lock_started) * 1000
+                recall_started = time.perf_counter()
+                changes_before_recall = int(getattr(self._beam.conn, "total_changes", 0))
                 results = self._beam.recall(**recall_kwargs)
+                recall_ms = (time.perf_counter() - recall_started) * 1000
+                recall_changes = int(getattr(self._beam.conn, "total_changes", 0)) - changes_before_recall
+                self._prefetch_recall_changes += max(recall_changes, 0)
+                self._prefetch_last_recall_ids = [
+                    (str(row.get("id")), str(row.get("tier")))
+                    for row in results
+                    if row.get("id") and row.get("tier") in {"working", "episodic"}
+                ]
+            self._ensure_prefetch_state()
+            with self._prefetch_cache_lock:
+                self._prefetch_stats["last_lock_wait_ms"] = lock_wait_ms
+                self._prefetch_stats["last_recall_ms"] = recall_ms
             if not results:
+                self._prefetch_last_bank_counts = {
+                    "rows_seen": 0, "selected": 0, "skipped_low_quality": 0,
+                    "skipped_source": 0, "skipped_relevance": 0,
+                }
                 return ""
             # Filter out low-relevance results to prevent context pollution.
             # Importance alone is not enough for silent injection: a memory must
             # also have a real topical signal. Raw transcript rows need a
             # stronger topical signal than distilled facts/preferences.
             filtered = []
+            counts = {
+                "rows_seen": len(results), "selected": 0, "skipped_low_quality": 0,
+                "skipped_source": 0, "skipped_relevance": 0,
+            }
             for r in results:
                 if profile.drop_low_quality and _is_low_quality_prefetch(r.get("content", "")):
+                    counts["skipped_low_quality"] += 1
                     continue
                 if profile.exclude_assistant and _prefetch_source_quality(r) <= 0:
+                    counts["skipped_source"] += 1
                     continue
                 signal = _prefetch_topic_signal(r)
                 score = float(r.get("score") or 0.0)
                 importance = float(r.get("importance") or 0.0)
                 required_signal = profile.raw_min_topic_signal if _prefetch_is_raw(r) else profile.min_topic_signal
                 if signal < required_signal:
+                    counts["skipped_relevance"] += 1
                     continue
                 if score < profile.min_score and importance < profile.min_importance:
+                    counts["skipped_relevance"] += 1
                     continue
                 filtered.append(r)
 
@@ -2443,6 +2972,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 filtered = _semantic_dedup_prefetch(filtered)
             # Cap back to the intended injection size after over-fetch+filter.
             filtered = filtered[:profile.top_k]
+            counts["selected"] = len(filtered)
+            self._prefetch_last_bank_counts = counts
             if not filtered:
                 return ""
             lines = ["## Mnemosyne Context"]
@@ -2463,10 +2994,23 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             return "\n".join(lines)
         except Exception as e:
             logger.debug("Mnemosyne prefetch failed: %s", e)
+            self._record_prefetch_error("bank", e)
             return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        pass
+        """Warm the exact next-use query on Hermes' serialized background lane.
+
+        No provider thread or writer queue is created. The cache is bounded,
+        keyed to the current database generation, and can be disabled with
+        MNEMOSYNE_PREFETCH_CACHE_ENABLED=0 when evaluating a baseline.
+        """
+        # LOCAL PATCH: P23 use Hermes' existing serialized callback lane.
+        if not self._beam or self._agent_context in self._skip_contexts or not self._prefetch_cache_enabled():
+            return
+        self._ensure_prefetch_state()
+        with self._prefetch_cache_lock:
+            self._prefetch_stats["queued"] += 1
+        self.prefetch(query, session_id=session_id)
 
     def _ensure_sync_turn_telemetry(self) -> None:
         """Initialize sync_turn telemetry for tests that construct via __new__."""
@@ -2516,8 +3060,29 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     SYNC_TOOL_MESSAGE_LIMIT = 5
     SYNC_TOOL_MESSAGE_CHAR_LIMIT = 2000
 
+    # LOCAL PATCH: P24 keep the actual per-turn writer bounded and distinct
+    # from initialization-time user_id/agent_identity.
+    @staticmethod
+    def _normalize_turn_author(author: Any) -> Dict[str, Any]:
+        if not isinstance(author, dict):
+            return {}
+        normalized: Dict[str, Any] = {}
+        author_id = author.get("id", author.get("author_id"))
+        author_name = author.get("name", author.get("author_name"))
+        is_bot = author.get("is_bot", author.get("author_is_bot"))
+        if author_id is not None and str(author_id).strip():
+            normalized["id"] = str(author_id).strip()[:200]
+        if author_name is not None and str(author_name).strip():
+            normalized["name"] = str(author_name).strip()[:200]
+        if isinstance(is_bot, bool):
+            normalized["is_bot"] = is_bot
+        return normalized
+
+    # LOCAL PATCH: P24 accept Hermes API-v2 per-turn speaker metadata while
+    # keeping older managers compatible (they omit this optional keyword).
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "",
-                  messages: Optional[List[Dict[str, Any]]] = None) -> None:
+                  messages: Optional[List[Dict[str, Any]]] = None,
+                  turn_author: Optional[Dict[str, Any]] = None) -> None:
         """Persist the turn to Mnemosyne episodic memory.
 
         LOCAL PATCH (F1): `messages` is accepted. Hermes only passes the full
@@ -2530,6 +3095,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         """
         if not self._beam or self._agent_context in self._skip_contexts:
             return
+        author = self._normalize_turn_author(
+            turn_author if turn_author is not None else getattr(self, "_current_turn_author", {})
+        )
         started = time.perf_counter()
         self._ensure_sync_turn_telemetry()
         with self._sync_turn_lock:
@@ -2554,8 +3122,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         importance=0.5,
                         scope=self._default_scope,
                         extract_entities=True,
+                        metadata={"turn_author": author} if author else {},
                     )
-                    self._capture_identity_signals(user_content)
+                    self._capture_identity_signals(user_content, turn_author=author)
                 if "assistant" in self._sync_roles and assistant_content and len(assistant_content) > 10 and not self._should_filter(assistant_content):
                     assistant_limit = _sync_turn_assistant_limit()
                     ac = assistant_content[:assistant_limit] if assistant_limit > 0 else assistant_content
@@ -2565,6 +3134,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         importance=0.15,
                         scope=self._default_scope,
                         extract_entities=True,
+                        metadata={"turn_author": author} if author else {},
                     )
                 if "tool" in self._sync_roles and messages:
                     # LOCAL PATCH (F1): store the tool/function turns that the
@@ -2582,7 +3152,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             source="conversation_tool",
                             importance=0.2,
                             scope=self._default_scope,
-                            metadata={"role": str(m.get("role")), "name": m.get("name")},
+                            metadata={
+                                "role": str(m.get("role")),
+                                "name": m.get("name"),
+                                **({"turn_author": author} if author else {}),
+                            },
                         )
             self._turn_count += 1
             if self._auto_sleep_enabled and self._turn_count % 10 == 0:
@@ -2635,8 +3209,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         "i don't know how to",
     ]
 
-    def _capture_identity_signals(self, user_content: str) -> None:
+    # LOCAL PATCH: P24 retain the caller's current-turn speaker on global
+    # identity facts; no process-level startup identity is substituted.
+    def _capture_identity_signals(
+        self,
+        user_content: str,
+        *,
+        turn_author: Optional[Dict[str, Any]] = None,
+    ) -> None:
         content_lower = user_content.lower()
+        author = self._normalize_turn_author(
+            turn_author if turn_author is not None else getattr(self, "_current_turn_author", {})
+        )
         for signal in self._IDENTITY_SIGNALS:
             if signal in content_lower:
                 # Save identity memory with high importance for durable recall
@@ -2646,6 +3230,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     importance=0.85,
                     scope="global",
                     veracity="stated",
+                    # LOCAL PATCH: P24 retain per-turn speaker provenance on
+                    # identity captures without changing visibility scope.
+                    metadata={"turn_author": author} if author else {},
                 )
                 break  # One identity memory per turn
 
@@ -3939,6 +4526,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         with self._ensure_beam_access_lock():
             result = run_diagnostics(**diagnostic_kwargs)
             result["sync_turn"] = self._sync_turn_diagnostics()
+            # LOCAL PATCH: P23 expose only timings, counts, cache state and
+            # output size; prefetch telemetry never includes query or memory text.
+            result["prefetch"] = self._prefetch_cache_snapshot()
 
             active_db = None
             try:
@@ -4038,8 +4628,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             "weight": weight,
         })
 
+    # LOCAL PATCH: P24 capture the current speaker on every turn; never infer a
+    # group-chat author from initialization-time user_id or agent_identity.
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         self._turn_count = turn_number
+        author = kwargs.get("turn_author")
+        if not isinstance(author, dict):
+            author = {
+                "id": kwargs.get("author_id"),
+                "name": kwargs.get("author_name"),
+                "is_bot": kwargs.get("author_is_bot"),
+            }
+        self._current_turn_author = self._normalize_turn_author(author)
 
     # LOCAL PATCH (P17): keep per-transcript counters separate from the stable memory namespace.
     def on_session_switch(
@@ -4059,14 +4659,26 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 self._reflect_calls_this_session = 0
 
     # LOCAL PATCH (P17): compression context is bounded; the host swallows callback errors.
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """Return bounded user/assistant excerpts; optionally checkpoint them locally.
+    # LOCAL PATCH: P24 API v2 writes the complete normalized evidence as an
+    # idempotent durable archive. Old Hermes releases continue through the
+    # bounded legacy excerpt/checkpoint path below.
+    def on_pre_compress(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        require_checkpoint: bool = False,
+    ) -> str:
+        """Return a bounded excerpt and preserve compression evidence.
 
-        ``require_checkpoint`` makes this provider method raise on failure, but
-        Hermes 0.18.2/0.19.0 catch hook exceptions in MemoryManager and continue
-        compression. It is therefore a best-effort checkpoint signal, not a
-        process-level fail-closed guarantee.
+        Hermes checkpoint API v2 always archives the full normalized evidence
+        durably before returning. Older hosts retain the legacy behavior:
+        snapshots are opt-in through ``memory.mnemosyne.require_checkpoint``,
+        and those managers may swallow hook errors while compression proceeds.
         """
+        if self.pre_compress_checkpoint_api_version >= 2:
+            self._write_full_evidence_checkpoint(messages)
+            return self._format_compression_excerpt(messages)
+
         required_value = self._read_config_key("require_checkpoint")
         required = (
             required_value
@@ -4124,6 +4736,100 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             lines.append(f"[{item['role']}] {text}")
             remaining -= len(text)
         return "\n".join(lines)
+
+    def _format_compression_excerpt(self, messages: Any) -> str:
+        """Build the bounded summary-prompt excerpt from normalized evidence."""
+        if not isinstance(messages, list):
+            return ""
+        excerpt: List[Dict[str, str]] = []
+        for item in messages[-self.COMPRESS_CONTEXT_MAX_MESSAGES:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or item.get("speaker") or "evidence").strip()[:40]
+            content = item.get("content", item.get("text"))
+            if not isinstance(content, str) or not content.strip():
+                continue
+            excerpt.append({"role": role, "content": content.strip()})
+        remaining = self.COMPRESS_CONTEXT_MAX_CHARS
+        lines = ["Mnemosyne pre-compression excerpts (conversation evidence; preserve useful facts):"]
+        for item in excerpt:
+            text = item["content"][:remaining]
+            if not text:
+                break
+            lines.append(f"[{item['role']}] {text}")
+            remaining -= len(text)
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _write_full_evidence_checkpoint(self, evidence: Any) -> Path:
+        """Durably archive all normalized evidence, deduplicated by content hash."""
+        if not isinstance(evidence, list) or any(not isinstance(item, dict) for item in evidence):
+            raise CheckpointError("API-v2 checkpoint requires a list of normalized evidence records")
+        home = str(getattr(self, "_hermes_home", "") or "").strip()
+        session_id = str(getattr(self, "_current_session_id", "") or "").strip()
+        if not home or not session_id:
+            raise CheckpointError("API-v2 checkpoint lacks Hermes home or session")
+        temp_path: Optional[str] = None
+        try:
+            normalized = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            evidence_digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+            session_digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+            directory = Path(home) / "mnemosyne" / "checkpoints"
+            target = directory / f"{session_digest}-{evidence_digest}.json"
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if directory.is_symlink():
+                raise OSError("checkpoint directory must not be a symlink")
+            if os.name != "nt":
+                os.chmod(directory, 0o700)
+            payload = {
+                "version": 2,
+                "session_id_sha256": session_digest,
+                "evidence_sha256": evidence_digest,
+                "evidence_messages": evidence,
+            }
+            serialized = json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8") + b"\n"
+            if target.exists():
+                if target.is_symlink() or not target.is_file():
+                    raise OSError("existing checkpoint must be a regular file")
+                if target.read_bytes() == serialized:
+                    if os.name != "nt":
+                        dir_fd = os.open(directory, os.O_RDONLY)
+                        try:
+                            os.fsync(dir_fd)
+                        finally:
+                            os.close(dir_fd)
+                    return target
+                raise OSError("existing checkpoint differs from normalized evidence")
+            fd, temp_path = tempfile.mkstemp(prefix=f".{session_digest}.", suffix=".tmp", dir=directory)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(serialized)
+                stream.flush()
+                os.fsync(stream.fileno())
+            # Hard-link publication is no-clobber and makes concurrent retries
+            # idempotent; the temporary inode already contains fsynced bytes.
+            try:
+                os.link(temp_path, target)
+            except FileExistsError:
+                if target.is_symlink() or not target.is_file() or target.read_bytes() != serialized:
+                    raise OSError("concurrent checkpoint differs from normalized evidence")
+            os.unlink(temp_path)
+            temp_path = None
+            if os.name != "nt":
+                dir_fd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            return target
+        except Exception as exc:
+            raise CheckpointError("API-v2 normalized evidence checkpoint could not be written") from exc
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
     def _write_compression_checkpoint(self, messages: List[Dict[str, str]]) -> Path:
         """Atomically replace this Hermes session's bounded local checkpoint."""
@@ -4240,21 +4946,275 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         MemoryManager._provider_memory_write_metadata_mode); upstream dropped it
         silently.
         """
-        if not self._beam or action not in ("add", "replace"):
+        # LOCAL PATCH: P24 use previous_content or an explicit native entry id
+        # to retire only a durable, provider-owned mirror association.
+        if not self._beam or action not in ("add", "replace", "remove"):
             return
+        if target not in {"memory", "user"}:
+            logger.warning("Mnemosyne native-memory mirror ignored unknown target %r", target)
+            return
+        details = dict(metadata or {})
+        native_entry_id = details.get("native_entry_id") or details.get("entry_id")
+        native_entry_id = str(native_entry_id).strip()[:200] if native_entry_id else None
+        hermes_session_id = str(
+            details.get("session_id") or getattr(self, "_current_session_id", "") or ""
+        ).strip()[:200]
+        previous_content = details.get("previous_content")
+        if action == "remove":
+            with self._ensure_beam_access_lock():
+                retired = self._retire_native_mirror(
+                    target=target,
+                    hermes_session_id=hermes_session_id,
+                    native_entry_id=native_entry_id,
+                    previous_content=previous_content if isinstance(previous_content, str) else None,
+                )
+            if not retired:
+                logger.warning(
+                    "Mnemosyne could not retire native %s mirror for target=%s session=%s: "
+                    "no exact owned mapping was available",
+                    action, target, hermes_session_id or "unknown",
+                )
+            return
+        if not isinstance(content, str) or not content.strip():
+            return
+        recorded = False
         try:
             scope = "global" if target == "user" else "session"
             # LOCAL PATCH: P19 mirror writes cannot commit an in-flight turn's transaction.
             with self._ensure_beam_access_lock():
-                self._beam.remember(
-                    content=content,
+                mirror_metadata = dict(details)
+                mirror_metadata["hermes_native_mirror"] = {
+                    "target": target,
+                    "session_id": hermes_session_id,
+                    "entry_id": native_entry_id,
+                    "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                }
+                # LOCAL PATCH: P24 keep native mirrors distinct from equal-text
+                # user-authored engine rows; remember() dedupes by content.
+                stored_content = self._native_mirror_content(target, content)
+                memory_id = self._beam.remember(
+                    content=stored_content,
                     source=f"builtin_memory_{target}",
                     importance=0.7 if target == "user" else 0.5,
                     scope=scope,
-                    metadata=dict(metadata or {}),
+                    metadata=mirror_metadata,
+                )
+                recorded = self._record_native_mirror(
+                    target=target,
+                    hermes_session_id=hermes_session_id,
+                    native_entry_id=native_entry_id,
+                    content=content,
+                    memory_id=memory_id,
                 )
         except Exception as e:
             logger.debug("Mnemosyne mirror write failed: %s", e)
+            return
+        # LOCAL PATCH: P24 retain the previous evidence until the replacement
+        # and its durable mapping both succeed. Identical-content replacements
+        # are already represented by the existing engine row.
+        if action == "replace" and recorded and (
+            (isinstance(previous_content, str) and previous_content != content)
+            or (previous_content is None and native_entry_id)
+        ):
+            with self._ensure_beam_access_lock():
+                retired = self._retire_native_mirror(
+                    target=target,
+                    hermes_session_id=hermes_session_id,
+                    native_entry_id=native_entry_id,
+                    previous_content=(
+                        previous_content if isinstance(previous_content, str) else None
+                    ),
+                    replacement_id=str(memory_id) if memory_id else None,
+                    exclude_memory_id=(
+                        str(memory_id)
+                        if not isinstance(previous_content, str) and memory_id
+                        else None
+                    ),
+                )
+            if not retired:
+                logger.warning(
+                    "Mnemosyne replacement was added but prior native mirror could not be retired "
+                    "for target=%s session=%s",
+                    target, hermes_session_id or "unknown",
+                )
+
+    # LOCAL PATCH: P24 persist exact native-to-engine ownership in the same
+    # SQLite database. User memories are global to the configured database;
+    # session-scoped Hermes ids must not prevent their later retirement.
+    def _native_mirror_connection(self):
+        beam = getattr(self, "_beam", None)
+        conn = getattr(beam, "conn", None)
+        if conn is None:
+            return None
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mnemosyne_hermes_native_mirror_mappings ("
+            "mapping_id TEXT PRIMARY KEY, target TEXT NOT NULL, source TEXT NOT NULL, "
+            "hermes_session_id TEXT NOT NULL, owner_id TEXT NOT NULL, native_entry_id TEXT, "
+            "content_sha256 TEXT NOT NULL, engine_memory_id TEXT NOT NULL)"
+        )
+        return conn
+
+    def _native_mirror_owner_id(self) -> str:
+        """Return the canonical database and profile owner for native mirrors."""
+        db_path = getattr(getattr(self, "_beam", None), "db_path", None)
+        if not db_path:
+            return ""
+        path = os.path.realpath(os.path.abspath(os.path.expanduser(str(db_path))))
+        profile_owner = self._canonical_owner()
+        return json.dumps([os.path.normcase(path), profile_owner], separators=(",", ":"))
+
+    @staticmethod
+    def _native_mirror_content(target: str, content: str) -> str:
+        marker = "[HERMES NATIVE USER]" if target == "user" else "[HERMES NATIVE MEMORY]"
+        return f"{marker}\n{content}"
+
+    def _record_native_mirror(
+        self,
+        *,
+        target: str,
+        hermes_session_id: str,
+        native_entry_id: Optional[str],
+        content: str,
+        memory_id: Any,
+    ) -> bool:
+        if not memory_id:
+            logger.warning("Mnemosyne native mirror returned no durable memory id for target=%s", target)
+            return False
+        try:
+            conn = self._native_mirror_connection()
+            if conn is None:
+                logger.warning("Mnemosyne native mirror has no durable mapping connection")
+                return False
+            owner_id = self._native_mirror_owner_id()
+            if not owner_id:
+                logger.warning("Mnemosyne native mirror has no canonical database owner")
+                return False
+            source = f"builtin_memory_{target}"
+            content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            association = json.dumps(
+                [target, source, owner_id, hermes_session_id, native_entry_id, content_digest, str(memory_id)],
+                ensure_ascii=False, separators=(",", ":"),
+            )
+            mapping_id = hashlib.sha256(association.encode("utf-8")).hexdigest()
+            conn.execute(
+                "INSERT OR IGNORE INTO mnemosyne_hermes_native_mirror_mappings "
+                "(mapping_id, target, source, hermes_session_id, owner_id, native_entry_id, content_sha256, engine_memory_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    mapping_id, target, source, hermes_session_id, owner_id,
+                    native_entry_id, content_digest, str(memory_id),
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception as exc:
+            logger.warning("Mnemosyne native mirror mapping could not be persisted: %s", type(exc).__name__)
+            return False
+
+    def _retire_native_mirror(
+        self,
+        *,
+        target: str,
+        hermes_session_id: str,
+        native_entry_id: Optional[str],
+        previous_content: Optional[str],
+        replacement_id: Optional[str] = None,
+        exclude_memory_id: Optional[str] = None,
+    ) -> bool:
+        try:
+            conn = self._native_mirror_connection()
+            if conn is None:
+                return False
+            source = f"builtin_memory_{target}"
+            owner_id = self._native_mirror_owner_id()
+            if not owner_id:
+                return False
+            if previous_content is not None:
+                digest = hashlib.sha256(previous_content.encode("utf-8")).hexdigest()
+                if target == "user":
+                    identity_clause = " AND native_entry_id=?" if native_entry_id else " AND native_entry_id IS NULL"
+                    params = [target, source, owner_id, digest]
+                    if native_entry_id:
+                        params.append(native_entry_id)
+                    rows = conn.execute(
+                        "SELECT mapping_id, engine_memory_id FROM mnemosyne_hermes_native_mirror_mappings "
+                        "WHERE target=? AND source=? AND owner_id=? "
+                        "AND content_sha256=?" + identity_clause,
+                        params,
+                    ).fetchall()
+                elif hermes_session_id:
+                    identity_clause = " AND native_entry_id=?" if native_entry_id else " AND native_entry_id IS NULL"
+                    params = [target, source, owner_id, hermes_session_id, digest]
+                    if native_entry_id:
+                        params.append(native_entry_id)
+                    rows = conn.execute(
+                        "SELECT mapping_id, engine_memory_id FROM mnemosyne_hermes_native_mirror_mappings "
+                        "WHERE target=? AND source=? AND owner_id=? "
+                        "AND hermes_session_id=? AND content_sha256=?" + identity_clause,
+                        params,
+                    ).fetchall()
+                else:
+                    return False
+            elif native_entry_id and target == "user":
+                exclude_clause = " AND engine_memory_id<>?" if exclude_memory_id else ""
+                rows = conn.execute(
+                    "SELECT mapping_id, engine_memory_id FROM mnemosyne_hermes_native_mirror_mappings "
+                    "WHERE target=? AND source=? AND owner_id=? AND native_entry_id=?"
+                    + exclude_clause,
+                    (target, source, owner_id, native_entry_id)
+                    + ((exclude_memory_id,) if exclude_memory_id else ()),
+                ).fetchall()
+            elif native_entry_id and hermes_session_id:
+                exclude_clause = " AND engine_memory_id<>?" if exclude_memory_id else ""
+                rows = conn.execute(
+                    "SELECT mapping_id, engine_memory_id FROM mnemosyne_hermes_native_mirror_mappings "
+                    "WHERE target=? AND source=? AND owner_id=? "
+                    "AND hermes_session_id=? AND native_entry_id=?"
+                    + exclude_clause,
+                    (target, source, owner_id, hermes_session_id, native_entry_id)
+                    + ((exclude_memory_id,) if exclude_memory_id else ()),
+                ).fetchall()
+            else:
+                return False
+            if not rows:
+                return False
+            # LOCAL PATCH: P24 invalidate exact mapped ids. The engine applies
+            # its visibility rules and expiry semantics to working and episodic
+            # rows, including global rows from an earlier provider session.
+            removed = False
+            selected_by_memory = {}
+            for mapping_id, memory_id in rows:
+                selected_by_memory.setdefault(str(memory_id), []).append(str(mapping_id))
+            for memory_id, mapping_ids in selected_by_memory.items():
+                placeholders = ",".join("?" for _ in mapping_ids)
+                other_associations = conn.execute(
+                    "SELECT COUNT(*) FROM mnemosyne_hermes_native_mirror_mappings "
+                    "WHERE target=? AND source=? AND owner_id=? AND engine_memory_id=? "
+                    f"AND mapping_id NOT IN ({placeholders})",
+                    (target, source, owner_id, memory_id, *mapping_ids),
+                ).fetchone()[0]
+                if other_associations:
+                    conn.executemany(
+                        "DELETE FROM mnemosyne_hermes_native_mirror_mappings WHERE mapping_id=?",
+                        ((mapping_id,) for mapping_id in mapping_ids),
+                    )
+                    removed = True
+                    continue
+                invalidate = getattr(self._beam, "invalidate", None)
+                if not callable(invalidate):
+                    logger.warning("Mnemosyne engine has no exact-id invalidation API")
+                    continue
+                if invalidate(memory_id, replacement_id=replacement_id):
+                    removed = True
+                    conn.executemany(
+                        "DELETE FROM mnemosyne_hermes_native_mirror_mappings WHERE mapping_id=?",
+                        ((mapping_id,) for mapping_id in mapping_ids),
+                    )
+            conn.commit()
+            return removed
+        except Exception as exc:
+            logger.warning("Mnemosyne native mirror retirement failed: %s", type(exc).__name__)
+            return False
 
     # Bounded drain for either consolidation trigger. If it overruns, the worker
     # unregisters the host backend after finishing, preserving LLM inheritance.

@@ -159,6 +159,19 @@ plugin-discovery and provider contracts are reviewed.
 
 ## Uninstall
 
+Native Windows also has [`install.ps1`](../../install.ps1): use `-DryRun` to
+inspect, `-Yes` to install, and `-Uninstall` with optional `-Purge` to remove.
+It uses a provenance-verified copy. Newer Hermes PM installations admit the
+plugin's declared pinned dependencies through `hermes pm install`; the legacy
+manual uv instructions above apply to unmanaged environments.
+
+Automatic context is capped at 8,000 characters by default and excludes raw
+tool/delegation transcripts. Exact-query warming/cache is experimental and
+opt-in. Native memory corrections retire only explicitly owned mirrors.
+Advanced controls and the version boundary for newer hooks are documented in
+the [configuration reference](../../docs/HERMES_CONFIGURATION.md); verification
+includes the [public-prefetch evaluation](../../bench/HERMES_PREFETCH_RESULTS.md).
+
 ```bash
 ./install.sh --uninstall          # remove provider link/package; keep engine and data
 ./install.sh --uninstall --purge  # also remove engine + $HERMES_HOME/mnemosyne

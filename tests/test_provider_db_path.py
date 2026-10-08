@@ -306,7 +306,9 @@ def test_memory_write_cannot_commit_a_failed_background_turn():
     _, rows = _during_failed_sync(
         lambda provider: provider.on_memory_write("add", "user", "durable mirror")
     )
-    assert rows == [{"content": "durable mirror"}], "mirror committed another turn's transaction"
+    assert rows == [{"content": "[HERMES NATIVE USER]\ndurable mirror"}], (
+        "mirror committed another turn's transaction"
+    )
 
 
 def test_identity_prefetch_waits_for_background_transaction():

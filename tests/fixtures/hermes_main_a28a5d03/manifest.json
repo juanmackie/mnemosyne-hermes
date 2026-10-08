@@ -1,0 +1,14 @@
+{
+  "upstream_commit": "a28a5d03a9fa60418db5f44f3436fa2aa029c8f2",
+  "files": {
+    "backup_sqlite.py": {
+      "sha256": "58c6270c9b1cbfd60e887bd87f94db45c85c6a43d7ea5cc0dfa806fec03a3363"
+    },
+    "memory_manager_checkpoint.py": {
+      "sha256": "9bb5ff272baa0622cdc39789b249a0e4f54d6a96d79174b7b3c882a1201e8ebd"
+    },
+    "LICENSE.upstream": {
+      "sha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6"
+    }
+  }
+}

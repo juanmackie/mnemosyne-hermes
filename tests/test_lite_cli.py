@@ -153,6 +153,75 @@ def test_restore_refuses_a_non_store_and_leaves_the_destination_alone():
         assert _contents(db) == ["keep me"]
 
 
+def test_restore_refuses_foreign_destination_byte_identically():
+    """A valid backup must not turn a mistyped engine path into a lite store."""
+    with tempfile.TemporaryDirectory() as d:
+        source = pathlib.Path(d) / "source.db"
+        destination = pathlib.Path(d) / "engine-like.db"
+        assert _run(["--db-path", str(source), "init"])[0] == 0
+        assert _run(["--db-path", str(source), "remember", "--content", "restore me"])[0] == 0
+        _foreign_store(str(destination))
+        before = destination.read_bytes()
+
+        code, _, err = _run(
+            ["--db-path", str(destination), "restore", "--backup", str(source), "--yes"]
+        )
+
+        assert code == 1, (code, err)
+        assert "not a Mnemosyne store" in err, err
+        assert destination.read_bytes() == before, "foreign destination was overwritten"
+        assert not list(pathlib.Path(d).glob("engine-like.db.pre-restore.*"))
+
+
+def test_restore_refuses_corrupt_and_newer_destinations_byte_identically():
+    """Preflight refuses unreadable or newer destinations before making a safety copy."""
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        source = root / "source.db"
+        assert _run(["--db-path", str(source), "init"])[0] == 0
+        assert _run(["--db-path", str(source), "remember", "--content", "restore me"])[0] == 0
+
+        corrupt = root / "corrupt.db"
+        corrupt.write_bytes(b"not sqlite")
+        newer = root / "newer.db"
+        with contextlib.closing(sqlite3.connect(newer)) as conn:
+            conn.execute("PRAGMA user_version=999")
+        for destination in (corrupt, newer):
+            before = destination.read_bytes()
+            code, _, err = _run(
+                ["--db-path", str(destination), "restore", "--backup", str(source), "--yes"]
+            )
+            assert code == 1, (destination.name, code, err)
+            assert destination.read_bytes() == before, f"{destination.name} was modified"
+            assert not list(root.glob(destination.name + ".pre-restore.*"))
+
+
+def test_restore_refuses_locked_destination_without_traceback_or_changes():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        source = root / "source.db"
+        destination = root / "locked.db"
+        assert _run(["--db-path", str(source), "init"])[0] == 0
+        with contextlib.closing(sqlite3.connect(destination)) as setup:
+            setup.execute("PRAGMA journal_mode=DELETE")
+            setup.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT)")
+        before = destination.read_bytes()
+
+        lock = sqlite3.connect(destination, timeout=0)
+        try:
+            lock.execute("BEGIN EXCLUSIVE")
+            code, _, err = _run(
+                ["--db-path", str(destination), "restore", "--backup", str(source), "--yes"]
+            )
+            assert code == 1, (code, err)
+            assert "could not inspect" in err and "locked" in err.lower(), err
+            assert destination.read_bytes() == before, "locked destination was modified"
+            assert not list(root.glob("locked.db.pre-restore.*"))
+        finally:
+            lock.rollback()
+            lock.close()
+
+
 def test_restore_needs_confirmation_and_yes_skips_it():
     with tempfile.TemporaryDirectory() as d:
         db = str(pathlib.Path(d) / "memory.db")
@@ -235,6 +304,8 @@ def test_restore_v2_backup_preserves_source_and_leaves_no_staging_files():
         source = pathlib.Path(d) / "v2.db"
         dest = pathlib.Path(d) / "restored.db"
         with contextlib.closing(sqlite3.connect(source)) as conn:
+            conn.executescript((ROOT / "tests/fixtures/lite-v2.sql").read_text(encoding="utf-8"))
+        with contextlib.closing(sqlite3.connect(dest)) as conn:
             conn.executescript((ROOT / "tests/fixtures/lite-v2.sql").read_text(encoding="utf-8"))
         before = source.read_bytes()
         code, _, err = _run(["--db-path", str(dest), "restore", "--backup", str(source), "--yes"])

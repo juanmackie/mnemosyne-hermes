@@ -22,8 +22,15 @@ never pollutes the timings. It prints `METRIC name=value` lines and exits
 non-zero if recall semantics change:
 
 - `assert_ok` — 7 hits for `xylophone`, 2 for the phrase, 0 for the miss
-- `search_p50_ms`, `search_p99_ms` — median / tail over all shapes (60 reps each)
-- `q0_p50_ms` … `q5_p99_ms` — per-shape median and tail
+- `memo_hit_search_p50_ms`, `memo_hit_search_p99_ms` — repeated calls served by
+  the per-thread recall memo, across all six shapes
+- `sql_miss_search_p50_ms`, `sql_miss_search_p99_ms` — the same shapes with
+  that query's memo entry evicted before every timed call; this includes SQL,
+  row decoding, result copies and normal buffered access accounting
+- `memo_hit_q0_p50_ms` … `memo_hit_q5_p99_ms` and
+  `sql_miss_q0_p50_ms` … `sql_miss_q5_p99_ms` — per-shape medians and tails
+- `search_p50_ms`, `search_p99_ms`, `q0_p50_ms` … `q5_p99_ms` — retained
+  aliases for memo-hit metrics so existing consumers keep working
 
 The same run also reports cold-store metrics from three fresh databases, each
 with 5000 writes:
@@ -45,19 +52,24 @@ measurements, not a guarantee about storage hardware or filesystem cache state.
 
 ## Recorded result
 
-Measured on the dev host (Windows, Python 3.11) with `AR_RUNS=5`, after recall
-moved to FTS5 (see below). Median of five invocations:
+Measured on the dev host (Windows, Python 3.11). Median of four consecutive
+invocations against the already-built corpus:
 
-| metric | value |
-| --- | --- |
-| `search_p50_ms` | 0.0058 |
-| `search_p99_ms` | 0.444 |
-| `assert_ok` | 1 |
+| path | p50 | p99 |
+| --- | --- | --- |
+| memo hits, all shapes | 0.0052 ms | 0.1882 ms |
+| forced SQL misses, all shapes | 0.2938 ms | 3.6348 ms |
+| SQL miss, q0 common + namespace | 1.8605 ms | 4.2326 ms |
+| SQL miss, q5 wide 50 results | 2.4082 ms | 3.8425 ms |
 
-Two single invocations during the same session gave p50 0.0053 and 0.0083 — a
-56% spread, which is why the number above is a median and why a single run is
-not a result. The p99 tail is dominated by shape 5 (wide, `max_results=50`),
-where BM25 has to rank every match before the `LIMIT`.
+All four runs reported `assert_ok=1`. These are local measurements; SQLite and
+filesystem cache state affect them. The gap between memo hits and SQL misses is
+why the harness reports the paths separately. The original `search_*` values
+measured memo hits only, despite their generic names.
+
+The widest query shape has the highest SQL-miss median. Its BM25 ranking and
+deterministic tie-break still require sorting the matching rows before the
+`LIMIT`; the benchmark makes that query cost visible separately from memo hits.
 
 ### What changed, and what the old number meant
 
@@ -71,16 +83,16 @@ was shared across threads and produced a cross-thread staleness bug.
 The current implementation replaces the substring scan with an FTS5 index and
 BM25 ranking. That removes the text snapshot entirely (the index is external
 content, so the corpus is not duplicated) and leaves one cache: the per-thread
-recall memo, which only holds rows a thread actually asked for. The p50 is
-within the noise band of the old claim; the honest reading is "about the same
-p50, less memory, real relevance ranking, one fewer cache", not a speed-up.
+recall memo, which only holds rows a thread actually asked for. The old
+0.0058 ms p50 was a memo-hit result, not a measurement of FTS search latency.
 
 Ranking is no longer `importance DESC, created_at DESC`: it is `bm25`, then
 that chain as the tie-break, then `id` so a `LIMIT` is deterministic.
 
 ## Scope
 
-- Editable: `src/mnemosyne_lite/storage.py` — the recall path.
-- Not the target: this harness. Editing the instrument to improve the number is
-  not a result.
+- `src/mnemosyne_lite/storage.py` owns recall semantics and the storage path.
+- This harness reports memo-hit and SQL-miss paths separately; do not compare a
+  new result against an older generic `search_*` number without checking which
+  path it represents.
 - Contract-frozen: namespace semantics, DB path, tool names, `integrations/`.

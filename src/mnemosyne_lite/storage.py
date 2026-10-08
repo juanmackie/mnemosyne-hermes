@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import pathlib
 import re
 import sqlite3
 import threading
@@ -229,6 +230,33 @@ class PythonMemoryStorage:
         self._fold_now = threading.Event()
         self._committed_writes = 0
         self._init_schema_resilient()
+
+    @classmethod
+    def validate_existing_file(cls, db_path: str) -> tuple[str, int]:
+        """Classify an existing database without changing its bytes.
+
+        Restore uses this before replacing a destination. Constructing a normal
+        storage object here would migrate or initialize the file, which would
+        defeat the purpose of a preflight check.
+        """
+        candidate = cls.__new__(cls)
+        candidate.db_path = db_path
+        try:
+            uri = pathlib.Path(db_path).resolve().as_uri() + "?mode=ro"
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise StorageError(f"could not inspect {db_path}: {exc}") from exc
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=cls.CLASSIFY_BUSY_TIMEOUT_MS / 1000)
+        except sqlite3.Error as exc:
+            raise StorageError(f"could not inspect {db_path}: {exc}") from exc
+        try:
+            return candidate._classify_schema(conn)
+        except StorageError:
+            raise
+        except sqlite3.Error as exc:
+            raise StorageError(f"could not inspect {db_path}: {exc}") from exc
+        finally:
+            conn.close()
 
     @property
     def _recall_cache(self):

@@ -18,9 +18,12 @@ run() {
 }
 
 run bash scripts/check_version_drift.sh
+run "${PYTHON_BIN:-python3}" tests/test_vendored_provider.py
+run "${PYTHON_BIN:-python3}" -m pytest tests/test_install.py -q
 run "${PYTHON_BIN:-python3}" tests/test_engine_patches.py
 run "${PYTHON_BIN:-python3}" tests/test_engine_recall_perf.py
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_consolidation.py -q
+run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_prefetch.py tests/test_provider_lifecycle.py tests/test_provider_eval.py tests/test_install_powershell.py -q
 run "${PYTHON_BIN:-python3}" scripts/check_engine_contract.py
 
 if [ "$failed" -gt 0 ]; then

@@ -263,6 +263,12 @@ def cmd_restore(args):
         print(f"ERROR: backup not found: {backup_path}", file=sys.stderr)
         return 1
     dest = os.path.expanduser(resolve_db_path(getattr(args, "db_path", None)))
+    if os.path.exists(dest):
+        try:
+            PythonMemoryStorage.validate_existing_file(dest)
+        except StorageError as e:
+            print(f"ERROR: restore destination is not a Mnemosyne store: {e}", file=sys.stderr)
+            return 1
     dest_dir = os.path.dirname(dest)
     if dest_dir:
         try:

@@ -54,7 +54,7 @@ behavior are tested separately by the onboarding lane.
 | `sync_turn(user, assistant, *, session_id, messages)` | concrete | overridden with optional `messages`; opted-in tool turns are stored (F1 addressed by P5) |
 | `on_memory_write(action, target, content, metadata=None)` | concrete | overridden with `metadata=None`; metadata reaches the engine write (F2 addressed by P6) |
 | `on_pre_compress`, `on_session_switch`, `on_delegation` | concrete | implemented locally (P16/P17); checkpoint failure cannot abort host compression because Hermes catches hook exceptions (F3) |
-| `backup_paths` | concrete | ABC default retained; Hermes backup already covers the default in-home DB, but not external DB paths (F4) |
+| `backup_paths` | concrete | P24 resolves the configured path without initialization; Hermes can include eligible paths within the OS user's home (F4) |
 
 All four abstract members are implemented with matching signatures, so the class
 is instantiable by the loader. The gaps below are all in optional hooks and are
@@ -82,6 +82,14 @@ mirror write (`source=f"builtin_memory_{target}"`, hardcoded importance/scope).
 
 ### F3 — pre-compression callback cannot enforce fail-closed checkpoints
 
+P24 additionally implements the newer checkpoint API v2 **only when the host
+exports that capability**. It persists the complete normalized evidence before
+acknowledgment. Pinned current-main host tests exercise idempotence and failure
+propagation with `require_checkpoint=True`. This does not change the following
+0.18.2/0.19.0 limitation or widen published support: those managers still catch
+provider exceptions. Newer end-to-end failure enforcement also requires Hermes'
+`compression.checkpoint_required` policy.
+
 The provider now overrides `on_pre_compress` (P17): it returns bounded
 user/assistant excerpts for the compression prompt and optionally writes an
 atomic v1 checkpoint under `$HERMES_HOME/mnemosyne/checkpoints/` when
@@ -98,7 +106,7 @@ local, bounded (100 text messages / 256 KiB), atomic, stored in an owner-only
 `0700` POSIX directory with private temporary files, and keyed by a hash of the
 transcript session id; default behavior writes no snapshot.
 
-### F4 — `backup_paths()` is not overridden (documentation constraint, not a code fix)
+### F4 — backup discovery has an OS-home boundary (partially addressed by P24)
 
 `hermes_cli/backup.py:164` calls `backup_paths()` on a **freshly loaded,
 un-initialized** provider (explicitly "no network, no init"), so any patch
@@ -107,11 +115,51 @@ reading `self._beam.db_path` would return `[]` in practice. Worse, the caller
 (`skipped_external`), so declaring an out-of-home `MNEMOSYNE_DB_PATH` would not
 back it up anyway.
 
-Consequence to document rather than patch: the engine's default store,
+P24 now resolves DB precedence on a fresh, uninitialized provider without
+opening or creating the DB. It declares a relocated store outside
+`HERMES_HOME` when it is inside the OS user's home. The pinned host's SQLite
+snapshot helper is exercised against a committed WAL row and the restored
+database. Arbitrary paths outside the OS home remain intentionally excluded.
+
+The engine's default store,
 `$HERMES_HOME/mnemosyne/data/mnemosyne.db`, is inside `HERMES_HOME` and is
 already covered by `hermes backup`. A store relocated outside the home directory
 is **not** covered by `hermes backup` — that is a Hermes constraint
 (`backup_paths` can only carry in-home paths into `_external/`).
+
+## 2026-10-08 optimization compatibility addendum
+
+Published support remains Hermes 0.18.2 and 0.19.0; engine dependency remains
+`mnemosyne-memory[embeddings]>=3.15.1,<3.16`. Current-main source compatibility
+was checked at `a28a5d03a9fa60418db5f44f3436fa2aa029c8f2`, independently
+of the published-release smoke matrix. Newer author/status/identity/checkpoint
+hooks are additive or capability-gated, and do not replace legacy signatures.
+
+P23 bounds complete prefetch output, penalizes/classifies raw sources and
+excludes tool/delegation captures by default, describes only exposed tools,
+and makes exact-query caching experimental and opt-in. Cache visibility and
+write invalidation are regression-tested. Diagnostics preserve failures as
+sanitized classes/counts separately from legitimate empty recall.
+
+P24 persists native mirror ownership and uses authoritative entry metadata for
+correction/deletion. It accepts current-speaker provenance independently of
+visibility, reduces setup to four fields while retaining advanced reads,
+implements fresh-provider backup discovery and identity signatures, and
+archives API-v2 compression evidence durably. Historical unowned mirrors
+cannot be safely repaired automatically.
+
+P25 declares directory-plugin requirements for newer Hermes PM admission.
+Installers invoke the supported `hermes pm install` owner path instead of
+directly installing packages into a managed generation; legacy uv/pip flow is
+retained. The selected PM interpreter and engine hashes must verify before
+patching. Native Windows installation uses a verified copy with the same
+activation and registration checks. No live operator configuration or memory
+store was used in these checks.
+
+See [configuration](../../docs/HERMES_CONFIGURATION.md),
+[prefetch evaluation](../../bench/HERMES_PREFETCH_RESULTS.md), and the
+reproducible lifecycle/install suites. A live gateway run and real session cache
+hit-rate measurements remain outside this source/fixture audit.
 
 ### F5 — `register(ctx)` originally never registered the provider (fixed)
 

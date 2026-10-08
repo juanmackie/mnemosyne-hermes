@@ -254,6 +254,39 @@ the patched engine ID tools; disabled preserves session/global visibility.
 | Verification | `tests/test_provider_consolidation.py`: deterministic stalled-model regression fails against the previous snapshot; foreground sync/prefetch/recall proceed before inference is released. Real engine SQL tracing checks protected database operations alongside independent connections and write→read coherence. Lifecycle regressions cover duplicate triggers, state capture, shutdown, ownership and failure cleanup. |
 | Upstream | Not sent yet. The inference/database split follows the transferable background-work separation described in [Honcho research](../../docs/HONCHO_RESEARCH.md); no Honcho code or service dependency is imported. Requires the audited engine diffs in `../engine-patches/`. |
 
+### P23 — bounded, measurable automatic context
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (source classification, prompt instructions, prefetch, cache, diagnostics) |
+| Date | 2026-10-08 |
+| Reason | Raw tool/delegation rows could silently enter context as facts; total output had no aggregate ceiling; prompt advertised unavailable tools and incorrectly deprecated active native memory. |
+| Behaviour | Tool/delegation sources are raw and excluded from automatic injection by default; explicit capture/manual recall remain available. The complete block has an 8,000-character default ceiling, prioritizes identity, and marks truncation/omission. Instructions reflect configured tools and active native memory. PII-safe timings/counts/failures are available in diagnostics. An opt-in bounded exact-query cache keys visibility, DB generation and custom-source revisions; queue warming uses Hermes' existing serialized callback lane. |
+| Verification | `tests/test_provider_prefetch.py`, `tests/test_provider_eval.py`, and `bench/hermes_prefetch_eval.py` exercise public engine-backed output, cache coherence, output limits and synthetic relevance outcomes. |
+| Upstream | Not sent yet; preserve these declared changes during sync. |
+
+### P24 — native ownership and Hermes lifecycle compatibility
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (mirror ownership, setup schema, author provenance, backup/identity/status/compression hooks) |
+| Date | 2026-10-08 |
+| Reason | Native corrections retained stale mirrors; the setup wizard included advanced controls; eligible external stores were omitted from backup discovery; newer host lifecycle APIs were unsupported. |
+| Behaviour | Durable native-entry ownership permits exact retirement with authoritative entry metadata, preserving unrelated memories. The setup schema has four essentials while advanced reads remain compatible. Current-speaker metadata is separate from visibility. Fresh-provider backup discovery and identity signatures read configuration without DB initialization. Checkpoint API v2 is advertised only on capable hosts and archives full normalized evidence durably/idempotently; legacy compression remains best effort. Successful context can provide newer recall-status badges. |
+| Verification | `tests/test_provider_lifecycle.py` includes native ownership/restart, author capture, backup/WAL restore, capability gating and failure propagation through extracted pinned Hermes main methods. Fixtures identify the upstream source commit and hashes. This is distinct from a live gateway run. |
+| Upstream | Not sent yet; published Hermes release support and engine pin remain unchanged. |
+
+### P25 — directory-plugin dependency declaration
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/pyproject.toml` (new local metadata, no upstream wheel original) |
+| Date | 2026-10-08 |
+| Reason | Newer Hermes PM owns managed environments and requires directory plugins to declare dependencies for admission. |
+| Behaviour | Declare the unchanged audited engine pin inside the deployed plugin. Bash and native PowerShell installers deploy/verify it before invoking `hermes pm install`, then verify the selected generation and engine patch hashes. Legacy installation remains supported. The metadata is included in provider wheels and in `VENDORED_FROM.json`'s metadata hashes. |
+| Verification | Installer fixture suites, pin-drift gate, and `tests/test_vendored_provider.py`. |
+| Upstream | Local deployment metadata; preserve during provider sync. |
+
 Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 (they need a product decision, not a mechanical fix).
 

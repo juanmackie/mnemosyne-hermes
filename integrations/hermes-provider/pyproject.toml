@@ -41,4 +41,4 @@ ignore_errors = true
 ignore = ["hermes_memory_provider"]
 
 [tool.setuptools.package-data]
-hermes_memory_provider = ["plugin.yaml"]
+hermes_memory_provider = ["plugin.yaml", "pyproject.toml"]
