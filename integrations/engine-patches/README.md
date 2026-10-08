@@ -12,6 +12,20 @@ plugin discovery or Hermes configuration. The engine dependency range remains
 | `core-entities.py.patch` | Entity fuzzy-match keeps its exact match set with a content-aware pre-filter and a threshold-bounded banded Levenshtein: substring containment selects the loose prefix bound, other pairs are capped at length-ratio (disjoint alphabets score 0), and the surviving matrix aborts outside a Ukkonen band of ±max_dist. Long queries no longer fan out to hundreds of full Python matrices per recall. |
 | `core-memory.py.patch` | The wrapper reports BEAM update success. BEAM authorizes the mutation; an existing legacy mirror is updated through the same connection and deferred transaction. Missing legacy rows do not turn a successful BEAM edit into `not_found`; denied IDs and rolled-back edits emit no wrapper update event. |
 | `mcp_tools.py.patch` | An update with no fields returns a validation error before constructing a memory instance. |
+| `core-llm-conflict-detector.py.patch` | Optional consolidation lock coordination yields during conflict-model calls and retains protection for cost logging. |
+
+The BEAM diff also adds backward-compatible `sleep(..., db_lock=None)` for P22.
+The provider passes its foreground RLock: sleep holds it over SQLite operations
+and releases it only around model and embedding computations. Tier degradation
+computes summaries/vectors before opening its savepoint, then conditionally
+updates the unchanged row and preserves atomic content/vector rollback.
+Consolidation checks its source contents and claim markers after slow work;
+concurrently edited sources are requeued instead of producing stale summaries.
+Conflict validation rechecks both source contents before invalidation, and
+worker proposal writes reject stale vectors and enrichment after an intervening
+edit or deletion during embedding.
+Existing callers that omit `db_lock` continue to work. See
+[`tests/test_provider_consolidation.py`](../../tests/test_provider_consolidation.py).
 
 The runtime cross-session toggle now applies consistently to these ID tools
 and provider update/validation. With it disabled, another session's private
@@ -38,6 +52,12 @@ within the dependency range still needs its diffs and digests audited here.
 Application is idempotent. Verified originals are retained beside each source
 with the suffix `.mnemosyne-hermes-original`; source replacements are atomic,
 and an ordinary replacement failure rolls back previously replaced files.
+
+For a new patch revision, only explicitly recorded `previous_patched_sha256`
+digests can upgrade in place, and only with the hash-verified original backup.
+The updated full diff applies to that original; unknown local revisions remain
+refused before any source write. Re-run the installer to upgrade an existing
+audited installation, then restart the gateway and engine MCP processes.
 
 To restore the audited originals:
 

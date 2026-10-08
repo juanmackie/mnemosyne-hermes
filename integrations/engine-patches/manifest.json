@@ -4,9 +4,12 @@
   "files": {
     "core/beam.py": {
       "original_sha256": "00d79c0642a01b666473fd6e36749ed012802930ea8694eb24f3b17593a20aa0",
-      "patched_sha256": "a0f314151c3a79bb9712f2f871e35e501053e9ed92695b5bf7b301a779fa9eee",
+      "patched_sha256": "71c4d38b0c8147f3a016ff0c1a0a4b8f377700db6de4797a55328a64161bd5d0",
       "patch": "core-beam.py.patch",
-      "patch_sha256": "25b92e055d5bb1b677c4179bb2a8e4ee43ef6261847db8728a2a9757c7249f7c"
+      "patch_sha256": "b710c33572ee9875b42a990371be4f469508ce6569d77d3fc0c1d4f543ae6fc8",
+      "previous_patched_sha256": [
+        "a0f314151c3a79bb9712f2f871e35e501053e9ed92695b5bf7b301a779fa9eee"
+      ]
     },
     "core/entities.py": {
       "original_sha256": "a2fe3855ec6280e46f676b80c3364ab8917f4d3e59cfa5af7530815b395eaf6b",
@@ -25,6 +28,12 @@
       "patched_sha256": "8d540920eb006a9edbb2f7983572d68ee438a4257445159bf3eea664e738afcd",
       "patch": "mcp_tools.py.patch",
       "patch_sha256": "1b400601bd772a4167760e4323f3ba374a6979007ec4b2c3541eac6bb856870b"
+    },
+    "core/llm_conflict_detector.py": {
+      "original_sha256": "043cfde68ccaf4f23b41db5d04f0f31d5864c69bfb91ec19e1fb39ae73c5415c",
+      "patched_sha256": "59320e060ec8c4fc8fc14d1516831ed4771e7e587da5180232fcad66b1723fa3",
+      "patch": "core-llm-conflict-detector.py.patch",
+      "patch_sha256": "d321f10b744bdd984733fa075a09460a88a879d3f4049b00db54b1ebbb77f673"
     }
   }
 }

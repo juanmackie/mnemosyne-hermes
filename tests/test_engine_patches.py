@@ -132,6 +132,47 @@ def test_shipped_patch_digests():
         )
 
 
+def test_upgrade_from_previous_audited_patch_requires_original_backup():
+    with patch_fixture() as (package, patches):
+        applier.apply_patches(package)
+        manifest_path = patches / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        previous = b"value = 'new'\n"
+        updated = b"value = 'newer'\n"
+        original = b"value = 'old'\n"
+        for entry in manifest["files"].values():
+            entry["previous_patched_sha256"] = [applier.digest(previous)]
+            entry["patched_sha256"] = applier.digest(updated)
+            delta = "".join(
+                difflib.unified_diff(
+                    original.decode().splitlines(True),
+                    updated.decode().splitlines(True),
+                    fromfile="a/source.py",
+                    tofile="b/source.py",
+                )
+            ).encode()
+            (patches / entry["patch"]).write_bytes(delta)
+            entry["patch_sha256"] = applier.digest(delta)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        missing_backup = package / ("second.py" + applier.BACKUP_SUFFIX)
+        missing_backup.unlink()
+        before = {p.name: p.read_bytes() for p in package.iterdir()}
+        try:
+            applier.apply_patches(package)
+        except ValueError as exc:
+            assert "cannot upgrade without verified original backup" in str(exc)
+        else:
+            raise AssertionError("previous patch upgraded without verified original")
+        assert {p.name: p.read_bytes() for p in package.iterdir()} == before
+        missing_backup.write_bytes(original)
+        applier.apply_patches(package)
+        assert (package / "first.py").read_bytes() == updated
+        assert (package / "second.py").read_bytes() == updated
+        assert all(s.startswith("already patched:") for s in applier.apply_patches(package))
+        applier.apply_patches(package, restore=True)
+        assert (package / "first.py").read_bytes() == original
+
+
 if __name__ == "__main__":
     tests = [
         test_patch_apply_dry_run_idempotency_and_restore,
@@ -139,6 +180,7 @@ if __name__ == "__main__":
         test_bad_backup_or_patch_refuses_before_any_write,
         test_write_failure_rolls_back_previous_source,
         test_shipped_patch_digests,
+        test_upgrade_from_previous_audited_patch_requires_original_backup,
     ]
     for fn in tests:
         fn()

@@ -6,6 +6,9 @@ integrations/hermes-provider/hermes_memory_provider/** -text
 integrations/hermes-provider/LICENSE.upstream -text
 integrations/hermes-provider/UPSTREAM_METADATA.txt -text
 
+# Engine diffs are byte-hashed; preserve LF and unified-diff blank context markers.
+integrations/engine-patches/*.patch text eol=lf whitespace=-blank-at-eol
+
 # Shell scripts should stay LF everywhere (they are executed, not compiled).
 *.sh text eol=lf
 

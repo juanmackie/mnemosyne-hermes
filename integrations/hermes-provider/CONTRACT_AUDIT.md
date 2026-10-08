@@ -199,7 +199,7 @@ serialized background executor, so the user-facing turn does not wait for DB
 work. A smoke regression test now holds a fake DB write open and verifies
 `sync_all()` returns before release, then drains the executor and reads the
 persisted fact back; it also prints the direct-call baseline against the same
-injected delay. A provider-level second worker was rejected: it would make
+injected delay. A provider-level second turn-write worker was rejected: it would make
 Hermes `flush_pending()` report completion before the write is durable and
 would duplicate ordering/lifecycle management. Direct callers of the provider
 method still block and should use Hermes `MemoryManager.sync_all()`.
@@ -333,7 +333,7 @@ change must pass `./test-all.sh --require-engine`.
 | F10 | Deliberate pin: provider imports engine internals and stays within `mnemosyne-memory[embeddings]>=3.15.1,<3.16`. |
 | F11 | Fixed: `is_available()` keeps the required boolean and `unavailable_reason()` exposes a bounded sanitized reason; loader/doctor tests cover it. |
 | F12 | Fixed: `sync_roles` accepts `tool` and defaults remain unchanged. |
-| F13 | Deliberate concurrency contract: Hermes serializes provider sync on its background executor; no second provider worker is added. Run 36311054419 passed all four real-Hermes variants; injected-delay dispatch measured 0.8–1.9 ms vs 217.3–318.4 ms direct. |
+| F13 | Deliberate concurrency contract: Hermes serializes provider turn writes on its background executor; no second turn-write worker is added. P22 tracks the separate consolidation worker and removes its auto-sleep join from turn sync. Run 36311054419 passed all four real-Hermes variants; injected-delay dispatch measured 0.8–1.9 ms vs 217.3–318.4 ms direct. |
 | F14 | End-to-end verified: plugin metadata and collision assertions pass on Ubuntu/macOS with Hermes 0.18.2/0.19.0 in run 36311054419; doctor exits 0 and exactly one provider is discovered. |
 | F15 | Fixed: four-tool default, explicit all-tools opt-in, and one canonical 40-tool table. |
 | F16 | Fixed: shared-connection tools, prompt reads, and mirror writes serialize with background turn capture (P19); real SQLite transaction and nested-lock regressions pass locally. |
@@ -341,3 +341,28 @@ change must pass `./test-all.sh --require-engine`.
 
 Every future local provider change must go through `PATCHES.md` +
 `VENDORED_FROM.json` (enforced by `tests/test_vendored_provider.py`).
+
+## 2026-10-08 consolidation concurrency amendment (P22)
+
+The previous auto-sleep join timeout left the worker holding the shared Beam
+lock. A deterministic regression reproduces blocked prefetch after that timeout
+against the prior snapshot. P22 tracks one independent consolidation connection,
+keeps SQLite operations serialized with foreground access, and yields only for
+model and embedding computation through audited engine patches. Turn writes
+remain durable before `sync_turn()` returns; consolidation is asynchronous and
+best effort, without a persistent job queue.
+
+`tests/test_provider_consolidation.py` gates real pinned-engine summarization,
+model refresh and degradation, traces worker SQL under the shared lock, and
+verifies concurrent foreground write/read coherence. Source-content claim checks
+reject stale summaries after edits, and degradation compares current content and
+tier before replacement. Worker proposal enrichment checks current content after
+embedding before storing derived data. Lifecycle tests cover single admission,
+session snapshots, reinitialization, shutdown and host-backend ownership.
+Conflict validation rechecks both source contents after model work before
+invalidating a row.
+
+The engine pin, provider registration and default tool surface remain unchanged.
+Verification uses a temporary copy of the pinned engine with exact audited
+patches. This amendment does not claim live-gateway verification or exercise a
+real LLM request; model waits and outputs are deterministic test doubles.

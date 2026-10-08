@@ -30,6 +30,9 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from datetime import datetime, timedelta
 
 
+# LOCAL PATCH: P22 registration/cleanup ownership spans provider instances.
+_host_llm_registration_lock = threading.Lock()
+
 # LOCAL PATCH (P15): supported Hermes versions do not ship this helper.
 def spawn_context_thread(target: Callable[[], Any], *, name: Optional[str] = None,
                          daemon: bool = True) -> threading.Thread:
@@ -1393,8 +1396,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     # may shorten this to keep the suite fast. Override via MNEMOSYNE_SESSION_END_TIMEOUT.
     SESSION_END_SLEEP_TIMEOUT_SECONDS = _parse_env_float("MNEMOSYNE_SESSION_END_TIMEOUT", 15)
 
-    # Auto-sleep thread join timeout. Re-read from env once at class level so
-    # it's not re-parsed on every _maybe_auto_sleep call.
+    # LOCAL PATCH: P22 kept for configuration compatibility. Auto-sleep starts a tracked
+    # background worker without joining it on the turn-sync path (P22).
     _AUTO_SLEEP_TIMEOUT_SECONDS = _parse_env_float("MNEMOSYNE_AUTO_SLEEP_TIMEOUT", 5)
 
     _SYNC_TURN_SLOW_THRESHOLD_SECONDS = _parse_env_float("MNEMOSYNE_SYNC_TURN_SLOW_THRESHOLD", 5)
@@ -1436,11 +1439,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._agent_context = "primary"
         self._turn_count = 0
         self._sync_turn_lock = threading.Lock()
-        # Serialize all Beam/SQLite access between the main thread and the
-        # auto_sleep daemon thread.  Without this, concurrent connections to
-        # the same WAL database can trigger a NULL-pointer SEGV in
-        # sqlite3_clear_bindings when a checkpoint invalidates an active
-        # statement on the other connection (#498).
+        # Serialize callers sharing the provider's Beam/SQLite handle (#498).
+        # LOCAL PATCH: P22 consolidation owns a separate worker connection;
+        # its slow reasoning must not hold the foreground handle's lock.
         # LOCAL PATCH: P19 also guards tool and prompt entry points. Reentrant
         # because the diagnostic tool handler takes this lock internally.
         self._beam_access_lock = threading.RLock()
@@ -1501,11 +1502,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # MNEMOSYNE_DB_PATH env > engine default (MNEMOSYNE_DATA_DIR >
         # $HERMES_HOME > ~/.hermes). None means "let the engine decide".
         self._db_path: Optional[str] = None
-        # Tracked so shutdown() can wait briefly for in-flight consolidation
-        # before clearing the host LLM backend, preventing the post-timeout
-        # daemon thread from racing with unregister and falling through to
-        # MNEMOSYNE_LLM_BASE_URL.
-        self._session_end_thread: Optional[threading.Thread] = None
+        # LOCAL PATCH: P22 one tracked worker for auto/session-end consolidation.
+        self._consolidation_lock = threading.Lock()
+        self._consolidation_thread: Optional[threading.Thread] = None
+        self._consolidation_running = False
+        self._consolidation_stopping = False
+        self._consolidation_cleanup_pending = False
+        self._host_llm_backend: Optional[Any] = None
         # C13: per-instance tracking of whether THIS provider contributed
         # to the module-level _active_provider_count. Lets each instance
         # increment exactly once on activate and decrement exactly once on
@@ -1998,6 +2001,17 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Mnemosyne beam for this session."""
+        # LOCAL PATCH: P22 do not retarget a still-running worker's host backend.
+        with self._ensure_consolidation_lock():
+            if self._consolidation_running:
+                raise RuntimeError("Mnemosyne consolidation must finish before reinitializing")
+            self._consolidation_stopping = True
+            try:
+                self._initialize_session(session_id, **kwargs)
+            finally:
+                self._consolidation_stopping = False
+
+    def _initialize_session(self, session_id: str, **kwargs) -> None:
         # C27: clear stale state from any prior init attempt so a re-init
         # returns the provider to a clean slate. _beam reset is critical
         # for the primary->skip-context re-init case (codex review finding
@@ -2045,8 +2059,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # skip-context sessions (subagent/cron/flush can still run memory tools).
         try:
             from hermes_memory_provider.hermes_llm_adapter import register_hermes_host_llm
-            if register_hermes_host_llm():
-                logger.info("Mnemosyne registered Hermes auxiliary LLM backend for memory operations")
+            from mnemosyne.core.llm_backends import get_host_llm_backend
+            # LOCAL PATCH: P22 delayed cleanup may only clear its own registration.
+            with _host_llm_registration_lock:
+                existing_backend = get_host_llm_backend()
+                if self._agent_context in self._skip_contexts and existing_backend is not None:
+                    # A skipped child uses the primary registration without taking ownership.
+                    # A reinitialized owner retains responsibility for its own registration.
+                    if self._host_llm_backend is not existing_backend:
+                        self._host_llm_backend = None
+                elif register_hermes_host_llm():
+                    self._host_llm_backend = get_host_llm_backend()
+                    logger.info("Mnemosyne registered Hermes auxiliary LLM backend for memory operations")
         except Exception as exc:
             logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
 
@@ -2625,54 +2649,99 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 )
                 break  # One identity memory per turn
 
+    # LOCAL PATCH: P22 separate slow consolidation from foreground connection access.
+    def _ensure_consolidation_lock(self):
+        lock = self.__dict__.setdefault("_consolidation_lock", threading.Lock())
+        with lock:
+            self.__dict__.setdefault("_consolidation_thread", None)
+            self.__dict__.setdefault("_consolidation_running", False)
+            self.__dict__.setdefault("_consolidation_stopping", False)
+            self.__dict__.setdefault("_consolidation_cleanup_pending", False)
+        return lock
+
+    def _start_consolidation(self, trigger: str) -> Optional[threading.Thread]:
+        """Start at most one worker; concurrent triggers reuse it without spending budget."""
+        with self._ensure_consolidation_lock():
+            if self._consolidation_stopping:
+                return None
+            if self._consolidation_running:
+                return self._consolidation_thread
+            beam_lock = self._ensure_beam_access_lock()
+            with beam_lock:
+                beam = self._beam
+                if beam is None:
+                    return None
+                if trigger == "auto_sleep":
+                    working = beam.get_working_stats().get("total", 0)
+                    if working <= self._auto_sleep_threshold:
+                        return None
+                    cutoff = (datetime.now() - timedelta(hours=WORKING_MEMORY_TTL_HOURS // 2)).isoformat()
+                    if not beam._count_unconsolidated_before(cutoff):
+                        return None
+                # Copy values now, rather than dereferencing a mutable Beam in the worker.
+                beam_kwargs = {
+                    "session_id": beam.session_id,
+                    "db_path": beam.db_path,
+                    "author_id": beam.author_id,
+                    "author_type": beam.author_type,
+                    "channel_id": beam.channel_id,
+                }
+                foreground_conn = beam.conn
+                owner_id = getattr(beam, "canonical_owner_id", "default")
+                agent_context = getattr(beam, "agent_context", self._agent_context)
+            skip = self._reserve_reflection_budget(trigger)
+            if skip is not None:
+                logger.info("Mnemosyne %s skipped: %s", trigger, json.dumps(skip))
+                return None
+
+            def _sleep_isolated():
+                sleep_beam = None
+                worker_conn = None
+                try:
+                    # Construction does schema work, so serialize it with provider access.
+                    # After construction, every SQLite operation uses the worker's handle.
+                    with beam_lock:
+                        sleep_beam = _get_beam_class()(**beam_kwargs)
+                        worker_conn = sleep_beam.conn
+                        if worker_conn is foreground_conn:
+                            worker_conn = None
+                            raise RuntimeError("consolidation requires an independent SQLite connection")
+                        sleep_beam.canonical_owner_id = owner_id
+                        sleep_beam.agent_context = agent_context
+                    # The audited engine releases db_lock only for model work;
+                    # all SQL/statement lifetimes remain serialized with P19.
+                    sleep_beam.sleep(db_lock=beam_lock)
+                except Exception as inner:
+                    logger.warning("Mnemosyne %s worker failed: %s", trigger, self._sanitize_sync_turn_error(inner))
+                finally:
+                    if worker_conn is not None:
+                        try:
+                            with beam_lock:
+                                worker_conn.close()
+                        except Exception as inner:
+                            logger.debug("Mnemosyne consolidation close failed: %s", self._sanitize_sync_turn_error(inner))
+                    with self._consolidation_lock:
+                        self._consolidation_running = False
+                        if self._consolidation_cleanup_pending:
+                            self._unregister_host_llm()
+                            self._consolidation_cleanup_pending = False
+
+            self._consolidation_running = True
+            try:
+                thread = spawn_context_thread(_sleep_isolated, name=f"mnemosyne-{trigger}-sleep")
+            except Exception:
+                self._consolidation_running = False
+                raise
+            self._consolidation_thread = thread
+            return thread
+
     def _maybe_auto_sleep(self) -> None:
         try:
-            stats = self._beam.get_working_stats()
-            working = stats.get("total", 0)
-            if working > self._auto_sleep_threshold:
-                # Cheap eligibility check: are there any unconsolidated
-                # working memories old enough to consolidate?
-                cutoff = (datetime.now() - timedelta(hours=WORKING_MEMORY_TTL_HOURS // 2)).isoformat()
-                eligible = self._beam._count_unconsolidated_before(cutoff)
-                if eligible == 0:
-                    return
-
-                skip = self._reserve_reflection_budget("auto_sleep")
-                if skip is not None:
-                    logger.info("Mnemosyne auto-sleep skipped: %s", json.dumps(skip))
-                    return
-
-                logger.info("Mnemosyne auto-sleep: working=%d, eligible=%d > threshold=%d", working, eligible, self._auto_sleep_threshold)
-                # Use session-scoped sleep to avoid timeout on large databases.
-                # Create a SEPARATE BeamMemory instance for the daemon thread
-                # so it gets its own SQLite connection via _thread_local.
-                # Reusing self._beam.conn from a daemon thread races with the
-                # main thread's sync_turn() writes, causing episodic INSERT
-                # failures (commit rolled back by concurrent main-thread writes).
-                beam_ref = self._beam
-                beam_lock = self._ensure_beam_access_lock()
-                def _sleep_isolated():
-                    try:
-                        BeamClass = _get_beam_class()
-                        sleep_beam = BeamClass(
-                            session_id=beam_ref.session_id,
-                            db_path=beam_ref.db_path,
-                            author_id=beam_ref.author_id,
-                            author_type=beam_ref.author_type,
-                            channel_id=beam_ref.channel_id,
-                        )
-                        with beam_lock:
-                            sleep_beam.sleep()
-                    except Exception as inner:
-                        logger.debug("Mnemosyne auto-sleep worker failed: %s", inner)
-                sleep_thread = spawn_context_thread(
-                    _sleep_isolated, name="mnemosyne-auto-sleep"
-                )
-                sleep_thread.join(timeout=self._AUTO_SLEEP_TIMEOUT_SECONDS)
-                if sleep_thread.is_alive():
-                    logger.warning("Mnemosyne auto-sleep timed out after %.0fs — consolidation deferred", self._AUTO_SLEEP_TIMEOUT_SECONDS)
-        except Exception:
-            pass
+            # No join here: Hermes' serialized sync executor must remain available
+            # for the next turn while independent consolidation reasons in background.
+            self._start_consolidation("auto_sleep")
+        except Exception as exc:
+            logger.warning("Mnemosyne auto-sleep failed: %s", self._sanitize_sync_turn_error(exc))
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return configured tool schemas; independent of Beam initialization state."""
@@ -4099,46 +4168,15 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             raise CheckpointError("required pre-compression checkpoint could not be written") from exc
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        # Bound the consolidation call so a slow LLM (e.g., a Hermes-routed
-        # network call) cannot block Hermes shutdown indefinitely. Mirrors
-        # the daemon-thread pattern already used by _maybe_auto_sleep above:
-        # the thread keeps running in the background if it overruns, but the
-        # main shutdown path is freed after the join timeout.
+        # LOCAL PATCH: P22 reuse any auto-sleep worker; never run duplicate
+        # consolidation or charge a second reflection call for the same work.
         if not self._beam:
             return
         try:
-            skip = self._reserve_reflection_budget("session_end")
-            if skip is not None:
-                logger.info("Mnemosyne session-end sleep skipped: %s", json.dumps(skip))
+            sleep_thread = self._start_consolidation("session_end")
+            if sleep_thread is None:
                 return
-            logger.info("Mnemosyne session end — running consolidation")
             timeout = self.SESSION_END_SLEEP_TIMEOUT_SECONDS
-            beam_ref = self._beam
-
-            def _sleep_with_logging():
-                # Wrap the target so exceptions get logged at the same
-                # severity the previous synchronous version used, instead
-                # of bubbling out as an uncaught daemon-thread traceback.
-                # Create a SEPARATE BeamMemory so the thread gets its own
-                # SQLite connection via _thread_local, avoiding races with
-                # the main thread's writes.
-                try:
-                    BeamClass = _get_beam_class()
-                    sleep_beam = BeamClass(
-                        session_id=beam_ref.session_id,
-                        db_path=beam_ref.db_path,
-                        author_id=beam_ref.author_id,
-                        author_type=beam_ref.author_type,
-                        channel_id=beam_ref.channel_id,
-                    )
-                    sleep_beam.sleep()
-                except Exception as inner:
-                    logger.debug("Mnemosyne session-end sleep failed: %s", inner)
-
-            sleep_thread = spawn_context_thread(
-                _sleep_with_logging, name="mnemosyne-session-end-sleep"
-            )
-            self._session_end_thread = sleep_thread
             sleep_thread.join(timeout=timeout)
             if sleep_thread.is_alive():
                 logger.warning(
@@ -4218,50 +4256,45 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         except Exception as e:
             logger.debug("Mnemosyne mirror write failed: %s", e)
 
-    # How long shutdown() will wait for an in-flight session_end consolidation
-    # to finish before clearing the host backend. Bounded so shutdown is never
-    # held up indefinitely; just long enough to close the race window where
-    # the daemon thread's post-join host call could see a None backend and
-    # fall through to MNEMOSYNE_LLM_BASE_URL (violating the host-skips-remote
-    # contract). Tests may shorten this to keep the suite fast. Override via
-    # MNEMOSYNE_SHUTDOWN_DRAIN_TIMEOUT.
+    # Bounded drain for either consolidation trigger. If it overruns, the worker
+    # unregisters the host backend after finishing, preserving LLM inheritance.
     SHUTDOWN_DRAIN_TIMEOUT_SECONDS = _parse_env_float("MNEMOSYNE_SHUTDOWN_DRAIN_TIMEOUT", 2)
 
+    def _unregister_host_llm(self) -> None:
+        # LOCAL PATCH: P22 only clear this instance's host backend registration.
+        try:
+            from hermes_memory_provider.hermes_llm_adapter import unregister_hermes_host_llm
+            from mnemosyne.core.llm_backends import get_host_llm_backend
+            with _host_llm_registration_lock:
+                owned_backend = getattr(self, "_host_llm_backend", None)
+                if owned_backend is not None and get_host_llm_backend() is owned_backend:
+                    unregister_hermes_host_llm()
+                self._host_llm_backend = None
+        except Exception as exc:
+            logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
+
     def shutdown(self) -> None:
-        # If session_end's daemon thread is still consolidating when shutdown
-        # arrives, briefly wait for it. Otherwise clearing the host backend
-        # next would race with the in-flight summarize/extract call and a
-        # post-timeout "host attempted" decision could degrade to remote URL
-        # despite A3.
-        thread = self._session_end_thread
+        # LOCAL PATCH: P22 stop admission before draining BOTH background triggers.
+        with self._ensure_consolidation_lock():
+            self._consolidation_stopping = True
+            thread = self._consolidation_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=self.SHUTDOWN_DRAIN_TIMEOUT_SECONDS)
-            if thread.is_alive():
-                logger.debug(
-                    "Mnemosyne shutdown: session-end thread still running after %ss; "
-                    "proceeding (daemon thread will be reaped on process exit)",
-                    self.SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
-                )
-        self._session_end_thread = None
-
-        # Symmetric with initialize(): clear the Hermes host LLM backend so a
-        # process that later uses Mnemosyne outside Hermes does not retain a
-        # stale reference into agent.auxiliary_client.
-        # Skip-context sessions must NOT unregister — the backend is process-global
-        # and owned by the primary session.
-        if self._agent_context not in self._skip_contexts:
-            try:
-                from hermes_memory_provider.hermes_llm_adapter import unregister_hermes_host_llm
-                unregister_hermes_host_llm()
-            except Exception as exc:
-                logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
-        if self._memory is not None:
-            try:
-                self._memory.close()
-            except Exception:
-                logger.debug("Mnemosyne: could not close wrapper", exc_info=True)
-        self._memory = None
-        self._beam = None
+        with self._consolidation_lock:
+            if self._consolidation_running:
+                self._consolidation_cleanup_pending = True
+                logger.debug("Mnemosyne shutdown: host backend cleanup deferred to consolidation worker")
+            else:
+                self._unregister_host_llm()
+                self._consolidation_thread = None
+        with self._ensure_beam_access_lock():
+            if self._memory is not None:
+                try:
+                    self._memory.close()
+                except Exception:
+                    logger.debug("Mnemosyne: could not close wrapper", exc_info=True)
+            self._memory = None
+            self._beam = None
 
         # C13: decrement this instance's contribution to the module-level
         # active-provider count. ``_provider_active`` stays True if other
