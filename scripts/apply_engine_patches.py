@@ -81,7 +81,12 @@ def apply_patches(
             backup.exists() and digest(backup.read_bytes()) != entry["original_sha256"]
         ):
             raise ValueError(f"backup differs from audited source: {relative}")
-        if current_hash not in (entry["original_sha256"], entry["patched_sha256"]):
+        previous_hashes = entry.get("previous_patched_sha256", [])
+        if current_hash not in (
+            entry["original_sha256"],
+            entry["patched_sha256"],
+            *previous_hashes,
+        ):
             raise ValueError(
                 f"engine source differs from audited {manifest['version']}: {relative}"
             )
@@ -99,7 +104,14 @@ def apply_patches(
             if current_hash == entry["patched_sha256"]:
                 report.append(f"already patched: {relative}")
                 continue
-            replacement = apply_diff(current, delta)
+            # Upgrade only a declared previous patch with its verified original.
+            # Never treat arbitrary local edits as a base for an updated diff.
+            original = current
+            if current_hash in previous_hashes:
+                if not backup.exists():
+                    raise ValueError(f"cannot upgrade without verified original backup: {relative}")
+                original = backup.read_bytes()
+            replacement = apply_diff(original, delta)
             if digest(replacement) != entry["patched_sha256"]:
                 raise ValueError(f"patched source digest mismatch: {relative}")
             compile(replacement, str(path), "exec")

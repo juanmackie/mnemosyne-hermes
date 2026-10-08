@@ -1,0 +1,62 @@
+--- a/mnemosyne/core/llm_conflict_detector.py
++++ b/mnemosyne/core/llm_conflict_detector.py
+@@ -134,7 +134,8 @@
+     older_content: str,
+     newer_content: str,
+     session_id: str,
+-    db_path: Optional[Path] = None
++    db_path: Optional[Path] = None,
++    db_lock=None,
+ ) -> Tuple[bool, float, Optional[str]]:
+     """
+     Use an LLM to validate if older_content is contradicted/superseded by newer_content.
+@@ -160,7 +161,14 @@
+   "reason": "Brief explanation"
+ }}
+ """
+-    result = _call_conflict_llm_with_retry(prompt)
++    if db_lock is None:
++        result = _call_conflict_llm_with_retry(prompt)
++    else:
++        db_lock.release()
++        try:
++            result = _call_conflict_llm_with_retry(prompt)
++        finally:
++            db_lock.acquire()
+     if not result:
+         return False, 0.0, None
+ 
+@@ -195,14 +203,25 @@
+         
+         # Write to core cost logs
+         try:
+-            log_cost(
+-                session_id=session_id,
+-                memory_count=2,
+-                token_count=input_t + output_t,
+-                estimated_cost_usd=est_cost,
+-                model=CONFLICT_LLM_MODEL,
+-                db_path=db_path
+-            )
++            if db_lock is None:
++                log_cost(
++                    session_id=session_id,
++                    memory_count=2,
++                    token_count=input_t + output_t,
++                    estimated_cost_usd=est_cost,
++                    model=CONFLICT_LLM_MODEL,
++                    db_path=db_path
++                )
++            else:
++                with db_lock:
++                    log_cost(
++                        session_id=session_id,
++                        memory_count=2,
++                        token_count=input_t + output_t,
++                        estimated_cost_usd=est_cost,
++                        model=CONFLICT_LLM_MODEL,
++                        db_path=db_path
++                    )
+         except Exception as log_exc:
+             logger.debug("Failed to record cost to database cost_entries: %s", log_exc)
+ 

@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Background provider consolidation no longer holds up turn capture or prompt
+  reads while waiting for model inference. Auto-sleep and session-end share
+  one tracked worker; audited engine lock boundaries preserve SQLite safety,
+  and shutdown drains work without clearing another provider's LLM backend.
+- Windows checkouts preserve the audited engine patch bytes, avoiding false
+  digest mismatches. Patch upgrades accept only declared prior revisions with
+  a verified original backup.
 - Engine entity recall no longer fuzzy-matches the raw query string against
   every known entity with a full Python Levenshtein per pair (~340 calls,
   ~72% of `recall()`). The guard is content-aware (substring containment

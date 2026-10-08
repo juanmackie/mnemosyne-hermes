@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "pPgo5jtQwTowka7i25756iz7QiVsET8fxpDz-Aovn9Q",
-      "bytes": 202107,
-      "lines": 4322
+      "sha256": "0WE438uUwBP8tP5yimQJHqIBvjWJAYzH_LHPp7NM2Is",
+      "bytes": 203813,
+      "lines": 4354
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "XeICgiLqwwywBK5h03zPG5g4_uG-TwagKex3UJzn_Sk",
@@ -75,7 +75,8 @@
       "P19 serialize tool dispatch, built-in prefetch reads, and built-in memory mirroring with background turn sync using a reentrant Beam lock",
       "P20 mnemosyne_update resolves every row mnemosyne_get resolves: global rows from other sessions and episodic rows; an update with no fields is an error, not not_found",
       "P21 mnemosyne_validate honours session/global visibility: the existence check and all mutations use the engine predicate, so private rows of other sessions are not_found",
-      "P20/P21 amendment: shared engine visibility helpers and bind params use one runtime cross-session snapshot for fallback update and every validation mutation"
+      "P20/P21 amendment: shared engine visibility helpers and bind params use one runtime cross-session snapshot for fallback update and every validation mutation",
+      "P22 single tracked independent consolidation worker; audited engine SQL lock boundaries yield during model work, auto-sleep never joins turn sync, shutdown drains either trigger and cleans only its owned host backend"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",

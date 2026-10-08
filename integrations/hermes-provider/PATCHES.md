@@ -243,6 +243,17 @@ and matching binds built by the engine scope helpers from one runtime snapshot.
 Cross-session enabled permits foreign-session private rows consistently with
 the patched engine ID tools; disabled preserves session/global visibility.
 
+### P22 — consolidation yields foreground access during model work
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (initialization, auto-sleep, session-end, shutdown) |
+| Date | 2026-10-08 |
+| Reason | The independent auto-sleep worker held the foreground Beam lock for its entire `sleep()`. A join timeout freed turn sync but left later prefetch/tool calls blocked for the remaining consolidation duration. The untracked worker could also overlap later triggers or outlive host-backend cleanup. |
+| Behaviour | One tracked worker captures session/database/author/channel and canonical owner/context, owns an independent connection, and calls the audited engine's lock-aware sleep path. Auto-sleep never joins on the turn-sync path; overlapping auto/session-end triggers reuse work without consuming another reflection call. Database access remains coordinated, while inference yields the foreground lock. Shutdown closes admission and drains either trigger; overrun cleanup only clears the backend registration this provider owns. Initialization keeps admission closed throughout retargeting and refuses active-worker reinitialization. Worker connections close even after failure. |
+| Verification | `tests/test_provider_consolidation.py`: deterministic stalled-model regression fails against the previous snapshot; foreground sync/prefetch/recall proceed before inference is released. Real engine SQL tracing checks protected database operations alongside independent connections and write→read coherence. Lifecycle regressions cover duplicate triggers, state capture, shutdown, ownership and failure cleanup. |
+| Upstream | Not sent yet. The inference/database split follows the transferable background-work separation described in [Honcho research](../../docs/HONCHO_RESEARCH.md); no Honcho code or service dependency is imported. Requires the audited engine diffs in `../engine-patches/`. |
+
 Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 (they need a product decision, not a mechanical fix).
 

@@ -1,6 +1,27 @@
 --- a/mnemosyne/core/beam.py
 +++ b/mnemosyne/core/beam.py
-@@ -1332,6 +1332,10 @@
+@@ -29,6 +29,20 @@
+ from datetime import datetime, timedelta, timezone
+ from typing import List, Dict, Optional, Any, Set, Union, Tuple, Callable
+ from pathlib import Path
++
++
++@contextlib.contextmanager
++def _temporarily_release_db_lock(db_lock):
++    # LOCAL PATCH: yield provider SQLite coordination only for model/embed waits.
++    """Release an already-held provider lock around slow non-SQL work."""
++    if db_lock is None:
++        yield
++        return
++    db_lock.release()
++    try:
++        yield
++    finally:
++        db_lock.acquire()
+ 
+ 
+ logger = logging.getLogger(__name__)
+@@ -1332,6 +1346,10 @@
          yield
          return
  
@@ -11,7 +32,7 @@
      conn._defer_commit = True
      try:
          yield
-@@ -1676,21 +1680,49 @@
+@@ -1676,21 +1694,49 @@
      now all surface (silent-destruction bug fixed) -- the pre-E6 path
      against TripleStore returned only the last-written mention per memory
      because of auto-invalidation on (subject, predicate).
@@ -65,7 +86,25 @@
              results = beam.annotations.query_by_kind("mentions", value=matched_entity)
              for row in results:
                  memory_ids.add(row["memory_id"])
-@@ -3290,6 +3322,9 @@
+@@ -3216,7 +3262,8 @@
+                  extract_entities: bool = False,
+                  extract: bool = False,
+                  veracity: str = "unknown",
+-                 trust_tier: str = None) -> str:
++                 trust_tier: str = None,
++                 db_lock=None) -> str:
+         """Store into working_memory. Deduplicates exact content matches.
+ 
+         When called from the legacy-compatible Mnemosyne.remember() path,
+@@ -3254,6 +3301,7 @@
+             metadata = (metadata or {}).copy()
+             metadata["_blob"] = blob_meta
+             content = sanitized_content
++        expected_content = content
+ 
+         # --- Auto-derive trust_tier from source if not explicitly set ---
+         if trust_tier is None:
+@@ -3290,6 +3338,9 @@
              # Conservative policy: only upgrade if the new call passes a
              # non-'unknown' veracity (preserves per-row trust on
              # backfills that don't carry a meaningful veracity arg).
@@ -75,7 +114,42 @@
              cursor.execute("""
                  UPDATE working_memory
                  SET importance = MAX(importance, ?), timestamp = ?, source = ?,
-@@ -4017,24 +4052,28 @@
+@@ -3361,11 +3412,31 @@
+         # never populated memory_embeddings. This left _detect_conflicts
+         # with zero embeddings to compare, making Phase 1 conflict
+         # detection a no-op despite 3762+ working memories.
++        vec = None
+         if _embeddings.available():
+             try:
+-                vec = _embeddings.embed([content])
+-                if vec is not None and len(vec) == 1:
+-                    _store_working_embedding(self.conn, memory_id, vec[0])
++                with _temporarily_release_db_lock(db_lock):
++                    vec = _embeddings.embed([content])
++            except Exception as exc:
++                logger.warning(
++                    "remember: embedding storage failed for '%s' (%s): %s",
++                    memory_id, type(exc).__name__, exc,
++                )
++
++        # A foreground update or forget can run while embedding is outside
++        # the provider lock. Do not attach this stale write's vector or derived
++        # enrichment to a changed/deleted row. The caller still receives the
++        # original id because its mutation already owns the resulting state.
++        if db_lock is not None:
++            current = self.conn.execute(
++                "SELECT content FROM working_memory WHERE id = ?", (memory_id,)
++            ).fetchone()
++            if current is None or current["content"] != expected_content:
++                return memory_id
++
++        if vec is not None and len(vec) == 1:
++            try:
++                _store_working_embedding(self.conn, memory_id, vec[0])
+             except Exception as exc:
+                 logger.warning(
+                     "remember: embedding storage failed for '%s' (%s): %s",
+@@ -4017,24 +4088,28 @@
          If replacement_id is provided, sets superseded_by.
          Otherwise sets valid_until to now (immediate expiry).
          """
@@ -110,7 +184,7 @@
          invalidated = cursor.rowcount > 0
          self.conn.commit()
          if invalidated:
-@@ -4237,9 +4276,13 @@
+@@ -4237,9 +4312,13 @@
              params.append(importance)
          if not updates:
              return False
@@ -126,7 +200,7 @@
              params
          )
          affected = cursor.rowcount
-@@ -4260,6 +4303,8 @@
+@@ -4260,6 +4339,8 @@
                  )
  
          self.conn.commit()
@@ -135,7 +209,7 @@
          return affected > 0
  
      def get(self, memory_id: str) -> Optional[Dict]:
-@@ -4272,15 +4317,19 @@
+@@ -4272,15 +4353,19 @@
  
          Returns None if not found in either table.
          """
@@ -158,7 +232,7 @@
          row = cursor.fetchone()
          if row:
              return {
-@@ -4297,12 +4346,12 @@
+@@ -4297,12 +4382,12 @@
              }
  
          # Episodic memory (fallback)
@@ -174,7 +248,7 @@
          row = cursor.fetchone()
          if row:
              return {
-@@ -4338,17 +4387,21 @@
+@@ -4338,17 +4423,21 @@
          # rolls back the working_memory DELETE rather than leaving it
          # uncommitted on the connection for a later unrelated commit to
          # silently include.
@@ -200,3 +274,329 @@
              )
              wm_rows = cursor.rowcount
              if wm_rows > 0:
+@@ -4365,7 +4454,9 @@
+                                 source: str = "consolidation", importance: float = 0.6,
+                                 metadata: Dict = None, valid_until: str = None,
+                                 scope: str = "session",
+-                                veracity: Optional[str] = None) -> str:
++                                veracity: Optional[str] = None,
++                                db_lock=None, claim_ids=None, claim_timestamp: Optional[str] = None,
++                                claim_contents=None) -> Optional[str]:
+         """
+         Store a consolidated summary into episodic_memory with optional embedding.
+ 
+@@ -4410,7 +4501,8 @@
+         vec = None
+         if _embeddings.available():
+             try:
+-                vec = _embeddings.embed([summary])
++                with _temporarily_release_db_lock(db_lock):
++                    vec = _embeddings.embed([summary])
+             except Exception as exc:
+                 logger.warning(
+                     "consolidate_to_episodic: embedding failed, storing "
+@@ -4418,6 +4510,19 @@
+                     type(exc).__name__, exc,
+                 )
+         cursor = self.conn.cursor()
++        # A foreground remember may update a claimed source row while the
++        # embedding call above yielded the provider lock. Never write a stale
++        # summary if any claimed source changed during that wait.
++        if claim_ids and claim_timestamp is not None:
++            placeholders = ",".join("?" * len(claim_ids))
++            cursor.execute(
++                f"SELECT id, content FROM working_memory WHERE id IN ({placeholders}) "
++                "AND consolidated_at = ? AND consolidation_claimed_at = ?",
++                (*claim_ids, claim_timestamp, claim_timestamp),
++            )
++            current_claims = {row["id"]: row["content"] for row in cursor.fetchall()}
++            if current_claims != claim_contents:
++                return None
+         cursor.execute("""
+             INSERT INTO episodic_memory
+             (id, content, source, timestamp, session_id, importance, metadata_json, summary_of, valid_until, scope,
+@@ -7862,7 +7967,20 @@
+             compressed += " [...]"
+         return compressed
+ 
+-    def _refresh_episodic_embedding(self, memory_id: str, rowid: int, new_content: str):
++    def _prepare_episodic_embedding(self, new_content: str, db_lock=None):
++        """Compute optional embedding before the episodic write transaction."""
++        vec_available_now = _vec_available(self.conn)
++        vec = None
++        if _embeddings.available():
++            try:
++                with _temporarily_release_db_lock(db_lock):
++                    vec = _embeddings.embed([new_content])
++            except Exception:
++                vec = None
++        return vec_available_now, vec
++
++    def _refresh_episodic_embedding(self, memory_id: str, rowid: int, new_content: str,
++                                    db_lock=None, prepared=None):
+         """Refresh dense-recall embedding stores for an episodic row whose
+         content has been mutated (degraded). Without this the
+         vec_episodes / memory_embeddings / binary_vector entries continue
+@@ -7878,13 +7996,11 @@
+         """
+         cursor = self.conn.cursor()
+ 
+-        vec_available_now = _vec_available(self.conn)
++        if prepared is None:
++            prepared = self._prepare_episodic_embedding(new_content, db_lock=db_lock)
++        vec_available_now, vec = prepared
+ 
+         if _embeddings.available():
+-            try:
+-                vec = _embeddings.embed([new_content])
+-            except Exception:
+-                vec = None
+             if vec is not None:
+                 # vec_episodes is a sqlite-vec virtual table; vec0 doesn't
+                 # support UPDATE on the embedding column reliably, so we
+@@ -7926,7 +8042,7 @@
+                 (memory_id,),
+             )
+ 
+-    def degrade_episodic(self, dry_run: bool = False) -> Dict:
++    def degrade_episodic(self, dry_run: bool = False, *, db_lock=None) -> Dict:
+         """Degrade old episodic memories through tier 1→2→3 compression.
+ 
+         Tier 1 (0-TIER2_DAYS): Full detail, 1.0x recall weight
+@@ -7997,36 +8113,42 @@
+         # (caught by /review for C18.b).
+         from mnemosyne.core import local_llm
+         for row in tier1_rows:
+-            cursor.execute("SAVEPOINT degrade_row")
+             try:
+                 compressed = row["content"]
+                 if local_llm.llm_available() and len(row["content"]) > 300:
+-                    summary = local_llm.summarize_memories([row["content"]])
++                    with _temporarily_release_db_lock(db_lock):
++                        summary = local_llm.summarize_memories([row["content"]])
+                     if summary:
+                         compressed = summary[:400]
+                 final_content = compressed[:800]
+-                cursor.execute(
+-                    "UPDATE episodic_memory SET content = ?, tier = 2, degraded_at = ? WHERE id = ?",
+-                    (_sanitize_utf8(final_content), now.isoformat(), row["id"])
+-                )
+-                # Only refresh the embedding when content actually changed.
+-                # If LLM was unavailable and content is unchanged the
+-                # existing embedding is already correct and an embed()
+-                # call would be wasted.
++                prepared = None
+                 if final_content != row["content"]:
+-                    self._refresh_episodic_embedding(row["id"], row["rowid"], final_content)
+-                cursor.execute("RELEASE degrade_row")
+-                results["tier1_to_tier2"] += 1
+-            except Exception:
++                    prepared = self._prepare_episodic_embedding(final_content, db_lock=db_lock)
++                # No database transaction is open during summarization/embedding.
++                cursor.execute("SAVEPOINT degrade_row")
+                 try:
++                    cursor.execute(
++                        "UPDATE episodic_memory SET content = ?, tier = 2, degraded_at = ? "
++                        "WHERE id = ? AND tier = 1 AND content = ?",
++                        (_sanitize_utf8(final_content), now.isoformat(), row["id"], row["content"])
++                    )
++                    updated = cursor.rowcount > 0
++                    if updated and final_content != row["content"]:
++                        self._refresh_episodic_embedding(
++                            row["id"], row["rowid"], final_content,
++                            db_lock=db_lock, prepared=prepared,
++                        )
++                    cursor.execute("RELEASE degrade_row")
++                    if updated:
++                        results["tier1_to_tier2"] += 1
++                except Exception:
+                     cursor.execute("ROLLBACK TO degrade_row")
+                     cursor.execute("RELEASE degrade_row")
+-                except Exception:
+-                    logger.info("Regex extraction failed, skipping", exc_info=True)
+-
++                    raise
++            except Exception:
++                logger.info("Regex extraction failed, skipping", exc_info=True)
+         # --- Degrade tier 2 → tier 3: smart extraction (keep key entities) ---
+         for row in tier2_rows:
+-            cursor.execute("SAVEPOINT degrade_row")
+             try:
+                 content = row["content"]
+                 if SMART_COMPRESS and len(content) > TIER3_MAX_CHARS:
+@@ -8035,21 +8157,31 @@
+                     compressed = content[:TIER3_MAX_CHARS]
+                     if len(content) > TIER3_MAX_CHARS:
+                         compressed += " [...]"
+-                cursor.execute(
+-                    "UPDATE episodic_memory SET content = ?, tier = 3, degraded_at = ? WHERE id = ?",
+-                    (_sanitize_utf8(compressed), now.isoformat(), row["id"])
+-                )
++                prepared = None
+                 if compressed != row["content"]:
+-                    self._refresh_episodic_embedding(row["id"], row["rowid"], compressed)
+-                cursor.execute("RELEASE degrade_row")
+-                results["tier2_to_tier3"] += 1
+-            except Exception:
++                    prepared = self._prepare_episodic_embedding(compressed, db_lock=db_lock)
++                cursor.execute("SAVEPOINT degrade_row")
+                 try:
++                    cursor.execute(
++                        "UPDATE episodic_memory SET content = ?, tier = 3, degraded_at = ? "
++                        "WHERE id = ? AND tier = 2 AND content = ?",
++                        (_sanitize_utf8(compressed), now.isoformat(), row["id"], row["content"])
++                    )
++                    updated = cursor.rowcount > 0
++                    if updated and compressed != row["content"]:
++                        self._refresh_episodic_embedding(
++                            row["id"], row["rowid"], compressed,
++                            db_lock=db_lock, prepared=prepared,
++                        )
++                    cursor.execute("RELEASE degrade_row")
++                    if updated:
++                        results["tier2_to_tier3"] += 1
++                except Exception:
+                     cursor.execute("ROLLBACK TO degrade_row")
+                     cursor.execute("RELEASE degrade_row")
+-                except Exception:
+-                    logger.info("Regex extraction failed, skipping", exc_info=True)
+-
++                    raise
++            except Exception:
++                logger.info("Regex extraction failed, skipping", exc_info=True)
+         self.conn.commit()
+         return results
+ 
+@@ -8261,7 +8393,14 @@
+             "candidate_ids": candidate_ids,
+         }
+ 
+-    def sleep(self, dry_run: bool = False, force: bool = False) -> Dict:
++    def sleep(self, dry_run: bool = False, force: bool = False, *, db_lock=None) -> Dict:
++        """Consolidate while optionally serializing short DB phases with a caller."""
++        if db_lock is None:
++            return self._sleep_locked(dry_run=dry_run, force=force)
++        with db_lock:
++            return self._sleep_locked(dry_run=dry_run, force=force, db_lock=db_lock)
++
++    def _sleep_locked(self, dry_run: bool = False, force: bool = False, *, db_lock=None) -> Dict:
+         """
+         Consolidate old working_memory for this session into episodic summaries.
+         Uses a local lightweight LLM when available; falls back to aaak
+@@ -8409,8 +8548,21 @@
+                             newer_content,
+                             session_id=self.session_id,
+                             db_path=self.db_path,
++                            db_lock=db_lock,
+                         )
+                         if is_conflict:
++                            # LOCAL PATCH: revalidate conflict snapshots after yielding for the model.
++                            if db_lock is not None:
++                                placeholders = ",".join("?" * 2)
++                                cursor.execute(
++                                    f"SELECT id, content FROM working_memory WHERE id IN ({placeholders})",
++                                    (older_id, newer_id),
++                                )
++                                current_pair = {row["id"]: row["content"] for row in cursor.fetchall()}
++                                if current_pair != {
++                                    older_id: older_content, newer_id: newer_content
++                                }:
++                                    continue
+                             if not dry_run:
+                                 self.invalidate(older_id, replacement_id=newer_id)
+                             conflicts_resolved += 1
+@@ -8436,12 +8588,14 @@
+                 if chunks:
+                     if len(chunks) == 1:
+                         # All memories fit in one prompt
+-                        summary = local_llm.summarize_memories(chunks[0], source=source)
++                        with _temporarily_release_db_lock(db_lock):
++                            summary = local_llm.summarize_memories(chunks[0], source=source)
+                     else:
+                         # Multi-chunk: summarize each chunk, then summarize the summaries
+                         chunk_summaries = []
+                         for chunk in chunks:
+-                            chunk_summary = local_llm.summarize_memories(chunk, source=source)
++                            with _temporarily_release_db_lock(db_lock):
++                                chunk_summary = local_llm.summarize_memories(chunk, source=source)
+                             if chunk_summary:
+                                 chunk_summaries.append(chunk_summary)
+                         if chunk_summaries:
+@@ -8449,10 +8603,11 @@
+                             if len(chunk_summaries) == 1:
+                                 summary = chunk_summaries[0]
+                             else:
+-                                summary = local_llm.summarize_memories(
+-                                    chunk_summaries,
+-                                    source=f"{source} (consolidated)"
+-                                )
++                                with _temporarily_release_db_lock(db_lock):
++                                    summary = local_llm.summarize_memories(
++                                        chunk_summaries,
++                                        source=f"{source} (consolidated)"
++                                    )
+                                 # If second-pass also overflows, concatenate
+                                 if not summary:
+                                     summary = " | ".join(chunk_summaries)
+@@ -8481,7 +8636,8 @@
+             if agent_context != "cron":
+                 try:
+                     from mnemosyne.core import model_refresh
+-                    proposals = model_refresh.infer_model_update_proposals(items)
++                    with _temporarily_release_db_lock(db_lock):
++                        proposals = model_refresh.infer_model_update_proposals(items)
+                 except Exception:
+                     proposals = []
+             model_refresh_proposals += len(proposals)
+@@ -8492,7 +8648,7 @@
+                 # the claim survives -- the rows show as consolidated but
+                 # without a summary. That's preferable to a phantom-summary-
+                 # without-claim race the previous ordering allowed.
+-                self.consolidate_to_episodic(
++                summary_id = self.consolidate_to_episodic(
+                     summary=summary,
+                     source_wm_ids=ids,
+                     source="sleep_consolidation",
+@@ -8504,8 +8660,24 @@
+                         "original_count": len(items),
+                         "source": source,
+                         "llm_used": llm_succeeded
+-                    }
++                    },
++                    db_lock=db_lock,
++                    claim_ids=ids if not dry_run else None,
++                    claim_timestamp=now_iso if not dry_run else None,
++                    claim_contents={item["id"]: item["content"] for item in items}
++                    if not dry_run else None,
+                 )
++                if not summary_id:
++                    # Requeue only still-claimed rows; concurrent updates keep
++                    # their newer content and are eligible for a later pass.
++                    placeholders = ",".join("?" * len(ids))
++                    cursor.execute(
++                        f"UPDATE working_memory SET consolidated_at = NULL, consolidation_claimed_at = NULL "
++                        f"WHERE id IN ({placeholders}) AND consolidated_at = ? AND consolidation_claimed_at = ?",
++                        (*ids, now_iso, now_iso),
++                    )
++                    self.conn.commit()
++                    continue
+                 if proposals:
+                     from mnemosyne.core import model_refresh
+                     proposal_ts = datetime.now().isoformat()
+@@ -8519,6 +8691,7 @@
+                             scope="session",
+                             veracity="inferred",
+                             trust_tier="DERIVED",
++                            db_lock=db_lock,
+                         )
+                         # Proposal rows are review artifacts from this sleep pass,
+                         # not fresh raw memories that should recursively trigger
+@@ -8562,7 +8735,7 @@
+             self.conn.commit()
+ 
+         # Run tiered degradation after consolidation
+-        degrade_result = self.degrade_episodic(dry_run=dry_run)
++        degrade_result = self.degrade_episodic(dry_run=dry_run, db_lock=db_lock)
+ 
+         logger.info(
+             "sleep: consolidated=%d summaries=%d conflicts=%d llm=%s method=%s",

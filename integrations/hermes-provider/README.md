@@ -19,6 +19,28 @@ previous slim `lib.storage`-backed provider in `integrations/hermes/` is retired
 | Contract audit | `CONTRACT_AUDIT.md` |
 | Plugins dir | `$HERMES_HOME/plugins/mnemosyne` → this package (symlink or verified copy) |
 
+## Background consolidation
+
+Auto-sleep starts at most one background consolidation worker per provider,
+without waiting in turn sync. Session-end reuses that worker and keeps its
+bounded wait (`MNEMOSYNE_SESSION_END_TIMEOUT`, default 15 seconds). The worker
+captures the active session, database, author/channel and canonical owner before
+starting, then owns and closes an independent SQLite connection. The audited
+engine coordinates database operations with foreground access while releasing
+the shared lock for model inference; foreground tool/turn connection access
+remains serialized. See [P22](PATCHES.md) and the
+[Honcho comparison](../../docs/HONCHO_RESEARCH.md).
+
+Shutdown stops new workers and waits up to `MNEMOSYNE_SHUTDOWN_DRAIN_TIMEOUT`
+(default 2 seconds). An overrun keeps the inherited host LLM backend available
+until the worker finishes; cleanup cannot clear a later provider's registration.
+Reinitialization is refused while consolidation is active. A daemon worker can
+still be interrupted by process exit; this is not a durable job queue, and the
+engine's existing additive consolidation/claim semantics remain in effect.
+`MNEMOSYNE_AUTO_SLEEP_TIMEOUT` no longer controls turn latency because auto-sleep
+does not join its worker. Re-run the installer for the audited engine patch and
+restart the gateway after updating the provider.
+
 ## Install
 
 Prerequisites: a Hermes install (`$HERMES_HOME`, default `~/.hermes`) and

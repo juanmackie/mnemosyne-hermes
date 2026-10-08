@@ -480,7 +480,7 @@ class PythonMemoryStorage:
             # store that cannot take it still opens and still writes.
             logger.debug("page size not applied", exc_info=True)
 
-# ---- background WAL drain + writer-side reset --------------------------
+    # ---- background WAL drain + writer-side reset --------------------------
     #
     # A checkpoint has two halves. The COPY puts frames back into the database
     # file; the RESET makes the log reusable. Measured on this store's own
@@ -625,9 +625,7 @@ class PythonMemoryStorage:
                             row = None
                             conn = self._connect(busy_timeout_ms=0)
                             try:
-                                row = conn.execute(
-                                    "PRAGMA wal_checkpoint(PASSIVE)"
-                                ).fetchone()
+                                row = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                             finally:
                                 conn.close()
                             # A busy pass copied nothing. Back off by a further
@@ -671,11 +669,9 @@ class PythonMemoryStorage:
         conn = self._conn()
         self._fold_now.set()
         try:
-            try:
+            # Best effort: the TRUNCATE below copies whatever is left.
+            with contextlib.suppress(sqlite3.Error):
                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
-            except sqlite3.Error:
-                # Best effort: the TRUNCATE below copies whatever is left.
-                pass
             deadline = time.monotonic() + self.WAL_FOLD_DEADLINE
             while True:
                 row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
