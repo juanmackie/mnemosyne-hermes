@@ -24,3 +24,11 @@ integrations/engine-patches/
     Original and patched source hashes: manifest.json
     Scope and application procedure: README.md
     Full upstream license text: integrations/hermes-provider/LICENSE.upstream
+
+tests/fixtures/hermes_main_a28a5d03/
+    Contract extracts from Hermes Agent at commit
+    a28a5d03a9fa60418db5f44f3436fa2aa029c8f2,
+    Copyright (c) 2025 Nous Research, MIT License.
+    Upstream: https://github.com/NousResearch/hermes-agent
+    Full upstream license text: tests/fixtures/hermes_main_a28a5d03/LICENSE.upstream
+    Source hashes and local artifact hashes: fixture module headers and manifest.json.

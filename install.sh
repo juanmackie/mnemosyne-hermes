@@ -30,6 +30,8 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 VENV="${HERMES_VENV:-}"
 PY_OVERRIDE=""
 DB_PATH="${MNEMOSYNE_DB_PATH:-}"
+HERMES_CLI=""
+HERMES_PM=false
 
 usage() {
   cat <<'EOF'
@@ -233,6 +235,36 @@ uninstall_package() {
   note "uninstalled $package from $VENV"
 }
 
+pm_selected_python() {
+  # Mirror Hermes' documented PM facts layout: installs/<install-key>/facts.json
+  # names the selected generation. Validate both the state file and generation
+  # boundary before using the path for engine patching.
+  "$VENV_PY" - "$VENV" <<'PMEOF'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+project = Path(sys.argv[1]).resolve().parent
+if not (project / "pm" / "environments.py").is_file():
+    raise SystemExit(1)
+home = Path(__import__("os").environ["HERMES_HOME"]).resolve()
+key = hashlib.sha256(str(project).encode("utf-8")).hexdigest()[:16]
+state = home / "installs" / key
+try:
+    facts = json.loads((state / "facts.json").read_text(encoding="utf-8-sig"))
+    environment = Path(facts["packages"]["venv"]["environment"]).resolve(strict=True)
+    if not environment.is_relative_to((state / "environments").resolve()):
+        raise ValueError("selected environment escaped Hermes install state")
+    python = environment / "Scripts" / "python.exe" if __import__("os").name == "nt" else environment / "bin" / "python"
+    if not python.is_file() or not (environment / "pyvenv.cfg").is_file():
+        raise ValueError("selected Hermes generation is incomplete")
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+print(python)
+PMEOF
+}
+
 safe_purge_target() {
   "$VENV_PY" - "$1" <<'PURGEEOF'
 from pathlib import Path
@@ -282,6 +314,29 @@ if [[ -z "${VENV_PY:-}" ]]; then
   VENV_PY="$(venv_python "$VENV")"
 fi
 [[ -n "$VENV_PY" ]] || fail "$VENV has no python (looked for bin/python and Scripts/python.exe)"
+
+# Prefer the CLI installed alongside the selected interpreter. A Hermes found
+# earlier on PATH may belong to a different virtualenv or installation.
+for candidate in "$VENV/bin/hermes" "$VENV/Scripts/hermes.exe"; do
+  if [[ -x "$candidate" ]]; then
+    HERMES_CLI="$candidate"
+    break
+  fi
+done
+if [[ -z "$HERMES_CLI" ]]; then
+  HERMES_CLI="$(command -v hermes 2>/dev/null || true)"
+fi
+
+# Hermes' package manager owns its selected Python environment. Detect it via
+# the supported read-only PM status command; callers must never inject packages
+# into a generation with uv/pip when this succeeds.
+if [[ -n "$HERMES_CLI" ]]; then
+  if [[ -f "$(dirname "$VENV")/pm/cli.py" || -f "$HERMES_HOME/hermes-agent/pm/cli.py" ]]; then
+    HERMES_PM=true
+  elif [[ "$DRY_RUN" != true ]] && "$HERMES_CLI" pm status >/dev/null 2>&1; then
+    HERMES_PM=true
+  fi
+fi
 
 # --- uninstall: the inverse of install, memory kept unless --purge -------
 if [[ "$UNINSTALL" == true ]]; then
@@ -337,10 +392,16 @@ EOF
     note "no plugin entry at $PLUGIN_LINK"
   fi
 
-  uninstall_package mnemosyne-hermes-provider
+  if [[ "$HERMES_PM" != true ]]; then
+    uninstall_package mnemosyne-hermes-provider
+  else
+    note "Hermes PM owns provider dependencies; no packages were removed directly"
+  fi
 
   if [[ "$PURGE" == true ]]; then
-    uninstall_package mnemosyne-memory
+    if [[ "$HERMES_PM" != true ]]; then
+      uninstall_package mnemosyne-memory
+    fi
     safe_purge_target "$DATA_ROOT" || fail "refusing to remove '$DATA_ROOT'; remove it yourself"
     if [[ -d "$DATA_ROOT" ]]; then
       rm -rf "$DATA_ROOT"
@@ -376,6 +437,17 @@ else
   PLUGIN_INSTALL_MODE="symlink with copy fallback"
 fi
 
+# Existing config files must be changed through Hermes so comments and
+# unrelated settings stay intact. Fail before installing anything if neither
+# the selected venv nor PATH provides its config command.
+if [[ -z "$HERMES_CLI" && -f "$CONFIG_FILE" ]]; then
+  if [[ "$DRY_RUN" == true ]]; then
+    note "NOTE: no Hermes CLI was found; this install cannot select memory.provider in the existing config"
+  else
+    fail "cannot select memory.provider: no Hermes CLI found in $VENV or on PATH; add it to PATH or pass the correct --venv/--python"
+  fi
+fi
+
 cat <<EOF
 Hermes provider install plan
   repo             : $ROOT
@@ -387,6 +459,11 @@ Hermes provider install plan
                      (nothing is created or opened by this script)
   engine pin       : $ENGINE_PIN
 EOF
+if [[ "$HERMES_PM" == true ]]; then
+  echo "  dependency owner : Hermes PM (provider pyproject declaration; hermes pm install)"
+else
+  echo "  dependency owner : installer (uv/pip in selected venv)"
+fi
 
 if [[ "$DRY_RUN" == true ]]; then
   echo
@@ -413,7 +490,9 @@ if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]] && ! verify_installed_copy "$P
 fi
 
 # --- 3. install provider + engine -------------------------------------------
-if command -v uv >/dev/null 2>&1; then
+if [[ "$HERMES_PM" == true ]]; then
+  echo "== Hermes PM owns the selected environment"
+elif command -v uv >/dev/null 2>&1; then
   INSTALL=(uv pip install --python "$VENV_PY")
 elif "$VENV_PY" -m pip --version >/dev/null 2>&1; then
   # Kept as a fallback; uv is preferred because it also works in the
@@ -423,13 +502,55 @@ else
   fail "neither uv nor pip is usable for $VENV; install uv (https://docs.astral.sh/uv/)"
 fi
 
-echo "== Installing the vendored provider and the pinned engine"
-"${INSTALL[@]}" "$PROVIDER_SRC"
-"${INSTALL[@]}" "$ENGINE_PIN"
+if [[ "$HERMES_PM" != true ]]; then
+  echo "== Installing the vendored provider and the pinned engine"
+  "${INSTALL[@]}" "$PROVIDER_SRC" "$ENGINE_PIN"
+fi
+
+# Deploy the directory before PM resolves the provider dependency union. The
+# selected memory.provider config names this directory's pyproject declaration.
+echo "== Installing the plugin directory"
+mkdir -p "$(dirname "$PLUGIN_LINK")"
+if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]] && ! verify_installed_copy "$PLUGIN_LINK"; then
+  fail "$PLUGIN_LINK changed after preflight; refusing to overwrite it"
+fi
+rm -rf "$PLUGIN_LINK"
+if [[ "$COPY_MODE" != true ]]; then
+  ln -s "$PROVIDER_PKG" "$PLUGIN_LINK" 2>/dev/null || true
+fi
+PLUGIN_REAL="$("$VENV_PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PLUGIN_LINK" 2>/dev/null || true)"
+PROVIDER_REAL="$("$VENV_PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PROVIDER_PKG" 2>/dev/null || true)"
+if [[ "$COPY_MODE" == true ]] || [[ -z "$PLUGIN_REAL" || "$PLUGIN_REAL" != "$PROVIDER_REAL" ]]; then
+  rm -rf "$PLUGIN_LINK"
+  cp -R "$PROVIDER_PKG" "$PLUGIN_LINK"
+  write_provenance "$PLUGIN_LINK" "$PROVIDER_PKG"
+  note "installed a COPY at $PLUGIN_LINK (no symlink support here)"
+  note "  re-run this script after changing provider code: a copy does not track it"
+else
+  note "linked $PLUGIN_LINK -> $PROVIDER_PKG"
+fi
+[[ -f "$PLUGIN_LINK/__init__.py" ]] || fail "$PLUGIN_LINK has no __init__.py; the Hermes memory
+       provider loader would skip it (it requires __init__.py with register_memory_provider)"
 
 # Patch the engine itself: the standalone `mnemosyne mcp` process bypasses
 # hermes_memory_provider. Refuse unreviewed source drift before plugin/config
 # changes; the applier keeps verified originals and is idempotent.
+if [[ "$HERMES_PM" == true ]]; then
+  # Setting the memory provider is the supported provider-selection input to
+  # PM's dependency union. `pm install` resolves and selects that union.
+  echo "== Selecting the provider so Hermes PM can admit its declared dependencies"
+  "$HERMES_CLI" config set memory.provider mnemosyne
+  "$HERMES_CLI" pm install
+  # On PM-managed installs the selected generation can differ from the
+  # bootstrap venv. Read Hermes' committed PM facts and validate its boundary.
+  HERMES_RUNTIME_PY="$(pm_selected_python 2>/dev/null || true)"
+  if [[ -n "$HERMES_RUNTIME_PY" && -x "$HERMES_RUNTIME_PY" ]]; then
+    VENV_PY="$HERMES_RUNTIME_PY"
+  else
+    fail "Hermes PM admitted dependencies but its committed selected generation could not be verified; refusing to patch an unverified environment"
+  fi
+fi
+
 echo "== Applying the audited engine visibility fixes"
 "$VENV_PY" "$ROOT/scripts/apply_engine_patches.py"
 
@@ -450,45 +571,33 @@ case "$ENGINE_FILE" in
        installed engine; uninstall whatever put src/ ahead of site-packages in $VENV" ;;
 esac
 
-# --- 4. plugin discovery ----------------------------------------------------
-echo "== Installing the plugin directory"
-mkdir -p "$(dirname "$PLUGIN_LINK")"
-if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]] && ! verify_installed_copy "$PLUGIN_LINK"; then
-  fail "$PLUGIN_LINK changed after preflight; refusing to overwrite it"
-fi
-rm -rf "$PLUGIN_LINK"
-if [[ "$COPY_MODE" != true ]]; then
-  ln -s "$PROVIDER_PKG" "$PLUGIN_LINK" 2>/dev/null || true
-fi
-PLUGIN_REAL="$("$VENV_PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PLUGIN_LINK" 2>/dev/null || true)"
-PROVIDER_REAL="$("$VENV_PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PROVIDER_PKG" 2>/dev/null || true)"
-if [[ "$COPY_MODE" == true ]] || [[ -z "$PLUGIN_REAL" || "$PLUGIN_REAL" != "$PROVIDER_REAL" ]]; then
-  # Asked for, or the link did not take: Windows cannot create a directory
-  # symlink without Developer Mode, and some filesystems refuse them. Copy
-  # instead and record the digests, which is what doctor verifies.
-  rm -rf "$PLUGIN_LINK"
-  cp -R "$PROVIDER_PKG" "$PLUGIN_LINK"
-  write_provenance "$PLUGIN_LINK" "$PROVIDER_PKG"
-  note "installed a COPY at $PLUGIN_LINK (no symlink support here)"
-  note "  re-run this script after changing provider code: a copy does not track it"
-else
-  note "linked $PLUGIN_LINK -> $PROVIDER_PKG"
-fi
-[[ -f "$PLUGIN_LINK/__init__.py" ]] || fail "$PLUGIN_LINK has no __init__.py; the Hermes memory
-       provider loader would skip it (it requires __init__.py with register_memory_provider)"
-
 # --- 5. config --------------------------------------------------------------
 echo "== Selecting the provider"
-if command -v hermes >/dev/null 2>&1; then
-  hermes config set memory.provider mnemosyne
+if [[ "$HERMES_PM" != true && -n "$HERMES_CLI" ]]; then
+  "$HERMES_CLI" config set memory.provider mnemosyne
 elif [[ ! -f "$CONFIG_FILE" ]]; then
   mkdir -p "$(dirname "$CONFIG_FILE")"
   printf 'memory:\n  provider: mnemosyne\n' >"$CONFIG_FILE"
   note "created $CONFIG_FILE with memory.provider=mnemosyne"
-else
-  note "NOTE: 'hermes' is not on PATH and $CONFIG_FILE already exists — this script"
-  note "      does not rewrite config files. Add under the existing memory: block:"
-  note "          provider: mnemosyne"
+fi
+
+# Check only the selected value; never print the full config, which can contain
+# sensitive settings. PyYAML is part of the Hermes CLI's runtime dependencies.
+if ! "$VENV_PY" - "$CONFIG_FILE" <<'CONFIGEOF'
+import pathlib
+import sys
+
+try:
+    import yaml
+    config = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+except Exception:
+    raise SystemExit(1)
+
+memory = config.get("memory") if isinstance(config, dict) else None
+raise SystemExit(0 if isinstance(memory, dict) and memory.get("provider") == "mnemosyne" else 1)
+CONFIGEOF
+then
+  fail "Hermes config does not select memory.provider=mnemosyne; refusing to report a successful install"
 fi
 
 # --- 6. verify --------------------------------------------------------------
@@ -531,6 +640,39 @@ if not p.is_available():
     sys.exit(1)
 print(f"provider registered: {p.name} (available); CLI handler contract OK")
 PY
+
+if [[ "$HERMES_PM" == true ]]; then
+  # The provider loader gives a bundled same-name provider precedence over
+  # this user plugin. Verify the resolved directory and instantiated class in
+  # the PM-selected interpreter before calling the install successful.
+  if ! "$VENV_PY" - "$PLUGIN_LINK" <<'LOADERPY'
+import inspect
+from pathlib import Path
+import sys
+
+try:
+    from plugins.memory import find_provider_dir, load_memory_provider
+except Exception as exc:
+    raise SystemExit(f"cannot access Hermes memory-provider loader: {exc}")
+
+expected = Path(sys.argv[1]).resolve()
+selected = find_provider_dir("mnemosyne")
+if selected is None or Path(selected).resolve() != expected:
+    raise SystemExit(f"Hermes resolves mnemosyne to {selected}, expected deployed provider {expected}")
+provider = load_memory_provider("mnemosyne")
+if provider is None:
+    raise SystemExit("Hermes loader could not instantiate mnemosyne")
+provider_file = Path(inspect.getfile(type(provider))).resolve()
+try:
+    provider_file.relative_to(expected)
+except ValueError:
+    raise SystemExit(f"Hermes instantiated {provider_file}, outside deployed provider {expected}")
+print(f"Hermes loader selected deployed provider class: {provider_file}")
+LOADERPY
+  then
+    fail "Hermes memory-provider loader does not resolve mnemosyne to the deployed provider class"
+  fi
+fi
 
 cat <<EOF
 

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "description": "Synthetic engineering fixtures; keyword retrieval with embeddings and LLM work disabled. Not a production traffic sample.",
+  "memories": [
+    {"label": "identity", "content": "[EVAL_IDENTITY] The current contact is Casey, a software engineer.", "source": "identity"},
+    {"label": "preference", "content": "[EVAL_PREFERENCE] Casey prefers pytest for Python testing and regression checks.", "source": "user"},
+    {"label": "project", "content": "[EVAL_PROJECT] The atlas deployment uses SQLite snapshots before database migrations.", "source": "insight"},
+    {"label": "raw_user", "content": "[USER] [EVAL_RAW_USER] Yesterday I ran pytest testing checks for the Python project.", "source": "conversation"},
+    {"label": "raw_tool", "content": "[TOOL] [EVAL_RAW_TOOL] pytest Python testing dump: SYNTHETIC_SECRET_DO_NOT_INJECT.", "source": "conversation_tool"},
+    {"label": "delegation", "content": "[DELEGATION] [EVAL_DELEGATION] Child agent pytest Python testing operational transcript.", "source": "conversation_delegation"},
+    {"label": "unrelated", "content": "[EVAL_UNRELATED] The gardening calendar lists tulips, compost and spring planting.", "source": "user"},
+    {"label": "foreign", "content": "[EVAL_FOREIGN] A different contact prefers Python pytest testing.", "source": "identity", "session": "other-contact"},
+    {"label": "model", "content": "[EVAL_MODEL] The Ruff formatter pipeline runs before each release.", "source": "canonical_tool", "store": "canonical", "owner": "default"},
+    {"label": "foreign_model", "content": "[EVAL_FOREIGN_MODEL] A different profile uses the Ruff formatter pipeline.", "source": "canonical_tool", "store": "canonical", "owner": "other-profile"},
+    {"label": "stale", "content": "[EVAL_STALE] Casey prefers a retired Python pytest testing configuration.", "source": "user", "valid_until": "2000-01-01T00:00:00"},
+    {"label": "large", "content": "[EVAL_LARGE] The zephyr release checklist requires careful review of all deployment stages. ", "source": "user", "repeat": 180}
+  ],
+  "cases": [
+    {"id": "greeting", "query": "Hello", "expected": ["identity"], "allowed": ["identity"], "forbidden": ["foreign", "raw_tool", "delegation"]},
+    {"id": "testing", "query": "pytest Python testing", "expected": ["identity", "preference"], "allowed": ["identity", "preference", "raw_user"], "forbidden": ["foreign", "raw_tool", "delegation", "unrelated"]},
+    {"id": "database", "query": "atlas SQLite snapshots database migrations", "expected": ["identity", "project"], "allowed": ["identity", "project"], "forbidden": ["foreign", "raw_tool", "delegation"]},
+    {"id": "topic-switch", "query": "tulips compost spring planting", "expected": ["identity", "unrelated"], "allowed": ["identity", "unrelated"], "forbidden": ["foreign", "raw_tool", "delegation", "preference"]},
+    {"id": "no-match", "query": "quasar neutrino spectrum", "expected": ["identity"], "allowed": ["identity"], "forbidden": ["foreign", "raw_tool", "delegation"]},
+    {"id": "short-followup", "query": "And then?", "expected": ["identity"], "allowed": ["identity"], "forbidden": ["foreign", "raw_tool", "delegation"]},
+    {"id": "operational-capture", "query": "pytest Python testing operational transcript dump", "expected": ["identity", "preference"], "allowed": ["identity", "preference", "raw_user"], "forbidden": ["foreign", "raw_tool", "delegation"]},
+    {"id": "canonical-profile", "query": "Ruff formatter pipeline", "expected": ["identity", "model"], "allowed": ["identity", "model"], "forbidden": ["foreign_model", "foreign", "stale"]},
+    {"id": "large-context", "query": "zephyr release checklist deployment stages", "expected": ["identity", "large"], "allowed": ["identity", "large", "project", "model"], "forbidden": ["foreign", "raw_tool", "delegation"], "max_chars": 8000, "overflow_identity": true}
+  ]
+}

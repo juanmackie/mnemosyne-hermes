@@ -39,7 +39,7 @@ def test_no_unmanifested_provider_files():
 
 
 def test_vendored_files_match_manifest_hashes():
-    for rel, entry in MANIFEST["files"].items():
+    for rel, entry in {**MANIFEST["files"], **MANIFEST.get("metadata_files", {})}.items():
         path = VENDOR / rel
         assert path.exists(), f"missing vendored file: {rel}"
         assert _digest(path) == entry["sha256"], (
@@ -47,12 +47,23 @@ def test_vendored_files_match_manifest_hashes():
             "fix, mark the site '# LOCAL PATCH:', list it in PATCHES.md and update "
             "VENDORED_FROM.json; otherwise re-sync from the upstream wheel."
         )
+        assert len(path.read_bytes()) == entry["bytes"], f"{rel} byte count drifted"
+        assert len(path.read_bytes().splitlines()) == entry["lines"], f"{rel} line count drifted"
+
+
+def test_directory_plugin_requirements_are_audited():
+    import tomllib
+
+    metadata = MANIFEST.get("metadata_files", {})
+    assert set(metadata) == {"hermes_memory_provider/pyproject.toml"}
+    requirements = tomllib.loads((PACKAGE / "pyproject.toml").read_text(encoding="utf-8"))
+    assert requirements["project"]["dependencies"] == [MANIFEST["engine_dependency"]["pin"]]
 
 
 def test_local_patches_are_declared():
     patched = {
         rel
-        for rel in MANIFEST["files"]
+        for rel in {**MANIFEST["files"], **MANIFEST.get("metadata_files", {})}
         if PATCH_MARKER in (VENDOR / rel).read_text(encoding="utf-8")
     }
     declared = set(MANIFEST.get("local_patches", {}))
@@ -71,6 +82,7 @@ if __name__ == "__main__":
     tests = [
         test_no_unmanifested_provider_files,
         test_vendored_files_match_manifest_hashes,
+        test_directory_plugin_requirements_are_audited,
         test_local_patches_are_declared,
     ]
     for fn in tests:

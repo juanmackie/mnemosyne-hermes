@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# Search-speed benchmark — recall() latency on a deterministic 3000-row corpus.
+# Recall-speed benchmark — memo-hit and forced SQL-miss latency on a deterministic
+# 3000-row corpus.
 # Outputs METRIC name=value lines. Exits nonzero if recall semantics break.
 # Uses a PERSISTENT corpus DB (rebuilt only when missing/version-stale) so
 # runs are comparable and insert-phase I/O jitter doesn't pollute timings.
@@ -159,35 +160,75 @@ QUERIES = [
     ("memory", None, 50, None),                           # wide, large limit
 ]
 REPS = 60
-all_times, per_query = [], {}
-gc.collect()
-gc.disable()
-try:
-    for qi, (q, ns, lim, imp) in enumerate(QUERIES):
-        for _ in range(10):  # warmup
-            s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
-        ts = []
-        for _ in range(REPS):
-            t0 = time.perf_counter()
-            s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
-            ts.append((time.perf_counter() - t0) * 1000)
-        all_times.extend(ts)
-        ts.sort()
-        per_query[qi] = (ts[len(ts) // 2], ts[int((len(ts) - 1) * 0.99)])
-finally:
-    gc.enable()
-s.close()
+memo_hit_times, memo_hit_per_query = [], {}
+sql_miss_times, sql_miss_per_query = [], {}
 
-def pct(data, p):
+def percentile(data, p):
     d = sorted(data)
     k = (len(d) - 1) * p / 100.0
     f = int(k)
     return d[f] if f + 1 >= len(d) else d[f] + (k - f) * (d[f + 1] - d[f])
 
-p50, p99 = pct(all_times, 50), pct(all_times, 99)
-print(f"METRIC search_p50_ms={p50:.4f}")
-print(f"METRIC search_p99_ms={p99:.4f}")
-for qi, (m50, m99) in per_query.items():
+gc.collect()
+gc.disable()
+try:
+    for qi, (q, ns, lim, imp) in enumerate(QUERIES):
+        key = (q, ns, lim, imp)
+        for _ in range(10):  # warmup
+            s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
+
+        # These are the legacy timings: after warmup, repeated calls exercise
+        # the per-thread recall memo (with normal buffered access accounting).
+        warm_result = s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
+        memo_ts = []
+        for _ in range(REPS):
+            t0 = time.perf_counter()
+            s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
+            memo_ts.append((time.perf_counter() - t0) * 1000)
+        memo_hit_times.extend(memo_ts)
+        memo_hit_per_query[qi] = (
+            percentile(memo_ts, 50), percentile(memo_ts, 99)
+        )
+
+        # Warm SQLite and the connection, then evict only this key before each
+        # sample. This bypasses the recall memo while preserving the same store,
+        # query, result limit, filters and normal access-count behavior.
+        expected_ids = [row["id"] for row in warm_result]
+        s._recall_cache.pop(key, None)
+        miss_result = s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
+        assert [row["id"] for row in miss_result] == expected_ids, (
+            f"memo-hit / SQL-miss result order differs for query shape {qi}"
+        )
+        sql_ts = []
+        for _ in range(REPS):
+            s._recall_cache.pop(key, None)
+            t0 = time.perf_counter()
+            s.recall(q, namespace=ns, max_results=lim, min_importance=imp)
+            sql_ts.append((time.perf_counter() - t0) * 1000)
+        sql_miss_times.extend(sql_ts)
+        sql_miss_per_query[qi] = (
+            percentile(sql_ts, 50), percentile(sql_ts, 99)
+        )
+finally:
+    gc.enable()
+s.close()
+
+memo_p50, memo_p99 = percentile(memo_hit_times, 50), percentile(memo_hit_times, 99)
+sql_p50, sql_p99 = percentile(sql_miss_times, 50), percentile(sql_miss_times, 99)
+# Keep the original names as aliases so existing benchmark consumers continue
+# to work; they have always measured repeated memo hits after warmup.
+print(f"METRIC search_p50_ms={memo_p50:.4f}")
+print(f"METRIC search_p99_ms={memo_p99:.4f}")
+print(f"METRIC memo_hit_search_p50_ms={memo_p50:.4f}")
+print(f"METRIC memo_hit_search_p99_ms={memo_p99:.4f}")
+print(f"METRIC sql_miss_search_p50_ms={sql_p50:.4f}")
+print(f"METRIC sql_miss_search_p99_ms={sql_p99:.4f}")
+for qi, (m50, m99) in memo_hit_per_query.items():
     print(f"METRIC q{qi}_p50_ms={m50:.4f}")
     print(f"METRIC q{qi}_p99_ms={m99:.4f}")
+    print(f"METRIC memo_hit_q{qi}_p50_ms={m50:.4f}")
+    print(f"METRIC memo_hit_q{qi}_p99_ms={m99:.4f}")
+for qi, (m50, m99) in sql_miss_per_query.items():
+    print(f"METRIC sql_miss_q{qi}_p50_ms={m50:.4f}")
+    print(f"METRIC sql_miss_q{qi}_p99_ms={m99:.4f}")
 PYEOF

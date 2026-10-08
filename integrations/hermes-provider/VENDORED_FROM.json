@@ -17,14 +17,14 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "0WE438uUwBP8tP5yimQJHqIBvjWJAYzH_LHPp7NM2Is",
-      "bytes": 203813,
-      "lines": 4354
+      "sha256": "su45uyQhjca_5SldDVnyukQtd9o4oLtJ-0Z-kkVVscs",
+      "bytes": 250123,
+      "lines": 5314
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "XeICgiLqwwywBK5h03zPG5g4_uG-TwagKex3UJzn_Sk",
       "bytes": 4098,
-      "lines": 139
+      "lines": 138
     },
     "hermes_memory_provider/cli.py": {
       "sha256": "oEER4MN5ZnfkzytyUonRm1YmxPvG7pgyu3fQaeh3qRY",
@@ -34,22 +34,22 @@
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
       "bytes": 6053,
-      "lines": 165
+      "lines": 164
     },
     "hermes_memory_provider/persona_adapter.py": {
       "sha256": "gZrRoooFM_JOTIyyQLZ7-OSxEHG5IjbKp6kTxZdZ440",
       "bytes": 8883,
-      "lines": 237
+      "lines": 236
     },
     "hermes_memory_provider/persona_tools.py": {
       "sha256": "wmwElN9HPSDF95H3UsDFW29Ve9g2Ew1qdc5d1MetRvw",
       "bytes": 3684,
-      "lines": 106
+      "lines": 105
     },
     "hermes_memory_provider/sync_adapter.py": {
       "sha256": "InSVKKWplpVZoYUkLIK2odQKMoPFrubTJRBFP8fW_t8",
       "bytes": 14381,
-      "lines": 397
+      "lines": 396
     }
   },
   "engine_dependency": {
@@ -76,7 +76,9 @@
       "P20 mnemosyne_update resolves every row mnemosyne_get resolves: global rows from other sessions and episodic rows; an update with no fields is an error, not not_found",
       "P21 mnemosyne_validate honours session/global visibility: the existence check and all mutations use the engine predicate, so private rows of other sessions are not_found",
       "P20/P21 amendment: shared engine visibility helpers and bind params use one runtime cross-session snapshot for fallback update and every validation mutation",
-      "P22 single tracked independent consolidation worker; audited engine SQL lock boundaries yield during model work, auto-sleep never joins turn sync, shutdown drains either trigger and cleans only its owned host backend"
+      "P22 single tracked independent consolidation worker; audited engine SQL lock boundaries yield during model work, auto-sleep never joins turn sync, shutdown drains either trigger and cleans only its owned host backend",
+      "P23 bounded complete prefetch, raw tool/delegation classification and exclusion, configured prompt instructions, PII-safe diagnostics, opt-in coherent exact-query cache",
+      "P24 exact durable native mirror ownership, compact setup, additive per-turn author provenance, fresh backup/identity/status hooks, capability-gated full durable checkpoint API v2"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",
@@ -86,6 +88,16 @@
       "P12 explicit Any annotations in detect_hermes_version/mnemosyne_command so static analysis can run over the provider (no runtime change)",
       "P13 check_provider_provenance accepts only format-v1 copies with an exact SHA-256 inventory of all package files (runtime caches excluded); install/uninstall remove only intact copies from the current canonical source, and _db_writable reports an unencodable path as not writable",
       "P14 supported Hermes range narrowed to audited published releases; remove unsupported-version claims"
+    ],
+    "hermes_memory_provider/pyproject.toml": [
+      "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"
     ]
+  },
+  "metadata_files": {
+    "hermes_memory_provider/pyproject.toml": {
+      "sha256": "CX7tA4i5gOv_fejMnbl-4LyjsOLhs_gmfTATW5CXFyE",
+      "bytes": 237,
+      "lines": 6
+    }
   }
 }

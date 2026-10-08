@@ -25,3 +25,9 @@ integrations/engine-patches/*.patch text eol=lf whitespace=-blank-at-eol
 *.txt text eol=lf
 *.cfg text eol=lf
 *.ini text eol=lf
+*.ps1 text eol=lf
+
+# Later patterns win: byte-gated vendor/fixture payloads must override the
+# generic text rules above, including future upstream CRLF snapshots.
+integrations/hermes-provider/hermes_memory_provider/** -text
+tests/fixtures/hermes_main_a28a5d03/LICENSE.upstream -text

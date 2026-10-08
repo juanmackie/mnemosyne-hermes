@@ -39,6 +39,20 @@ inventory (excluding runtime bytecode caches). The installer then selects
 first write, not by the installer. `./install.sh --help` lists every flag,
 including `--copy`, `--venv`, `--python`, `--hermes-home` and `--db-path`.
 
+On native Windows, use the companion PowerShell installer (copies require no
+symlink privilege):
+
+```powershell
+.\install.ps1 -DryRun -Venv "$env:LOCALAPPDATA\hermes\hermes-agent\venv"
+.\install.ps1 -Yes -Venv "$env:LOCALAPPDATA\hermes\hermes-agent\venv"
+```
+
+Both installers detect newer Hermes package-manager ownership and use
+`hermes pm install` with declared plugin requirements. Legacy environments use
+the selected interpreter's uv/pip path. The audited engine pin stays unchanged;
+unknown engine source hashes are refused. Newer source compatibility does not
+expand the published Hermes release support range.
+
 ## 2. Verify
 
 ```bash
@@ -163,6 +177,11 @@ the four default tools; a configured list can select any subset.
 | `mnemosyne_persona_reinforce` | Persona | opt-in | Reinforce a persona fact. |
 
 ## 5. Using the lite store from Hermes
+
+For automatic-context budgets, cache experiments, capture controls, native
+corrections, backup discovery, and newer lifecycle hooks, see the
+[configuration reference](HERMES_CONFIGURATION.md). The provider evaluation is
+described in [bench/HERMES_PREFETCH_RESULTS.md](../bench/HERMES_PREFETCH_RESULTS.md).
 
 If you want explicit memory tools over the *lite* store rather than the
 provider, register the lite MCP server as an MCP server instead:

@@ -23,13 +23,22 @@ If a memory DB already exists, keep it — do not delete or re-initialize.
 ```bash
 git clone https://github.com/juanmackie/mnemosyne-hermes.git
 cd mnemosyne-hermes
-./install.sh                # installs provider + pinned engine into the Hermes venv
+./install.sh --dry-run      # inspect dependency owner, paths and provider selection
+./install.sh               # install the provider with its audited engine pin
 ```
 There is **no curl one-liner** — the installer needs a checkout — and there is
 no native release binary to download. `./install.sh --dry-run` prints the
 resolved venv, DB path and symlink target without writing anything.
 
-**Verify:** `./install.sh` ends with `provider registered: mnemosyne (available)`.
+On native Windows, execute `.\install.ps1 -DryRun`, then
+`.\install.ps1 -Yes`; pass `-Venv` or `-Python` when discovery needs a path.
+The native installer uses a verified copy and supports PowerShell 5.1/7.
+Both installers use Hermes PM admission when that environment is managed.
+
+**Verify:** the installer exits zero after activation, engine import,
+registration and actual Hermes-loader selection checks. A same-name bundled
+provider that blocks the deployed snapshot is a refusal, not a successful
+install. Resolve that supported host configuration before continuing.
 
 ## 2. Verify
 ```bash
@@ -56,6 +65,11 @@ hermes mnemosyne inspect "test"        # search the live store
 ```
 For a full write/read round-trip, ask the agent to remember a fact and recall
 it, or run the CI smoke test: `bash scripts/smoke-hermes-onboarding.sh`.
+
+For automatic recall tuning, read [HERMES_CONFIGURATION.md](HERMES_CONFIGURATION.md).
+Keep the default session scope and four tools unless the task needs another
+setting. Evaluate caching against real session hits before enabling it; the
+offline exact-repeat benchmark alone does not establish next-turn reuse.
 
 ## 5. The lite MCP surface (optional, independent of the provider)
 

@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native Windows PowerShell provider installation and Hermes PM dependency
+  admission for newer managed environments, with isolated installer tests.
+- Synthetic engine-backed public-prefetch evaluation, bounded automatic
+  context, PII-safe recall telemetry, and opt-in exact-query caching.
+- Read-only backup discovery, compact setup prompts, and capability-gated
+  newer Hermes author/checkpoint/status/identity hooks. Published release and
+  engine support bounds remain unchanged.
+
 - Deterministic natural-language recall evaluation harness under
   `.claude/hillclimb/recall-quality/` (94 labelled cases, held-out splits,
   real-CLI grader and offline candidate screen). Round 1 exposed the AND/OR
@@ -31,6 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Automatic prompt context classifies tool/delegation transcripts as raw and
+  excludes them by default. Instructions describe active native Hermes memory
+  and only configured Mnemosyne tools.
+- Native add/replace/remove mirroring tracks ownership and retires exact
+  prior rows instead of retaining corrected or deleted facts indefinitely.
+
+- Lite restore refuses foreign, corrupt, newer-version and locked destinations
+  before replacement or safety-copy writes, protecting against mistyped paths.
+- Provider installation selects Hermes from the chosen virtualenv and verifies
+  config activation before reporting success. Provider and engine dependencies
+  are resolved together in one install invocation.
+- Recall benchmarks distinguish memo-hit latency from uncached SQL searches;
+  the previous generic search metrics measured repeated memo hits only.
 - Background provider consolidation no longer holds up turn capture or prompt
   reads while waiting for model inference. Auto-sleep and session-end share
   one tracked worker; audited engine lock boundaries preserve SQLite safety,

@@ -61,6 +61,9 @@ ignore = [
 [tool.mypy]
 # Type-check the code this repo owns, in the same scope as pyright.
 files = ["src/mnemosyne_lite", "tests"]
+# Pinned Hermes source extracts are upstream contract evidence, including
+# platform-specific branches; our wrappers and assertions remain type-checked.
+exclude = ["^tests/fixtures/hermes_main_a28a5d03/"]
 python_version = "3.11"
 ignore_missing_imports = true
 

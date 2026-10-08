@@ -9,7 +9,7 @@ Two things ship here, and they are deliberately separate:
 
 | | What it is | Who installs it |
 | --- | --- | --- |
-| **The provider** — `integrations/hermes-provider/` | A vendored, engine-backed Hermes memory provider. Provider id `mnemosyne`. | `./install.sh` |
+| **The provider** — `integrations/hermes-provider/` | A vendored, engine-backed Hermes memory provider. Provider id `mnemosyne`. | `./install.sh` or `install.ps1` |
 | **The lite surface** — `src/mnemosyne_lite/` | A standalone SQLite keyword store with a CLI (`mnemosyne-lite`) and an MCP stdio server. **Not** a Hermes provider. | `pip install -e .` |
 
 The provider is the product. The lite surface is a small, keyless store you can
@@ -41,8 +41,7 @@ cd mnemosyne-hermes
 ./install.sh               # provider + pinned engine, into the Hermes venv
 ```
 
-`install.sh` does four things and nothing else: installs
-`integrations/hermes-provider` plus the pinned engine into the Hermes venv,
+The installer admits the vendored provider's pinned engine dependencies,
 installs `$HERMES_HOME/plugins/mnemosyne` as a symlink (or verified copy when
 symlinks are unavailable), sets
 `memory.provider: mnemosyne` via `hermes config set`, and verifies that exactly
@@ -52,6 +51,27 @@ runtime bytecode caches). `doctor` rejects drift, and install/uninstall refuse
 to overwrite or remove an unverified directory; re-run the installer after
 editing a copy. The installer never creates or opens the memory database — the
 resolved DB path is printed up front so you can check it first.
+
+The installer prefers the Hermes CLI in the selected virtualenv and verifies
+`memory.provider` before reporting success. If an existing config cannot be
+updated because Hermes is unavailable, it stops before installing packages;
+pass the correct `--venv` or put Hermes on `PATH`.
+
+Native Windows can use `.\install.ps1 -DryRun` followed by
+`.\install.ps1 -Yes`; pass `-Venv` or `-Python` when discovery needs an explicit
+path. It installs a verified copy. On newer Hermes installations both
+installers respect Hermes PM ownership and admit declared dependencies through
+`hermes pm install`.
+
+Installer verification checks the provider Hermes actually selects. A bundled
+same-name provider that prevents loading the deployed snapshot causes a clear
+refusal; direct module registration alone is insufficient proof of activation.
+
+Automatic context now has an 8,000-character aggregate ceiling and excludes
+raw tool/delegation captures by default. Prompt instructions match the exposed
+tools, and native memory corrections retire owned mirrors. Exact-query caching
+is opt-in. See the [configuration reference](docs/HERMES_CONFIGURATION.md) and
+[provider evaluation](bench/HERMES_PREFETCH_RESULTS.md).
 
 The installer also applies the [audited engine fixes](integrations/engine-patches/README.md)
 so the engine's standalone `mnemosyne mcp` update path can edit foreign-session
@@ -123,6 +143,10 @@ store. Read/maintenance commands refuse to invent an empty database at a mistype
 path, and a file that is not a lite store is refused byte-identically rather
 than adopted — that refusal is what keeps a mistyped `--db-path` away from an
 engine bank.
+
+`restore` checks an existing destination read-only before replacement or a
+safety backup. Foreign, corrupt and newer-version databases are refused
+unchanged; older lite stores remain valid restore destinations.
 
 The default database is `~/.mnemosyne-lite/mnemosyne.db`. Override it with
 `--db-path` or `MNEMOSYNE_DB_PATH`; `DATABASE_URL` is honoured only for

@@ -33,6 +33,8 @@ ENGINE_PIN='mnemosyne-memory[embeddings]>=3.15.1,<3.16'
 grep -qF "$ENGINE_PIN" install.sh || err "install.sh engine pin drifted"
 grep -qF "$ENGINE_PIN" integrations/hermes-provider/pyproject.toml || err "provider pyproject engine pin drifted"
 grep -qF "$ENGINE_PIN" integrations/hermes-provider/VENDORED_FROM.json || err "VENDORED_FROM.json engine pin drifted"
+grep -qF "$ENGINE_PIN" install.ps1 || err "install.ps1 engine pin drifted"
+grep -qF "$ENGINE_PIN" integrations/hermes-provider/hermes_memory_provider/pyproject.toml || err "directory-plugin requirement pin drifted"
 
 if [[ "$fail" -ne 0 ]]; then
   exit 1
