@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bounded read-only provider ID inspection and partial recorded history, plus
+  an optional session/global-filtered Markdown evidence projection.
+- Exact host message references when available, caller-asserted references on
+  explicit remembers, and a pinned-engine provenance/lineage characterization.
+- Lite cards expose bounded descriptive context and valid UTC creation dates.
+- Existing provider diagnostics expose bounded consolidation-worker status,
+  durations, sanitized failure classes and shutdown-timeout state.
+
 - Native Windows PowerShell provider installation and Hermes PM dependency
   admission for newer managed environments, with isolated installer tests.
 - Synthetic engine-backed public-prefetch evaluation, bounded automatic
@@ -38,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fans out to a fraction of the full matrices with its rank-1 hit intact.
 
 ### Fixed
+
+- The full test runner preserves inherited Python paths using the configured
+  interpreter's native separator, including Windows Python under Git Bash.
+- Provider audit writes own short-lived connections on their calling thread,
+  report sanitized failures, and retain known target ownership for successful
+  mutations. History-read failures no longer appear as empty history.
+- Lite MCP count-read failures propagate as tool errors; conversational
+  fallback counts are labeled as bounded candidates.
 
 - Automatic prompt context classifies tool/delegation transcripts as raw and
   excludes them by default. Instructions describe active native Hermes memory

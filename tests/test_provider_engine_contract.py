@@ -26,6 +26,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+import threading
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -86,7 +87,7 @@ def _contract_env(tmp):
 
     def tracked_connect(*args, **kwargs):
         conn = real_connect(*args, **kwargs)
-        connections.append(conn)
+        connections.append((conn, threading.get_ident()))
         return conn
 
     try:
@@ -95,8 +96,9 @@ def _contract_env(tmp):
     finally:
         # Engine connections are thread-local; close them before Windows
         # attempts to remove the temporary database directory.
-        for conn in connections:
-            conn.close()
+        for conn, owner_thread in connections:
+            if owner_thread == threading.get_ident():
+                conn.close()
         for name in ("mnemosyne.core.beam", "mnemosyne.core.memory"):
             module = sys.modules.get(name)
             local = getattr(module, "_thread_local", None)
@@ -140,7 +142,7 @@ def _stub_hermes_constants():
             sys.modules["hermes_constants"] = saved
 
 
-def _init_contract_provider(tmp, session_id="contract_primary", **kwargs):
+def _init_contract_provider(tmp, session_id="contract_primary", *, stub_audit=True, **kwargs):
     """Build a real engine-backed provider with the full tool surface open.
 
     Mirrors the ``_init`` pattern from tests/test_provider_db_path.py (stubbed
@@ -157,7 +159,8 @@ def _init_contract_provider(tmp, session_id="contract_primary", **kwargs):
     BeamMemory = _require_engine()
     assert BeamMemory is not None, "engine guard must have failed first"
     provider = provider_mod.MnemosyneMemoryProvider()
-    provider.__dict__["_init_audit_log"] = lambda: None
+    if stub_audit:
+        provider.__dict__["_init_audit_log"] = lambda: None
     real_read_config = provider._read_config_key
 
     def _open_all_tools(key):
@@ -174,7 +177,8 @@ def _init_contract_provider(tmp, session_id="contract_primary", **kwargs):
         }
         provider.initialize(session_id=session_id, hermes_home=str(tmp), **init_kwargs)
     finally:
-        provider.__dict__.pop("_init_audit_log", None)
+        if stub_audit:
+            provider.__dict__.pop("_init_audit_log", None)
     assert provider._beam is not None, (
         f"provider failed to initialize against the real engine: {provider._init_error!r}"
     )
@@ -957,6 +961,142 @@ def test_remember_dedup_stays_session_local():
             assert second.get(other)["importance"] == 0.7
 
 
+def test_real_audit_and_pinned_engine_lineage_baseline():
+    """Characterize field survival without invoking any LLM-backed path."""
+    BeamMemory = _require_engine()
+    if BeamMemory is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        provider = _init_contract_provider(
+            tmp,
+            session_id="lineage_session",
+            stub_audit=False,
+        )
+        metadata = {
+            "source_ref": {
+                "session_id": "lineage_session",
+                "message_id": "host-message-17",
+                "origin": "host",
+            },
+            "retention_probe": "kept-through-update-and-validation",
+        }
+        stored = _call(
+            provider,
+            "mnemosyne_remember",
+            {
+                "content": "Lineage baseline memory content",
+                "source": "document",
+                "scope": "session",
+                "metadata": metadata,
+            },
+        )
+        assert stored["status"] == "stored", stored
+        memory_id = stored["memory_id"]
+
+        assert (
+            _call(
+                provider,
+                "mnemosyne_update",
+                {
+                    "memory_id": memory_id,
+                    "content": "Updated lineage baseline memory content",
+                },
+            )["status"]
+            == "updated"
+        )
+        assert (
+            _call(
+                provider,
+                "mnemosyne_validate",
+                {
+                    "memory_id": memory_id,
+                    "action": "attest",
+                    "validator": "contract-test",
+                },
+            ).get("error")
+            is None
+        )
+        working = provider._beam.get(memory_id)
+        working_metadata = json.loads(working["metadata"])
+        assert working["source"] == "document"
+        assert working_metadata["retention_probe"] == metadata["retention_probe"]
+        assert working_metadata["source_ref"]["message_id"] == "host-message-17"
+        assert working_metadata["source_ref"]["origin"] == "caller"
+
+        batch_result = _call(
+            provider,
+            "mnemosyne_batch",
+            {
+                "operations": [
+                    {
+                        "action": "remember",
+                        "content": "Batch source reference assertion.",
+                        "metadata": {
+                            "source_ref": {
+                                "session_id": "lineage_session",
+                                "message_id": "untrusted-batch-id",
+                                "origin": "host",
+                            },
+                            "batch_probe": "preserved",
+                        },
+                    }
+                ],
+            },
+        )
+        assert batch_result["status"] == "ok", batch_result
+        batch_id = batch_result["results"][0]["memory_id"]
+        batch_metadata = json.loads(provider._beam.get(batch_id)["metadata"])
+        assert batch_metadata["batch_probe"] == "preserved"
+        assert batch_metadata["source_ref"]["origin"] == "caller"
+
+        episodic_id = provider._beam.consolidate_to_episodic(
+            summary="A consolidated lineage baseline.",
+            source_wm_ids=[memory_id],
+            source="contract-consolidation",
+            scope="session",
+            metadata={"source": "contract-consolidation", "retention_probe": "episodic"},
+        )
+        episodic = provider._beam.get(episodic_id)
+        episodic_metadata = json.loads(episodic["metadata"])
+        assert episodic_metadata["retention_probe"] == "episodic"
+        # Pinned get() omits summary_of; the whole-store export retains it.
+        assert "summary_of" not in episodic
+        exported = provider._beam.export_to_dict()
+        exported_row = next(row for row in exported["episodic_memory"] if row["id"] == episodic_id)
+        assert exported_row["summary_of"] == memory_id
+
+        worker = threading.Thread(
+            target=lambda: provider._audit_event(
+                "worker_probe",
+                memory_id=memory_id,
+                scope="session",
+                session_id=provider._session_id,
+                source_tool="contract-worker",
+            )
+        )
+        worker.start()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "audit worker did not finish"
+        from hermes_memory_provider.audit import read_audit_history
+
+        events = read_audit_history(
+            pathlib.Path(provider._beam.db_path),
+            memory_id=memory_id,
+            session_id=provider._session_id,
+            limit=100,
+        )
+        actions = [event["action"] for event in events]
+        assert "remember" in actions
+        assert "update" in actions
+        assert "validate_attest" in actions
+        assert "worker_probe" in actions
+        update_event = next(event for event in events if event["action"] == "update")
+        assert update_event["session_id"] == provider._session_id
+        assert update_event["scope"] == "session"
+        assert provider.get_audit_diagnostics()["counters"]["write_successes"] >= 4
+        provider.shutdown()
+
+
 if __name__ == "__main__":
     tests = [
         test_engine_api_surface_matches_snapshot,
@@ -971,6 +1111,7 @@ if __name__ == "__main__":
         test_engine_mcp_batch_update_preserves_outer_transaction,
         test_engine_update_refreshes_vectors_and_cached_recall,
         test_remember_dedup_stays_session_local,
+        test_real_audit_and_pinned_engine_lineage_baseline,
     ]
     for fn in tests:
         fn()

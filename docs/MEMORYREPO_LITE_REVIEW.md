@@ -1,0 +1,44 @@
+# Memoryrepo patterns for Mnemosyne-lite
+
+**Review target:** `supermemoryai/memoryrepo` at `54f7ff3065df8af687dc5c04a4bb17d6611e5fd1` (read-only checkout). This is a design review only; no implementation is included.
+
+## Recommendation
+
+Borrow the upstream project's agent-facing discipline while keeping Mnemosyne-lite's SQLite schema, four MCP tool names, keyless operation, and standard-library footprint intact. The best near-term work is to fix a verified MCP error-reporting gap, then add a small labeled recall-quality gate using the repository's existing provider evaluation practice, and consider a card improvement using fields already in the lite store. Memoryrepo has no visible evaluation harness in the reviewed checkout; the labeled fixture proposal is based on Mnemosyne's own provider evaluation, not attributed to upstream. Do not port Memoryrepo's git-backed wiki, model-driven chat writes, or background “dream” loop into lite.
+
+Memoryrepo's prompt asks the agent to search before changing memory and to attach source references to remembered facts ([`memory.ts`](https://github.com/supermemoryai/memoryrepo/blob/54f7ff3065df8af687dc5c04a4bb17d6611e5fd1/src/server/memory.ts#L48-L59)). The write tool does not validate that citations exist; source references are model-authored conventions. When a referenced message is missing, source lookup falls back to the thread's last messages and labels that fallback ([`transcripts.ts`](https://github.com/supermemoryai/memoryrepo/blob/54f7ff3065df8af687dc5c04a4bb17d6611e5fd1/src/server/transcripts.ts#L91-L99)). This suggests a provenance habit, not a directly portable guarantee. Evaluation is a Mnemosyne-side opportunity: the existing synthetic provider fixtures separate required and forbidden results, response budgets, and latency ([`hermes_prefetch_cases.json`](../bench/hermes_prefetch_cases.json), [`HERMES_PREFETCH_RESULTS.md`](../bench/HERMES_PREFETCH_RESULTS.md)); adapt that established practice to lite without implying Memoryrepo has such a harness.
+
+## What already exists in Mnemosyne-lite
+
+- Retrieval is already local FTS5 with BM25 ordering, deterministic tie-breaks, a literal-substring path for queries without searchable tokens, and a bounded per-thread memo ([`storage.py`](../src/mnemosyne_lite/storage.py#L1105-L1248)). This already provides the ranked retrieval that Memoryrepo implements separately for markdown files and transcripts.
+- `describe` provides a store inventory before search; CLI `--format cards` and MCP results share capped cards with an ID, namespace, importance, match snippet, and `shown N of M` count ([`cli.py`](../src/mnemosyne_lite/cli.py#L101-L137), [`cards.py`](../src/mnemosyne_lite/cards.py#L1-L24), [`tools.py`](../src/mnemosyne_lite/tools.py#L15-L42)). The lite MCP surface already has `mnemosyne_prefetch` and `mnemosyne_sync_turn` ([`tools.py`](../src/mnemosyne_lite/tools.py#L24-L42)).
+- Contract coverage is strong for schema safety, refusal behavior, CLI and MCP round trips, and card output ([`test_python_hardening.py`](../tests/test_python_hardening.py), [`test_lite_mcp.py`](../tests/test_lite_mcp.py), [`test_lite_describe_cards.py`](../tests/test_lite_describe_cards.py)). `bench/measure.sh` measures cold initialization, write cost, memo-hit latency, SQL-miss latency, and checks basic retrieval counts; it is a performance harness, not a relevance evaluation ([`bench/measure.sh`](../bench/measure.sh), [`bench/README.md`](../bench/README.md)). The existing labeled outcome evaluation and its gate target the Hermes provider, not the lite `storage.recall`/MCP path ([`test_provider_eval.py`](../tests/test_provider_eval.py), [`hermes_prefetch_eval.py`](../bench/hermes_prefetch_eval.py)).
+- Stored `context` is available in rows and accepted by `remember`, but cards currently omit it ([`storage.py`](../src/mnemosyne_lite/storage.py#L1014-L1044), [`cards.py`](../src/mnemosyne_lite/cards.py#L87-L96)). MCP's card-count and indexed-count queries catch broad errors and substitute `len(results)` ([`tools.py`](../src/mnemosyne_lite/tools.py#L156-L171]); that can present an approximate count as an exact `shown N of M` or indexed total, despite the repository's fail-loud distinction between no match and store failure.
+
+## Proposed changes, ordered by value
+
+### 1. Stop masking MCP count failures
+
+Change the lite tool path so failures in `count_matching()` or `count()` propagate as a tool error instead of returning an apparently exact count derived from result length. The store already converts SQLite read errors to `StorageError`; preserving that signal through `call_tool` aligns with the repository's fail-loud contract without changing the tool names or successful response fields. This is the first priority because the masking behavior is present in the current code. If a count is intentionally made optional later, the response should explicitly mark it unavailable rather than presenting an estimate as exact.
+
+**Validation scenarios:** inject a failure in each count query after a successful recall and assert MCP returns `isError: true`; separately assert a true empty search still succeeds with `shown 0 of 0`; confirm valid searches preserve their current structured fields and card text.
+
+### 2. Add a keyless lite recall-quality evaluation
+
+Adapt the repository's existing provider evaluation pattern to a small synthetic fixture set and runner around the public lite recall path. Grade required and forbidden memory labels, no-match behavior, output size, and stable ordering; report quality and latency separately. Include both `storage.recall` and `mnemosyne_prefetch` so the prefetch fallback is measured as its own behavior. This fills the clearest evaluation gap: current lite tests pin contracts, and the latency harness pins a few counts, but neither measures relevant-versus-irrelevant recall across representative queries.
+
+Keep fixture text synthetic, never read an operator's database, and describe scores as fixture outcomes rather than real-user relevance. Register the runner or its fast smoke subset in `scripts/checks.sh`, since that file is the repository's gate registry.
+
+**Validation scenarios:** relevant and irrelevant memories with overlapping terms; a no-match query; a short follow-up; punctuation-only literal search; Unicode words; namespace and importance filters; capped result count; prefetch's multi-term fallback; repeat queries for latency; output with a very long memory; missing/foreign store failures. Require the grader itself to reject empty, wrong, forbidden, duplicate, and oversized outputs, following the oracle/null/wrong-answer checks in [`test_provider_eval.py`](../tests/test_provider_eval.py#L23-L44). Preserve and report the current BM25 behavior as the baseline.
+
+### 3. Make existing cards more auditable without changing tools or schema
+
+Consider rendering an optional, bounded `context` line on cards and including the memory's creation date if it is already present in each row. Keep the memory ID prominent as the stable reference and do not describe free-form `context` as a verified source citation. This applies Memoryrepo's provenance habit using existing lite data and leaves the JSON row shape, database schema, and four MCP tool names untouched. It is an additive text-card change; retain the current table and JSON formats.
+
+**Validation scenarios:** absent, empty, and long context; context containing newlines; each card and overall output remain within documented caps; IDs and `shown N of M` remain visible; existing text-table and JSON contracts remain unchanged. Check both CLI cards and MCP `text` because they share the renderer.
+
+## Patterns to keep out of the lite scope
+
+Memoryrepo's implementation centers on a markdown wiki in a remotely versioned git repository, immediate model-authored edits, source-reading tools, transcript/note inboxes, and scheduled model-based cleanup ([`README.md`](https://github.com/supermemoryai/memoryrepo/blob/54f7ff3065df8af687dc5c04a4bb17d6611e5fd1/README.md#L22-L42), [`memory.ts`](https://github.com/supermemoryai/memoryrepo/blob/54f7ff3065df8af687dc5c04a4bb17d6611e5fd1/src/server/memory.ts#L68-L90), [`memory-agent.ts`](https://github.com/supermemoryai/memoryrepo/blob/54f7ff3065df8af687dc5c04a4bb17d6611e5fd1/src/server/memory-agent.ts#L440-L465)). These require an LLM/service lifecycle and a different memory model. Porting them would undermine lite's keyless, standalone SQLite role and introduce dependencies and behavior the lite surface does not promise.
+
+The shared ideas are process-level: search before capture, preserve provenance where available, make result budgets explicit, keep no-match distinct from failure, and evaluate retrieval against labeled fixtures. Memoryrepo's API keys, model calls, remote git repository, notes, accounts, and background dream scheduler are not dependencies or design requirements for mnemosyne-lite.

@@ -37,7 +37,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$ROOT"
-export PYTHONPATH="$ROOT/src:${PYTHONPATH:-}"
+# Build PYTHONPATH with the configured interpreter's native path separator.
+# In Git Bash, the shell is POSIX-like while a Windows Python expects a
+# semicolon-separated path list. Passing ROOT as an argument also lets MSYS
+# convert it for that Python process; exporting the resulting value avoids
+# Git Bash rewriting it as one path when Python is launched later.
+export PYTHONPATH
+PYTHONPATH="$("$PYTHON_BIN" -c 'import os, sys; from pathlib import Path; parts = [str(Path(sys.argv[1]) / "src")]; inherited = os.environ.get("PYTHONPATH", ""); parts.extend(inherited.split(os.pathsep) if inherited else []); print(os.pathsep.join(parts))' "$ROOT")"
+export PYTHONPATH
 if [[ ! -f pyproject.toml ]]; then
   printf 'Error: pyproject.toml not found at %s\n' "$ROOT" >&2
   exit 1

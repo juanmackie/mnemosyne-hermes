@@ -57,6 +57,22 @@ Mnemosyne supplies searchable facts and episodic evidence. Skills carry
 procedures; `session_search`, when exposed by Hermes, is the transcript fallback.
 Dynamic recall stays in per-turn context while provider instructions stay static.
 
+## Consolidation status
+
+The existing opt-in `mnemosyne_diagnose` tool includes a `consolidation` snapshot
+for the provider's automatic/session-end worker. It reports `idle`, `running`,
+`succeeded` or `failed`, the last trigger, epoch start/finish times, monotonic
+duration in milliseconds, and an error class if the worker failed. Reused and
+skipped trigger counts, stopping state and a shutdown-timeout flag help explain
+why another trigger did not start a worker. These fields contain no memory text,
+session identifiers, paths or error messages.
+
+Status is in memory for this provider instance and resets on reinitialization.
+It does not survive a process restart or represent a durable job ledger. The
+snapshot covers the existing tracked worker; a manually invoked sleep tool has
+its own response. No token/cost values are inferred. The four default tools and
+reflection budgets are unchanged.
+
 ## Lifecycle compatibility
 
 Native mirror replace/remove retires only an owned engine row identified by

@@ -18,11 +18,13 @@ import os
 import pathlib
 import sys
 import tempfile
+from datetime import UTC, datetime
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 import mnemosyne_lite.cli as CLI  # noqa: E402
+from mnemosyne_lite.cards import render_list_cards, render_recall_cards  # noqa: E402
 from mnemosyne_lite.storage import PythonMemoryStorage  # noqa: E402
 
 
@@ -103,6 +105,56 @@ def test_text_and_json_recall_contracts_still_hold():
         code, out, err = _run(["--db-path", db, "recall", "--query", "json", "--format", "json"])
         assert code == 0, (code, err)
         assert isinstance(json.loads(out), list), out
+
+
+def test_cards_include_bounded_context_and_utc_date():
+    stamp = datetime(2024, 1, 2, 23, 30, tzinfo=UTC).timestamp()
+    row = {
+        "id": "mem-1",
+        "namespace": "ns",
+        "importance": 5,
+        "content": "remember storage",
+        "context": "A descriptive note\nwith a second line",
+        "created_at": stamp,
+    }
+    rendered = render_recall_cards([row], "storage", 1, 1)
+    assert "context (metadata): A descriptive note with a second line" in rendered
+    assert "created (UTC): 2024-01-02" in rendered
+
+    long_context = "line one\n" + ("x" * 500)
+    row["context"] = long_context
+    rendered = render_list_cards([row], 1)
+    context_line = next(line for line in rendered.splitlines() if "context (" in line)
+    assert "\n" not in context_line
+    assert len(context_line) <= 160
+    assert context_line.endswith("…")
+
+
+def test_cards_omit_missing_or_malformed_optional_metadata():
+    base = {"id": "mem-2", "namespace": "ns", "importance": 3, "content": "note"}
+    rendered = render_list_cards([base], 1)
+    assert "context (" not in rendered and "created (UTC):" not in rendered
+    base.update(context="\n \t", created_at="not-a-timestamp")
+    rendered = render_list_cards([base], 1)
+    assert "context (" not in rendered and "created (UTC):" not in rendered
+
+
+def test_prefetch_fallback_labels_its_bounded_total():
+    with tempfile.TemporaryDirectory() as d:
+        db = str(pathlib.Path(d) / "m.db")
+        assert _run(["--db-path", db, "init"])[0] == 0
+        store = PythonMemoryStorage(db)
+        store.remember("A neighborhood has local storage systems", "default", 5)
+        store.close()
+        from mnemosyne_lite.tools import call_tool
+
+        store = PythonMemoryStorage(db)
+        result = call_tool(store, "mnemosyne_prefetch", {"query": "neighborhood query"})
+        store.close()
+        assert result["count"] == 1
+        assert result["total_is_bounded"] is True
+        assert "bounded keyword fallback" in result["text"]
+        assert "shown 1 of 1" not in result["text"]
 
 
 if __name__ == "__main__":

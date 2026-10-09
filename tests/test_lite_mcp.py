@@ -16,6 +16,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
@@ -147,12 +148,60 @@ def test_foreign_store_is_refused_byte_identically():
         assert after == before, "file was modified"
 
 
+def test_count_read_failures_are_mcp_errors_after_successful_recall():
+    """A failed total query must not turn a successful recall into an exact count."""
+    for method_name in ("count_matching", "count"):
+        with tempfile.TemporaryDirectory() as d:
+            db = _new_store(d)
+            storage = PythonMemoryStorage(db)
+            storage.remember("the user prefers local storage", "ns", 5)
+            storage.close()
+            request = {
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "tools/call",
+                "params": {
+                    "name": "mnemosyne_memory_search",
+                    "arguments": {"query": "local storage", "namespace": "ns"},
+                },
+            }
+            with patch.object(
+                PythonMemoryStorage,
+                method_name,
+                side_effect=StorageError(f"{method_name} read failed"),
+            ):
+                response = _serve(db, [request])[0]["result"]
+            assert response["isError"] is True, response
+            assert f"{method_name} read failed" in response["content"][0]["text"]
+
+
+def test_no_match_search_is_a_successful_empty_mcp_result():
+    with tempfile.TemporaryDirectory() as d:
+        db = _new_store(d)
+        request = {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "mnemosyne_memory_search",
+                "arguments": {"query": "no such memory"},
+            },
+        }
+        response = _serve(db, [request])[0]["result"]
+        assert response["isError"] is False, response
+        result = response["structuredContent"]
+        assert result["count"] == 0 and result["total"] == 0, result
+        assert "shown 0 of 0" in result["text"], result
+
+
 if __name__ == "__main__":
     tests = [
         test_round_trip_over_the_mcp_protocol,
         test_notifications_and_unknown_methods,
         test_missing_store_is_refused_not_fabricated,
         test_foreign_store_is_refused_byte_identically,
+        test_count_read_failures_are_mcp_errors_after_successful_recall,
+        test_no_match_search_is_a_successful_empty_mcp_result,
     ]
     for fn in tests:
         fn()
