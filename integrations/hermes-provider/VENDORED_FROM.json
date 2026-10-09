@@ -17,19 +17,19 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "su45uyQhjca_5SldDVnyukQtd9o4oLtJ-0Z-kkVVscs",
-      "bytes": 250123,
-      "lines": 5314
+      "sha256": "bmE-CpIPT-uR8OMkEWC0cnV2aamwKTht-ttt1qmAwPg",
+      "bytes": 266205,
+      "lines": 5586
     },
     "hermes_memory_provider/audit.py": {
-      "sha256": "XeICgiLqwwywBK5h03zPG5g4_uG-TwagKex3UJzn_Sk",
-      "bytes": 4098,
-      "lines": 138
+      "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
+      "bytes": 16988,
+      "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "oEER4MN5ZnfkzytyUonRm1YmxPvG7pgyu3fQaeh3qRY",
-      "bytes": 34419,
-      "lines": 783
+      "sha256": "8Z8Tc5asg-OmV5hYgpHP_z6JIVcIteKuS31W1w19QJg",
+      "bytes": 42297,
+      "lines": 934
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -50,6 +50,11 @@
       "sha256": "InSVKKWplpVZoYUkLIK2odQKMoPFrubTJRBFP8fW_t8",
       "bytes": 14381,
       "lines": 396
+    },
+    "hermes_memory_provider/evidence.py": {
+      "sha256": "gylb1knG95-J1Wv48cW_1YOCOL8axLsRMI8d-_rHXGc",
+      "bytes": 14620,
+      "lines": 299
     }
   },
   "engine_dependency": {
@@ -78,7 +83,10 @@
       "P20/P21 amendment: shared engine visibility helpers and bind params use one runtime cross-session snapshot for fallback update and every validation mutation",
       "P22 single tracked independent consolidation worker; audited engine SQL lock boundaries yield during model work, auto-sleep never joins turn sync, shutdown drains either trigger and cleans only its owned host backend",
       "P23 bounded complete prefetch, raw tool/delegation classification and exclusion, configured prompt instructions, PII-safe diagnostics, opt-in coherent exact-query cache",
-      "P24 exact durable native mirror ownership, compact setup, additive per-turn author provenance, fresh backup/identity/status hooks, capability-gated full durable checkpoint API v2"
+      "P24 exact durable native mirror ownership, compact setup, additive per-turn author provenance, fresh backup/identity/status hooks, capability-gated full durable checkpoint API v2",
+      "P26 partial-history diagnostics and authorized target ownership for remember/update/forget/invalidate/private validation events",
+      "P28 exact host references on eligible turn/identity capture; explicit remember references remain caller assertions",
+      "P29 bounded process-local tracked consolidation status, immutable lock-free snapshots and sanitized lifecycle outcomes in existing diagnostics"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",
@@ -87,10 +95,18 @@
       "P11 db_path wired into the CLI BeamMemory/Mnemosyne and canonical-provider provenance check (T3/T7)",
       "P12 explicit Any annotations in detect_hermes_version/mnemosyne_command so static analysis can run over the provider (no runtime change)",
       "P13 check_provider_provenance accepts only format-v1 copies with an exact SHA-256 inventory of all package files (runtime caches excluded); install/uninstall remove only intact copies from the current canonical source, and _db_writable reports an unencodable path as not writable",
-      "P14 supported Hermes range narrowed to audited published releases; remove unsupported-version claims"
+      "P14 supported Hermes range narrowed to audited published releases; remove unsupported-version claims",
+      "P27 read-only bounded ID inspection and partial history with session/global or explicit operator selection",
+      "P28 optional bounded Markdown evidence export preserving engine JSON export"
     ],
     "hermes_memory_provider/pyproject.toml": [
       "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"
+    ],
+    "hermes_memory_provider/audit.py": [
+      "P26 classified per-operation thread-owned audit connections, bounded lock waits, scoped read-only history and sanitized failures"
+    ],
+    "hermes_memory_provider/evidence.py": [
+      "P28 new local read-only source-reference normalization and bounded Markdown projection; no engine schema changes"
     ]
   },
   "metadata_files": {

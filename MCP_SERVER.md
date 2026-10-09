@@ -67,6 +67,14 @@ namespaces); run `mnemosyne-lite describe` for the full summary.
 
 ### tools/call
 
+Search and prefetch count-query failures return `isError: true`, even if the
+preceding recall succeeded. A true no-match remains a successful empty result.
+When prefetch uses its bounded keyword fallback, `total` counts the returned
+candidates and `total_is_bounded: true` distinguishes it from a full matching
+count. Card text labels this explicitly. Card context is descriptive stored
+metadata, capped to a 160-character line; valid creation timestamps appear as
+UTC dates. `max_chars` caps each content body, not the entire card.
+
 ```json
 {"jsonrpc":"2.0","method":"tools/call",
  "params":{"name":"mnemosyne_memory_search","arguments":{"query":"storage"}},"id":3}

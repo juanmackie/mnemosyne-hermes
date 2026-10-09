@@ -153,23 +153,24 @@ def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"
     from .cards import DEFAULT_CARD_CHARS, render_recall_cards
 
     max_chars = arguments.get("max_chars", DEFAULT_CARD_CHARS)
-    try:
-        total = (
-            len(results)
-            if used_fallback
-            else storage.count_matching(
-                arguments["query"],
-                namespace=namespace,
-                min_importance=arguments.get("min_importance"),
-            )
+    total = (
+        len(results)
+        if used_fallback
+        else storage.count_matching(
+            arguments["query"],
+            namespace=namespace,
+            min_importance=arguments.get("min_importance"),
         )
-    except Exception:
-        total = len(results)
-    try:
-        indexed = storage.count()
-    except Exception:
-        indexed = len(results)
-    cards = render_recall_cards(results, arguments["query"], total, indexed, max_chars)
+    )
+    indexed = storage.count()
+    cards = render_recall_cards(
+        results,
+        arguments["query"],
+        total,
+        indexed,
+        max_chars,
+        total_is_bounded=used_fallback,
+    )
     result = {
         "ok": True,
         "results": results,
@@ -179,4 +180,6 @@ def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"
         "namespace": namespace,
         "text": cards,
     }
+    if used_fallback:
+        result["total_is_bounded"] = True
     return result

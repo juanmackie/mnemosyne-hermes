@@ -127,6 +127,62 @@ when both are set. The standalone lite surface uses `~/.mnemosyne-lite/mnemosyne
 — that is **not** the provider's store. Check `hermes mnemosyne inspect` or
 `doctor` to confirm which store is live.
 
+## Inspect evidence and recorded history
+
+```bash
+hermes mnemosyne inspect --id <memory-id> --session-id <engine-session-id>
+hermes mnemosyne history --id <memory-id> --session-id <engine-session-id> --format text
+hermes mnemosyne export --format markdown --session-id <engine-session-id> --output evidence.md
+```
+
+By-ID inspection, history, and Markdown export use an existing engine store
+through read-only SQLite connections. They refuse missing, foreign and corrupt
+stores without creating tables. The existing positional `inspect <query>` and
+whole-store JSON export keep their behavior. New reads select the given engine
+session plus global rows; the default session is `hermes_default`. Provider
+sessions commonly have a `hermes_` prefix, so use the stored engine session ID
+reported by `mnemosyne_stats`, rather than assuming it is the host transcript ID.
+`--all-sessions` explicitly selects the local operator's broader view. These
+local CLI selectors are filters, not authentication. `history --profile` only
+narrows matching event labels; it does not select a different database.
+
+History is **partial recorded history**, not a complete revision log or undo
+facility. Remember, successful update/forget/invalidate, and private validation
+events retain known target ownership, including after deletion. Legacy events
+with missing ownership are excluded from session views. Other capture and
+background operations may remain uncovered. Writes are best effort with a
+100 ms SQLite busy wait, per-operation connections and sanitized health counters
+available through `get_audit_diagnostics()` and the existing full-surface
+`mnemosyne_diagnose` tool. Failed history reads report an error.
+
+Turn capture attaches a `source_ref` containing the host session and exact
+message ID only when the full message list supplies one unique matching
+message. Older hosts or ambiguous messages omit it. Explicit remember metadata
+can supply `source_ref: {session_id, message_id}`; it is labeled `caller` rather
+than `host`. References do not verify what a message says, and no transcript
+lookup is supplied by these commands. Identity captures retain eligible refs.
+Imported or externally edited metadata can contain an asserted `host` label;
+the inspection view cannot authenticate those labels. Provider tool writes
+normalize caller-supplied origins to `caller`, including batch and pending writes.
+Inspection includes `origin_authenticated: false`; Markdown labels the origin
+as a stored claim, including references captured through the host callback.
+The engine's summary rows retain lineage separately; inspection and export show
+only original IDs eligible for the selected session, with unavailable evidence
+marked. Consolidation does not automatically copy all source metadata.
+
+Inspection caps content at 4,000 characters. History limits events to 100 per
+call and supports JSON (default) or text. Markdown export caps rows at 200,
+each content body at 4,000 characters, its index at 8,000 characters and each
+lineage list at 20 IDs. Omission/truncation is visible. It produces a single
+read-only projection with escaped Markdown and stable IDs, without Git writes
+or import synchronization. Output must be a new file in an existing directory;
+database/WAL/SHM/journal targets and existing outputs are refused. Existing JSON export
+remains the full engine format.
+
+The snapshot bounds legacy metadata and lineage text before loading them into
+Python (65,536 characters each). Oversized metadata yields unavailable evidence;
+oversized lineage is explicitly marked incomplete. Unknown scopes are excluded.
+
 ## Fail loud, never hollow
 
 The provider imports the engine (`mnemosyne.core.*`, `mnemosyne.batch_tool`,

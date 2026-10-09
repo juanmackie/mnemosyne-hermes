@@ -290,6 +290,50 @@ the patched engine ID tools; disabled preserves session/global visibility.
 Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 (they need a product decision, not a mechanical fix).
 
+### P26 — thread-owned audit persistence and partial-history health
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/audit.py`, `hermes_memory_provider/__init__.py` |
+| Date | 2026-10-09 |
+| Reason | One initialization-thread SQLite connection dropped worker events; read errors looked like empty history. Updates had no recorded event and deletion events lacked durable target ownership. |
+| Behaviour | Short-lived per-operation connections, a 100 ms busy wait, classified-store checks before writes, lifecycle serialization and sanitized failure counters. Read-only history raises on failed reads. Session/global selection excludes unknown ownership, while explicit operator selection permits broader inspection. Successful remember/update/forget/invalidate/private validation events retain target scope/session; history remains partial and best effort. Diagnostics include audit health without another default tool. |
+| Verification | `tests/test_provider_audit.py`, `tests/test_provider_inspection.py`, and the real-audit lineage case in `tests/test_provider_engine_contract.py`: threads, locked stores, shutdown, replaced/foreign-store refusal, scoped/deleted events, valid bounded metadata, and read errors. |
+| Upstream | Local provider integration; not sent upstream. Preserve during re-vendor. |
+
+### P27 — bounded read-only provider inspection CLI
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/cli.py` |
+| Date | 2026-10-09 |
+| Reason | Existing CLI inspection was keyword search only, without source-reference or recorded-history views. |
+| Behaviour | `inspect --id` and `history --id` read existing stores without engine initialization or DDL. Session/global selection is the default; `--all-sessions` is explicit local-operator selection. Content/history are bounded and metadata is allowlisted. History supports JSON/text and labels partial coverage. Existing positional search is preserved. CLI also exposes the P28 Markdown projection while leaving engine JSON export unchanged. |
+| Verification | `tests/test_provider_inspection.py` and `tests/test_provider_evidence.py`: scope/lineage exclusions, failures, content limits and read-only DB behavior. |
+| Upstream | Local CLI extension; not sent upstream. Preserve during re-vendor. |
+
+### P28 — exact references and Markdown evidence projection
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/evidence.py` (new local module), `hermes_memory_provider/__init__.py`, `hermes_memory_provider/cli.py` |
+| Date | 2026-10-09 |
+| Reason | Source/author fields did not consistently carry exact host message IDs; a readable evidence view needed to preserve engine ownership and visibility. |
+| Behaviour | Turn/identity capture adds references only for uniquely matching host messages with explicit IDs; explicit tool references remain caller assertions. Inspection marks stored origins unauthenticated; Markdown renders origin labels as stored claims. Shared read-only classification/snapshots show eligible engine rows and original lineage. Optional Markdown export escapes content, marks missing evidence and truncation, caps rows/content/index/lineage, and publishes a new file without touching the DB or overwriting an existing target. No transcript verification, Git writes, schema migration, pin widening or second memory backend. |
+| Verification | `tests/test_provider_evidence.py`, provider inspection tests and engine-contract lineage checks cover exact/ambiguous/missing IDs, explicit origin, WAL snapshots, legacy engine tables, store refusal, source limits and export/DB compatibility. |
+| Upstream | New local helper rather than copied memoryrepo code; design informed by `docs/MEMORYREPO_PROPOSED_PLAN.md`. Preserve module during re-vendor. |
+
+### P29 — observable consolidation lifecycle
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` |
+| Date | 2026-10-09 |
+| Reason | The tracked automatic/session-end worker had no bounded status snapshot for operators. |
+| Behaviour | Existing diagnosis includes in-memory worker state, trigger, start/finish times, monotonic duration, sanitized error class, reused/skipped trigger counts and shutdown-timeout state. Immutable snapshot replacement permits status reads without acquiring worker or foreground locks. Existing worker, budgets, tool exposure and engine ownership are retained; no durable job ledger or inferred cost fields. |
+| Verification | `tests/test_provider_maintenance.py` and existing consolidation tests cover blocked model work, success/failure, overlap, worker construction/close/start failures, shutdown and reinitialization. Sleep/close `SystemExit` propagates while finalizing failed status. |
+| Upstream | Local provider diagnostics; preserve during re-vendor. |
+
 ## Sync procedure (run on every upstream release)
 
 ```bash

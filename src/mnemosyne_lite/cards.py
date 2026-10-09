@@ -8,9 +8,14 @@ A header reports `shown N of M` so agents can tell "no match" from
 
 Pure functions only: no DB access, no I/O. The CLI (`--format cards`)
 and the MCP `text` field share this renderer.
+
+`max_chars` caps each memory content body. Optional context metadata has its
+own 160-character line cap. Context is free-form descriptive metadata, not a
+verified citation. Created dates are rendered as UTC calendar dates.
 """
 
 import re
+from datetime import UTC, datetime
 
 # A character the FTS5 unicode61 tokenizer keeps: a letter or a digit.
 _TOKEN_RE = re.compile(r"[^\W_]", re.UNICODE)
@@ -18,6 +23,7 @@ _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 DEFAULT_CARD_CHARS = 500
 DEFAULT_SNIPPET_CHARS = 160
+DEFAULT_METADATA_CHARS = 160
 
 
 def query_terms(query: str) -> list[str]:
@@ -93,7 +99,28 @@ def _card_body(index: int, row: dict, query: str, max_chars: int) -> list[str]:
     lines.append(f"  {body}" if body else "  -")
     if query:
         lines.append(f"  match: {build_snippet(str(row.get('content', '')), query)}")
+    context = _single_line(str(row.get("context") or ""))
+    if context:
+        lines.append(
+            truncate(
+                "  context (metadata): " + context,
+                DEFAULT_METADATA_CHARS,
+            )
+        )
+    created = _utc_date(row.get("created_at"))
+    if created:
+        lines.append(f"  created (UTC): {created}")
     return lines
+
+
+def _utc_date(value: object) -> str | None:
+    """Format a SQLite Unix timestamp as a deterministic UTC calendar date."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value, tz=UTC).date().isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def render_recall_cards(
@@ -102,13 +129,16 @@ def render_recall_cards(
     total: int,
     indexed_total: int,
     max_chars: int = DEFAULT_CARD_CHARS,
+    *,
+    total_is_bounded: bool = False,
 ) -> str:
-    """Render recall rows as cards with a `shown N of M` header."""
+    """Render recall rows; `max_chars` caps each content body only."""
     shown = len(rows)
-    header = (
-        f'mnemosyne-lite recall · query "{query}" · '
-        f"shown {shown} of {total} · {indexed_total} memories indexed"
-    )
+    if total_is_bounded:
+        count_label = f"shown {shown} · bounded keyword fallback returned {total} candidates"
+    else:
+        count_label = f"shown {shown} of {total}"
+    header = f'mnemosyne-lite recall · query "{query}" · {count_label} · {indexed_total} memories indexed'
     if not rows:
         return header + "\n(no matches; try fewer or different words)"
     out = [header]

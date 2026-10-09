@@ -71,6 +71,12 @@ provider module in `sys.modules` for the life of the process, so a running
 gateway keeps executing the old module while a one-shot CLI probe already looks
 healthy.
 
+For existing-store by-ID inspection, session-filtered partial history, and
+Markdown evidence export, see the provider's
+[inspection guide](../integrations/hermes-provider/README.md#inspect-evidence-and-recorded-history).
+These CLI additions preserve the four default provider tools and existing
+keyword inspection/JSON export.
+
 ## 3. Where memory lives
 
 The provider resolves its database in this order (first match wins):

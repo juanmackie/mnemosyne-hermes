@@ -1641,6 +1641,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._consolidation_running = False
         self._consolidation_stopping = False
         self._consolidation_cleanup_pending = False
+        # LOCAL PATCH: P29 bounded, process-local consolidation observability.
+        self._consolidation_status: Dict[str, Any] = {
+            "state": "idle", "last_trigger": None, "started_at": None,
+            "finished_at": None, "duration_ms": None, "error_class": None,
+            "reused_triggers": 0, "skipped_triggers": 0,
+            "shutdown_timed_out": False, "running": False, "stopping": False,
+        }
+        self._consolidation_started_monotonic: Optional[float] = None
         self._host_llm_backend: Optional[Any] = None
         # C13: per-instance tracking of whether THIS provider contributed
         # to the module-level _active_provider_count. Lets each instance
@@ -1673,6 +1681,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def _init_audit_log(self) -> None:
         """Initialize audit log co-located with the active provider DB."""
+        # LOCAL PATCH: P26 retire any prior target before resolving this one;
+        # a failed retarget must never keep the old database writable.
+        self._close_audit_log(reset=True)
         try:
             from hermes_memory_provider.audit import AuditLog
             db_path = getattr(self._beam, "db_path", None)
@@ -1681,6 +1692,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 logger.debug("Audit log initialized: %s", db_path)
         except Exception as exc:
             logger.debug("Audit log init skipped: %s", exc)
+
+    # LOCAL PATCH: P26 audit handles are short-lived internally, but their
+    # lifecycle still follows the provider's active database target.
+    def _close_audit_log(self, *, reset: bool) -> None:
+        audit = getattr(self, "_audit", None)
+        if audit is not None:
+            try:
+                audit.close()
+            except Exception as exc:
+                logger.debug("Audit log close skipped: %s", type(exc).__name__)
+        if reset:
+            self._audit = None
 
     def _audit_event(self, action: str, **kwargs) -> None:
         """Record an audit event. Never raises, never blocks."""
@@ -1692,6 +1715,73 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             self._audit.record(action, **kwargs)
         except Exception:
             pass
+
+    # LOCAL PATCH: P28 caller-controlled metadata cannot promote a source_ref
+    # to host origin. Exact host refs are created only by sync_turn's helper.
+    @staticmethod
+    def _asserted_caller_metadata(metadata: Any) -> Any:
+        from hermes_memory_provider.evidence import asserted_metadata
+        return asserted_metadata(metadata)
+
+    # LOCAL PATCH: P26 expose a bounded audit health snapshot for operators
+    # without adding a tool to the provider's default four-tool surface.
+    def get_audit_diagnostics(self) -> Dict[str, Any]:
+        audit = getattr(self, "_audit", None)
+        if audit is None:
+            return {
+                "state": "unavailable", "readonly": False,
+                "counters": {"write_attempts": 0, "write_successes": 0,
+                             "write_failures": 0, "read_attempts": 0,
+                             "read_failures": 0},
+                "errors": {"init": "AuditUnavailableError", "write": None, "read": None},
+            }
+        diagnostics = getattr(audit, "diagnostics", None)
+        if callable(diagnostics):
+            try:
+                result = diagnostics()
+                return dict(result) if isinstance(result, dict) else {
+                    "state": "degraded", "readonly": False, "counters": {},
+                    "errors": {"init": None, "write": None, "read": "InvalidDiagnostics"},
+                }
+            except Exception:
+                pass
+        # LOCAL PATCH: P26 diagnostics must fail visibly when the audit API is
+        # unavailable; reporting a healthy zero-failure state would be false.
+        return {
+            "state": "degraded", "readonly": False, "counters": {},
+            "errors": {"init": None, "write": None, "read": "DiagnosticsUnavailable"},
+        }
+
+    # LOCAL PATCH: P26 capture stored owner metadata for an audit event. Callers
+    # append it only after the engine confirms an authorized mutation.
+    def _audit_memory_owner(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        beam = getattr(self, "_beam", None)
+        conn = getattr(beam, "conn", None)
+        if conn is None:
+            return None
+        try:
+            for table, store in (("working_memory", "working"), ("episodic_memory", "episodic")):
+                row = conn.execute(
+                    f"SELECT session_id, scope FROM {table} WHERE id = ? LIMIT 1",
+                    (memory_id,),
+                ).fetchone()
+                if row is not None:
+                    if row[1] not in ("session", "global"):
+                        return None
+                    scope = str(row[1])
+                    owner: Dict[str, Any] = {
+                        "bank": "global" if scope == "global" else "private",
+                        "scope": scope,
+                        "source_tool": "mnemosyne_update",
+                        "metadata": {"memory_store": store},
+                    }
+                    if row[0] is not None:
+                        owner["session_id"] = str(row[0])
+                    return owner
+        except Exception:
+            # Auditing is best effort; an unknown owner must never be guessed.
+            return None
+        return None
 
     def _init_error_reason(self) -> str:
         """Return a human-readable failure reason for tool responses.
@@ -2228,10 +2318,20 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             if self._consolidation_running:
                 raise RuntimeError("Mnemosyne consolidation must finish before reinitializing")
             self._consolidation_stopping = True
+            # LOCAL PATCH: P29 each completed/retried provider initialization
+            # gets a fresh in-memory status lifetime.
+            self._consolidation_status = {
+                "state": "idle", "last_trigger": None, "started_at": None,
+                "finished_at": None, "duration_ms": None, "error_class": None,
+                "reused_triggers": 0, "skipped_triggers": 0,
+                "shutdown_timed_out": False, "running": False, "stopping": True,
+            }
+            self._consolidation_started_monotonic = None
             try:
                 self._initialize_session(session_id, **kwargs)
             finally:
                 self._consolidation_stopping = False
+                self._consolidation_status = {**self._consolidation_status, "stopping": False}
 
     def _initialize_session(self, session_id: str, **kwargs) -> None:
         # C27: clear stale state from any prior init attempt so a re-init
@@ -2247,6 +2347,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 self._memory.close()
             except Exception:
                 logger.debug("Mnemosyne: could not close prior wrapper", exc_info=True)
+        # LOCAL PATCH: P26 an unsuccessful or skipped reinitialize cannot
+        # leave the prior database's audit writer attached to this provider.
+        self._close_audit_log(reset=True)
         self._memory = None
         self._beam = None
         self._surface_beam = None
@@ -3098,6 +3201,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         author = self._normalize_turn_author(
             turn_author if turn_author is not None else getattr(self, "_current_turn_author", {})
         )
+        # LOCAL PATCH: P28 attach a host source reference only when one exact,
+        # stable Hermes message ID matches the content and active session.
+        from hermes_memory_provider.evidence import turn_metadata
+        host_session_id = session_id or getattr(self, "_current_session_id", "")
         started = time.perf_counter()
         self._ensure_sync_turn_telemetry()
         with self._sync_turn_lock:
@@ -3116,25 +3223,33 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 if "user" in self._sync_roles and user_content and len(user_content) > 5 and not self._should_filter(user_content):
                     user_limit = _sync_turn_user_limit()
                     uc = user_content[:user_limit] if user_limit > 0 else user_content
+                    user_metadata = turn_metadata(
+                        user_content, "user", messages, host_session_id, author,
+                    )
                     self._beam.remember(
                         content=f"[USER] {uc}",
                         source="conversation",
                         importance=0.5,
                         scope=self._default_scope,
                         extract_entities=True,
-                        metadata={"turn_author": author} if author else {},
+                        metadata=user_metadata,
                     )
-                    self._capture_identity_signals(user_content, turn_author=author)
+                    self._capture_identity_signals(
+                        user_content, turn_author=author, source_metadata=user_metadata,
+                    )
                 if "assistant" in self._sync_roles and assistant_content and len(assistant_content) > 10 and not self._should_filter(assistant_content):
                     assistant_limit = _sync_turn_assistant_limit()
                     ac = assistant_content[:assistant_limit] if assistant_limit > 0 else assistant_content
+                    assistant_metadata = turn_metadata(
+                        assistant_content, "assistant", messages, host_session_id, author,
+                    )
                     self._beam.remember(
                         content=f"[ASSISTANT] {ac}",
                         source="conversation",
                         importance=0.15,
                         scope=self._default_scope,
                         extract_entities=True,
-                        metadata={"turn_author": author} if author else {},
+                        metadata=assistant_metadata,
                     )
                 if "tool" in self._sync_roles and messages:
                     # LOCAL PATCH (F1): store the tool/function turns that the
@@ -3147,16 +3262,17 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     ][-self.SYNC_TOOL_MESSAGE_LIMIT:]
                     for m in tool_turns:
                         text = str(m.get("content"))[:self.SYNC_TOOL_MESSAGE_CHAR_LIMIT]
+                        role = str(m.get("role", "tool")).lower()
+                        tool_metadata = turn_metadata(
+                            str(m.get("content") or ""), role, messages, host_session_id, author,
+                        )
+                        tool_metadata.update({"role": role, "name": m.get("name")})
                         self._beam.remember(
                             content=f"[TOOL] {text}",
                             source="conversation_tool",
                             importance=0.2,
                             scope=self._default_scope,
-                            metadata={
-                                "role": str(m.get("role")),
-                                "name": m.get("name"),
-                                **({"turn_author": author} if author else {}),
-                            },
+                            metadata=tool_metadata,
                         )
             self._turn_count += 1
             if self._auto_sleep_enabled and self._turn_count % 10 == 0:
@@ -3216,6 +3332,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         user_content: str,
         *,
         turn_author: Optional[Dict[str, Any]] = None,
+        # LOCAL PATCH: P28 preserve an exact host-provided reference when a
+        # user statement is copied into the durable identity memory.
+        source_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         content_lower = user_content.lower()
         author = self._normalize_turn_author(
@@ -3232,7 +3351,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     veracity="stated",
                     # LOCAL PATCH: P24 retain per-turn speaker provenance on
                     # identity captures without changing visibility scope.
-                    metadata={"turn_author": author} if author else {},
+                    metadata={
+                        **(source_metadata or {}),
+                        **({"turn_author": author} if author else {}),
+                    },
                 )
                 break  # One identity memory per turn
 
@@ -3244,26 +3366,77 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             self.__dict__.setdefault("_consolidation_running", False)
             self.__dict__.setdefault("_consolidation_stopping", False)
             self.__dict__.setdefault("_consolidation_cleanup_pending", False)
+            self.__dict__.setdefault("_consolidation_status", {
+                "state": "idle", "last_trigger": None, "started_at": None,
+                "finished_at": None, "duration_ms": None, "error_class": None,
+                "reused_triggers": 0, "skipped_triggers": 0,
+                "shutdown_timed_out": False, "running": False, "stopping": False,
+            })
+            self.__dict__.setdefault("_consolidation_started_monotonic", None)
         return lock
 
+    def _consolidation_status_snapshot(self) -> Dict[str, Any]:
+        """Return only bounded lifecycle metadata; never expose worker inputs."""
+        # LOCAL PATCH: P29 read lock-free because diagnose is called while
+        # holding the foreground lock, and admission may hold the lifecycle
+        # lock while waiting briefly for that foreground lock. Writers replace
+        # the fixed-key dict under the lifecycle lock, so this reference read
+        # cannot wait behind model work or create a lock-order inversion.
+        status = self._consolidation_status
+        return dict(status)
+
+    # LOCAL PATCH: P29 publish bounded outcome data for the existing worker.
+    def _finish_consolidation(self, error: Optional[BaseException] = None) -> None:
+        """Publish completion using a monotonic duration and an error type only."""
+        with self._consolidation_lock:
+            now = time.monotonic()
+            started = self._consolidation_started_monotonic
+            updates = {
+                "finished_at": time.time(),
+                "duration_ms": (
+                    max(0.0, (now - started) * 1000.0) if started is not None else None
+                ),
+            }
+            if error is not None:
+                updates.update(state="failed", error_class=type(error).__name__[:128])
+            else:
+                updates.update(state="succeeded", error_class=None)
+            self._consolidation_status = {**self._consolidation_status, **updates, "running": False}
+            self._consolidation_running = False
+            self._consolidation_started_monotonic = None
+            if self._consolidation_cleanup_pending:
+                self._unregister_host_llm()
+                self._consolidation_cleanup_pending = False
+
+    # LOCAL PATCH: P29 track admission, reuse, skip and worker-start failures.
     def _start_consolidation(self, trigger: str) -> Optional[threading.Thread]:
         """Start at most one worker; concurrent triggers reuse it without spending budget."""
         with self._ensure_consolidation_lock():
             if self._consolidation_stopping:
+                self._consolidation_status = {**self._consolidation_status,
+                                              "skipped_triggers": self._consolidation_status["skipped_triggers"] + 1}
                 return None
             if self._consolidation_running:
+                self._consolidation_status = {**self._consolidation_status,
+                                              "reused_triggers": self._consolidation_status["reused_triggers"] + 1}
                 return self._consolidation_thread
             beam_lock = self._ensure_beam_access_lock()
             with beam_lock:
                 beam = self._beam
                 if beam is None:
+                    self._consolidation_status = {**self._consolidation_status,
+                                                  "skipped_triggers": self._consolidation_status["skipped_triggers"] + 1}
                     return None
                 if trigger == "auto_sleep":
                     working = beam.get_working_stats().get("total", 0)
                     if working <= self._auto_sleep_threshold:
+                        self._consolidation_status = {**self._consolidation_status,
+                                                      "skipped_triggers": self._consolidation_status["skipped_triggers"] + 1}
                         return None
                     cutoff = (datetime.now() - timedelta(hours=WORKING_MEMORY_TTL_HOURS // 2)).isoformat()
                     if not beam._count_unconsolidated_before(cutoff):
+                        self._consolidation_status = {**self._consolidation_status,
+                                                      "skipped_triggers": self._consolidation_status["skipped_triggers"] + 1}
                         return None
                 # Copy values now, rather than dereferencing a mutable Beam in the worker.
                 beam_kwargs = {
@@ -3278,12 +3451,25 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 agent_context = getattr(beam, "agent_context", self._agent_context)
             skip = self._reserve_reflection_budget(trigger)
             if skip is not None:
+                self._consolidation_status = {**self._consolidation_status,
+                                              "skipped_triggers": self._consolidation_status["skipped_triggers"] + 1}
                 logger.info("Mnemosyne %s skipped: %s", trigger, json.dumps(skip))
                 return None
+
+            trigger_name = trigger if trigger in {"auto_sleep", "session_end"} else "other"
+            self._consolidation_status = {**self._consolidation_status, **{
+                "state": "running", "last_trigger": trigger_name,
+                "started_at": time.time(), "finished_at": None,
+                "duration_ms": None, "error_class": None,
+                "shutdown_timed_out": False, "running": True,
+            }}
+            self._consolidation_started_monotonic = time.monotonic()
+            self._consolidation_running = True
 
             def _sleep_isolated():
                 sleep_beam = None
                 worker_conn = None
+                worker_error: Optional[BaseException] = None
                 try:
                     # Construction does schema work, so serialize it with provider access.
                     # After construction, every SQLite operation uses the worker's handle.
@@ -3298,26 +3484,40 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     # The audited engine releases db_lock only for model work;
                     # all SQL/statement lifetimes remain serialized with P19.
                     sleep_beam.sleep(db_lock=beam_lock)
-                except Exception as inner:
-                    logger.warning("Mnemosyne %s worker failed: %s", trigger, self._sanitize_sync_turn_error(inner))
+                except BaseException as inner:
+                    worker_error = inner
+                    if isinstance(inner, Exception):
+                        logger.warning("Mnemosyne %s worker failed: %s", trigger, self._sanitize_sync_turn_error(inner))
+                    else:
+                        logger.warning("Mnemosyne %s worker exited with %s", trigger, type(inner).__name__[:128])
+                        raise
                 finally:
-                    if worker_conn is not None:
-                        try:
-                            with beam_lock:
-                                worker_conn.close()
-                        except Exception as inner:
-                            logger.debug("Mnemosyne consolidation close failed: %s", self._sanitize_sync_turn_error(inner))
-                    with self._consolidation_lock:
-                        self._consolidation_running = False
-                        if self._consolidation_cleanup_pending:
-                            self._unregister_host_llm()
-                            self._consolidation_cleanup_pending = False
+                    try:
+                        if worker_conn is not None:
+                            try:
+                                with beam_lock:
+                                    worker_conn.close()
+                            except BaseException as inner:
+                                if worker_error is None:
+                                    worker_error = inner
+                                if isinstance(inner, Exception):
+                                    logger.debug("Mnemosyne consolidation close failed: %s", self._sanitize_sync_turn_error(inner))
+                                else:
+                                    logger.debug("Mnemosyne consolidation close exited with %s", type(inner).__name__[:128])
+                                    raise
+                    finally:
+                        self._finish_consolidation(worker_error)
 
-            self._consolidation_running = True
             try:
                 thread = spawn_context_thread(_sleep_isolated, name=f"mnemosyne-{trigger}-sleep")
-            except Exception:
+            except Exception as exc:
                 self._consolidation_running = False
+                self._consolidation_status = {**self._consolidation_status, **{
+                    "state": "failed", "finished_at": time.time(),
+                    "duration_ms": max(0.0, (time.monotonic() - self._consolidation_started_monotonic) * 1000.0),
+                    "error_class": type(exc).__name__[:128], "running": False,
+                }}
+                self._consolidation_started_monotonic = None
                 raise
             self._consolidation_thread = thread
             return thread
@@ -3482,6 +3682,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         extract_entities = bool(args.get("extract_entities", False))
         extract = bool(args.get("extract", False))
         metadata = args.get("metadata") or None
+        # LOCAL PATCH: P28 caller references stay explicitly asserted; they
+        # are never upgraded to host-provided evidence at the provider edge.
+        from hermes_memory_provider.evidence import asserted_metadata, source_reference
+        metadata = asserted_metadata(metadata)
         veracity = clamp_veracity(
             args.get("veracity"), context="mnemosyne_remember"
         )
@@ -3520,9 +3724,15 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             metadata=metadata,
             veracity=veracity,
         )
+        _source_ref = source_reference(metadata)
         self._audit_event(
-            "remember", memory_id=memory_id, bank="private",
+            "remember", memory_id=memory_id,
+            bank="global" if scope == "global" else "private",
             scope=scope, source_tool="mnemosyne_remember",
+            metadata={
+                "source_type": str(source)[:128],
+                **({"source_id": _source_ref["message_id"]} if _source_ref else {}),
+            },
         )
         return json.dumps({
             "status": "stored",
@@ -3540,6 +3750,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         except BatchValidationError as exc:
             return json.dumps(batch_validation_error_payload(exc))
 
+        # LOCAL PATCH: P28 normalize batch remember metadata before preview,
+        # approval staging, or the lower-level batch writer can persist it.
+        for operation in normalized:
+            payload = operation.get("payload")
+            if (operation.get("action") == "remember" and isinstance(payload, dict)
+                    and "metadata" in payload):
+                payload["metadata"] = self._asserted_caller_metadata(payload["metadata"])
+
         if bool(args.get("dry_run", False)):
             return json.dumps(dry_run_batch(normalized))
 
@@ -3547,15 +3765,16 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if _write_approval_enabled():
             staged = []
             for op in normalized:
+                payload = op.get("payload", {})
                 pid = _stage_pending_write({
                     "tool": "mnemosyne_batch",
                     "action": op.get("action", ""),
-                    "content": op.get("content", ""),
-                    "importance": op.get("importance", 0.5),
-                    "source": op.get("source", "user"),
-                    "scope": op.get("scope", self._default_scope),
-                    "metadata": op.get("metadata"),
-                    "veracity": op.get("veracity"),
+                    "content": payload.get("content", ""),
+                    "importance": payload.get("importance", 0.5),
+                    "source": payload.get("source", "user"),
+                    "scope": payload.get("scope", self._default_scope),
+                    "metadata": payload.get("metadata"),
+                    "veracity": payload.get("veracity"),
                 })
                 staged.append(pid)
             return json.dumps({
@@ -3703,6 +3922,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         metadata = args.get("metadata") or {}
         if not isinstance(metadata, dict):
             return json.dumps({"error": "metadata must be an object"})
+        # LOCAL PATCH: P28 shared-memory callers cannot claim host-origin refs.
+        metadata = self._asserted_caller_metadata(metadata)
         veracity = clamp_veracity(args.get("veracity"), context="mnemosyne_shared_remember")
         surface_content = self._surface_label(content, kind)
         stable_id = "sf_" + self._surface_hash(surface_content)
@@ -3800,13 +4021,17 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         replacement_id = args.get("replacement_id", None) or None
         if not memory_id:
             return json.dumps({"error": "memory_id is required"})
+        # LOCAL PATCH: P26 retain ownership for the durable deleted-row event.
+        owner = self._audit_memory_owner(memory_id)
         ok = self._beam.invalidate(memory_id, replacement_id=replacement_id)
-        self._audit_event(
-            "invalidate", memory_id=memory_id, bank="private",
-            source_tool="mnemosyne_invalidate",
-            metadata={"replacement_id": replacement_id, "invalidated": ok} if replacement_id else {"invalidated": ok},
-        )
         if ok:
+            if owner is not None:
+                owner["source_tool"] = "mnemosyne_invalidate"
+                owner["metadata"] = {
+                    "memory_store": owner["metadata"].get("memory_store"),
+                    "replacement_id": replacement_id,
+                }
+                self._audit_event("invalidate", memory_id=memory_id, **owner)
             return json.dumps({"status": "invalidated", "memory_id": memory_id})
         return json.dumps({"status": "memory_not_found", "memory_id": memory_id})
 
@@ -3843,7 +4068,6 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             if not self._beam:
                 return json.dumps({"error": "private beam not initialized"})
             target_beam = self._beam
-
         conn = target_beam.conn
 
         # LOCAL PATCH: P21 validate honours the same session/global visibility
@@ -3854,7 +4078,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         _visible, _visible_params = self._visible_memory_clause(target_beam, memory_id)
         # Verify the memory exists (and is visible) in this bank
         existing = conn.execute(
-            "SELECT id, author_id, content FROM working_memory WHERE " + _visible,
+            "SELECT id, author_id, content, session_id, scope FROM working_memory WHERE " + _visible,
             _visible_params,
         ).fetchone()
         if not existing:
@@ -3866,6 +4090,16 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         author_id = existing[1]
         prev_content = existing[2]
+        # LOCAL PATCH: P26 derive audit ownership from the exact visible row
+        # check already performed for this validation operation.
+        owner: Optional[Dict[str, Any]] = None
+        if bank == "private" and existing[4] in ("session", "global"):
+            owner = {
+                "bank": "global" if existing[4] == "global" else "private",
+                "scope": str(existing[4]),
+                "session_id": str(existing[3] or self._session_id),
+                "source_tool": "mnemosyne_validate",
+            }
 
         # Apply the action atomically. Every mutation carries the same
         # visibility predicate (LOCAL PATCH: P21), so a row that fails the
@@ -3918,15 +4152,22 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 "memory_id": memory_id,
             })
 
-        # Audit log if available
+        # Audit log if available. Private events keep the target's stored scope
+        # and session, including for the delete action; surface events remain
+        # unattributed unless their separate owner model can prove access.
         try:
             if hasattr(self, "_audit_event"):
-                self._audit_event(
-                    action=f"validate_{action}",
-                    memory_id=memory_id,
-                    bank=bank,
-                    source_tool="mnemosyne_validate",
-                )
+                if owner is not None:
+                    owner["source_tool"] = "mnemosyne_validate"
+                    owner["metadata"] = {"source_type": f"validate_{action}"}
+                    self._audit_event(
+                        action=f"validate_{action}", memory_id=memory_id, **owner,
+                    )
+                elif bank == "surface":
+                    self._audit_event(
+                        action=f"validate_{action}", memory_id=memory_id,
+                        bank=bank, source_tool="mnemosyne_validate",
+                    )
         except Exception:
             logger.debug("Mnemosyne audit event failed for validate", exc_info=True)
 
@@ -4158,7 +4399,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     valid_until=payload.get("valid_until"),
                     extract_entities=bool(payload.get("extract_entities", False)),
                     extract=bool(payload.get("extract", False)),
-                    metadata=payload.get("metadata"),
+                    # LOCAL PATCH: P28 pending files are caller assertions at
+                    # replay time too; approval does not authenticate a source.
+                    metadata=self._asserted_caller_metadata(payload.get("metadata")),
                     veracity=clamp_veracity(
                         payload.get("veracity"), context="mnemosyne_apply_pending"
                     ),
@@ -4342,6 +4585,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # for "nothing to change"; only the first one is a not_found.
         if content is None and importance is None:
             return json.dumps({"error": "content or importance is required", "memory_id": memory_id})
+        # LOCAL PATCH: P26 capture the authorized target's owner before writing.
+        owner = self._audit_memory_owner(memory_id)
         ok = self._beam.update_working(memory_id, content=content, importance=importance)
         memory_store: Optional[str] = "working"
         if not ok:
@@ -4356,6 +4601,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         }
         if ok:
             result["memory_store"] = memory_store
+            if owner is not None:
+                owner["source_tool"] = "mnemosyne_update"
+                owner["metadata"] = {"memory_store": memory_store}
+                self._audit_event("update", memory_id=memory_id, **owner)
         return json.dumps(result)
 
     def _update_get_visible_memory(self, memory_id: str, content: Optional[str],
@@ -4445,11 +4694,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         memory_id = args.get("memory_id", "").strip()
         if not memory_id:
             return json.dumps({"error": "memory_id is required"})
+        # LOCAL PATCH: P26 retain ownership before the row is removed.
+        owner = self._audit_memory_owner(memory_id)
         ok = self._beam.forget_working(memory_id)
-        if ok:
+        if ok and owner is not None:
+            owner["source_tool"] = "mnemosyne_forget"
+            owner["metadata"] = {"memory_store": owner["metadata"].get("memory_store")}
             self._audit_event(
-                "forget", memory_id=memory_id, bank="private",
-                source_tool="mnemosyne_forget",
+                "forget", memory_id=memory_id, **owner,
             )
         return json.dumps({
             "status": "deleted" if ok else "not_found",
@@ -4517,7 +4769,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if self._profile_isolation_enabled and self._beam is not None:
             diagnostic_kwargs["bank"] = self._resolve_profile_bank()
         if self._beam is None:
-            return json.dumps(run_diagnostics(**diagnostic_kwargs), indent=2, default=str)
+            result = run_diagnostics(**diagnostic_kwargs)
+            result["audit"] = self.get_audit_diagnostics()
+            # LOCAL PATCH: P29 expose only bounded worker lifecycle metadata.
+            result["consolidation"] = self._consolidation_status_snapshot()
+            return json.dumps(result, indent=2, default=str)
 
         # The active provider bank shares its SQLite database with auto_sleep's
         # separate Beam connection. Keep every active-bank diagnostic access in
@@ -4526,6 +4782,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         with self._ensure_beam_access_lock():
             result = run_diagnostics(**diagnostic_kwargs)
             result["sync_turn"] = self._sync_turn_diagnostics()
+            # LOCAL PATCH: P29 expose only bounded worker lifecycle metadata.
+            result["consolidation"] = self._consolidation_status_snapshot()
+            # LOCAL PATCH: P26 expose audit health without adding a provider tool.
+            result["audit"] = self.get_audit_diagnostics()
             # LOCAL PATCH: P23 expose only timings, counts, cache state and
             # output size; prefetch telemetry never includes query or memory text.
             result["prefetch"] = self._prefetch_cache_snapshot()
@@ -4983,6 +5243,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # LOCAL PATCH: P19 mirror writes cannot commit an in-flight turn's transaction.
             with self._ensure_beam_access_lock():
                 mirror_metadata = dict(details)
+                # LOCAL PATCH: P28 native-write metadata is supplied by the
+                # Hermes callback and is not a verified source lookup.
+                mirror_metadata = self._asserted_caller_metadata(mirror_metadata)
                 mirror_metadata["hermes_native_mirror"] = {
                     "target": target,
                     "session_id": hermes_session_id,
@@ -5237,22 +5500,31 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # LOCAL PATCH: P22 stop admission before draining BOTH background triggers.
         with self._ensure_consolidation_lock():
             self._consolidation_stopping = True
+            self._consolidation_status = {**self._consolidation_status, "stopping": True}
             thread = self._consolidation_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=self.SHUTDOWN_DRAIN_TIMEOUT_SECONDS)
         with self._consolidation_lock:
             if self._consolidation_running:
                 self._consolidation_cleanup_pending = True
+                # LOCAL PATCH: P29 report drain timeout without claiming the worker failed.
+                self._consolidation_status = {**self._consolidation_status,
+                                              "shutdown_timed_out": True}
                 logger.debug("Mnemosyne shutdown: host backend cleanup deferred to consolidation worker")
             else:
                 self._unregister_host_llm()
                 self._consolidation_thread = None
+                self._consolidation_status = {**self._consolidation_status,
+                                              "stopping": True}
         with self._ensure_beam_access_lock():
             if self._memory is not None:
                 try:
                     self._memory.close()
                 except Exception:
                     logger.debug("Mnemosyne: could not close wrapper", exc_info=True)
+            # LOCAL PATCH: P26 close admission under the same foreground lock
+            # as memory operations, retaining the object for closed diagnostics.
+            self._close_audit_log(reset=False)
             self._memory = None
             self._beam = None
 

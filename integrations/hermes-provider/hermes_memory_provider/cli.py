@@ -346,6 +346,20 @@ def register_cli(subparser):
     inspect_cmd = mn_cmds.add_parser("inspect", help="Search memories")
     inspect_cmd.add_argument("query", nargs="?", default="", help="Search query")
     inspect_cmd.add_argument("--limit", type=int, default=10, help="Max results")
+    # LOCAL PATCH: P27 by-ID inspection is a bounded read-only snapshot. Keep
+    # the existing positional keyword-search form intact.
+    inspect_cmd.add_argument("--id", dest="memory_id", help="Inspect one memory by ID")
+    inspect_cmd.add_argument("--session-id", default="hermes_default", help="Session whose memories are visible")
+    inspect_cmd.add_argument("--all-sessions", action="store_true", help="Explicit local-operator access across sessions")
+    inspect_cmd.add_argument("--format", choices=("json",), help="By-ID inspection format (JSON)")
+
+    history_cmd = mn_cmds.add_parser("history", help="Show partial audit history for one memory ID")
+    history_cmd.add_argument("--id", dest="memory_id", required=True, help="Memory ID")
+    history_cmd.add_argument("--session-id", default="hermes_default", help="Session whose events are visible")
+    history_cmd.add_argument("--all-sessions", action="store_true", help="Explicit local-operator access across sessions")
+    history_cmd.add_argument("--profile", help="Narrow audit events to a stored profile label")
+    history_cmd.add_argument("--limit", type=int, default=50, help="Maximum events (1-100)")
+    history_cmd.add_argument("--format", choices=("json", "text"), default="json", help="Output format")
 
     mn_cmds.add_parser("clear", help="Clear scratchpad")
 
@@ -353,8 +367,14 @@ def register_cli(subparser):
     doctor_cmd.add_argument("--dry-run", action="store_true", help="Show what would be fixed without installing")
     doctor_cmd.add_argument("--no-fix", action="store_true", help="Diagnose only, do not fix")
 
-    export_cmd = mn_cmds.add_parser("export", help="Export all memories to a JSON file")
-    export_cmd.add_argument("--output", "-o", type=str, required=True, help="Output JSON file path")
+    # LOCAL PATCH: P27 add a bounded visibility-filtered Markdown projection;
+    # JSON remains the existing engine export format by default.
+    export_cmd = mn_cmds.add_parser("export", help="Export memories to JSON or Markdown")
+    export_cmd.add_argument("--output", "-o", type=str, required=True, help="Output file path")
+    export_cmd.add_argument("--format", choices=("json", "markdown"), default="json", help="Export format")
+    export_cmd.add_argument("--session-id", default="hermes_default", help="Session whose memories are visible")
+    export_cmd.add_argument("--all-sessions", action="store_true", help="Explicit local-operator export across sessions")
+    export_cmd.add_argument("--limit", type=int, default=200, help="Maximum Markdown records (1-200)")
 
     import_cmd = mn_cmds.add_parser("import", help="Import memories from a JSON file or another provider")
     import_cmd.add_argument("--input", "-i", type=str, help="Input JSON file path (for file imports)")
@@ -379,12 +399,122 @@ def register_cli(subparser):
     subparser.set_defaults(func=mnemosyne_command)
 
 
+def _inspection_db_path() -> Path:
+    """Resolve an existing provider DB without opening it for writes."""
+    resolved = resolve_effective_db_path()
+    if not resolved:
+        raise RuntimeError("could not resolve the Mnemosyne database path")
+    path = Path(resolved).expanduser()
+    if not path.is_file():
+        raise RuntimeError("Mnemosyne database does not exist; inspection will not create it")
+    return path
+
+
+def _bounded_limit(args: Any, default: int) -> int:
+    limit = getattr(args, "limit", default)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("--limit must be between 1 and 100")
+    return limit
+
+
+def _readonly_inspect(args: Any) -> int:
+    """Print one visible current memory via a validated read-only snapshot."""
+    try:
+        if getattr(args, "query", ""):
+            raise ValueError("inspect accepts either a query or --id, not both")
+        path = _inspection_db_path()
+        from hermes_memory_provider.evidence import read_snapshot, source_reference
+
+        rows = read_snapshot(
+            path,
+            session_id=getattr(args, "session_id", "hermes_default"),
+            all_sessions=bool(getattr(args, "all_sessions", False)),
+            memory_id=str(args.memory_id),
+            limit=1,
+        )
+        row = rows[0] if rows else None
+        if row is not None:
+            row = dict(row)
+            content = str(row.get("content") or "")
+            row["content_truncated"] = bool(row.get("content_truncated")) or len(content) > 4000
+            row["content"] = content if len(content) <= 4000 else content[:3999] + "…"
+            row["source"] = str(row.get("source") or "")[:128]
+            lineage = row.get("summary_of") or []
+            row["lineage_truncated"] = bool(row.get("lineage_truncated")) or len(lineage) > 20
+            row["summary_of"] = lineage[:20]
+            row.pop("metadata", None)
+            row["source_reference"] = source_reference(rows[0].get("metadata"))
+        print(json.dumps({
+            "status": "found" if row else "not_found",
+            "coverage": "current record only; audit history may be partial",
+            "memory": row,
+        }, ensure_ascii=False, indent=2, default=str))
+        return 0
+    except Exception as exc:
+        print(f"Inspection failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+def _readonly_history(args: Any) -> int:
+    """Print bounded, ownership-filtered audit events for a memory ID."""
+    try:
+        path = _inspection_db_path()
+        limit = _bounded_limit(args, 50)
+        from hermes_memory_provider.audit import read_audit_history
+
+        events = read_audit_history(
+            path,
+            memory_id=str(args.memory_id),
+            session_id=getattr(args, "session_id", "hermes_default"),
+            all_sessions=bool(getattr(args, "all_sessions", False)),
+            profile=getattr(args, "profile", None),
+            limit=limit,
+        )
+        output_format = getattr(args, "format", "json")
+        if output_format == "text":
+            print(f"Partial audit history for {args.memory_id} ({len(events)} event(s))")
+            for event in events:
+                metadata = event.get("metadata_json")
+                try:
+                    metadata = json.loads(metadata) if metadata else {}
+                except (TypeError, ValueError):
+                    metadata = {"status": "invalid metadata"}
+                fields = (
+                    event.get("timestamp"), event.get("action"), event.get("source_tool"),
+                    event.get("scope"), event.get("session_id"), event.get("profile"),
+                )
+                print("  " + " | ".join("" if value is None else str(value)[:128] for value in fields))
+                if metadata:
+                    print("    metadata: " + json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))[:512])
+        else:
+            print(json.dumps({
+                "memory_id": str(args.memory_id),
+                "coverage": "partial audit history; not a complete or undoable timeline",
+                "count": len(events),
+                "events": events,
+            }, ensure_ascii=False, indent=2, default=str))
+        return 0
+    except Exception as exc:
+        print(f"History failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
 def mnemosyne_command(args):
     """Dispatch ``hermes mnemosyne <subcommand>``."""
     cmd = getattr(args, "mnemosyne_cmd", None)
     if not cmd:
-        print("Usage: hermes mnemosyne {stats|sleep|version|inspect|clear|export|import}")
+        print("Usage: hermes mnemosyne {stats|sleep|version|inspect|history|clear|export|import}")
         return 1
+
+    # LOCAL PATCH: P27 inspection must never construct BeamMemory because its
+    # initializer may create or migrate tables in a mistyped/empty database.
+    if cmd == "inspect" and getattr(args, "memory_id", None):
+        return _readonly_inspect(args)
+    if cmd == "inspect" and getattr(args, "all_sessions", False):
+        print("Error: --all-sessions is only available with inspect --id", file=sys.stderr)
+        raise SystemExit(1)
+    if cmd == "history":
+        return _readonly_history(args)
 
     # Register Hermes host LLM backend so sleep uses Hermes' provider.
     # Use a try/except fallback chain: the relative import works when loaded
@@ -565,6 +695,27 @@ def mnemosyne_command(args):
         if not output_path:
             print("Usage: hermes mnemosyne export --output <path>")
             return 1
+        if getattr(args, "format", "json") == "markdown":
+            try:
+                path = _inspection_db_path()
+                limit = getattr(args, "limit", 200)
+                if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+                    raise ValueError("--limit must be between 1 and 200")
+                from hermes_memory_provider.evidence import export_markdown
+                result = export_markdown(
+                    path,
+                    output_path,
+                    session_id=getattr(args, "session_id", "hermes_default"),
+                    all_sessions=bool(getattr(args, "all_sessions", False)),
+                    limit=limit,
+                )
+                print(f"Exported {result.get('shown', 0)} visible memories to {output_path} (Markdown)")
+                if result.get("truncated"):
+                    print(f"Output capped at {limit} records")
+                return 0
+            except Exception as e:
+                print(f"Export failed: {e}")
+                raise SystemExit(1) from e
         try:
             from mnemosyne.core.memory import Mnemosyne
             _db = resolve_effective_db_path()

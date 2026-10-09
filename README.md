@@ -79,6 +79,11 @@ global working memories. Source hashes are verified before patching; unreviewed
 engine revisions are refused. Restart engine MCP processes as well as the
 gateway after an update.
 
+Memories can now be inspected by ID, with bounded recorded history and an
+optional read-only Markdown evidence export. See the provider's
+[inspection guide](integrations/hermes-provider/README.md#inspect-evidence-and-recorded-history)
+for session selection, source references, limits, and partial-history coverage.
+
 ## Verify
 
 ```bash
@@ -131,6 +136,12 @@ capped cited cards with a `shown N of M` header (`--max-chars N` caps each
 card; truncation is marked with `…`). Copy `skills/mnemosyne-lite/SKILL.md`
 into `~/.claude/skills/` (or paste it into `AGENTS.md`) for the agent
 runbook: it costs 0 tokens until used.
+
+Cards also show a stored context line (descriptive metadata) and creation date
+in UTC when available. `--max-chars` caps the content body; context has its own
+160-character line cap. MCP count-query failures report a tool error rather
+than inventing totals. Prefetch keyword fallback totals are explicitly labeled
+as bounded candidate counts.
 
 The store uses schema v3, which removes a redundant copy of every memory's text.
 Opening an older lite store makes a timestamped `.pre-v3.*.bak` copy before
