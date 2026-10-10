@@ -17,12 +17,8 @@ _mnemosyne_root = Path(__file__).resolve().parent.parent
 if (_mnemosyne_root / "hermes_memory_provider").is_dir() and str(_mnemosyne_root) not in sys.path:
     sys.path.insert(0, str(_mnemosyne_root))
 
-# Supported Hermes range (T8): `hermes mnemosyne ...` depends on Hermes' plugin
-# CLI discovery internals, so the range is a contract, not a preference.
-# LOCAL PATCH (P14): only 0.18.2 and 0.19.0 were available and audited;
-# do not claim support for unpublished/unverified 0.20+ releases.
-SUPPORTED_HERMES_RANGE = ">=0.18,<0.20"
-TESTED_HERMES_VERSIONS = ("0.18.2", "0.19.0")
+# LOCAL PATCH (P30): no Hermes version requirement. The detected version is
+# reported by `doctor` for diagnosis only and never gates anything.
 
 
 def detect_hermes_version():
@@ -41,26 +37,6 @@ def detect_hermes_version():
         return getattr(_il.import_module("agent"), "__version__", None)
     except Exception:
         return None
-
-
-def check_hermes_version(version):
-    """Return (ok, message) for a detected Hermes version (T8)."""
-    tested = ", ".join(TESTED_HERMES_VERSIONS)
-    if not version:
-        return False, (
-            f"could not detect Hermes version; supported range is {SUPPORTED_HERMES_RANGE} "
-            f"(tested {tested})"
-        )
-    try:
-        parts = tuple(int(x) for x in str(version).split(".")[:2])
-    except (TypeError, ValueError):
-        parts = ()
-    if len(parts) == 2 and (0, 18) <= parts < (0, 20):
-        return True, f"Hermes {version} is within the supported range {SUPPORTED_HERMES_RANGE}"
-    return False, (
-        f"Hermes {version} is outside the supported range {SUPPORTED_HERMES_RANGE} "
-        f"(tested {tested})"
-    )
 
 
 def engine_version():
@@ -637,11 +613,7 @@ def mnemosyne_command(args):
         print("=" * 40)
         for line in describe_memory_location(db_path, hermes_home):
             print(f"  {line}")
-        _hv = detect_hermes_version()
-        _ok_hv, _hv_msg = check_hermes_version(_hv)
-        print(f"  Hermes version: {_hv or 'unknown'} [{'ok' if _ok_hv else 'WARN'}]")
-        if not _ok_hv:
-            print(f"    {_hv_msg}")
+        print(f"  Hermes version: {detect_hermes_version() or 'unknown'}")
         print("  Critical checks:")
         for label, ok, item_detail in critical:
             mark = "PASS" if ok else "FAIL"

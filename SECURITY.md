@@ -72,7 +72,5 @@ in `pyproject.toml` (dynamic, read from `mnemosyne_lite.__version__`), and the
 CHANGELOG records what changed. Entries up to `2.4.0` describe the retired Rust
 product and are not supported.
 
-The Hermes range this provider supports is `>=0.18,<0.20`, and the versions
-actually tested are listed in `integrations/hermes-provider/README.md`. Reports
-against a Hermes version outside that range are still welcome, but the range is
-a contract and not a promise to expand.
+No Hermes version is required. Reports against any Hermes version are welcome;
+include the output of `hermes --version`.

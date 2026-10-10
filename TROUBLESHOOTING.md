@@ -59,7 +59,7 @@ package file (excluding runtime bytecode caches and the marker) and the exact
 inventory and SHA-256 digests still match. Re-run the installer after editing a
 copy. The installer refuses to overwrite/uninstall an unverified directory;
 legacy unversioned copies need to be moved aside or removed manually. Hermes
-0.18.2/0.19.0 discovery
+discovery
 prefers a bundled provider over a same-name user plugin and deduplicates that
 name; the clean-user smoke tests this collision and one-provider registration.
 Do not add another manual registration entry point.

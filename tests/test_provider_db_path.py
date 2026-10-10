@@ -526,16 +526,6 @@ def test_on_pre_compress_required_checkpoint_fails_on_write_error():
             raise AssertionError("require_checkpoint did not fail on checkpoint I/O error")
 
 
-def test_check_hermes_version_truth_table():
-    for tested in ("0.18.2", "0.19.0"):
-        ok, _ = _module_attr(cli_mod, "check_hermes_version")(tested)
-        assert ok is True, tested
-    for bad in ("0.17.9", "0.20.0", "0.21.2", "0.22.0", "1.0.0", None, "not-a-version"):
-        ok, msg = _module_attr(cli_mod, "check_hermes_version")(bad)
-        assert ok is False, (bad, msg)
-        assert "range" in msg
-
-
 def test_default_tool_surface_is_curated():
     provider = provider_mod.MnemosyneMemoryProvider()
     with patch.object(provider, "_read_config_key", return_value=None):
@@ -695,7 +685,6 @@ if __name__ == "__main__":
         test_db_path_unset_passes_nothing_to_beam,
         test_schema_declares_db_path,
         test_db_path_wins_over_profile_isolation,
-        test_check_hermes_version_truth_table,
         test_default_tool_surface_is_curated,
         test_full_tool_surface_requires_explicit_wildcard,
         test_tool_surface_allows_explicit_subset_and_rejects_mixed_wildcard,

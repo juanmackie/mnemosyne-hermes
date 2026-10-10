@@ -30,7 +30,7 @@ history keep it; do not restore it.
 | `src/mnemosyne_lite/` | `cli.py`, `mcp.py`, `tools.py`, `storage.py`, `db_path.py`, `cards.py` |
 | `skills/mnemosyne-lite/` | Agent runbook (`SKILL.md`): describe-first search, card reading, no-store fabrication |
 | `tests/` | Contract and regression suites (see Verification) |
-| `scripts/` | Repo gates and helpers: `checks.sh` (registry), `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh`, `upstream-drift-check.py` |
+| `scripts/` | Repo gates and helpers: `checks.sh` (registry), `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh`, `upstream-drift-check.py`, `update.sh` / `update.ps1` (check/apply updates) |
 | `bench/` | The recall-latency harness (`measure.sh`) and its record (`README.md`) |
 | `docs/` | `AGENT_SETUP.md`, `HERMES_INTEGRATION.md`, `MCP_CLIENT_CONFIGS.md`; `docs/archive/` is historical |
 | `examples/` | Runnable usage examples |
@@ -47,6 +47,15 @@ history keep it; do not restore it.
   a `# LOCAL PATCH:` marker at the site, a `PATCHES.md` entry, and an updated
   hash/bytes/lines in `VENDORED_FROM.json`. `python tests/test_vendored_provider.py`
   is the gate. Never "fix" a vendored file without the manifest update.
+- **No Hermes version requirement.** Do not add a supported range, a minimum or
+  an upper bound for `hermes-agent`; `doctor` only prints the detected version
+  (patch P30). CI installs the newest Hermes.
+- **No GitHub releases.** Updates ship as commits on `main`; there is no release
+  workflow. `scripts/update.sh` (`update.ps1` on Windows) is the update contract:
+  `--check` exits 10 when an update exists and changes nothing; `--apply` is
+  fast-forward only, refuses a dirty tree, and rolls back when the install or
+  `doctor` fails. The agent prompt in `README.md` and `docs/AGENT_SETUP.md` §6
+  must stay in step with it.
 - **Engine pin** `mnemosyne-memory[embeddings]>=3.15.1,<3.16` in `install.sh`,
   `integrations/hermes-provider/pyproject.toml` and `VENDORED_FROM.json`. The
   upper bound is a real contract; widening it requires re-running
@@ -153,7 +162,7 @@ there is invisible. Add new gates to it.
   engine, ID visibility matrix, write→read coherence; strict in CI via
   `./test-all.sh --require-engine`, weekly against the newest engine via the
   upstream-drift workflow). What the lane does not cover: a live gateway run
-  (LIVE_VERIFICATION.md), Hermes-version discovery beyond the smoke matrix,
+  (LIVE_VERIFICATION.md), Hermes behavior beyond the newest-release smoke,
   and LLM-gated consolidation paths exercised only with dry_run.
 - The local patches in `PATCHES.md` have not been sent upstream; the sync
   procedure in `scripts/vendor-provider-sync.sh` re-applies them.

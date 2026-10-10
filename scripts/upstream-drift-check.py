@@ -6,9 +6,9 @@ Two upstreams matter here:
 * ``mnemosyne-memory`` — the engine, and the source of the vendored
   ``hermes_memory_provider`` snapshot. A new release means the snapshot should
   be re-checked with ``scripts/vendor-provider-sync.sh``.
-* ``hermes-agent`` — Hermes itself. A release outside the supported range
-  (``>=0.18,<0.20``) means the range contract needs re-auditing, and a release
-  inside it means the smoke lane should be re-run against it.
+* ``hermes-agent`` — Hermes itself. There is no supported version range; the
+  newest release is reported for information, and the upstream-drift workflow
+  runs the onboarding smoke against it.
 
 The script is stdlib-only, so it runs anywhere Python does. It downloads the
 new wheel directly from the PyPI JSON API rather than shelling out to pip.
@@ -43,7 +43,6 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 VENDORED = ROOT / "integrations" / "hermes-provider" / "hermes_memory_provider"
 MANIFEST = ROOT / "integrations" / "hermes-provider" / "VENDORED_FROM.json"
 SYNC_SCRIPT = ROOT / "scripts" / "vendor-provider-sync.sh"
-SUPPORTED_HERMES_RANGE = ">=0.18,<0.20"
 MAX_WHEEL_BYTES = 256 * 1024 * 1024
 MAX_PROVIDER_BYTES = 16 * 1024 * 1024
 MAX_PROVIDER_FILES = 512
@@ -94,20 +93,6 @@ def vendored_engine_version() -> str:
 def _version_tuple(version: str) -> tuple[int, ...]:
     parts = re.findall(r"\d+", version)
     return tuple(int(part) for part in parts) or (0,)
-
-
-def hermes_range_status(version: str) -> tuple[bool, str]:
-    """(in range, message) for a hermes-agent version, against the contract."""
-    numbers = _version_tuple(version)
-    low, high = (0, 18), (0, 20)
-    if numbers[:2] < low:
-        return False, f"{version} is below the supported range {SUPPORTED_HERMES_RANGE}"
-    if numbers[:2] >= high:
-        return False, (
-            f"{version} is at or above the upper bound of {SUPPORTED_HERMES_RANGE}. "
-            "The bound is a contract: re-run the contract audit before widening it."
-        )
-    return True, f"{version} is inside the supported range"
 
 
 def download_wheel(url: str, into: pathlib.Path) -> pathlib.Path:
@@ -284,7 +269,6 @@ def main(argv: list[str] | None = None) -> int:
     engine_report: dict[str, Any] = {"latest": engine["version"], "vendored": pinned}
     hermes_report: dict[str, Any] = {
         "latest": hermes["version"],
-        "supported_range": SUPPORTED_HERMES_RANGE,
     }
     report: dict[str, Any] = {"engine": engine_report, "hermes": hermes_report}
 
@@ -307,17 +291,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         engine_report["status"] = "current"
 
-    in_range, message = hermes_range_status(hermes["version"])
-    hermes_report["message"] = message
-    if not in_range:
-        actions.append(f"hermes-agent {message}")
-
     if args.json:
         report["actions"] = actions
         print(json.dumps(report, indent=2))
     else:
         print(f"mnemosyne-memory: vendored {pinned}, latest {engine['version']}")
-        print(f"hermes-agent:     latest {hermes['version']} ({message})")
+        print(f"hermes-agent:     latest {hermes['version']}")
         if "drift_report" in engine_report:
             print()
             print(engine_report["drift_report"])

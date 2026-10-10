@@ -4,9 +4,9 @@ name: Upstream drift
 #
 # A new `mnemosyne-memory` release means the vendored provider snapshot needs
 # re-checking against the new wheel (scripts/vendor-provider-sync.sh does the
-# diff; PATCHES.md says what to do about it). A new `hermes-agent` release means
-# the supported range needs re-auditing, and the onboarding smoke lane should be
-# re-run against it.
+# diff; PATCHES.md says what to do about it). Hermes has no required version;
+# the smoke job installs the newest `hermes-agent` and fails when onboarding
+# breaks against it.
 #
 # The check opens (or updates) an issue when there is something to do, so a
 # scheduled failure is not the only signal.

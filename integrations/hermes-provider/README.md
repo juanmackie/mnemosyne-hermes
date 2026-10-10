@@ -203,15 +203,14 @@ a fresh one-shot CLI probe will look healthy while the running gateway is still
 executing the old module. Symptom of a stale process: a fix "works in the CLI"
 but not in the live session.
 
-## Supported Hermes range
+## Hermes version
 
-`hermes mnemosyne` depends on Hermes' plugin CLI discovery internals, so the
-supported range is a contract: **`>=0.18,<0.20`**, audited against the two
-published Hermes releases in the matrix: `0.18.2` and `0.19.0`. The provider
-logs a warning — it does not refuse to start — when the detected `hermes-agent`
-version is outside that range, and `doctor` prints the detected version beside
-the range. Versions outside the audited range are unsupported until their
-plugin-discovery and provider contracts are reviewed.
+No Hermes version is required. `doctor` prints the detected `hermes-agent`
+version for diagnosis only; it never changes the exit code. CI installs the
+newest Hermes for the onboarding smoke, and the weekly upstream-drift job
+repeats that run, so a Hermes release that breaks onboarding shows up as a
+failed job. The contract audit was done against 0.18.2 and 0.19.0
+(`CONTRACT_AUDIT.md`).
 
 ## Uninstall
 

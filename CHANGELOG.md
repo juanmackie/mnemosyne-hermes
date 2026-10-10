@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/update.sh` and `scripts/update.ps1`: a notify-only `--check` (exit 10
+  when `main` has new commits) and an opt-in `--apply` that fast-forwards, re-runs
+  the installer, runs `doctor` and rolls back on failure. `docs/AGENT_SETUP.md`
+  §6 has the `hermes cron` setup; the README carries a copy-paste prompt that
+  makes an agent install and schedule the check.
 - Bounded read-only provider ID inspection and partial recorded history, plus
   an optional session/global-filtered Markdown evidence projection.
 - Exact host message references when available, caller-asserted references on
@@ -125,6 +130,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The resolved notes ledger and its history-dependent CI gate, finished
   planning documents, duplicate `QUICK_START.md`, and retired benchmark loop.
 - The unused lite `graph()` method, `MemoryRecord` type, and `--no-enrich` flag.
+- Every Hermes version requirement: the `>=0.18,<0.20` range, the tested-version
+  list and `check_hermes_version` (patch P30), the init-time warning, the drift
+  script's range check, and the pinned CI matrix. `doctor` still prints the
+  detected version. The onboarding smoke installs the newest Hermes.
+- The tag-triggered release workflow. Updates ship as commits on `main`.
 
 ## [3.0.0] - 2026-09-27
 

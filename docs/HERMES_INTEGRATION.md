@@ -50,8 +50,7 @@ symlink privilege):
 Both installers detect newer Hermes package-manager ownership and use
 `hermes pm install` with declared plugin requirements. Legacy environments use
 the selected interpreter's uv/pip path. The audited engine pin stays unchanged;
-unknown engine source hashes are refused. Newer source compatibility does not
-expand the published Hermes release support range.
+unknown engine source hashes are refused.
 
 ## 2. Verify
 

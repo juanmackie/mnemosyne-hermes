@@ -103,8 +103,8 @@ divergence.
 |---|---|
 | File | `hermes_memory_provider/__init__.py` (`initialize`) |
 | Date | 2026-09-18 |
-| Reason | `MNEMOSYNE_DATA_DIR` silently outranks `$HERMES_HOME`, splitting logs from the DB, and no line stated where memory actually lives. Nothing declared the supported Hermes range either, though `hermes mnemosyne` depends on Hermes' plugin CLI discovery internals. |
-| Behaviour | One INFO line at init with resolved DB, provider package, engine version and `HERMES_HOME`; a WARNING when the DB sits outside `$HERMES_HOME`; a WARNING when the detected `hermes-agent` version is outside the supported range. Never refuses to start. |
+| Reason | `MNEMOSYNE_DATA_DIR` silently outranks `$HERMES_HOME`, splitting logs from the DB, and no line stated where memory actually lives. |
+| Behaviour | One INFO line at init with resolved DB, provider package, engine version and `HERMES_HOME`; a WARNING when the DB sits outside `$HERMES_HOME`. Never refuses to start. (The Hermes-range warning was removed by P30.) |
 | Upstream | Not sent yet — repo-specific diagnostics. |
 
 ### P10 — doctor gates its exit code (T4/T6/T8)
@@ -151,7 +151,7 @@ divergence.
 The remaining vendored files are byte-identical to the 3.15.1 wheel RECORD.
 `register_memory_provider(ctx)` was already present upstream and is unchanged.
 
-### P14 — supported Hermes range reflects audited releases (P4-2)
+### P14 — supported Hermes range reflects audited releases (P4-2) — superseded by P30
 
 | | |
 | --- | --- |
@@ -333,6 +333,17 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Behaviour | Existing diagnosis includes in-memory worker state, trigger, start/finish times, monotonic duration, sanitized error class, reused/skipped trigger counts and shutdown-timeout state. Immutable snapshot replacement permits status reads without acquiring worker or foreground locks. Existing worker, budgets, tool exposure and engine ownership are retained; no durable job ledger or inferred cost fields. |
 | Verification | `tests/test_provider_maintenance.py` and existing consolidation tests cover blocked model work, success/failure, overlap, worker construction/close/start failures, shutdown and reinitialization. Sleep/close `SystemExit` propagates while finalizing failed status. |
 | Upstream | Local provider diagnostics; preserve during re-vendor. |
+
+### P30 — no Hermes version requirement
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/cli.py`, `hermes_memory_provider/__init__.py` |
+| Date | 2026-10-10 |
+| Reason | The provider enforced a `>=0.18,<0.20` Hermes range. The owner no longer wants a Hermes version requirement; a newer Hermes must not produce a warning or a failed check. |
+| Behaviour | `SUPPORTED_HERMES_RANGE`, `TESTED_HERMES_VERSIONS` and `check_hermes_version` are removed, and `initialize` no longer logs a range check. `detect_hermes_version` stays; `doctor` prints the detected version for diagnosis only and the version never changes its exit code. |
+| Verification | `tests/test_provider_db_path.py` (doctor/version surface), `tests/test_vendored_provider.py` (hashes and declarations). The onboarding smoke installs the newest Hermes. |
+| Upstream | Not sent yet; repo-specific. Preserve during re-vendor. |
 
 ## Sync procedure (run on every upstream release)
 

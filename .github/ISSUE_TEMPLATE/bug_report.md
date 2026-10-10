@@ -16,7 +16,7 @@ A clear and concise description of the bug.
 - **Version**: output of `hermes mnemosyne version` or `mnemosyne-lite --version`
 - **OS**: [e.g. macOS 14.0, Ubuntu 22.04, Windows 11]
 - **Python Version**: [e.g. 3.11.9]
-- **Hermes Version**: [e.g. 0.19.0, output of `hermes --version`]
+- **Hermes Version**: [output of `hermes --version`]
 - **Installed with**: [`./install.sh` / `pip install -e .` / other]
 
 ## Steps to Reproduce

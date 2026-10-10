@@ -20,9 +20,33 @@ This repository is **not** [rand/mnemosyne](https://github.com/rand/mnemosyne).
 The Rust product that used to live here is retired; `docs/archive/` and git
 history keep it.
 
+## Quick start: hand this to your agent
+
+Copy this block and give it to the agent that runs your Hermes. It installs the
+provider, verifies it, and sets up a daily update check.
+
+```text
+Set up the Mnemosyne memory system on this Hermes agent, then keep it updated.
+
+1. Clone https://github.com/juanmackie/mnemosyne-hermes.git to ~/mnemosyne-hermes
+   (if it is already there, run `git pull --ff-only` in it).
+2. Read ~/mnemosyne-hermes/docs/AGENT_SETUP.md and follow it step by step. In
+   short: `./install.sh --dry-run`, show me the plan, then `./install.sh --yes`.
+   On native Windows use `.\install.ps1 -DryRun`, then `.\install.ps1 -Yes`.
+3. Verify: `hermes mnemosyne doctor --no-fix` must exit 0 and
+   `hermes memory status` must show mnemosyne active. Never delete or
+   re-initialize an existing memory database.
+4. Do the "Keep it updated" step of that runbook: a daily, notify-only update
+   check. Do NOT auto-apply updates unless I tell you to.
+5. Finish with a checklist: step, pass/fail, one line of evidence. If a step
+   fails twice, stop and show me the exact output.
+
+No API key is needed. If any step asks for one, stop and tell me.
+```
+
 ## What you need
 
-- A Hermes install (`hermes-agent >=0.18,<0.20`) and its virtualenv.
+- A Hermes install and its virtualenv. No particular Hermes version is required.
 - [`uv`](https://docs.astral.sh/uv/) — it works in pip-less and root-owned
   venvs, which is how some Docker Hermes installs ship.
 - Python 3.11+ for the lite surface.
@@ -105,6 +129,22 @@ a `sync_turn` round trip + a single-registration check). It needs real symlinks,
 so it runs on Linux/macOS; on Windows it skips. The provider's curated default
 and complete tool names are maintained in the
 [canonical Hermes tool table](docs/HERMES_INTEGRATION.md#canonical-tool-names-and-default-exposure).
+
+### Updates
+
+Updates ship as commits on `main`; there are no GitHub releases to watch.
+`scripts/update.sh` (native Windows: `scripts\update.ps1`) checks and applies
+them:
+
+```bash
+scripts/update.sh --check     # exit 10 and a commit list when an update exists; changes nothing
+scripts/update.sh --apply     # fast-forward, re-run ./install.sh --yes, run doctor; rolls back on failure
+```
+
+An agent can be told by a scheduled `--check` job, and can apply the update
+itself if you opt in. [`docs/AGENT_SETUP.md`](docs/AGENT_SETUP.md#6-keep-it-updated)
+has the `hermes cron` setup for both. Restart the Hermes gateway after an
+applied update.
 
 ### Uninstall
 
