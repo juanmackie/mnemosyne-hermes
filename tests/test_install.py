@@ -281,8 +281,10 @@ def test_package_manager_owns_provider_dependencies_without_uv_injection(install
     install_key = __import__("hashlib").sha256(str(venv.parent.resolve()).encode()).hexdigest()[:16]
     state = home / "installs" / install_key
     environment = state / "environments" / "gen-fixture"
-    (environment / "Scripts").mkdir(parents=True)
-    shutil.copyfile(venv / "bin/python", environment / "Scripts/python.exe")
+    # The installer reads the interpreter from the platform's venv layout.
+    selected_python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    selected_python.parent.mkdir(parents=True)
+    shutil.copy(venv / "bin/python", selected_python)  # keeps the exec bit
     (environment / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
     import json
 
