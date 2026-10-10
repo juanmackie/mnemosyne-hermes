@@ -62,6 +62,7 @@ def test_host_reference_requires_unique_exact_message_and_stable_identifiers():
     assert source_reference(metadata) == {
         "session_id": "host-session",
         "message_id": "message-7",
+        "message_id_namespace": "internal",
         "origin": "host",
         "origin_authenticated": False,
     }
@@ -72,15 +73,99 @@ def test_host_reference_requires_unique_exact_message_and_stable_identifiers():
         [message, message],
         [{**message, "content": "other content"}],
         [{**message, "session_id": "other"}],
-        [{**message, "message_id": "conflicting-id"}],
         [{**message, "id": "bad\nidentifier"}],
         [message, {"role": "assistant", "content": "different", "id": "message-7"}],
-        [message, {"role": "user", "content": "different", "message_id": "message-7"}],
     ):
         assert "source_ref" not in turn_metadata(
             message["content"], "user", messages, "host-session"
         )
     assert "source_ref" not in turn_metadata(message["content"], "user", [message], "")
+
+
+def test_host_reference_keeps_platform_and_internal_id_namespaces_separate():
+    current = {
+        "role": "user",
+        "content": "same exact content",
+        "message_id": "42",
+        "id": "7",
+        "session_id": "active",
+    }
+    # Platform ID 42 collides with another row's internal ID, and the same
+    # platform ID occurs in another session. Neither makes this ref ambiguous.
+    other_session = {
+        "role": "assistant",
+        "content": "different",
+        "message_id": "42",
+        "id": "8",
+        "session_id": "elsewhere",
+    }
+    other_namespace = {
+        "role": "tool",
+        "content": "different",
+        "id": "42",
+        "session_id": "active",
+    }
+    metadata = turn_metadata(
+        current["content"], "user", [other_session, other_namespace, current], "active"
+    )
+    assert source_reference(metadata) == {
+        "session_id": "active",
+        "message_id": "42",
+        "message_id_namespace": "platform",
+        "origin": "host",
+        "origin_authenticated": False,
+    }
+
+    internal_target = {
+        "role": "user",
+        "content": "internal ID content",
+        "id": "42",
+        "session_id": "active",
+    }
+    platform_collision = {
+        "role": "assistant",
+        "content": "other content",
+        "message_id": "42",
+        "id": "99",
+        "session_id": "active",
+    }
+    internal_metadata = turn_metadata(
+        internal_target["content"], "user", [platform_collision, internal_target], "active"
+    )
+    assert source_reference(internal_metadata)["message_id_namespace"] == "internal"
+
+    # Repeated host IDs in the selected namespace and session are ambiguous.
+    duplicate = {**current, "content": "other message text"}
+    assert "source_ref" not in turn_metadata(
+        current["content"], "user", [current, duplicate], "active"
+    )
+
+
+def test_host_reference_uses_only_active_session_for_exact_match():
+    current = {
+        "role": "user",
+        "content": "repeated text",
+        "message_id": 0,
+        "id": 9,
+        "session_id": "active",
+    }
+    other_session = {
+        "role": "user",
+        "content": "repeated text",
+        "message_id": 1,
+        "id": 9,
+        "session_id": "other",
+    }
+    metadata = turn_metadata(current["content"], "user", [other_session, current], "active")
+    assert source_reference(metadata)["message_id"] == "0"
+    assert source_reference(metadata)["message_id_namespace"] == "platform"
+
+    # A malformed preferred platform ID must not silently fall back to a valid
+    # internal ID, which would change the reference namespace.
+    invalid_preferred = {**current, "message_id": "bad\nplatform-id", "id": "valid-row-id"}
+    assert "source_ref" not in turn_metadata(
+        invalid_preferred["content"], "user", [invalid_preferred], "active"
+    )
 
 
 def test_caller_reference_cannot_claim_host_origin_and_metadata_is_not_mutated():
@@ -189,6 +274,7 @@ def test_markdown_exports_scoped_ids_and_asserted_refs_with_explicit_gaps(tmp_pa
     assert result["shown"] == 2
     assert result["truncated"] is False
     assert "Source reference (stored host claim, lookup unavailable): host / exact" in text
+    assert "(namespace: unknown)" in text
     assert "Source reference: unavailable" in text
     assert "<script>" not in text and "[[unsafe]]" not in text
     assert "foreign secret" not in text and "foreign-secret-id" not in text

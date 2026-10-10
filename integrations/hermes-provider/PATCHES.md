@@ -345,6 +345,28 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Verification | `tests/test_provider_db_path.py` (doctor/version surface), `tests/test_vendored_provider.py` (hashes and declarations). The onboarding smoke installs the newest Hermes. |
 | Upstream | Not sent yet; repo-specific. Preserve during re-vendor. |
 
+### P31 — selected-profile config, store resolution and read-only doctor
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/configuration.py` (new local helper), `hermes_memory_provider/__init__.py`, `hermes_memory_provider/cli.py` |
+| Date | 2026-10-10 |
+| Reason | Engine-global config fallback could bleed settings or seed files. Provider banks, CLI, identity, backups and doctor could resolve different stores; reinitialization retained prior settings and ordinary SQLite opens could recreate a disappeared store. |
+| Behaviour | Read selected-home YAML without writes, reject malformed/unreadable config, reset profile settings before each initialization, and share path resolution across surfaces. Explicit paths beat isolation; refuse lossy bank names and conflicting identity. Open the exact store through BeamMemory with config seeding disabled. Identity still tracks config changes for cache invalidation; backup includes the store actually open. Doctor uses Hermes' active home and read-only SQLite; `--no-fix` avoids constructors and diagnostic logs. Supplemental doctor checks cover runtime dependencies. Provider diagnostic repair gets the explicit active path and profile log directory. |
+| Verification | `tests/test_provider_profiles.py` drives public initialization, config refusal, bank ambiguity, identity/backup consistency, reinitialization, active-home doctor and a disappearing-file race. Fresh subprocesses use the real audited engine constructors with two profiles, with and without `MNEMOSYNE_DATA_DIR`, and verify write isolation plus no default DB or config creation. Existing engine-contract, lifecycle and consolidation tests remain required. This is isolated runtime evidence, not live-gateway deployment verification. |
+| Upstream | Not sent. Requires the P31 amendments to the audited engine patches in `../engine-patches/`: import-time default DB initialization removed, optional config seeding on constructors, and explicit diagnostic paths. Engine pin and P30 remain unchanged. |
+
+### P32 — preserve source-reference identifier namespaces
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/evidence.py` |
+| Date | 2026-10-10 |
+| Reason | Hermes internal row IDs and platform message IDs can legitimately differ or collide; comparing them as one namespace dropped valid references. |
+| Behaviour | Prefer explicit platform IDs, otherwise internal IDs, and record `message_id_namespace`. Normalize nonnegative integer host IDs. Check uniqueness within the selected namespace and session; refuse invalid or duplicated selected IDs. Preserve old references without inventing a namespace, and label the namespace or its absence in Markdown. All origins remain unauthenticated stored claims. |
+| Verification | `tests/test_provider_profiles.py` and `tests/test_provider_evidence.py` cover cross-namespace collisions, same-namespace duplicates, integer IDs and legacy references. |
+| Upstream | Local evidence helper; preserve during re-vendor. |
+
 ## Sync procedure (run on every upstream release)
 
 ```bash

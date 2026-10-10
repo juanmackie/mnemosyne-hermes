@@ -4,11 +4,12 @@
   "files": {
     "core/beam.py": {
       "original_sha256": "00d79c0642a01b666473fd6e36749ed012802930ea8694eb24f3b17593a20aa0",
-      "patched_sha256": "71c4d38b0c8147f3a016ff0c1a0a4b8f377700db6de4797a55328a64161bd5d0",
+      "patched_sha256": "37486513142ed95bef4e1ea44166e936214d5b820cde323a477f10975387d933",
       "patch": "core-beam.py.patch",
-      "patch_sha256": "b710c33572ee9875b42a990371be4f469508ce6569d77d3fc0c1d4f543ae6fc8",
+      "patch_sha256": "0554d1e9a03c6238448e4bc41978cc63220ea762132d5c86ca277e8e5d166848",
       "previous_patched_sha256": [
-        "a0f314151c3a79bb9712f2f871e35e501053e9ed92695b5bf7b301a779fa9eee"
+        "a0f314151c3a79bb9712f2f871e35e501053e9ed92695b5bf7b301a779fa9eee",
+        "71c4d38b0c8147f3a016ff0c1a0a4b8f377700db6de4797a55328a64161bd5d0"
       ]
     },
     "core/entities.py": {
@@ -19,9 +20,12 @@
     },
     "core/memory.py": {
       "original_sha256": "c7088c7bbe84054ad66b97b6c281d15b1ee00dc9b08811a28852034a86dcf1fc",
-      "patched_sha256": "e2a0e57068d82e7c1a7384200a30d2ea542ec76e1655d4a5ed5b45dbb51678a2",
+      "patched_sha256": "9d88ac16727e30f2522db84a310f1303e86fb72938a552f981cf5b0ce7aaf8d2",
       "patch": "core-memory.py.patch",
-      "patch_sha256": "9a5051beff52fe418dc220cd9196b55ecd6395d2daecb6f5c541ad8bacbd1a39"
+      "patch_sha256": "a32413a25a5fb0b679412676fc0dd72456a8e55eb34824138c45c6100c86a944",
+      "previous_patched_sha256": [
+        "e2a0e57068d82e7c1a7384200a30d2ea542ec76e1655d4a5ed5b45dbb51678a2"
+      ]
     },
     "mcp_tools.py": {
       "original_sha256": "65b766bd2d4a09401c1c0b2ab492ee254cc97fccf493140c2455de12e64c1dda",
@@ -34,6 +38,12 @@
       "patched_sha256": "59320e060ec8c4fc8fc14d1516831ed4771e7e587da5180232fcad66b1723fa3",
       "patch": "core-llm-conflict-detector.py.patch",
       "patch_sha256": "d321f10b744bdd984733fa075a09460a88a879d3f4049b00db54b1ebbb77f673"
+    },
+    "diagnose.py": {
+      "original_sha256": "7c74619bc6e55f66f728ae6ab357e246dbb95342d4de12c19b7390d89e06fd1c",
+      "patched_sha256": "b0be091c40a19643b8c92e68324ed03e5323ed4fb6404e312c2870289e090a0b",
+      "patch": "diagnose.py.patch",
+      "patch_sha256": "9f7313bc184a32bb7d626f376356ec180a96afa4ee7e3b32adbbde8a555852a8"
     }
   }
 }

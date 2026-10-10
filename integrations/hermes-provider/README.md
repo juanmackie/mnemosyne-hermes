@@ -115,17 +115,26 @@ The provider resolves its DB path in this order (first match wins):
 |---|---|---|
 | 1 | `memory.mnemosyne.db_path` (Hermes `config.yaml`) | Per-install override |
 | 2 | `MNEMOSYNE_DB_PATH` env var | Preserved contract; read by the provider and the CLI |
-| 3 | engine default `_default_db_path()` | `MNEMOSYNE_DATA_DIR` > `$HERMES_HOME` > `~/.hermes`, then `mnemosyne/data/mnemosyne.db` |
+| 3 | profile-aware engine default | `MNEMOSYNE_DATA_DIR` > active Hermes home > `~/.hermes`, then `mnemosyne/data/mnemosyne.db` |
 
 There is no separate `$MNEMOSYNE_DATA_DIR` fallback *after* the env var — it
 only moves the engine default. If the resolved DB sits outside `$HERMES_HOME`,
 the provider logs a warning at init and `hermes mnemosyne doctor` reports it,
 because logs and memory are then split across two roots.
 
-`db_path` wins over `profile_isolation` (per-profile banks); the provider warns
-when both are set. The standalone lite surface uses `~/.mnemosyne-lite/mnemosyne.db`
+`db_path` wins over `profile_isolation` (per-profile banks); the provider uses
+the explicit path when both are set. The standalone lite surface uses `~/.mnemosyne-lite/mnemosyne.db`
 — that is **not** the provider's store. Check `hermes mnemosyne inspect` or
 `doctor` to confirm which store is live.
+
+Provider, CLI, identity and backup discovery share one read-only resolver.
+Settings fall back to the selected profile's `mnemosyne/config.yaml`, without
+invoking the engine's global config singleton or seeding files. Malformed or
+unreadable config fails visibly. Profile isolation requires an unambiguous bank
+name; conflicting agent identity or names requiring sanitization are refused
+unless `db_path` is explicit. See the [configuration reference](../../docs/HERMES_CONFIGURATION.md).
+`doctor --no-fix` checks the selected store with read-only SQLite and creates no
+store, config or diagnostic log.
 
 ## Inspect evidence and recorded history
 
@@ -161,6 +170,11 @@ message. Older hosts or ambiguous messages omit it. Explicit remember metadata
 can supply `source_ref: {session_id, message_id}`; it is labeled `caller` rather
 than `host`. References do not verify what a message says, and no transcript
 lookup is supplied by these commands. Identity captures retain eligible refs.
+New host references also record `message_id_namespace` (`platform` for an
+explicit `message_id`, otherwise `internal` for `id`). Distinct namespaces may
+contain the same value without a collision; duplicates within the selected
+namespace and session are refused. Integer host IDs are normalized to strings.
+Older references retain an unknown namespace, which Markdown labels explicitly.
 Imported or externally edited metadata can contain an asserted `host` label;
 the inspection view cannot authenticate those labels. Provider tool writes
 normalize caller-supplied origins to `caller`, including batch and pending writes.

@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "Synthetic engineering fixtures; keyword retrieval with embeddings and LLM work disabled. Not a production traffic sample.",
+  "version": 2,
+  "description": "Synthetic engineering fixtures; keyword retrieval with embeddings and LLM work disabled. Not a production traffic sample. The held-out split uses exact synthetic markers and does not measure semantic or paraphrase recall.",
   "memories": [
     {"label": "identity", "content": "[EVAL_IDENTITY] The current contact is Casey, a software engineer.", "source": "identity"},
     {"label": "preference", "content": "[EVAL_PREFERENCE] Casey prefers pytest for Python testing and regression checks.", "source": "user"},
@@ -13,7 +13,9 @@
     {"label": "model", "content": "[EVAL_MODEL] The Ruff formatter pipeline runs before each release.", "source": "canonical_tool", "store": "canonical", "owner": "default"},
     {"label": "foreign_model", "content": "[EVAL_FOREIGN_MODEL] A different profile uses the Ruff formatter pipeline.", "source": "canonical_tool", "store": "canonical", "owner": "other-profile"},
     {"label": "stale", "content": "[EVAL_STALE] Casey prefers a retired Python pytest testing configuration.", "source": "user", "valid_until": "2000-01-01T00:00:00"},
-    {"label": "large", "content": "[EVAL_LARGE] The zephyr release checklist requires careful review of all deployment stages. ", "source": "user", "repeat": 180}
+    {"label": "large", "content": "[EVAL_LARGE] The zephyr release checklist requires careful review of all deployment stages. ", "source": "user", "repeat": 180},
+    {"label": "retired_start_time", "content": "[EVAL_RETIRED_START_TIME] Casey previously started work at 8 AM.", "source": "user", "valid_until": "2000-01-01T00:00:00"},
+    {"label": "current_start_time", "content": "[EVAL_CURRENT_START_TIME] Casey now starts work at 9 AM.", "source": "preference"}
   ],
   "cases": [
     {"id": "greeting", "query": "Hello", "expected": ["identity"], "allowed": ["identity"], "forbidden": ["foreign", "raw_tool", "delegation"]},
@@ -25,5 +27,12 @@
     {"id": "operational-capture", "query": "pytest Python testing operational transcript dump", "expected": ["identity", "preference"], "allowed": ["identity", "preference", "raw_user"], "forbidden": ["foreign", "raw_tool", "delegation"]},
     {"id": "canonical-profile", "query": "Ruff formatter pipeline", "expected": ["identity", "model"], "allowed": ["identity", "model"], "forbidden": ["foreign_model", "foreign", "stale"]},
     {"id": "large-context", "query": "zephyr release checklist deployment stages", "expected": ["identity", "large"], "allowed": ["identity", "large", "project", "model"], "forbidden": ["foreign", "raw_tool", "delegation"], "max_chars": 8000, "overflow_identity": true}
+  ],
+  "held_out_cases": [
+    {"id": "held-needed-fact", "split": "held_out", "query": "atlas snapshot migration database", "expected": ["identity", "project"], "allowed": ["identity", "project"], "forbidden": ["foreign", "raw_tool", "delegation", "unrelated"]},
+    {"id": "held-distractor", "split": "held_out", "query": "pytest testing preference", "expected": ["identity", "preference"], "allowed": ["identity", "preference"], "forbidden": ["foreign", "raw_tool", "delegation", "unrelated"]},
+    {"id": "held-topic-switch", "split": "held_out", "query": "tulips compost spring planting", "expected": ["identity", "unrelated"], "allowed": ["identity", "unrelated"], "forbidden": ["foreign", "raw_tool", "delegation", "preference"]},
+    {"id": "held-correction-retirement", "split": "held_out", "query": "Casey current workday start time", "expected": ["identity", "current_start_time"], "allowed": ["identity", "current_start_time"], "forbidden": ["retired_start_time", "foreign", "raw_tool", "delegation"]},
+    {"id": "held-no-match", "split": "held_out", "query": "quasar neutrino spectrum", "expected": ["identity"], "allowed": ["identity"], "forbidden": ["preference", "project", "unrelated", "retired_start_time", "current_start_time", "foreign", "raw_tool", "delegation"]}
   ]
 }

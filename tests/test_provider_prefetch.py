@@ -1,6 +1,7 @@
 """P23 regressions for Hermes prompt quality, budgeting and prefetch cache."""
 
 import contextlib
+import json
 import os
 import pathlib
 import sqlite3
@@ -217,6 +218,47 @@ def test_real_engine_cache_observes_memory_writes_visibility_and_source_revision
         finally:
             provider_mod._BUILTIN_PROFILES.pop(profile.name, None)
             provider_mod._BUILTIN_PROFILES.pop(alternate_profile.name, None)
+
+
+def test_correction_hides_old_prefetch_fact_and_keeps_audit_events(tmp_path):
+    from hermes_memory_provider.audit import read_audit_history
+
+    with _real_provider(tmp_path) as (instance, _, db_path):
+        instance.__dict__.pop("_init_audit_log", None)
+        instance._init_audit_log()
+        old = json.loads(
+            instance._handle_remember(
+                {
+                    "content": "[EVAL_RETIRED_START_TIME] Casey previously started work at 8 AM.",
+                    "source": "preference",
+                    "scope": "session",
+                    "importance": 0.95,
+                }
+            )
+        )
+        memory_id = old["memory_id"]
+        updated = json.loads(
+            instance._handle_update(
+                {
+                    "memory_id": memory_id,
+                    "content": "[EVAL_CURRENT_START_TIME] Casey now starts work at 9 AM.",
+                }
+            )
+        )
+        assert updated["status"] == "updated"
+
+        output = instance.prefetch(
+            "Casey current workday start time", session_id="prefetch-test-session"
+        )
+        assert "EVAL_CURRENT_START_TIME" in output
+        assert "EVAL_RETIRED_START_TIME" not in output
+        history = read_audit_history(
+            db_path,
+            memory_id=memory_id,
+            session_id="hermes_prefetch-test-session",
+        )
+        assert [event["action"] for event in history] == ["update", "remember"]
+        assert all(event["event_id"] for event in history)
 
 
 def test_system_prompt_matches_native_memory_and_configured_tools():

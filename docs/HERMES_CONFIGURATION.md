@@ -4,6 +4,29 @@ Set these keys under `memory.mnemosyne` in Hermes' config. The setup wizard
 asks only about `db_path`, `profile_isolation`, `default_scope`, and `tools`.
 Existing advanced configurations remain supported.
 
+Settings are read without writes from the selected Hermes home's `config.yaml`,
+then its `mnemosyne/config.yaml`; provider initialization arguments take
+precedence. Missing files use defaults. Malformed or unreadable files cause a
+visible refusal before opening a database. Profile settings never fall back to
+the engine's process-global config singleton, and reinitializing a provider
+resets the prior profile's settings before applying the new profile.
+
+Database resolution is shared by the provider, CLI, identity and backup hooks.
+Without an explicit path, `MNEMOSYNE_DATA_DIR` wins over the selected Hermes
+home's `mnemosyne/data`. Isolation selects `banks/<profile>/mnemosyne.db` under
+that directory (`default` keeps the base path). Profile names must be lowercase
+ASCII bank names of at most 64 characters; names that need lossy sanitization or
+agent identities that disagree with the directory are refused. Set `db_path`
+explicitly to resolve such ambiguity. It takes precedence over isolation.
+
+`hermes mnemosyne doctor --no-fix` uses Hermes' active home, including an
+in-process profile override. It performs its acceptance checks without creating
+databases, config or diagnostic logs; integrity checks open existing SQLite
+files with `mode=ro`. Without `--no-fix`, supplemental checks cover runtime
+dependencies and can install missing dependencies, while store checks remain
+read-only. The opt-in `mnemosyne_diagnose` tool can still initialize/repair its
+explicitly selected store and writes its report under the active profile.
+
 ```yaml
 memory:
   provider: mnemosyne
