@@ -13,6 +13,18 @@ plugin discovery or Hermes configuration. The engine dependency range remains
 | `core-memory.py.patch` | The wrapper reports BEAM update success. BEAM authorizes the mutation; an existing legacy mirror is updated through the same connection and deferred transaction. Missing legacy rows do not turn a successful BEAM edit into `not_found`; denied IDs and rolled-back edits emit no wrapper update event. |
 | `mcp_tools.py.patch` | An update with no fields returns a validation error before constructing a memory instance. |
 | `core-llm-conflict-detector.py.patch` | Optional consolidation lock coordination yields during conflict-model calls and retains protection for cost logging. |
+| `diagnose.py.patch` | Provider diagnostics accept an explicit store and profile log directory instead of deriving another database from the environment. |
+
+P31 removes import-time default database initialization from `core.memory`.
+Each real constructor (including the standalone default-memory helper) still
+initializes its selected database. Both `Mnemosyne` and `BeamMemory` accept
+`seed_config=False`, used by the Hermes provider and CLI so construction cannot
+seed the process-global config. Standalone engine callers retain config seeding
+by default. The provider opens its resolved bank directly through `BeamMemory`.
+`doctor --no-fix` avoids constructors and diagnostic-log writes entirely.
+Fresh-process tests in `tests/test_provider_profiles.py` exercise the real
+constructors with two profiles, with and without a data-directory override,
+and assert that no default DB or config is created.
 
 The BEAM diff also adds backward-compatible `sleep(..., db_lock=None)` for P22.
 The provider passes its foreground RLock: sleep holds it over SQLite operations

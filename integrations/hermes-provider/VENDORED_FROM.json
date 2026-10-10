@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "Xix6e19Neo5t1EmrN0IX70-zMlbeNqcZ4FeBa-2zyhQ",
-      "bytes": 265695,
-      "lines": 5572
+      "sha256": "gdcRlxbU5yeY5sbxdNWTcO5jEoQJvKTPfBan4bfr-8g",
+      "bytes": 265514,
+      "lines": 5543
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
@@ -27,9 +27,9 @@
       "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "WMawKZqnyqpLslyzt-W0vF1P6ChK88kbxoQhuDJBc-U",
-      "bytes": 41151,
-      "lines": 906
+      "sha256": "3BCRjCAtmNSvWT2-O2CyRoZYhXcPzgeExbIz1t5LOPU",
+      "bytes": 41072,
+      "lines": 894
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -52,9 +52,14 @@
       "lines": 396
     },
     "hermes_memory_provider/evidence.py": {
-      "sha256": "gylb1knG95-J1Wv48cW_1YOCOL8axLsRMI8d-_rHXGc",
-      "bytes": 14620,
-      "lines": 299
+      "sha256": "uZmYNSMuC6zOV8eFqEAjjgSK2cinad07sENlWzmQkdA",
+      "bytes": 15887,
+      "lines": 326
+    },
+    "hermes_memory_provider/configuration.py": {
+      "sha256": "aiyTRZwqpOUT0wiRrThHCsMvaTe_Du9UIlJcmnBJ4b4",
+      "bytes": 4761,
+      "lines": 125
     }
   },
   "engine_dependency": {
@@ -87,7 +92,8 @@
       "P26 partial-history diagnostics and authorized target ownership for remember/update/forget/invalidate/private validation events",
       "P28 exact host references on eligible turn/identity capture; explicit remember references remain caller assertions",
       "P29 bounded process-local tracked consolidation status, immutable lock-free snapshots and sanitized lifecycle outcomes in existing diagnostics",
-      "P30 remove the Hermes version check at init; no Hermes version requirement"
+      "P30 remove the Hermes version check at init; no Hermes version requirement",
+      "P31 selected-profile read-only config and shared store resolution; reset settings on reinitialization, skip engine config seeding, and read-only active-profile doctor"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",
@@ -99,7 +105,8 @@
       "P14 superseded by P30 (the supported-range constants were removed)",
       "P27 read-only bounded ID inspection and partial history with session/global or explicit operator selection",
       "P28 optional bounded Markdown evidence export preserving engine JSON export",
-      "P30 remove SUPPORTED_HERMES_RANGE, TESTED_HERMES_VERSIONS and check_hermes_version; doctor only prints the detected Hermes version"
+      "P30 remove SUPPORTED_HERMES_RANGE, TESTED_HERMES_VERSIONS and check_hermes_version; doctor only prints the detected Hermes version",
+      "P31 selected-profile read-only config and shared store resolution; reset settings on reinitialization, skip engine config seeding, and read-only active-profile doctor"
     ],
     "hermes_memory_provider/pyproject.toml": [
       "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"
@@ -108,7 +115,11 @@
       "P26 classified per-operation thread-owned audit connections, bounded lock waits, scoped read-only history and sanitized failures"
     ],
     "hermes_memory_provider/evidence.py": [
-      "P28 new local read-only source-reference normalization and bounded Markdown projection; no engine schema changes"
+      "P28 new local read-only source-reference normalization and bounded Markdown projection; no engine schema changes",
+      "P32 keep internal and platform message-ID namespaces distinct, normalize integer host IDs, and retain untyped legacy references"
+    ],
+    "hermes_memory_provider/configuration.py": [
+      "P31 new local read-only selected-profile configuration and shared database/bank resolution; reject unreadable config and ambiguous bank identity"
     ]
   },
   "metadata_files": {

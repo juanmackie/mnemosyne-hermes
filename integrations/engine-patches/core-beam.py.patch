@@ -1,5 +1,5 @@
---- a/mnemosyne/core/beam.py
-+++ b/mnemosyne/core/beam.py
+--- a/core/beam.py
++++ b/core/beam.py
 @@ -29,6 +29,20 @@
  from datetime import datetime, timedelta, timezone
  from typing import List, Dict, Optional, Any, Set, Union, Tuple, Callable
@@ -86,7 +86,23 @@
              results = beam.annotations.query_by_kind("mentions", value=matched_entity)
              for row in results:
                  memory_ids.add(row["memory_id"])
-@@ -3216,7 +3262,8 @@
+@@ -2977,10 +3023,13 @@
+     def __init__(self, session_id: str = "default", db_path: Path = None,
+                  author_id: str = None, author_type: str = None,
+                  channel_id: str = None, use_cloud: bool = False,
+-                 event_emitter: "Optional[Callable[[Any], None]]" = None):
++                 event_emitter: "Optional[Callable[[Any], None]]" = None,
++                 seed_config: bool = True):
+         # Auto-seed config.yaml on first BeamMemory init (Hermes provider path)
+         from mnemosyne.core.config import get_config
+-        get_config()  # idempotent — no-op if config.yaml already exists
++        # LOCAL PATCH: P31 profile integrations resolve config without seeding.
++        if seed_config:
++            get_config()  # standalone engine behavior remains unchanged
+ 
+         self.session_id = session_id
+         self.author_id = author_id
+@@ -3216,7 +3265,8 @@
                   extract_entities: bool = False,
                   extract: bool = False,
                   veracity: str = "unknown",
@@ -96,7 +112,7 @@
          """Store into working_memory. Deduplicates exact content matches.
  
          When called from the legacy-compatible Mnemosyne.remember() path,
-@@ -3254,6 +3301,7 @@
+@@ -3254,6 +3304,7 @@
              metadata = (metadata or {}).copy()
              metadata["_blob"] = blob_meta
              content = sanitized_content
@@ -104,7 +120,7 @@
  
          # --- Auto-derive trust_tier from source if not explicitly set ---
          if trust_tier is None:
-@@ -3290,6 +3338,9 @@
+@@ -3290,6 +3341,9 @@
              # Conservative policy: only upgrade if the new call passes a
              # non-'unknown' veracity (preserves per-row trust on
              # backfills that don't carry a meaningful veracity arg).
@@ -114,7 +130,7 @@
              cursor.execute("""
                  UPDATE working_memory
                  SET importance = MAX(importance, ?), timestamp = ?, source = ?,
-@@ -3361,11 +3412,31 @@
+@@ -3361,11 +3415,31 @@
          # never populated memory_embeddings. This left _detect_conflicts
          # with zero embeddings to compare, making Phase 1 conflict
          # detection a no-op despite 3762+ working memories.
@@ -149,7 +165,7 @@
              except Exception as exc:
                  logger.warning(
                      "remember: embedding storage failed for '%s' (%s): %s",
-@@ -4017,24 +4088,28 @@
+@@ -4017,24 +4091,28 @@
          If replacement_id is provided, sets superseded_by.
          Otherwise sets valid_until to now (immediate expiry).
          """
@@ -184,7 +200,7 @@
          invalidated = cursor.rowcount > 0
          self.conn.commit()
          if invalidated:
-@@ -4237,9 +4312,13 @@
+@@ -4237,9 +4315,13 @@
              params.append(importance)
          if not updates:
              return False
@@ -200,7 +216,7 @@
              params
          )
          affected = cursor.rowcount
-@@ -4260,6 +4339,8 @@
+@@ -4260,6 +4342,8 @@
                  )
  
          self.conn.commit()
@@ -209,7 +225,7 @@
          return affected > 0
  
      def get(self, memory_id: str) -> Optional[Dict]:
-@@ -4272,15 +4353,19 @@
+@@ -4272,15 +4356,19 @@
  
          Returns None if not found in either table.
          """
@@ -232,7 +248,7 @@
          row = cursor.fetchone()
          if row:
              return {
-@@ -4297,12 +4382,12 @@
+@@ -4297,12 +4385,12 @@
              }
  
          # Episodic memory (fallback)
@@ -248,7 +264,7 @@
          row = cursor.fetchone()
          if row:
              return {
-@@ -4338,17 +4423,21 @@
+@@ -4338,17 +4426,21 @@
          # rolls back the working_memory DELETE rather than leaving it
          # uncommitted on the connection for a later unrelated commit to
          # silently include.
@@ -274,7 +290,7 @@
              )
              wm_rows = cursor.rowcount
              if wm_rows > 0:
-@@ -4365,7 +4454,9 @@
+@@ -4365,7 +4457,9 @@
                                  source: str = "consolidation", importance: float = 0.6,
                                  metadata: Dict = None, valid_until: str = None,
                                  scope: str = "session",
@@ -285,7 +301,7 @@
          """
          Store a consolidated summary into episodic_memory with optional embedding.
  
-@@ -4410,7 +4501,8 @@
+@@ -4410,7 +4504,8 @@
          vec = None
          if _embeddings.available():
              try:
@@ -295,7 +311,7 @@
              except Exception as exc:
                  logger.warning(
                      "consolidate_to_episodic: embedding failed, storing "
-@@ -4418,6 +4510,19 @@
+@@ -4418,6 +4513,19 @@
                      type(exc).__name__, exc,
                  )
          cursor = self.conn.cursor()
@@ -315,7 +331,7 @@
          cursor.execute("""
              INSERT INTO episodic_memory
              (id, content, source, timestamp, session_id, importance, metadata_json, summary_of, valid_until, scope,
-@@ -7862,7 +7967,20 @@
+@@ -7862,7 +7970,20 @@
              compressed += " [...]"
          return compressed
  
@@ -337,7 +353,7 @@
          """Refresh dense-recall embedding stores for an episodic row whose
          content has been mutated (degraded). Without this the
          vec_episodes / memory_embeddings / binary_vector entries continue
-@@ -7878,13 +7996,11 @@
+@@ -7878,13 +7999,11 @@
          """
          cursor = self.conn.cursor()
  
@@ -354,7 +370,7 @@
              if vec is not None:
                  # vec_episodes is a sqlite-vec virtual table; vec0 doesn't
                  # support UPDATE on the embedding column reliably, so we
-@@ -7926,7 +8042,7 @@
+@@ -7926,7 +8045,7 @@
                  (memory_id,),
              )
  
@@ -363,7 +379,7 @@
          """Degrade old episodic memories through tier 1→2→3 compression.
  
          Tier 1 (0-TIER2_DAYS): Full detail, 1.0x recall weight
-@@ -7997,36 +8113,42 @@
+@@ -7997,36 +8116,42 @@
          # (caught by /review for C18.b).
          from mnemosyne.core import local_llm
          for row in tier1_rows:
@@ -424,7 +440,7 @@
              try:
                  content = row["content"]
                  if SMART_COMPRESS and len(content) > TIER3_MAX_CHARS:
-@@ -8035,21 +8157,31 @@
+@@ -8035,21 +8160,31 @@
                      compressed = content[:TIER3_MAX_CHARS]
                      if len(content) > TIER3_MAX_CHARS:
                          compressed += " [...]"
@@ -467,7 +483,7 @@
          self.conn.commit()
          return results
  
-@@ -8261,7 +8393,14 @@
+@@ -8261,7 +8396,14 @@
              "candidate_ids": candidate_ids,
          }
  
@@ -483,7 +499,7 @@
          """
          Consolidate old working_memory for this session into episodic summaries.
          Uses a local lightweight LLM when available; falls back to aaak
-@@ -8409,8 +8548,21 @@
+@@ -8409,8 +8551,21 @@
                              newer_content,
                              session_id=self.session_id,
                              db_path=self.db_path,
@@ -505,7 +521,7 @@
                              if not dry_run:
                                  self.invalidate(older_id, replacement_id=newer_id)
                              conflicts_resolved += 1
-@@ -8436,12 +8588,14 @@
+@@ -8436,12 +8591,14 @@
                  if chunks:
                      if len(chunks) == 1:
                          # All memories fit in one prompt
@@ -522,7 +538,7 @@
                              if chunk_summary:
                                  chunk_summaries.append(chunk_summary)
                          if chunk_summaries:
-@@ -8449,10 +8603,11 @@
+@@ -8449,10 +8606,11 @@
                              if len(chunk_summaries) == 1:
                                  summary = chunk_summaries[0]
                              else:
@@ -538,7 +554,7 @@
                                  # If second-pass also overflows, concatenate
                                  if not summary:
                                      summary = " | ".join(chunk_summaries)
-@@ -8481,7 +8636,8 @@
+@@ -8481,7 +8639,8 @@
              if agent_context != "cron":
                  try:
                      from mnemosyne.core import model_refresh
@@ -548,7 +564,7 @@
                  except Exception:
                      proposals = []
              model_refresh_proposals += len(proposals)
-@@ -8492,7 +8648,7 @@
+@@ -8492,7 +8651,7 @@
                  # the claim survives -- the rows show as consolidated but
                  # without a summary. That's preferable to a phantom-summary-
                  # without-claim race the previous ordering allowed.
@@ -557,7 +573,7 @@
                      summary=summary,
                      source_wm_ids=ids,
                      source="sleep_consolidation",
-@@ -8504,8 +8660,24 @@
+@@ -8504,8 +8663,24 @@
                          "original_count": len(items),
                          "source": source,
                          "llm_used": llm_succeeded
@@ -583,7 +599,7 @@
                  if proposals:
                      from mnemosyne.core import model_refresh
                      proposal_ts = datetime.now().isoformat()
-@@ -8519,6 +8691,7 @@
+@@ -8519,6 +8694,7 @@
                              scope="session",
                              veracity="inferred",
                              trust_tier="DERIVED",
@@ -591,7 +607,7 @@
                          )
                          # Proposal rows are review artifacts from this sleep pass,
                          # not fresh raw memories that should recursively trigger
-@@ -8562,7 +8735,7 @@
+@@ -8562,7 +8738,7 @@
              self.conn.commit()
  
          # Run tiered degradation after consolidation

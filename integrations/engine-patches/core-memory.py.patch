@@ -1,5 +1,5 @@
---- a/mnemosyne/core/memory.py
-+++ b/mnemosyne/core/memory.py
+--- a/core/memory.py
++++ b/core/memory.py
 @@ -25,7 +25,7 @@
  logger = logging.getLogger(__name__)
  
@@ -9,7 +9,42 @@
  _thread_local = threading.local()
  
  # Default data directory
-@@ -568,35 +568,33 @@
+@@ -117,8 +117,8 @@
+     init_beam(db_path)
+ 
+ 
+-# Initialize on module load
+-init_db()
++# LOCAL PATCH: P31 importing a wrapper must not open the default store.
++# Constructors (including _get_default) initialize only their selected DB.
+ 
+ 
+ def generate_id(content: str) -> str:
+@@ -137,10 +137,12 @@
+ 
+     def __init__(self, session_id: str = "default", db_path: Path = None, bank: str = None,
+                  author_id: str = None, author_type: str = None,
+-                 channel_id: str = None):
++                 channel_id: str = None, seed_config: bool = True):
+         # Auto-seed config.yaml on first Mnemosyne init
+         from mnemosyne.core.config import get_config
+-        get_config()  # triggers _seed() if config.yaml doesn't exist
++        # LOCAL PATCH: P31 provider operations must not seed global config.
++        if seed_config:
++            get_config()
+ 
+         self.session_id = session_id
+         self.bank = bank or "default"
+@@ -171,7 +173,7 @@
+         self.beam = BeamMemory(session_id=session_id, db_path=self.db_path,
+                                author_id=author_id, author_type=author_type,
+                                channel_id=channel_id,
+-                               event_emitter=self._stream_emit)
++                               event_emitter=self._stream_emit, seed_config=seed_config)
+ 
+     # ─── Phase 8: Streaming ─────────────────────────────────────────
+ 
+@@ -568,35 +570,33 @@
  
      def update(self, memory_id: str, content: str = None,
                 importance: float = None) -> bool:

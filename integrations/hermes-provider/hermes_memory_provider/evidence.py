@@ -45,7 +45,13 @@ def source_reference(metadata: Any) -> dict[str, str | bool] | None:
         return None
     origin = "host" if reference.get("origin") == "host" else "caller"
     # Stored JSON cannot authenticate a host label from an import or legacy row.
-    return {**identifiers, "origin": origin, "origin_authenticated": False}
+    result = {**identifiers, "origin": origin, "origin_authenticated": False}
+    # LOCAL PATCH: P32 old references have an unknown namespace. Preserve them
+    # as legacy claims; never silently label them as platform or internal IDs.
+    namespace = reference.get("message_id_namespace")
+    if namespace in ("platform", "internal"):
+        result["message_id_namespace"] = namespace
+    return result
 
 
 def asserted_metadata(metadata: Any) -> Any:
@@ -66,23 +72,43 @@ def turn_metadata(content: str, role: str, messages: Any, session_id: str,
         metadata["turn_author"] = dict(turn_author)
     if not _identifier(session_id) or not isinstance(messages, list):
         return metadata
+
+    # LOCAL PATCH: P32 scope both exact-content matching and duplicate checks
+    # to the active session. Hermes normally omits per-message session IDs;
+    # when present, they must agree with the session supplied to sync_turn.
+    def belongs_to_session(message: dict[str, Any]) -> bool:
+        message_session = message.get("session_id", session_id)
+        if message_session is None:
+            message_session = session_id
+        return message_session == session_id
+
     matches = [message for message in messages if isinstance(message, dict)
+               and belongs_to_session(message)
                and str(message.get("role", "")).lower() == role
                and message.get("content") == content]
     if len(matches) != 1:
         return metadata
     message = matches[0]
-    message_id = _identifier(message.get("id")) or _identifier(message.get("message_id"))
-    if (not message_id or (message.get("id") and message.get("message_id")
-                           and message["id"] != message["message_id"])
-            or (message.get("session_id") and message["session_id"] != session_id)):
+    # LOCAL PATCH: P32 prefer explicit platform IDs, checking duplicates only
+    # in that namespace. Internal row IDs can legitimately differ or collide.
+    key = "message_id" if message.get("message_id") is not None else "id"
+    def host_id(value: Any) -> str | None:
+        # Hermes row IDs and some platform message IDs are nonnegative integers.
+        if type(value) is int and value >= 0:
+            value = str(value)
+        return _identifier(value)
+
+    message_id = host_id(message.get(key))
+    if not message_id:
         return metadata
     if any(other is not message and isinstance(other, dict)
-           and message_id in (other.get("id"), other.get("message_id"))
+           and belongs_to_session(other)
+           and message_id == host_id(other.get(key))
            for other in messages):
         return metadata
     metadata["source_ref"] = {
         "session_id": session_id, "message_id": message_id, "origin": "host",
+        "message_id_namespace": "platform" if key == "message_id" else "internal",
     }
     return metadata
 
@@ -265,7 +291,8 @@ def export_markdown(db_path: str | Path, output_path: str | Path, *,
         reference = source_reference(row.get("metadata"))
         if reference:
             sections.append(f"Source reference (stored {reference['origin']} claim, lookup unavailable): "
-                            f"{_markdown(reference['session_id'], 256)} / {_markdown(reference['message_id'], 256)}")
+                            f"{_markdown(reference['session_id'], 256)} / {_markdown(reference['message_id'], 256)} "
+                            f"(namespace: {reference.get('message_id_namespace', 'unknown')})")
         else:
             sections.append("Source reference: unavailable.")
         if row.get("metadata_error"):

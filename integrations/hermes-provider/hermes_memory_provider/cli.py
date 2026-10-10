@@ -47,35 +47,13 @@ def engine_version():
         return "unknown"
 
 
-def _read_configured_db_path(hermes_home):
-    try:
-        from mnemosyne.hermes_config import read_hermes_config_key
-        val = read_hermes_config_key(hermes_home, "db_path")
-        if val:
-            return str(Path(str(val)).expanduser())
-    except Exception:
-        pass
-    env = os.environ.get("MNEMOSYNE_DB_PATH")
-    if env:
-        return str(Path(env).expanduser())
-    return None
+# LOCAL PATCH: P31 one read-only path resolver shared with the provider.
+from .configuration import active_home, resolve_db_path
 
 
-def resolve_effective_db_path(hermes_home=None):
-    """Resolve the DB path the provider will use (T3 + T6).
-
-    Precedence: memory.mnemosyne.db_path > MNEMOSYNE_DB_PATH > engine default
-    (MNEMOSYNE_DATA_DIR > $HERMES_HOME > ~/.hermes).
-    """
-    home = hermes_home or os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
-    explicit = _read_configured_db_path(home)
-    if explicit:
-        return explicit
-    try:
-        from mnemosyne.core.beam import _default_db_path
-        return str(_default_db_path())
-    except Exception:
-        return None
+def resolve_effective_db_path(hermes_home=None, **kwargs):
+    """Resolve the selected profile's store without importing engine constructors."""
+    return resolve_db_path(hermes_home, **kwargs)
 
 
 def describe_memory_location(db_path, hermes_home):
@@ -296,7 +274,8 @@ def _db_integrity(db_path):
         return True, "not created yet"
     try:
         import sqlite3
-        con = sqlite3.connect(str(p))
+        # LOCAL PATCH: P31 a disappeared file must never be recreated by doctor.
+        con = sqlite3.connect(p.resolve().as_uri() + "?mode=ro", uri=True)
         try:
             row = con.execute("PRAGMA integrity_check").fetchone()
             val = row[0] if row else "no result"
@@ -524,7 +503,7 @@ def mnemosyne_command(args):
             _beam_kwargs: dict[str, Any] = {"session_id": "hermes_default"}
             if _resolved_db_path:
                 _beam_kwargs["db_path"] = _resolved_db_path
-            beam = BeamMemory(**_beam_kwargs)
+            beam = BeamMemory(seed_config=False, **_beam_kwargs)
         except Exception as e:
             print(f"Error: Mnemosyne not available: {e}")
             # The CLI ignores return values; raise so the process fails loud.
@@ -574,7 +553,7 @@ def mnemosyne_command(args):
     elif cmd == "doctor":
         dry_run = bool(getattr(args, "dry_run", False))
         no_fix = bool(getattr(args, "no_fix", False))
-        hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        hermes_home = str(active_home())
         db_path = resolve_effective_db_path(hermes_home)
 
         # T4: explicit critical checks gate the exit code. The engine's own
@@ -625,9 +604,19 @@ def mnemosyne_command(args):
             # SystemExit makes `hermes mnemosyne doctor` exit non-zero.
             raise SystemExit(1)
 
+        # LOCAL PATCH: P31 acceptance reads only the selected store. The full
+        # engine scan constructs a memory instance and writes a diagnostic log.
+        if no_fix:
+            return 0
         try:
-            from mnemosyne.diagnose import run_diagnostics, auto_fix
-            result = run_diagnostics()
+            from mnemosyne.diagnose import auto_fix
+            from mnemosyne.runtime_diagnostics import collect_runtime_diagnostics
+            checks = collect_runtime_diagnostics()["checks"]
+            result = {
+                "entries": checks,
+                "checks_passed": sum(check["status"] in ("OK", "YES", "OPTIONAL") for check in checks),
+                "checks_total": len(checks),
+            }
             print(f"\n  Engine checks passed: {result.get('checks_passed', 0)}/{result.get('checks_total', 0)}")
             if result.get("key_findings"):
                 print("\n  Key findings:")
@@ -647,7 +636,6 @@ def mnemosyne_command(args):
                         print(f"  ❌ {item['label']}: {item['error']}")
                 if not fix_result["fixed"] and not fix_result["failed"]:
                     print("  Nothing to fix - all dependencies are healthy.")
-            print(f"\nFull log: {result.get('log_path', 'unknown')}")
         except Exception as e:
             # LOCAL PATCH: say what to install. Upstream printed only the raw
             # exception, leaving a public user with "No module named 'mnemosyne'"
@@ -691,7 +679,7 @@ def mnemosyne_command(args):
         try:
             from mnemosyne.core.memory import Mnemosyne
             _db = resolve_effective_db_path()
-            mem = Mnemosyne(session_id="hermes_default", **({"db_path": _db} if _db else {}))
+            mem = Mnemosyne(session_id="hermes_default", seed_config=False, **({"db_path": _db} if _db else {}))
             result = mem.export_to_file(output_path)
             print(f"Exported {result['working_memory_count']} working, {result['episodic_memory_count']} episodic, {result['legacy_memories_count']} legacy, {result['triples_count']} triples to {output_path}")
         except Exception as e:
@@ -752,7 +740,7 @@ def mnemosyne_command(args):
             from mnemosyne.core.memory import Mnemosyne
             _db = resolve_effective_db_path()
             mem = Mnemosyne(session_id=session_id or "import_session",
-                            channel_id=channel_id,
+                            channel_id=channel_id, seed_config=False,
                             **({"db_path": _db} if _db else {}))
         except Exception as e:
             print(f"Error: Mnemosyne not available: {e}")

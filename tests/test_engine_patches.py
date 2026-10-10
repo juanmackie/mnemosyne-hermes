@@ -4,7 +4,10 @@ import contextlib
 import difflib
 import importlib.util
 import json
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 from unittest.mock import patch
 
@@ -173,6 +176,92 @@ def test_upgrade_from_previous_audited_patch_requires_original_backup():
         assert (package / "first.py").read_bytes() == original
 
 
+def test_engine_import_and_profile_constructor_do_not_touch_default_store():
+    """Exercise the real patched engine in a fresh process with isolated paths."""
+    engine_root = os.environ.get("MNEMOSYNE_TEST_ENGINE_ROOT")
+    if engine_root:
+        package_dir = pathlib.Path(engine_root).resolve()
+    else:
+        package_spec = importlib.util.find_spec("mnemosyne")
+        package_dir = (
+            pathlib.Path(next(iter(package_spec.submodule_search_locations))).resolve()
+            if package_spec and package_spec.submodule_search_locations
+            else None
+        )
+    if package_dir is None or not (package_dir / "core" / "memory.py").is_file():
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise AssertionError("real engine constructor smoke requires mnemosyne-memory")
+        print("skip: mnemosyne-memory is not importable")
+        return
+
+    script = r"""
+import pathlib, sys
+package = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(package.parent))
+root = pathlib.Path(sys.argv[2])
+default_db = root / "environment-data" / "mnemosyne.db"
+default_config = root / "environment-data" / "config.yaml"
+
+# Importing the wrapper must not initialize any store or seed global config.
+import mnemosyne.core.memory
+assert not default_db.exists(), default_db
+assert not default_config.exists(), default_config
+
+# Explicit profile construction initializes that database while avoiding the
+# process-global config seed and the environment-selected default database.
+from mnemosyne import Mnemosyne
+profile_db = root / "profile" / "mnemosyne.db"
+memory = Mnemosyne(db_path=profile_db, seed_config=False)
+assert profile_db.is_file(), profile_db
+assert pathlib.Path(memory.db_path) == profile_db
+assert not default_db.exists(), default_db
+assert not default_config.exists(), default_config
+
+# Diagnostics can be directed at a profile DB and log directory without
+# constructing a second default store or writing under the default Hermes home.
+from mnemosyne.diagnose import run_diagnostics
+diagnostic_db = root / "diagnostic-profile" / "mnemosyne.db"
+diagnostic_logs = root / "diagnostic-profile" / "logs"
+run_diagnostics(db_path=diagnostic_db, seed_config=False, log_dir=diagnostic_logs)
+assert diagnostic_db.is_file(), diagnostic_db
+assert list(diagnostic_logs.glob("diagnose_*.jsonl")), diagnostic_logs
+assert not default_db.exists(), default_db
+assert not default_config.exists(), default_config
+assert not (root / "environment-home" / "mnemosyne" / "logs").exists()
+
+# Standalone callers keep the historical default behavior when the new option
+# is omitted: selected default DB initialization and config seeding still work.
+standalone = Mnemosyne()
+assert pathlib.Path(standalone.db_path) == default_db
+assert default_db.is_file(), default_db
+assert default_config.is_file(), default_config
+from mnemosyne.core import memory as memory_module
+memory_module._default_instance = None
+default_helper = memory_module._get_default()
+assert pathlib.Path(default_helper.db_path) == default_db
+assert default_db.is_file(), default_db
+assert default_config.is_file(), default_config
+print("import/profile isolation and standalone defaults passed")
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        env = {
+            **os.environ,
+            "HERMES_HOME": str(root / "environment-home"),
+            "MNEMOSYNE_DATA_DIR": str(root / "environment-data"),
+            "MNEMOSYNE_EMBEDDINGS_OFF": "1",
+            "MNEMOSYNE_AUTO_MIGRATE": "0",
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(package_dir), str(root)],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
 if __name__ == "__main__":
     tests = [
         test_patch_apply_dry_run_idempotency_and_restore,
@@ -181,6 +270,7 @@ if __name__ == "__main__":
         test_write_failure_rolls_back_previous_source,
         test_shipped_patch_digests,
         test_upgrade_from_previous_audited_patch_requires_original_backup,
+        test_engine_import_and_profile_constructor_do_not_touch_default_store,
     ]
     for fn in tests:
         fn()

@@ -1,0 +1,45 @@
+--- a/diagnose.py
++++ b/diagnose.py
+@@ -154,7 +154,9 @@
+     return {"quick_check": result, "detail": ""}
+ 
+ 
+-def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False, bank: str | None = None) -> Dict:
++def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False, bank: str | None = None,
++                    db_path: str | Path | None = None, seed_config: bool = True,
++                    log_dir: str | Path | None = None) -> Dict:
+     """
+     Run full diagnostic scan and write PII-safe log.
+     Returns summary dict for display.
+@@ -168,7 +170,14 @@
+             against the bank's own SQLite DB (data/banks/<bank>/mnemosyne.db).
+             When None, the default/profile-root DB is used.
+     """
+-    log_path = _log_path()
++    # LOCAL PATCH: P31 a provider knows its selected profile and exact store.
++    # Standalone callers retain their existing default paths and config seeding.
++    if log_dir is None:
++        log_path = _log_path()
++    else:
++        directory = Path(log_dir)
++        directory.mkdir(parents=True, exist_ok=True)
++        log_path = directory / f"diagnose_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.jsonl"
+     entries: List[Dict] = []
+     resolved_bank: str | None = None
+     resolved_db: str | None = None
+@@ -191,10 +200,12 @@
+     # --- Database state ---
+     try:
+         from mnemosyne.core.memory import Mnemosyne
+-        if bank:
+-            mem = Mnemosyne(session_id="hermes_default", bank=bank)
++        if db_path is not None:
++            mem = Mnemosyne(session_id="hermes_default", db_path=db_path, seed_config=seed_config)
++        elif bank:
++            mem = Mnemosyne(session_id="hermes_default", bank=bank, seed_config=seed_config)
+         else:
+-            mem = Mnemosyne()
++            mem = Mnemosyne(seed_config=seed_config)
+         stats = mem.get_stats()
+ 
+         # PII-safe: counts and config only, never content

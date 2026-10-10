@@ -102,10 +102,12 @@ def test_db_path_from_env():
 
 
 def test_db_path_from_hermes_config_beats_env():
-    # Reading memory.mnemosyne.db_path uses the engine's hermes_config helper;
-    # without the engine the provider is unavailable anyway, so skip in a bare venv.
-    if getattr(provider_mod, "read_hermes_config_key", None) is None:
-        print("skip: engine helper read_hermes_config_key unavailable (bare venv)")
+    # The provider's safe YAML reader is local; keep this engine-free gate
+    # runnable in a bare venv where the optional PyYAML package may be absent.
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("skip: PyYAML unavailable (bare venv)")
         return
     with tempfile.TemporaryDirectory() as tmp:
         config = pathlib.Path(tmp) / "config.yaml"
@@ -132,12 +134,14 @@ def test_db_path_kwargs_beats_all():
         assert _beam(provider).kwargs["db_path"] == str(pathlib.Path(tmp) / "kwarg.db")
 
 
-def test_db_path_unset_passes_nothing_to_beam():
+def test_db_path_unset_passes_resolved_default_to_beam():
     with tempfile.TemporaryDirectory() as tmp:
         os.environ.pop("MNEMOSYNE_DB_PATH", None)
         provider = _init(tmp)
-        assert provider._db_path is None
-        assert "db_path" not in _beam(provider).kwargs
+        expected = str(pathlib.Path(tmp) / "_engine_data" / "mnemosyne.db")
+        assert provider._db_path == expected
+        assert _beam(provider).kwargs["db_path"] == expected
+        assert _beam(provider).kwargs["seed_config"] is False
 
 
 def test_schema_declares_db_path():
@@ -147,6 +151,11 @@ def test_schema_declares_db_path():
 
 
 def test_db_path_wins_over_profile_isolation():
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("skip: PyYAML unavailable (bare venv)")
+        return
     with tempfile.TemporaryDirectory() as tmp:
         config = pathlib.Path(tmp) / "config.yaml"
         config.write_text("memory:\n  mnemosyne:\n    profile_isolation: true\n", encoding="utf-8")
@@ -682,7 +691,7 @@ if __name__ == "__main__":
         test_db_path_from_env,
         test_db_path_from_hermes_config_beats_env,
         test_db_path_kwargs_beats_all,
-        test_db_path_unset_passes_nothing_to_beam,
+        test_db_path_unset_passes_resolved_default_to_beam,
         test_schema_declares_db_path,
         test_db_path_wins_over_profile_isolation,
         test_default_tool_surface_is_curated,

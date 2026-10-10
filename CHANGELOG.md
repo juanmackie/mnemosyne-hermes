@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Provider settings and store paths follow the selected Hermes profile across
+  initialization, CLI, identity and backups. Reinitialization resets settings;
+  malformed config and ambiguous bank names fail visibly. Audited engine
+  constructors no longer open a default DB on import and can skip config seeding.
+- `doctor --no-fix` uses the active profile and read-only SQLite without creating
+  a database, config or diagnostic log.
+- Evidence references retain separate internal and platform message-ID
+  namespaces, including integer IDs; legacy references remain untyped claims.
+
 ### Added
 
 - `scripts/update.sh` and `scripts/update.ps1`: a notify-only `--check` (exit 10

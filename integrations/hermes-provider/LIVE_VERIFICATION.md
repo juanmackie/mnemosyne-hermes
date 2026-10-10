@@ -7,6 +7,17 @@ is given, plus the evidence already gathered without touching live state.
 
 ## Already proven (no live state touched)
 
+2026-10-10: `tests/test_provider_profiles.py` additionally exercises two
+temporary profiles in fresh Python processes with the real audited engine,
+with and without a data-directory override. It verifies separate writes,
+provider/CLI/identity path agreement, real wrapper construction and no default
+DB/config creation. Focused regressions cover config refusal, stale settings,
+backup paths, namespace collisions and read-only doctor. These tests use a
+temporary engine copy and do not constitute a live gateway run. The blocked
+`scripts/checks.sh` gate remains unexecuted.
+The combined targeted suite passed 145 tests with the engine required;
+see the [P31/P32 audit record](CONTRACT_AUDIT.md#2026-10-10-amendment--selected-profile-store-safety-p31p32).
+
 | Check | Command | Result |
 |---|---|---|
 | Snapshot is the upstream artifact | `scripts/vendor-provider-sync.sh <site-packages>/hermes_memory_provider` | 7/7 `same` before the local patches; patched files listed in `PATCHES.md` |

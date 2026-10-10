@@ -414,3 +414,40 @@ The engine pin, provider registration and default tool surface remain unchanged.
 Verification uses a temporary copy of the pinned engine with exact audited
 patches. This amendment does not claim live-gateway verification or exercise a
 real LLM request; model waits and outputs are deterministic test doubles.
+
+## 2026-10-10 amendment — selected-profile store safety (P31/P32)
+
+Configuration reads now stay within the selected Hermes home, without the
+engine config singleton. One pure resolver implements explicit config/env path
+precedence, data-directory overrides and bank selection; ambiguous identities
+are refused. Provider reinitialization resets config-derived settings, including
+shared-surface paths and read policy, capture roles, filters and reflection
+budgets. Doctor uses the active-home helper and SQLite `mode=ro`; its no-fix
+path creates no database, config or diagnostic log.
+
+The pinned engine patches remove eager default-DB initialization from the
+wrapper module and permit integrations to skip config seeding in both real
+constructors. Standalone default-memory helpers still initialize their selected
+store on construction. Provider diagnostics pass the actual store and selected
+profile log directory. Source references carry internal/platform namespaces;
+integer host IDs normalize within that namespace, while old references remain
+untyped, unauthenticated stored claims.
+
+`tests/test_provider_profiles.py` adds fresh-process, real-constructor evidence
+for two profiles in one process, both with a shared data-directory override and
+with separate profile roots. It asserts separate writes and absence of a
+default DB/config, plus focused config-refusal, lifecycle, backup, identity and
+read-only doctor regressions. Verification uses a temporary audited engine
+copy; the live installation is not patched. Engine pin and Hermes version
+policy are unchanged. The live gateway checklist remains unexecuted, and the
+blocked `scripts/checks.sh` gate was neither run nor recreated.
+
+Final targeted verification: **145 pytest tests passed** with
+`MNEMOSYNE_REQUIRE_ENGINE=1` against the temporary patched engine. Scope:
+provider profiles, DB paths, loader, evidence, lifecycle, engine contract,
+consolidation, maintenance, engine-patch deployment and vendored snapshot.
+Focused Ruff checks/format checks and mypy passed on the changed tests;
+the standalone vendored gate passed all four checks. Engine patch applier
+dry-run, previous-generation upgrade, idempotency and restore were exercised
+only on a temporary package copy. These results do not replace the blocked
+broad repository gate or the live-gateway checklist.

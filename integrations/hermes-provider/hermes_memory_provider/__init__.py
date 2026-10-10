@@ -129,7 +129,6 @@ try:
         dry_run_batch,
         validate_batch_operations,
     )
-    from mnemosyne.hermes_config import read_hermes_config_key
     from mnemosyne.integrations.hermes_persona_prompt import HermesPersonaPromptMixin
 except ImportError as _engine_import_error:
     _ENGINE_IMPORT_ERROR = _engine_import_error
@@ -140,10 +139,14 @@ except ImportError as _engine_import_error:
     batch_validation_error_payload = None
     dry_run_batch = None
     validate_batch_operations = None
-    read_hermes_config_key = None
 
     class HermesPersonaPromptMixin:  # fallback: keeps the class body valid
         pass
+
+# LOCAL PATCH: P31 configuration discovery never seeds engine-global config.
+from .configuration import (ProfileConfigError, active_home, configured_db_path,
+                            read_hermes_config_key, read_engine_profile_key,
+                            resolve_db_path, profile_bank)
 
 logger = logging.getLogger(__name__)
 
@@ -1635,6 +1638,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # MNEMOSYNE_DB_PATH env > engine default (MNEMOSYNE_DATA_DIR >
         # $HERMES_HOME > ~/.hermes). None means "let the engine decide".
         self._db_path: Optional[str] = None
+        self._configuration_overrides: Dict[str, Any] = {}
         # LOCAL PATCH: P22 one tracked worker for auto/session-end consolidation.
         self._consolidation_lock = threading.Lock()
         self._consolidation_thread: Optional[threading.Thread] = None
@@ -1995,25 +1999,47 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # used the engine default, so a set env var silently pointed nowhere.
         # Only the Hermes config surface is consulted here (not the engine's own
         # config singleton) so the chain above is the whole story.
-        db_path = kwargs.get("db_path")
-        if db_path is None:
-            try:
-                from mnemosyne.hermes_config import read_hermes_config_key
-                db_path = read_hermes_config_key(self._hermes_home, "db_path")
-            except Exception:
-                db_path = None
-        if db_path is None:
-            db_path = os.environ.get("MNEMOSYNE_DB_PATH") or None
-        if db_path:
-            self._db_path = str(Path(str(db_path)).expanduser())
-            if self._profile_isolation_enabled:
-                logger.warning(
-                    "Mnemosyne: both db_path=%s and profile_isolation are set; "
-                    "db_path wins and profile banks are ignored for this provider.",
-                    self._db_path,
-                )
-        else:
-            self._db_path = None
+        # LOCAL PATCH: P31 all surfaces share profile-aware path resolution.
+        self._db_path = resolve_db_path(self._hermes_home, overrides=kwargs,
+                                        agent_identity=self._agent_identity)
+        explicit_db_path = configured_db_path(self._hermes_home, overrides=kwargs)
+        if explicit_db_path and self._profile_isolation_enabled:
+            logger.warning(
+                "Mnemosyne: both db_path=%s and profile_isolation are set; "
+                "db_path wins and profile banks are ignored for this provider.",
+                explicit_db_path,
+            )
+
+    def _reset_profile_settings(self) -> None:
+        # LOCAL PATCH: P31 reinitialization restores defaults before a new
+        # profile applies its values. Locks, source registrations and worker
+        # ownership stay attached to this provider instance.
+        self._auto_sleep_enabled = _parse_env_bool("MNEMOSYNE_AUTO_SLEEP_ENABLED", True)
+        self._auto_sleep_threshold = 50
+        self._reflect_disabled_for_cron = _parse_env_bool("MNEMOSYNE_REFLECT_DISABLED_FOR_CRON", True)
+        self._reflect_max_calls_per_session = _parse_env_optional_int("MNEMOSYNE_REFLECT_MAX_CALLS_PER_SESSION", 3)
+        self._reflect_calls_this_session = 0
+        self._ignore_patterns = []
+        self._profile_isolation_enabled = False
+        self._shared_surface_path = None
+        self._shared_surface_read = False
+        self._default_scope = "session"
+        self._db_path = None
+        self._sync_roles = {"user"}
+        sync_env = os.environ.get("MNEMOSYNE_SYNC_ROLES")
+        if sync_env is not None:
+            self._sync_roles = {r.strip().lower() for r in sync_env.split(",") if r.strip()} & self._VALID_SYNC_ROLES
+        self._skip_contexts = {"cron", "flush", "subagent", "background", "skill_loop"}
+        skip_env = os.environ.get("MNEMOSYNE_SKIP_CONTEXTS")
+        if skip_env is not None:
+            self._skip_contexts = {c.strip() for c in skip_env.split(",") if c.strip()}
+        self._turn_count = 0
+        self._current_turn_author = {}
+        self._prefetch_cache.clear()
+        self._prefetch_last_context = ""
+        self._prefetch_last_bank_counts = {}
+        self._prefetch_recall_changes = 0
+        self._prefetch_conn_identity = None
 
 
     def _should_filter(self, content: str) -> bool:
@@ -2030,36 +2056,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return False
 
     def _read_config_key(self, key: str) -> Any:
-        """Read a single key, checking Hermes config first, then Mnemosyne config.
-
-        Precedence: Hermes config.yaml (memory.mnemosyne.<key>) > Mnemosyne
-        config.yaml > env var > hardcoded default.
-
-        This bridges the two config systems so that ``mnemosyne config set``
-        and ``mnemosyne config reload`` actually affect the running provider.
-        """
-        # LOCAL PATCH (T3): the engine may be absent (bare venv). Guard both
-        # config reads; this used to raise ModuleNotFoundError out of initialize()
-        # instead of letting is_available() report the reason.
-        # 1. Hermes config (memory.mnemosyne.<key>)
-        try:
-            if read_hermes_config_key is not None:
-                val = read_hermes_config_key(getattr(self, "_hermes_home", None), key)
-                if val is not None:
-                    return val
-        except Exception:
-            pass
-
-        # 2. Mnemosyne config singleton (auto-reloads on file change)
-        try:
-            from mnemosyne.core.config import get_config
-            val = get_config().get(key)
-            if val is not None:
-                return val
-        except Exception:
-            pass
-
-        return None
+        """Read the selected profile's settings without creating config files."""
+        # LOCAL PATCH: P31 the engine singleton belongs to the process, not
+        # this profile. Its fallback could silently read another store's config.
+        home = getattr(self, "_hermes_home", None)
+        value = read_hermes_config_key(home, key)
+        if value is not None:
+            return value
+        return read_engine_profile_key(home, key)
 
     def _configured_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return the curated default or the explicitly configured tool set.
@@ -2146,13 +2150,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 from .cli import resolve_effective_db_path
             except ImportError:
                 return []
-        hermes_home = (
-            getattr(self, "_hermes_home", "")
-            or os.environ.get("HERMES_HOME")
-            or str(Path.home() / ".hermes")
-        )
+        hermes_home = str(active_home(getattr(self, "_hermes_home", None)))
         try:
-            db_path = resolve_effective_db_path(hermes_home)
+            db_path = str(self._beam.db_path) if self._beam is not None else resolve_effective_db_path(hermes_home)
             if not db_path or str(db_path) == ":memory:":
                 return []
             user_home = Path.home().resolve()
@@ -2180,28 +2180,32 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # store. Only an explicit configured path can be resolved without
             # initialization; its package-default path is outside user home.
             try:
-                shared_path = read_hermes_config_key(hermes_home, "shared_surface_path") if read_hermes_config_key else None
+                shared_path = self._shared_surface_path or self._read_config_key("shared_surface_path")
+            except ProfileConfigError:
+                raise
             except Exception:
                 shared_path = None
             external_shared = eligible(shared_path)
             if external_shared and external_shared not in paths:
                 paths.append(external_shared)
             return paths
+        except ProfileConfigError:
+            raise
         except (OSError, RuntimeError, ValueError):
             return []
 
     # LOCAL PATCH: P24 expose read-only configuration that changes provider
     # identity so Hermes gateway caches are invalidated without opening a DB.
     def identity_signature(self) -> Dict[str, Any]:
-        home = (
-            getattr(self, "_hermes_home", "")
-            or os.environ.get("HERMES_HOME")
-            or str(Path.home() / ".hermes")
-        )
+        home = str(active_home(getattr(self, "_hermes_home", None)))
         configured: Dict[str, Any] = {}
         for key in ("profile_isolation", "default_scope", "tools", "shared_surface_path", "shared_surface_read"):
             try:
-                value = read_hermes_config_key(home, key) if read_hermes_config_key is not None else None
+                value = self._configuration_overrides.get(key)
+                if value is None:
+                    value = self._read_config_key(key)
+            except ProfileConfigError:
+                raise
             except Exception:
                 value = None
             if value is not None:
@@ -2214,7 +2218,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             except ImportError:
                 resolve_effective_db_path = None
         try:
-            db_path = resolve_effective_db_path(home) if resolve_effective_db_path else None
+            if self._configuration_overrides:
+                db_path = resolve_effective_db_path(home, overrides=self._configuration_overrides,
+                                                   agent_identity=getattr(self, "_agent_identity", None))
+            else:
+                db_path = resolve_effective_db_path(home)
+        except ProfileConfigError:
+            raise
         except Exception:
             db_path = None
         if db_path:
@@ -2285,31 +2295,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return sanitized or "default"
 
     def _resolve_profile_bank(self) -> str:
-        """Derive a bank name from the active Hermes profile.
-
-        Precedence:
-        1. agent_identity (explicit profile name from Hermes)
-        2. hermes_home basename (derived from profile directory)
-        3. Fallback to 'default' (backward-compatible shared DB)
-        """
-        # Try agent_identity first (most reliable)
-        identity = getattr(self, "_agent_identity", None) or ""
-        if identity and identity.lower() not in ("primary", "default", "none", ""):
-            bank = self._sanitize_bank_name(identity)
-            if bank != "default":
-                return bank
-
-        # Fall back to hermes_home basename
-        hermes_home = getattr(self, "_hermes_home", "") or ""
-        if hermes_home:
-            from pathlib import Path
-            basename = Path(hermes_home).name
-            if basename and basename.lower() not in (".hermes", "hermes", "default", ""):
-                bank = self._sanitize_bank_name(basename)
-                if bank != "default":
-                    return bank
-
-        return "default"
+        # LOCAL PATCH: P31 lossy name sanitization can collapse distinct profiles.
+        return profile_bank(self._hermes_home, getattr(self, "_agent_identity", None))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Mnemosyne beam for this session."""
@@ -2358,11 +2345,25 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._agent_context = kwargs.get("agent_context", "primary")
         self._platform = kwargs.get("platform", "cli")
         self._current_session_id = str(session_id or "hermes_default")
-        self._hermes_home = kwargs.get("hermes_home", "")
+        stable_scope = kwargs.get("gateway_session_key") or session_id or "hermes_default"
+        self._session_id = f"hermes_{stable_scope}"
+        self._hermes_home = str(active_home(kwargs.get("hermes_home")))
+        self._reset_profile_settings()
+        self._configuration_overrides = {
+            key: kwargs[key] for key in ("db_path", "profile_isolation", "default_scope", "tools",
+                                         "shared_surface_path", "shared_surface_read")
+            if kwargs.get(key) is not None
+        }
         self._agent_identity = kwargs.get("agent_identity", None) or ""
 
         # Apply provider-specific config from kwargs (Hermes-passed) or config.yaml fallback
-        self._apply_provider_config(kwargs)
+        try:
+            self._apply_provider_config(kwargs)
+        except Exception as exc:
+            # LOCAL PATCH: P31 config refusal also deactivates a previous profile.
+            self._init_error = exc
+            self._deactivate_in_module()
+            raise
 
         # LOCAL PATCH: P30 no Hermes version check at init; `doctor` reports the version.
         # C25: Register the Hermes auxiliary LLM backend BEFORE the skip-context
@@ -2398,51 +2399,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             self._deactivate_in_module()
             return
 
-        # Derive a stable per-thread session scope from gateway_session_key when
-        # available.  Each Telegram topic gets its own stable session so memories
-        # stay isolated per-thread while scope='global' memories still surface
-        # everywhere.  Falls back to the Hermes agent session_id for CLI and
-        # non-gateway use (no behavior change for those paths).
-        stable_scope = kwargs.get("gateway_session_key") or session_id
-        self._session_id = f"hermes_{stable_scope}"
-
         try:
-            if self._profile_isolation_enabled and not self._db_path:
-                # Route through Mnemosyne(bank=...) so BankManager handles
-                # directory creation, canonical path resolution, and isolates
-                # memories per Hermes profile.
-                bank_name = self._resolve_profile_bank()
-                from mnemosyne import Mnemosyne
-                mem = Mnemosyne(
-                    session_id=self._session_id,
-                    bank=bank_name,
-                    channel_id=kwargs.get("channel_id", ""),
-                )
-                self._memory = mem
-                self._beam = mem.beam
-                logger.info(
-                    "Mnemosyne initialized (profile isolation ON): session=%s, bank=%s, db=%s",
-                    self._session_id, bank_name, mem.db_path,
-                )
-            else:
-                BeamMemory = _get_beam_class()
-                beam_kwargs: Dict[str, Any] = {"session_id": self._session_id}
-                if self._db_path:
-                    beam_kwargs["db_path"] = self._db_path
-                self._beam = BeamMemory(**beam_kwargs)
-                # T6: name where memory actually lives, once, at init.
-                try:
-                    try:
-                        from .cli import describe_memory_location
-                    except ImportError:
-                        from hermes_memory_provider.cli import describe_memory_location
-                    for _line in describe_memory_location(self._db_path, self._hermes_home):
-                        if _line.strip().startswith("WARNING"):
-                            logger.warning("Mnemosyne: %s", _line.strip())
-                        else:
-                            logger.info("Mnemosyne: %s", _line.strip())
-                except Exception:
-                    logger.info("Mnemosyne initialized: session=%s", self._session_id)
+            # LOCAL PATCH: P31 open the explicit resolved store directly.
+            # Mnemosyne's wrapper import used to initialize a default DB first.
+            BeamMemory = _get_beam_class()
+            self._beam = BeamMemory(session_id=self._session_id, db_path=self._db_path,
+                                    seed_config=False, channel_id=kwargs.get("channel_id", ""))
+            from .cli import describe_memory_location
+            for line in describe_memory_location(self._db_path, self._hermes_home):
+                if line.strip().startswith("WARNING"):
+                    logger.warning("Mnemosyne: %s", line.strip())
+                else:
+                    logger.info("Mnemosyne: %s", line.strip())
 
         except Exception as e:
             # C27: capture the exception so system_prompt_block() can render a
@@ -3460,7 +3428,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     # Construction does schema work, so serialize it with provider access.
                     # After construction, every SQLite operation uses the worker's handle.
                     with beam_lock:
-                        sleep_beam = _get_beam_class()(**beam_kwargs)
+                        sleep_beam = _get_beam_class()(seed_config=False, **beam_kwargs)
                         worker_conn = sleep_beam.conn
                         if worker_conn is foreground_conn:
                             worker_conn = None
@@ -3879,7 +3847,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         shared_path = self._shared_surface_path or (_mnemosyne_root / "data" / "shared" / "mnemosyne.db")
         shared_path.parent.mkdir(parents=True, exist_ok=True)
         self._shared_surface_path = shared_path
-        self._surface_beam = BeamMemory(session_id="hermes_shared_surface", db_path=shared_path)
+        self._surface_beam = BeamMemory(session_id="hermes_shared_surface", db_path=shared_path, seed_config=False)
         logger.info("Mnemosyne shared surface initialized: db=%s", shared_path)
 
     def _require_surface_beam(self) -> Optional[str]:
@@ -4557,7 +4525,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if not output_path:
             return json.dumps({"error": "output_path is required"})
         from mnemosyne.core.memory import Mnemosyne
-        mem = Mnemosyne(session_id=self._session_id, db_path=self._beam.db_path)
+        mem = Mnemosyne(session_id=self._session_id, db_path=self._beam.db_path, seed_config=False)
         result = mem.export_to_file(output_path)
         return json.dumps(result)
 
@@ -4701,7 +4669,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         force = bool(args.get("force", False))
 
         from mnemosyne.core.memory import Mnemosyne
-        mem = Mnemosyne(session_id=self._session_id, db_path=self._beam.db_path)
+        mem = Mnemosyne(session_id=self._session_id, db_path=self._beam.db_path, seed_config=False)
 
         if provider:
             api_key = args.get("api_key", "").strip()
@@ -4751,9 +4719,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         diagnostic_kwargs: Dict[str, Any] = {
             "repair_vec_working": repair_requested,
             "dry_run": dry_run,
+            # LOCAL PATCH: P31 diagnostics must inspect/repair the exact active store.
+            "db_path": str(self._beam.db_path) if self._beam is not None else resolve_db_path(self._hermes_home),
+            "seed_config": False,
+            "log_dir": str(active_home(self._hermes_home) / "mnemosyne/logs"),
         }
-        if self._profile_isolation_enabled and self._beam is not None:
-            diagnostic_kwargs["bank"] = self._resolve_profile_bank()
         if self._beam is None:
             result = run_diagnostics(**diagnostic_kwargs)
             result["audit"] = self.get_audit_diagnostics()
@@ -4791,7 +4761,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 try:
                     import sqlite3
                     from mnemosyne.diagnose import _memory_orphan_diagnostics
-                    con = sqlite3.connect(str(active_db))
+                    # LOCAL PATCH: P31 diagnostic inspection cannot recreate a missing store.
+                    con = sqlite3.connect(Path(active_db).resolve().as_uri() + "?mode=ro", uri=True)
                     try:
                         cur = con.cursor()
                         result["active_provider_counts"] = {
