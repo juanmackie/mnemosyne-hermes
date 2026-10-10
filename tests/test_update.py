@@ -71,6 +71,8 @@ def repos(tmp_path):
     shutil.copyfile(ROOT / "scripts" / "update.sh", seed / "scripts" / "update.sh")
     (seed / "install.sh").write_text(STUB_INSTALL, encoding="utf-8", newline="\n")
     _git(seed, "add", ".")
+    # Windows checkouts carry no exec bit; update.sh runs ./install.sh directly.
+    _git(seed, "update-index", "--chmod=+x", "install.sh")
     _git(seed, "commit", "-q", "-m", "initial")
     _git(seed, "push", "-q", "origin", "main")
     user = tmp_path / "user"
