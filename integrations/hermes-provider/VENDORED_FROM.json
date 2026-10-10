@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "bmE-CpIPT-uR8OMkEWC0cnV2aamwKTht-ttt1qmAwPg",
-      "bytes": 266205,
-      "lines": 5586
+      "sha256": "Xix6e19Neo5t1EmrN0IX70-zMlbeNqcZ4FeBa-2zyhQ",
+      "bytes": 265695,
+      "lines": 5572
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
@@ -27,9 +27,9 @@
       "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "8Z8Tc5asg-OmV5hYgpHP_z6JIVcIteKuS31W1w19QJg",
-      "bytes": 42297,
-      "lines": 934
+      "sha256": "WMawKZqnyqpLslyzt-W0vF1P6ChK88kbxoQhuDJBc-U",
+      "bytes": 41151,
+      "lines": 906
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -72,7 +72,7 @@
       "P6 on_memory_write accepts metadata and passes it to the engine's remember(metadata=...)",
       "P7 sys.path guard (T7): only add the repo sibling dir when it really holds hermes_memory_provider/hermes_plugin; a copied install must not shadow the engine",
       "P8 db_path (T3): read memory.mnemosyne.db_path/MNEMOSYNE_DB_PATH and pass into BeamMemory; db_path wins over profile isolation",
-      "P9 startup location + Hermes range logging (T6/T8): describe_memory_location() and check_hermes_version()",
+      "P9 startup location logging (T6): describe_memory_location()",
       "P15 local spawn_context_thread compatibility helper copies contextvars; existing sleep workers use it while sync_turn relies on Hermes' serialized background MemoryManager",
       "P16 on_delegation stores bounded task/result only when sync_roles explicitly includes delegation",
       "P17 implement session/compression hooks; checkpoint JSON is bounded to 256 KiB, uses owner-only permissions and remains best effort because Hermes catches callback exceptions",
@@ -86,7 +86,8 @@
       "P24 exact durable native mirror ownership, compact setup, additive per-turn author provenance, fresh backup/identity/status hooks, capability-gated full durable checkpoint API v2",
       "P26 partial-history diagnostics and authorized target ownership for remember/update/forget/invalidate/private validation events",
       "P28 exact host references on eligible turn/identity capture; explicit remember references remain caller assertions",
-      "P29 bounded process-local tracked consolidation status, immutable lock-free snapshots and sanitized lifecycle outcomes in existing diagnostics"
+      "P29 bounded process-local tracked consolidation status, immutable lock-free snapshots and sanitized lifecycle outcomes in existing diagnostics",
+      "P30 remove the Hermes version check at init; no Hermes version requirement"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",
@@ -95,9 +96,10 @@
       "P11 db_path wired into the CLI BeamMemory/Mnemosyne and canonical-provider provenance check (T3/T7)",
       "P12 explicit Any annotations in detect_hermes_version/mnemosyne_command so static analysis can run over the provider (no runtime change)",
       "P13 check_provider_provenance accepts only format-v1 copies with an exact SHA-256 inventory of all package files (runtime caches excluded); install/uninstall remove only intact copies from the current canonical source, and _db_writable reports an unencodable path as not writable",
-      "P14 supported Hermes range narrowed to audited published releases; remove unsupported-version claims",
+      "P14 superseded by P30 (the supported-range constants were removed)",
       "P27 read-only bounded ID inspection and partial history with session/global or explicit operator selection",
-      "P28 optional bounded Markdown evidence export preserving engine JSON export"
+      "P28 optional bounded Markdown evidence export preserving engine JSON export",
+      "P30 remove SUPPORTED_HERMES_RANGE, TESTED_HERMES_VERSIONS and check_hermes_version; doctor only prints the detected Hermes version"
     ],
     "hermes_memory_provider/pyproject.toml": [
       "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"

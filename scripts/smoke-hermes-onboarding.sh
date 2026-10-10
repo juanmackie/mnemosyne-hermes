@@ -11,11 +11,14 @@
 # Needs real symlinks (install.sh links the plugin). On Windows it SKIPS with
 # exit 0; CI runs it on ubuntu-latest.
 #
+# Installs the newest hermes-agent unless HERMES_AGENT_VERSION (or
+# --hermes-agent-version) names one. There is no required Hermes version.
+#
 # Usage: scripts/smoke-hermes-onboarding.sh [--hermes-agent-version X] [--keep]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HERMES_AGENT_VERSION="${HERMES_AGENT_VERSION:-0.19.0}"
+HERMES_AGENT_VERSION="${HERMES_AGENT_VERSION:-}"
 KEEP=false
 
 while [[ $# -gt 0 ]]; do
@@ -29,7 +32,7 @@ while [[ $# -gt 0 ]]; do
     shift
     ;;
   -h | --help)
-    sed -n '2,15p' "$0"
+    sed -n '2,17p' "$0"
     exit 0
     ;;
   *)
@@ -78,8 +81,8 @@ VENV_PY="$VENV_BIN/python"
 }
 export PATH="$VENV_BIN:$PATH"
 
-echo "== [2/6] installing real Hermes $HERMES_AGENT_VERSION"
-uv pip install --python "$VENV_PY" "hermes-agent==$HERMES_AGENT_VERSION"
+echo "== [2/6] installing real Hermes ${HERMES_AGENT_VERSION:-(newest)}"
+uv pip install --python "$VENV_PY" "hermes-agent${HERMES_AGENT_VERSION:+==$HERMES_AGENT_VERSION}"
 hermes --version
 
 echo "== [3/6] ./install.sh --yes"
@@ -191,7 +194,7 @@ provider = loaded
 provider.initialize(session_id="smoke", hermes_home=str(home), agent_context="primary")
 assert provider.is_available(), provider.unavailable_reason()
 
-# Hermes 0.18.2/0.19.0 owns the asynchronous, serialized sync worker. Verify
+# Hermes owns the asynchronous, serialized sync worker. Verify
 # that a deliberately slow DB write does not hold the caller, then drain the
 # worker and prove the write landed. Also measure direct sync_turn as a baseline
 # on the same injected delay; callers must route it through MemoryManager.
@@ -227,7 +230,7 @@ manager = MemoryManager()
 manager.add_provider(provider)
 assert len(manager.providers) == 1 and manager.get_provider("mnemosyne") is provider, manager.providers
 try:
-    # Contract check: Hermes 0.18/0.19 swallows a provider CheckpointError, so
+    # Contract check: Hermes swallows a provider CheckpointError, so
     # the option cannot honestly promise to abort compression end-to-end.
     original_pre_compress = provider.on_pre_compress
     def fail_checkpoint(_messages):

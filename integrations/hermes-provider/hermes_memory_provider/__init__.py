@@ -2364,21 +2364,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # Apply provider-specific config from kwargs (Hermes-passed) or config.yaml fallback
         self._apply_provider_config(kwargs)
 
-        # T8: state the supported Hermes range and warn (never refuse) outside it.
-        try:
-            try:
-                from .cli import detect_hermes_version, check_hermes_version
-            except ImportError:
-                from hermes_memory_provider.cli import detect_hermes_version, check_hermes_version
-            _hv = detect_hermes_version()
-            _ok, _msg = check_hermes_version(_hv)
-            if _ok:
-                logger.info("Mnemosyne: %s", _msg)
-            else:
-                logger.warning("Mnemosyne: %s", _msg)
-        except Exception:
-            pass
-
+        # LOCAL PATCH: P30 no Hermes version check at init; `doctor` reports the version.
         # C25: Register the Hermes auxiliary LLM backend BEFORE the skip-context
         # early return. The backend is process-global and needed by sleep even in
         # skip-context sessions (subagent/cron/flush can still run memory tools).

@@ -132,10 +132,5 @@ def test_extract_provider_bounds_source_size(tmp_path, monkeypatch):
         DRIFT.extract_provider(wheel, tmp_path / "extract")
 
 
-def test_hermes_range_does_not_accept_future_contract_versions():
-    assert DRIFT.hermes_range_status("0.19.0")[0] is True
-    assert DRIFT.hermes_range_status("0.20.0")[0] is False
-
-
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

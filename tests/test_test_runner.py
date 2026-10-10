@@ -52,6 +52,7 @@ def _bash_path(path: Path) -> str:
             tail = tail.replace("\\", "/").lstrip("/")
             return f"/{drive[0].lower()}/{tail}"
         pytest.skip("Git Bash cygpath is unavailable for a non-drive path")
+    assert cygpath  # narrows for mypy when pytest is not importable
     result = subprocess.run([cygpath, "-u", str(path)], check=True, capture_output=True, text=True)
     return result.stdout.strip()
 
@@ -62,6 +63,7 @@ def test_runner_preserves_native_pythonpath_and_python_path_with_spaces(
     bash = _find_bash()
     if not bash:
         pytest.skip("bash is unavailable")
+    assert bash  # narrows for mypy when pytest is not importable
 
     engine = tmp_path / "patched engine"
     engine.mkdir()

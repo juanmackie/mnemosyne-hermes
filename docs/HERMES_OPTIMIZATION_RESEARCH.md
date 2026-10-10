@@ -2,7 +2,7 @@
 
 **Research date:** 2026-10-08  
 **Question:** What concrete changes would make the Mnemosyne provider work better in real Hermes sessions?  
-**Compatibility boundary:** This repository documents support for Hermes 0.18.2 and 0.19.0, audited from tags `v2026.7.7.2` and `v2026.7.20`. Hermes `main` was checked at commit [`a28a5d03a9fa60418db5f44f3436fa2aa029c8f2`](https://github.com/NousResearch/hermes-agent/commit/a28a5d03a9fa60418db5f44f3436fa2aa029c8f2), dated 2026-10-08 UTC. Findings about newer hooks are marked as future compatibility work, not as available in the supported release contract.
+**Audit baseline:** This repository requires no Hermes version. The findings below were audited against Hermes 0.18.2 and 0.19.0, from tags `v2026.7.7.2` and `v2026.7.20`. Hermes `main` was checked at commit [`a28a5d03a9fa60418db5f44f3436fa2aa029c8f2`](https://github.com/NousResearch/hermes-agent/commit/a28a5d03a9fa60418db5f44f3436fa2aa029c8f2), dated 2026-10-08 UTC. Findings about newer hooks are marked as future compatibility work, not as available in the audited releases.
 
 ## Findings
 

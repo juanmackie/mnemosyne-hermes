@@ -111,19 +111,13 @@ jobs:
         run: bash scripts/checks.sh
 
   hermes-onboarding:
-    name: onboarding (${{ matrix.os }}, hermes ${{ matrix.hermes }})
+    name: onboarding (${{ matrix.os }}, newest hermes)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # No Hermes version is required: the smoke installs the newest release.
         os: [ubuntu-latest, macos-latest]
-        # The currently published and audited Hermes releases in the support
-        # range; widen this only after CONTRACT_AUDIT.md and smoke coverage.
-        hermes: ["0.18.2", "0.19.0"]
-    env:
-      # The pin is a contract: `hermes mnemosyne` depends on Hermes' plugin CLI
-      # discovery internals.
-      HERMES_AGENT_VERSION: ${{ matrix.hermes }}
     steps:
       # actions/checkout v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

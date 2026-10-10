@@ -2,8 +2,8 @@
 
 Scope: the vendored snapshot in `hermes_memory_provider/`, audited against the
 `MemoryProvider` ABC and `MemoryManager` of **hermes-agent 0.19.0** in a scratch
-venv, with an AST signature diff against the installed **0.18.2** checkout. Both
-published versions are in the CI smoke matrix.
+venv, with an AST signature diff against the installed **0.18.2** checkout. No Hermes
+version is required (P30); CI installs the newest release for the onboarding smoke.
 
 Method: AST signature diff of `agent/memory_provider.py::MemoryProvider` vs
 `hermes_memory_provider/__init__.py::MnemosyneMemoryProvider`, plus reading the
@@ -129,7 +129,7 @@ is **not** covered by `hermes backup` — that is a Hermes constraint
 
 ## 2026-10-08 optimization compatibility addendum
 
-Published support remains Hermes 0.18.2 and 0.19.0; engine dependency remains
+No Hermes version is required (P30; the audit baseline above is 0.18.2/0.19.0). The engine dependency remains
 `mnemosyne-memory[embeddings]>=3.15.1,<3.16`. Current-main source compatibility
 was checked at `a28a5d03a9fa60418db5f44f3436fa2aa029c8f2`, independently
 of the published-release smoke matrix. Newer author/status/identity/checkpoint

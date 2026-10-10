@@ -14,7 +14,7 @@ Hermes memory provider. Execute steps in order.
 
 ## 0. Pre-check
 ```bash
-hermes --version            # supported range: >=0.18,<0.20
+hermes --version            # any version; there is no required Hermes version
 hermes memory status        # note the current provider before changing it
 ```
 If a memory DB already exists, keep it — do not delete or re-initialize.
@@ -92,6 +92,63 @@ MCP client configuration:
 `mnemosyne_memory_remember` and `mnemosyne_memory_search` through the client.
 (`mnemosyne-lite mcp` writes pure JSON-RPC to stdout; diagnostics go to stderr.)
 See `MCP_SERVER.md` and `docs/MCP_CLIENT_CONFIGS.md`.
+
+## 6. Keep it updated
+
+Updates are commits on `main` of the checkout from step 1 — there are no GitHub
+releases. `scripts/update.sh` (native Windows: `scripts\update.ps1`) is the one
+tool for both noticing and applying them:
+
+| Command | Effect | Exit |
+| --- | --- | --- |
+| `scripts/update.sh --check` | Fetch, print new commits. Changes nothing. | `0` current, `10` update available |
+| `scripts/update.sh --apply [-- INSTALL_ARGS]` | Fast-forward, `./install.sh --yes INSTALL_ARGS`, `hermes mnemosyne doctor --no-fix`. Restores the old commit and install if either fails. | `0` ok, `1` failed |
+
+`--quiet` prints nothing when already current. `--apply` refuses a dirty tree,
+a diverged history or another branch, and never touches the memory database.
+Pass the same `--venv` / `--hermes-home` you gave the installer after `--`.
+
+**Notify only (default).** Hermes can run a script on a schedule and deliver its
+output; empty output is silent. Check `hermes cron create --help` on your
+version, then:
+
+```bash
+mkdir -p ~/.hermes/scripts
+cat > ~/.hermes/scripts/mnemosyne-update-check.sh <<'EOF'
+#!/usr/bin/env bash
+# Prints the new commits only when an update exists; exit 10 means "update available".
+"$HOME/mnemosyne-hermes/scripts/update.sh" --check --quiet || [ "$?" -eq 10 ]
+EOF
+chmod +x ~/.hermes/scripts/mnemosyne-update-check.sh
+hermes cron create "0 9 * * *" --no-agent --script mnemosyne-update-check.sh \
+  --name mnemosyne-update-check
+hermes cron list          # confirm the job exists; add --deliver <target> to choose where notices go
+```
+
+**Apply automatically (only if the user asked for it).** `--apply` runs the
+installer from the fetched commits, so enable it only for a remote you trust:
+
+```bash
+cat > ~/.hermes/scripts/mnemosyne-update-apply.sh <<'EOF'
+#!/usr/bin/env bash
+"$HOME/mnemosyne-hermes/scripts/update.sh" --apply --quiet -- --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+EOF
+chmod +x ~/.hermes/scripts/mnemosyne-update-apply.sh
+hermes cron create "0 4 * * *" --no-agent --script mnemosyne-update-apply.sh \
+  --name mnemosyne-update-apply
+```
+
+A successful apply prints `Updated to <sha>`. Restart the Hermes gateway
+afterwards: Hermes caches the loaded provider module until the process ends.
+If `hermes` is not on the scheduler's `PATH`, add `--venv <hermes venv>` after
+the `--`.
+
+Without Hermes cron, use any scheduler. Linux/macOS `crontab -e`:
+`0 9 * * * $HOME/mnemosyne-hermes/scripts/update.sh --check --quiet` (cron mails
+the output when `MAILTO` is set). Windows Task Scheduler: run
+`powershell -NoProfile -ExecutionPolicy Bypass -File <checkout>\scripts\update.ps1 -Check -Quiet`
+daily. Anything that reads Atom feeds can follow
+`https://github.com/juanmackie/mnemosyne-hermes/commits/main.atom`.
 
 ---
 References: `integrations/hermes-provider/README.md`,

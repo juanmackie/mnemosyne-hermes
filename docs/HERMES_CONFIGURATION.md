@@ -28,7 +28,7 @@ memory:
 | `sync_roles` | `[user]` | `assistant`, `tool`, and `delegation` require explicit opt-in. `[]` disables autosave. Identity extraction also requires `user`. Environment: `MNEMOSYNE_SYNC_ROLES`. |
 | `shared_surface_path` | `data/shared/mnemosyne.db` | Separate shared-surface database. |
 | `shared_surface_read` | `false` | Merge shared-surface results into explicit recall, with bank tags. |
-| `require_checkpoint` | `false` | Legacy bounded local compression snapshot. Supported Hermes 0.18.2/0.19.0 catches hook failures, so this cannot guarantee compression aborts. |
+| `require_checkpoint` | `false` | Legacy bounded local compression snapshot. Audited Hermes 0.18.2/0.19.0 catch hook failures, so this cannot guarantee compression aborts. |
 | `vector_type` | `int8` | Reserved setting; not wired to BeamMemory at runtime. |
 
 ## Automatic context controls
@@ -96,8 +96,8 @@ The provider advertises checkpoint API v2 only to a host exposing that API.
 It writes the complete normalized evidence durably and idempotently before
 acknowledging compression. End-to-end abort on failure additionally requires
 Hermes' `compression.checkpoint_required` gate. These newer hooks are tested
-against pinned main source; published support remains 0.18.2/0.19.0, whose
-compression hooks are best effort. See the [contract audit](../integrations/hermes-provider/CONTRACT_AUDIT.md).
+against pinned main source; the audited releases 0.18.2/0.19.0 treat
+compression hooks as best effort. See the [contract audit](../integrations/hermes-provider/CONTRACT_AUDIT.md).
 
 `backup_paths()` resolves configuration without initialization or opening the
 database. Hermes can snapshot declared stores outside `HERMES_HOME` only when
