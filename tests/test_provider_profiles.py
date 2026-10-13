@@ -270,13 +270,26 @@ def test_successful_doctor_no_fix_leaves_store_and_file_inventory_unchanged(tmp_
         connection.execute("CREATE TABLE example (id TEXT)")
     host = types.ModuleType("hermes_constants")
     host.get_hermes_home = lambda: home
+    engine = types.ModuleType("mnemosyne")
+    engine.__path__ = []
+    engine_core = types.ModuleType("mnemosyne.core")
+    engine_core.__path__ = []
+    engine_beam = types.ModuleType("mnemosyne.core.beam")
     before = {
         str(path.relative_to(tmp_path)): path.read_bytes()
         for path in tmp_path.rglob("*")
         if path.is_file()
     }
     with (
-        patch.dict(sys.modules, {"hermes_constants": host}),
+        patch.dict(
+            sys.modules,
+            {
+                "hermes_constants": host,
+                "mnemosyne": engine,
+                "mnemosyne.core": engine_core,
+                "mnemosyne.core.beam": engine_beam,
+            },
+        ),
         patch.object(cli, "_provider_registration_count", return_value=(1, "synthetic discovery")),
         patch.object(cli, "check_provider_provenance", return_value=(True, "synthetic provenance")),
     ):
