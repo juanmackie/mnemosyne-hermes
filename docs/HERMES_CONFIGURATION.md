@@ -80,6 +80,16 @@ Mnemosyne supplies searchable facts and episodic evidence. Skills carry
 procedures; `session_search`, when exposed by Hermes, is the transcript fallback.
 Dynamic recall stays in per-turn context while provider instructions stay static.
 
+## Engine recall precision
+
+`MNEMOSYNE_RECALL_SCORE_FLOOR` is an engine environment setting, applied by the
+audited engine patches. It defaults to disabled and keeps results above a
+configured fraction of the highest score. It affects explicit recall and
+engine-backed automatic context; changing it invalidates cached prefetch
+context. It does not constrain topic domains or affect the lite store.
+See the [engine cutoff reference](../integrations/engine-patches/README.md#recall-precision-cutoff)
+before choosing a threshold. This is not a `memory.mnemosyne` YAML key.
+
 ## Consolidation status
 
 The existing opt-in `mnemosyne_diagnose` tool includes a `consolidation` snapshot

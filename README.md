@@ -103,6 +103,12 @@ global working memories. Source hashes are verified before patching; unreviewed
 engine revisions are refused. Restart engine MCP processes as well as the
 gateway after an update.
 
+An optional engine recall score cutoff can suppress weak neighboring matches
+while retaining multiple strong answers. It defaults to disabled pending
+benchmark calibration. See the
+[cutoff configuration and regression coverage](integrations/engine-patches/README.md#recall-precision-cutoff)
+and [PrecisionMemBench results](bench/PRECISION_RECALL_RESULTS.md).
+
 Memories can now be inspected by ID, with bounded recorded history and an
 optional read-only Markdown evidence export. See the provider's
 [inspection guide](integrations/hermes-provider/README.md#inspect-evidence-and-recorded-history)

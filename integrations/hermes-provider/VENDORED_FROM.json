@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "gdcRlxbU5yeY5sbxdNWTcO5jEoQJvKTPfBan4bfr-8g",
-      "bytes": 265514,
-      "lines": 5543
+      "sha256": "w-sjNmyzTvey5OcJMKdAzJR2X6YxAcmZbANiw4oIqyg",
+      "bytes": 265644,
+      "lines": 5545
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
@@ -93,7 +93,8 @@
       "P28 exact host references on eligible turn/identity capture; explicit remember references remain caller assertions",
       "P29 bounded process-local tracked consolidation status, immutable lock-free snapshots and sanitized lifecycle outcomes in existing diagnostics",
       "P30 remove the Hermes version check at init; no Hermes version requirement",
-      "P31 selected-profile read-only config and shared store resolution; reset settings on reinitialization, skip engine config seeding, and read-only active-profile doctor"
+      "P31 selected-profile read-only config and shared store resolution; reset settings on reinitialization, skip engine config seeding, and read-only active-profile doctor",
+      "P33 include engine recall score floor in the exact-query prefetch cache key"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",

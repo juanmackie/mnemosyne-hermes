@@ -47,6 +47,35 @@ recall is therefore also an explicit authorization choice for ID operations.
 
 ## Apply and verify
 
+### Recall precision cutoff
+
+`MNEMOSYNE_RECALL_SCORE_FLOOR` enables an optional relative score cutoff.
+For example, `0.6` keeps candidates whose score is at least 60% of the highest
+candidate score. The cutoff preserves the order of surviving candidates and
+can retain several answers. It runs before the linear and polyphonic return
+limits and recall counters, and also filters fact supplements and enhanced
+recall output. Engine and provider cache keys include the setting.
+
+Unset or `0` preserves the existing recall behavior. Values must be finite
+numbers between `0` and `1`. Invalid values produce a warning and preserve the
+existing behavior. A value of `1` retains tied highest scores. Scores are
+hybrid ranking signals, not probabilities. The example `0.6` is not a
+recommended production threshold.
+
+After applying the patches, set the variable in the environment of the
+`mnemosyne mcp` process or Hermes gateway and restart that process. The setting
+does not apply to `mnemosyne-lite`. Test candidate thresholds against the full
+PrecisionMemBench suite before selecting a deployment default. The replay
+tool and measurement limits are documented in
+[`bench/PRECISION_RECALL_RESULTS.md`](../../bench/PRECISION_RECALL_RESULTS.md).
+
+The regression lanes use temporary stores and cover cross-topic lexical
+neighbors, rambling queries, multiple required answers, working and episodic
+tiers, session visibility, cache refresh and returned-row recall accounting.
+Domain labels such as `domain:writing` are not the engine's `session`/`global`
+scope. The cutoff does not enforce domain isolation. See the
+[scope analysis](../../bench/PRECISION_SCOPE_ANALYSIS.md).
+
 Use the Python executable from the engine's venv, from the repository root:
 
 ```bash

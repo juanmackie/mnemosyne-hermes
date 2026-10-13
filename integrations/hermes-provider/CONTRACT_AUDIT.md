@@ -451,3 +451,18 @@ the standalone vendored gate passed all four checks. Engine patch applier
 dry-run, previous-generation upgrade, idempotency and restore were exercised
 only on a temporary package copy. These results do not replace the blocked
 broad repository gate or the live-gateway checklist.
+
+## 2026-10-13 precision findings follow-up
+
+The audited engine patch adds an opt-in relative recall score cutoff, with
+filtering after enhanced rescoring. P33 includes that setting in the provider's
+prefetch cache identity. Default behavior, engine pin, tool registration and
+session/global visibility remain unchanged. Semantic domain filtering is not
+implemented. The [precision report](../../bench/PRECISION_RECALL_RESULTS.md)
+records the full public-fixture keyword replay and its missing-belief tradeoff.
+
+On a temporary engine copy, `test-all.sh --skip-llm --require-engine` passed
+the provider gates and 296 pytest tests. `scripts/checks.sh` completed with all
+gates passing. Pre-commit, Ruff, formatting, mypy and ShellCheck passed. The
+Windows onboarding smoke skipped its symlink-dependent lane. The live gateway
+checklist remains unexecuted, and the deployed MiniLM/MCP retune remains pending.

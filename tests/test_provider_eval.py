@@ -45,8 +45,7 @@ def test_held_out_cases_have_explicit_labels_and_versioned_source():
 
 def test_held_out_grader_rejects_missing_and_retired_facts():
     case = next(
-        case for case in FIXTURES["held_out_cases"]
-        if case["id"] == "held-correction-retirement"
+        case for case in FIXTURES["held_out_cases"] if case["id"] == "held-correction-retirement"
     )
     assert not MODULE.grade(case, "[EVAL_IDENTITY]", LABELS)["passed"]
     assert not MODULE.grade(
@@ -54,9 +53,7 @@ def test_held_out_grader_rejects_missing_and_retired_facts():
         "[EVAL_IDENTITY] [EVAL_CURRENT_START_TIME] [EVAL_RETIRED_START_TIME]",
         LABELS,
     )["passed"]
-    assert MODULE.grade(
-        case, "[EVAL_IDENTITY] [EVAL_CURRENT_START_TIME]", LABELS
-    )["passed"]
+    assert MODULE.grade(case, "[EVAL_IDENTITY] [EVAL_CURRENT_START_TIME]", LABELS)["passed"]
 
 
 def test_empty_wrong_sensitive_and_oversized_answers_fail():
@@ -102,15 +99,11 @@ def test_public_prefetch_engine_outcomes(tmp_path):
     evidence = json.loads(report.read_text(encoding="utf-8"))
     assert evidence["provider_ref"] == "working-tree"
     assert evidence["errors"] == 0
-    assert evidence["total"] == len(
-        FIXTURES["cases"] + FIXTURES.get("held_out_cases", [])
-    )
+    assert evidence["total"] == len(FIXTURES["cases"] + FIXTURES.get("held_out_cases", []))
     assert evidence["passed"] == sum(bool(case["passed"]) for case in evidence["cases"])
     assert evidence["evaluation_version"] == FIXTURES["version"]
     assert len(evidence["provider_source_hashes"]) >= 7
     assert len(evidence["provider_source_tree_sha256"]) == 64
-    assert evidence["held_out_metrics"]["case_count"] == len(
-        FIXTURES["held_out_cases"]
-    )
+    assert evidence["held_out_metrics"]["case_count"] == len(FIXTURES["held_out_cases"])
     assert evidence["held_out_metrics"]["execution_errors"] == 0
     assert evidence["held_out_metrics"]["task_recall"] is not None

@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Engine recall supports an opt-in relative score cutoff across linear,
+  polyphonic and enhanced returns, including fact supplements. Rejected rows
+  do not accrue linear recall counts. Engine and provider caches distinguish
+  cutoff settings. The default remains disabled pending full-suite calibration.
 - Provider settings and store paths follow the selected Hermes profile across
   initialization, CLI, identity and backups. Reinitialization resets settings;
   malformed config and ambiguous bank names fail visibly. Audited engine
@@ -46,11 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   newer Hermes author/checkpoint/status/identity hooks. Published release and
   engine support bounds remain unchanged.
 
-- Deterministic natural-language recall evaluation harness under
-  `.claude/hillclimb/recall-quality/` (94 labelled cases, held-out splits,
-  real-CLI grader and offline candidate screen). Round 1 exposed the AND/OR
-  recall-specificity tradeoff; its OR candidate did not clear the negative
-  specificity gate and is retained as an experiment, not shipped behavior.
+- PrecisionMemBench score replay and isolated engine regressions for weak
+  lexical neighbors, query noise and multiple required answers. The findings
+  audit distinguishes semantic domain labels from engine visibility scope and
+  records the verified upstream Qdrant interface mismatch.
 - Engine-backed provider contract lane (`tests/test_provider_engine_contract.py`):
   every provider tool runs against the pinned real engine in CI
   (`./test-all.sh --require-engine`), with a weekly run against the newest
