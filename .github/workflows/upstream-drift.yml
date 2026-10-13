@@ -114,15 +114,25 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          uv venv --python 3.11 .venv
-          py="$PWD/.venv/bin/python"
-          echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
-          # Newest engine, not the pin: a green run here (plus the drift diff)
-          # is the evidence a pin bump needs; a red run blocks it.
-          uv pip install --python "$py" "mnemosyne-memory[embeddings]==${{ steps.latest.outputs.version }}" pytest
-          uv pip install --python "$py" --no-deps ./integrations/hermes-provider
-          MNEMOSYNE_REQUIRE_ENGINE=1 "$py" tests/test_provider_engine_contract.py 2>&1 | tee contract-latest-engine.md
-          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          (
+            set -euo pipefail
+            uv venv --python 3.11 .venv
+            py="$PWD/.venv/bin/python"
+            echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
+            # Newest engine, not the pin. Apply only the audited local engine
+            # patches before testing the provider; the patcher refuses unknown
+            # source revisions. Tee retains setup failures in the artifact.
+            uv pip install --python "$py" "mnemosyne-memory[embeddings]==${{ steps.latest.outputs.version }}" pytest
+            uv pip install --python "$py" --no-deps ./integrations/hermes-provider
+            "$py" scripts/apply_engine_patches.py
+            # A green run plus the drift diff is the evidence a pin bump needs;
+            # a red run blocks it.
+            MNEMOSYNE_REQUIRE_ENGINE=1 "$py" tests/test_provider_engine_contract.py
+          ) 2>&1 | tee contract-latest-engine.md
+          status=${PIPESTATUS[0]}
+          echo "Exit status: $status" | tee -a contract-latest-engine.md
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
 
       - name: Upload contract report
         # actions/upload-artifact v4.6.2
