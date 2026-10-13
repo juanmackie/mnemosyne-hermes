@@ -113,9 +113,12 @@ afterwards. Uninstalling only the provider retains these engine fixes; restore
 explicitly if the retained engine should return to upstream behavior.
 
 The strict CI lane applies the patches and exercises real BEAM, MCP, and provider
-handlers against temporary stores. The weekly newest-engine lane intentionally
-tests upstream behavior without these patches so it can detect whether upstream
-has incorporated the fixes. No live remote gateway verification is implied.
+handlers against temporary stores. The weekly newest-engine lane also applies
+the audited patches before testing the provider contract. It reports setup,
+patch-audit, and contract failures, including refusal of an unknown upstream
+source revision. A new release needs a source audit to determine which fixes
+it incorporates before updating or retiring the patches. No live remote gateway
+verification is implied.
 
 ## Upstream and retirement
 
