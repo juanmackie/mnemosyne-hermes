@@ -367,6 +367,17 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Verification | `tests/test_provider_profiles.py` and `tests/test_provider_evidence.py` cover cross-namespace collisions, same-namespace duplicates, integer IDs and legacy references. |
 | Upstream | Local evidence helper; preserve during re-vendor. |
 
+### P33 - recall cutoff in prefetch cache identity
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` |
+| Date | 2026-10-13 |
+| Reason | Enabling an engine score cutoff must not reuse a previously cached broad result. |
+| Behaviour | Include `MNEMOSYNE_RECALL_SCORE_FLOOR` in the exact-query prefetch cache key. Changing the cutoff refreshes context even when the query and database are unchanged. |
+| Verification | `tests/test_provider_prefetch.py::test_prefetch_cache_observes_recall_score_floor_changes` fails with stale context before this patch and passes after it. |
+| Upstream | Preserve while the audited engine recall cutoff is local. |
+
 ## Sync procedure (run on every upstream release)
 
 ```bash

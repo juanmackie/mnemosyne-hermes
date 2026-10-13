@@ -393,6 +393,43 @@ def test_queue_prefetch_is_opt_in_until_hit_rate_is_measured():
     beam.conn.close()
 
 
+def test_prefetch_cache_observes_recall_score_floor_changes():
+    beam = RecallBeam(rows=[_row("User prefers brief summaries")])
+    instance = _provider(beam)
+    instance._prefetch_model_slots = lambda query, profile: ""
+    weak = _row("User sometimes requests detailed appendices")
+    weak["score"] = 0.5
+
+    def recall(**kwargs):
+        beam.recall_calls += 1
+        if os.environ.get("MNEMOSYNE_RECALL_SCORE_FLOOR") == "0.6":
+            return list(beam.rows)
+        return [*beam.rows, weak]
+
+    beam.recall = recall
+    try:
+        with patch.dict(
+            os.environ,
+            {"MNEMOSYNE_PREFETCH_CACHE_ENABLED": "1", "MNEMOSYNE_RECALL_SCORE_FLOOR": "0"},
+        ):
+            query = "What summaries do I prefer?"
+            baseline = instance.prefetch(query, session_id="session-a")
+            assert "detailed appendices" in baseline
+            assert instance.prefetch(query, session_id="session-a") == baseline
+            assert beam.recall_calls == 1
+
+            os.environ["MNEMOSYNE_RECALL_SCORE_FLOOR"] = "0.6"
+            selected = instance.prefetch(query, session_id="session-a")
+            assert "brief summaries" in selected
+            assert "detailed appendices" not in selected
+            assert beam.recall_calls == 2
+
+            os.environ["MNEMOSYNE_RECALL_SCORE_FLOOR"] = "0"
+            assert instance.prefetch(query, session_id="session-a") == baseline
+    finally:
+        beam.conn.close()
+
+
 def test_prefetch_diagnostics_distinguish_store_error_from_no_match():
     beam = RecallBeam()
     beam.conn.execute(

@@ -24,6 +24,8 @@ regressions the benchmark's correctness asserts cannot see:
      checkpointing scores ~28% better than the seed and writes a ~41 MiB WAL on
      disk; this is the gate that catches it.
 """
+
+import contextlib
 import json
 import os
 import re
@@ -52,10 +54,8 @@ def _wal_bytes(root):
     for dirpath, _dirnames, filenames in os.walk(root):
         for name in filenames:
             if name.endswith("-wal"):
-                try:
+                with contextlib.suppress(OSError):
                     total += os.path.getsize(os.path.join(dirpath, name))
-                except OSError:
-                    pass
     return total
 
 
@@ -73,6 +73,7 @@ def check_contract(workspace, scratch):
     sys.path.insert(0, workspace)
     try:
         from mnemosyne_lite.storage import PythonMemoryStorage
+
         store = PythonMemoryStorage(os.path.join(scratch, "contract.db"))
         try:
             conn = store._conn()
@@ -140,7 +141,10 @@ def main():
         try:
             proc = subprocess.run(
                 ["bash", "bench/measure.sh"],
-                cwd=tmp, capture_output=True, text=True, timeout=1800,
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                timeout=1800,
             )
         finally:
             stop.set()
@@ -170,20 +174,36 @@ def main():
 
     # Gate 3: peak WAL across the run.
     if peak[0] > WAL_PEAK_LIMIT:
-        fail("wal_unbounded",
-             f"peak WAL {peak[0]/1048576:.1f} MiB > limit "
-             f"{WAL_PEAK_LIMIT/1048576:.0f} MiB (checkpoint policy regressed?)")
+        fail(
+            "wal_unbounded",
+            f"peak WAL {peak[0] / 1048576:.1f} MiB > limit "
+            f"{WAL_PEAK_LIMIT / 1048576:.0f} MiB (checkpoint policy regressed?)",
+        )
 
     out_path = os.path.join(workspace, "eval", "score.json")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w") as fh:
         json.dump(
-            {"score": score, "fail_class": "ok", "metric": FIELD,
-             "assert_ok": True, "wal_peak_bytes": peak[0],
-             "context": {k: metrics[k] for k in
-                         ("write_5000_p50_ms", "search_p50_ms", "search_p99_ms",
-                          "cold_init_p50_ms", "store_5000_bytes") if k in metrics}},
-            fh, indent=2,
+            {
+                "score": score,
+                "fail_class": "ok",
+                "metric": FIELD,
+                "assert_ok": True,
+                "wal_peak_bytes": peak[0],
+                "context": {
+                    k: metrics[k]
+                    for k in (
+                        "write_5000_p50_ms",
+                        "search_p50_ms",
+                        "search_p99_ms",
+                        "cold_init_p50_ms",
+                        "store_5000_bytes",
+                    )
+                    if k in metrics
+                },
+            },
+            fh,
+            indent=2,
         )
     print(f"score {score} ms ({FIELD}), assert_ok=1")
 

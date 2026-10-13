@@ -391,6 +391,7 @@ def test_sync_turn_attaches_only_exact_host_message_references():
         assert reference == {
             "session_id": "host-session-42",
             "message_id": message_id,
+            "message_id_namespace": "internal",
             "origin": "host",
         }
 

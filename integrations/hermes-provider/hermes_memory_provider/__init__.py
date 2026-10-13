@@ -2573,6 +2573,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 "MNEMOSYNE_PREFETCH_MODEL_SLOT_MIN_OVERLAP",
                 "MNEMOSYNE_PREFETCH_INCLUDE_RAW_TOOL_CAPTURE",
                 "MNEMOSYNE_PREFETCH_CACHE_TTL_SECONDS",
+                # LOCAL PATCH: P33 cutoff changes invalidate broad cached recall.
+                "MNEMOSYNE_RECALL_SCORE_FLOOR",
             )
         )
         query_digest = hashlib.sha256(query.encode("utf-8", errors="replace")).hexdigest()
