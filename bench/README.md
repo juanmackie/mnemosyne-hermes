@@ -89,6 +89,121 @@ recall memo, which only holds rows a thread actually asked for. The old
 Ranking is no longer `importance DESC, created_at DESC`: it is `bm25`, then
 that chain as the tie-break, then `id` so a `LIMIT` is deterministic.
 
+## `memory_writer_eval.py` — memory-writer quality
+
+This is a separate evaluation seam. `hermes_prefetch_eval.py` seeds memories and
+measures injected context; `precision_recall_eval.py` measures retrieval
+cutoffs. Neither isolates what a writer chooses to store. This evaluator scores
+writer artifacts produced from the same synthetic traces with the retrieval,
+answer and decoding settings held fixed.
+
+The fixture (`memory_writer_cases.json`, format
+`mnemosyne-memory-writer-cases/v1`) contains 24 authored synthetic cases:
+12 personal and 12 coding, split 16 development / 8 held-out. Every case has a
+trace, optional context, optional seed memories, independently labeled required
+and forbidden propositions, evidence anchors, a no-op expectation, and a recall
+query. No external benchmark data, real transcript, credential or live store is
+used. The research rationale and licensing limits are in
+[`docs/HY_MEMORY_RESEARCH.md`](../docs/HY_MEMORY_RESEARCH.md).
+
+### Artifact contract
+
+A candidate artifact is JSON (format
+`mnemosyne-memory-writer-artifact/v1`):
+
+```json
+{
+  "format": "mnemosyne-memory-writer-artifact/v1",
+  "writer": {"name": "example", "model": "example-model", "prompt_version": "v1"},
+  "cases": [
+    {
+      "id": "personal-dev-01",
+      "memories": [
+        {
+          "content": "The user takes coffee with oat milk and 2 shots of espresso.",
+          "kind": "preference",
+          "subject": "user",
+          "subject_name": null,
+          "scope": "session",
+          "valid_until": null,
+          "evidence": ["u1"]
+        }
+      ],
+      "operations": [{"op": "add", "memory": 0}]
+    }
+  ]
+}
+```
+
+`kind` is one of `fact`, `preference`, `identity`, `plan`, `experience`,
+`decision`, `blocker`. `subject` is `user`, `assistant`, `repo` or `other`.
+`scope` is `session` or `global`. `evidence` lists trace message IDs; a
+memory that cites context or an unknown ID fails. `operations` must reference
+every memory exactly once. `add` creates a new memory; `update` and `supersede`
+require a seed ID in `target`. A case with `expect_no_memories` must have no
+memories or operations. A candidate with no cases is valid but fails every
+required case; malformed shapes, unknown keys, oversized content, bad dates,
+duplicate case IDs and invalid operation indexes are rejected.
+
+### Scoring and limits
+
+The scorer is deliberately lexical and deterministic. It checks required and
+forbidden propositions, subject/kind ownership, evidence anchors, duplicate
+claims, expected seed-preserving or mutation behavior, no-op behavior, and
+content bounds. It does **not** prove semantic entailment: a paraphrase can be
+missed, and a sentence can contain a required token while drawing a wrong
+conclusion. Wrong-conclusion controls and held-out cases are included; review
+disputed cases manually. `required_claim_recall` is a label-retention measure,
+not an answer-quality score. Character counts are not billed tokens, and no
+latency claim is made.
+
+### Run
+
+```bash
+python3 tests/test_memory_writer_eval.py   # evaluator self-check, no pytest needed
+python3 bench/memory_writer_eval.py \
+  --cases bench/memory_writer_cases.json \
+  --baseline /path/to/baseline.json \
+  --candidate /path/to/candidate.json \
+  --output /path/to/new-report.json \
+  --require-no-regression --require-pass
+```
+
+The report is a new JSON file; the tool refuses to overwrite an input, an
+existing report, or a SQLite store path. Exit codes: `0` report written and
+requested gates passed; `1` quality or regression gate failed; `2` invalid
+input/artifact/environment or unsafe output. `--require-no-regression` fails if
+the candidate loses a required claim or case pass that the baseline had.
+
+`oracle_artifact()` is an instrument check built from the fixture labels. It is
+used by the tests and must never be presented as model-quality evidence.
+
+### Optional provider replay
+
+`--replay-provider` applies the candidate operations to fresh temporary stores
+through the existing public provider handlers. It requires the audited pinned
+engine and refuses live DB/home selectors; it sets throwaway `HERMES_HOME` and
+`MNEMOSYNE_DATA_DIR`, disables embeddings, and never calls a model or network.
+It configures the fixture's declared `replay_tools` through the provider's
+`memory.mnemosyne.tools` resolution path, so a tool the provider actually
+cannot expose fails the case instead of being assumed available. The report
+records the `mnemosyne-memory` distribution version and the provider's pinned
+engine requirement. It checks persisted content and recall reachability.
+Corrections are replayed as in-place updates, so replay does **not** assert
+historical-chain semantics. If the engine is unavailable, replay fails loudly;
+it does not silently skip.
+
+### Collecting real writer artifacts
+
+Artifact creation happens outside this script. Use an existing, explicitly
+selected Hermes model environment; do not add a credential, paid endpoint,
+model download or live-store connection. Record the model, prompt version,
+decoding settings, fixture SHA-256, and the empty starting-bank state. Produce
+baseline and candidate artifacts from the same traces. Compare development and
+held-out results by domain, retain failures in the denominator, and repeat
+paired runs before promoting a prompt or engine change. A writer-only result
+does not establish retrieval or production improvement.
+
 ## Scope
 
 - `src/mnemosyne_lite/storage.py` owns recall semantics and the storage path.
