@@ -25,6 +25,32 @@ def active_home(hermes_home: str | Path | None = None) -> Path:
     return Path(get_hermes_home()).expanduser()
 
 
+def _yaml_safe_load(text: str) -> Any:
+    """Parse YAML with whichever loader this Hermes install ships.
+
+    Hermes <= 0.21 venvs carry PyYAML; 0.22+ ships ruamel through the internal
+    ``hermes_yaml`` module. Both are tried before the bare-ruamel default so the
+    provider works across releases without pinning one.
+    """
+    try:
+        import yaml
+    except ImportError:
+        pass
+    else:
+        return yaml.safe_load(text)
+    try:
+        from hermes_yaml import safe_load
+    except ImportError:
+        pass
+    else:
+        return safe_load(text)
+    from ruamel.yaml import YAML
+
+    parser = YAML(typ="safe", pure=True)
+    parser.version = (1, 1)
+    return parser.load(text)
+
+
 def _mapping(path: Path) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -35,8 +61,10 @@ def _mapping(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError) as exc:
         raise ProfileConfigError(f"Cannot read profile config: {path}") from exc
     try:
-        import yaml
-        value = yaml.safe_load(text)
+        # LOCAL PATCH: P34 — Hermes 0.22 dropped PyYAML (ruamel-only venv), so
+        # the hard `import yaml` raised and every config read failed with
+        # ProfileConfigError. Resolve a loader this install actually ships.
+        value = _yaml_safe_load(text)
     except Exception as exc:
         raise ProfileConfigError(f"Cannot parse profile config: {path}") from exc
     if value is None:

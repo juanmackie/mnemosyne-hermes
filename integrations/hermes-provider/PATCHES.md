@@ -367,6 +367,17 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Verification | `tests/test_provider_profiles.py` and `tests/test_provider_evidence.py` cover cross-namespace collisions, same-namespace duplicates, integer IDs and legacy references. |
 | Upstream | Local evidence helper; preserve during re-vendor. |
 
+### P34 — loader resolution without PyYAML (Hermes 0.22+)
+
+| | |
+|---|---|
+| File | `hermes_memory_provider/configuration.py` (`_mapping`, new `_yaml_safe_load`) |
+| Date | 2026-10-15 |
+| Reason | Hermes 0.22 dropped PyYAML from its venv (ruamel-only), so the hard `import yaml` raised `ModuleNotFoundError` and every profile-config read failed with `ProfileConfigError` — the provider could not resolve its DB path at all. |
+| Behaviour | `_yaml_safe_load` resolves a loader this install actually ships: PyYAML when present (Hermes <= 0.21), then the internal `hermes_yaml.safe_load` (0.22+), then bare ruamel with YAML 1.1 semantics as a last resort. Same parse result on every Hermes release; no version pin. |
+| Verification | `hermes mnemosyne doctor --no-fix` against a 0.22.0 image (PyYAML-free venv) resolves the DB and passes the config checks; the vendored-snapshot gate covers the hash update. |
+| Upstream | Not sent; generally useful (affects every Hermes >= 0.22 install of this provider). |
+
 ### P33 - recall cutoff in prefetch cache identity
 
 | | |
