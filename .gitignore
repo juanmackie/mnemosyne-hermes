@@ -65,6 +65,9 @@ docs/VALIDATION_RESULTS.md
 # Dream-RSI run state (self-ignores its bulky work/ + trace_pool/; this entry hides everything)
 .dream-rsi/
 
+# Level-up evaluation scratch (clones, venvs, raw logs; deliverables live in docs/levelup/)
+.levelup-work/
+
 # recall-quality eval: derived output only. The runner, inputs, grader and
 # _state.json are committed; the corpus DB, transcripts and report are not.
 .claude/hillclimb/*/data/

@@ -1,0 +1,674 @@
+{
+  "workstream": "C",
+  "title": "Embedding comparison: BAAI/bge-small-en-v1.5 (384d) vs nomic-embed-text-v1.5 (768d)",
+  "decision": {
+    "verdict": "RECOMMEND reindex to nomic-embed-text-v1.5 (768-dim)",
+    "confidence": "moderate-high on direction and rough size; CPU-only, one dataset, 120 queries, sentence-transformers path",
+    "rationale": "nomic beats the current BAAI/bge-small-en-v1.5 default on every retrieval metric on the same 120 queries and same memory units: recall@10 0.681 vs 0.571 (delta +0.110, bootstrap 95% CI +0.051..+0.173), MRR 0.545 vs 0.438 (+0.107, CI +0.042..+0.174), recall@1 +0.081 (CI +0.010..+0.156), nDCG@10 +0.104 (CI +0.053..+0.156). All CIs exclude zero and the sign is consistent across metrics, categories and both hit@k-style metrics. Cost: ~3.6x index build time, exactly 2x index storage per unit, ~2.2x single-query latency p50 (68.5 vs 31.7 ms, noisy), ~2.2x model RSS in the ST path, 4.1x weight file size; all within the engine's CPU-only operating envelope for a full reindex.",
+    "conditions": [
+      "MNEMOSYNE_EMBEDDING_DIM=768 must be set (engine dim map has no nomic entry and falls back to 384)",
+      "MNEMOSYNE_EMBEDDING_QUERY_PREFIX='search_query: ' and MNEMOSYNE_EMBEDDING_DOC_PREFIX='search_document: ' must be set (engine applies no built-in nomic prefixes; these numbers assume them)",
+      "full reindex required: 384 -> 768 dim is a hard schema change (sqlite-vec tables recreated at the new dim)",
+      "validate engine-native fastembed ONNX quality before rollout; this benchmark measured the sentence-transformers PyTorch path, engine uses fastembed ONNX"
+    ],
+    "not_pending_because": "the measurement succeeded; F1/BLEU/LLM-judge are blocked (marked BLOCKED) but are downstream QA metrics, not embedding-retrieval metrics, and the decision to reindex rests on retrieval quality + cost, which were measured."
+  },
+  "protocol": {
+    "label": "MemBase LoCoMo loader + NaiveRAG message-unit contract (custom harness; not the official 3-stage runner)",
+    "dataset": "LoCoMo (snap-research/locomo data/locomo10.json, 10 conversations, 272 sessions, 5,882 messages, 1,986 QA pairs)",
+    "dataset_stats_from_loader": {
+      "trajectories": 10,
+      "sessions": 272,
+      "messages": 5882,
+      "questions": 1986,
+      "question_type_stats": {
+        "temporal": 321,
+        "open-domain": 96,
+        "multi-hop": 282,
+        "single-hop": 841,
+        "adversarial": 446
+      }
+    },
+    "subset": {
+      "trajectories": 4,
+      "memory_units": 2080,
+      "queries": 120,
+      "queries_with_resolvable_gold": 120,
+      "memory_units_per_trajectory": [
+        419,
+        369,
+        663,
+        629
+      ],
+      "queries_per_trajectory": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "selection_rule": "first N trajectories in loader order; first 30 valid QA pairs per trajectory (QA with >=1 evidence id resolved against that trajectory's messages)",
+      "category_composition": {
+        "1": {
+          "n": 43,
+          "question_type": "multi-hop",
+          "recall@10_mean": 0.4549,
+          "mrr_mean": 0.3809
+        },
+        "2": {
+          "n": 64,
+          "question_type": "temporal",
+          "recall@10_mean": 0.6797,
+          "mrr_mean": 0.5244
+        },
+        "3": {
+          "n": 11,
+          "question_type": "open-domain",
+          "recall@10_mean": 0.5,
+          "mrr_mean": 0.2379
+        },
+        "4": {
+          "n": 2,
+          "question_type": "single-hop",
+          "recall@10_mean": 0.0,
+          "mrr_mean": 0.0
+        }
+      }
+    },
+    "memory_unit": "one LoCoMo message per unit, serialized exactly as MemBase NaiveRAGLayer.add_message: 'Speaker {name} (role: {role}) says: {content}\\nTimestamp: {iso}'",
+    "retrieval": "dense cosine top-10 over all units of the same trajectory (per-user index); gold = LoCoMo evidence dia_ids prefixed by the MemBase loader as 'U<sample>:<dia_id>'",
+    "metrics": "recall@1/5/10 = |gold ∩ top_k| / |gold|; MRR = 1/rank of first relevant; nDCG@10 with binary relevance",
+    "tokenizer": "tiktoken cl100k_base",
+    "device": "CPU-only (CUDA intentionally not used)",
+    "backend": "sentence-transformers 5.2.3 + torch 2.14.1+cpu",
+    "prefixes": {
+      "bge_small": "Represent this sentence for searching relevant passages: ",
+      "nomic_doc": "search_document: ",
+      "nomic_query": "search_query: ",
+      "rationale": "each model is used per its own model card (bge query instruction; nomic search_document:/search_query: task prefixes)"
+    },
+    "warmup": "first 5 queries excluded from latency stats; model files pre-cached before measured load",
+    "not_official_runner": "MemBase's stage-2 SearchRunner loads stage-1 .pkl dumps and returns memory contents without unit ids, so gold-evidence scoring is not possible from its output; this harness reuses the official dataset loader and the exact NaiveRAG unit serialization/granularity instead."
+  },
+  "headline": {
+    "decision": "RECOMMEND reindex to nomic-embed-text-v1.5",
+    "quality_delta_recall@10": 0.1097,
+    "quality_delta_mrr": 0.1067,
+    "ci95_recall@10": [
+      0.0507,
+      0.173
+    ],
+    "cost_index_build_x": 3.64,
+    "cost_query_latency_p50_x": 2.16,
+    "cost_index_storage_x": 2.0,
+    "same_retrieved_content_tokens": false,
+    "why_not_pending": "120 paired queries; every delta CI excludes zero; effect size ~10x the CI half-width is not required because sign-consistency holds across recall@1/5/10, MRR and nDCG@10, and per-category deltas are non-negative."
+  },
+  "measured_at": "2026-10-18 (Australia/Brisbane)",
+  "sources": {
+    "membase_repo": "https://github.com/zjunlp/MemBase (MIT), clone commit a9ba9495d48541d3e68588ff097294cc7a1201bc (HEAD 2026-09-03), 5.61 MB on disk",
+    "locomo_data": "https://github.com/snap-research/locomo/blob/main/data/locomo10.json (sha256 79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4, 2,805,274 bytes)",
+    "engine_default": "mnemosyne 3.15.x core/embeddings.py:70 `_DEFAULT_MODEL = os.environ.get(\"MNEMOSYNE_EMBEDDING_MODEL\", \"BAAI/bge-small-en-v1.5\")`"
+  },
+  "models": {
+    "bge_small": {
+      "hf_name": "BAAI/bge-small-en-v1.5",
+      "dim": 384,
+      "max_seq_length": 512,
+      "query_prefix": "Represent this sentence for searching relevant passages: ",
+      "doc_prefix": "",
+      "weights_safetensors_mb": 133.5
+    },
+    "nomic": {
+      "hf_name": "nomic-ai/nomic-embed-text-v1.5",
+      "dim": 768,
+      "max_seq_length": 8192,
+      "query_prefix": "search_query: ",
+      "doc_prefix": "search_document: ",
+      "weights_safetensors_mb": 546.9
+    }
+  },
+  "scale_notes": {
+    "index_build": "measured 2,080 units: 57.3 s (36.3 units/s) vs 208.5 s (10.0 units/s); linear in unit count, so a 100k-unit DB is ~46 min vs ~2.8 h single-threaded CPU",
+    "index_storage": "float32 N x dim x 4: 1,536 B/unit (384d) vs 3,072 B/unit (768d); production stores that quantize to int8 could halve both",
+    "query_latency": "p50 31.7 ms vs 68.5 ms per query (encode + cosine over <=663 units); grows with DB size for the cosine scan, but the engine uses sqlite-vec for the real store",
+    "rss": "sentence-transformers peak 743 MB (bge) vs 1,666 MB (nomic); engine fastembed ONNX is expected to be lower but was not measured"
+  },
+  "comparison": {
+    "recall@1": {
+      "bge_small_mean": 0.264,
+      "nomic_mean": 0.3447,
+      "delta_nomic_minus_bge": 0.0808,
+      "delta_ci95_low": 0.0099,
+      "delta_ci95_high": 0.1556,
+      "n_queries": 120,
+      "win_rate_nomic": 0.175,
+      "tie_rate": 0.75
+    },
+    "recall@5": {
+      "bge_small_mean": 0.5076,
+      "nomic_mean": 0.6071,
+      "delta_nomic_minus_bge": 0.0995,
+      "delta_ci95_low": 0.0355,
+      "delta_ci95_high": 0.1651,
+      "n_queries": 120,
+      "win_rate_nomic": 0.217,
+      "tie_rate": 0.708
+    },
+    "recall@10": {
+      "bge_small_mean": 0.5713,
+      "nomic_mean": 0.681,
+      "delta_nomic_minus_bge": 0.1097,
+      "delta_ci95_low": 0.0507,
+      "delta_ci95_high": 0.173,
+      "n_queries": 120,
+      "win_rate_nomic": 0.2,
+      "tie_rate": 0.733
+    },
+    "mrr": {
+      "bge_small_mean": 0.438,
+      "nomic_mean": 0.5446,
+      "delta_nomic_minus_bge": 0.1067,
+      "delta_ci95_low": 0.0418,
+      "delta_ci95_high": 0.1741,
+      "n_queries": 120,
+      "win_rate_nomic": 0.308,
+      "tie_rate": 0.525
+    },
+    "ndcg@10": {
+      "bge_small_mean": 0.4462,
+      "nomic_mean": 0.5499,
+      "delta_nomic_minus_bge": 0.1038,
+      "delta_ci95_low": 0.0527,
+      "delta_ci95_high": 0.1564,
+      "n_queries": 120,
+      "win_rate_nomic": 0.375,
+      "tie_rate": 0.45
+    }
+  },
+  "comparison_by_category": {
+    "1": {
+      "question_type": "multi-hop",
+      "n": 43,
+      "bge_recall@10": 0.4549,
+      "nomic_recall@10": 0.54,
+      "bge_mrr": 0.3809,
+      "nomic_mrr": 0.5016
+    },
+    "2": {
+      "question_type": "temporal",
+      "n": 64,
+      "bge_recall@10": 0.6797,
+      "nomic_recall@10": 0.8125,
+      "bge_mrr": 0.5244,
+      "nomic_mrr": 0.6266
+    },
+    "3": {
+      "question_type": "open-domain",
+      "n": 11,
+      "bge_recall@10": 0.5,
+      "nomic_recall@10": 0.5,
+      "bge_mrr": 0.2379,
+      "nomic_mrr": 0.2668
+    },
+    "4": {
+      "question_type": "single-hop",
+      "n": 2,
+      "bge_recall@10": 0.0,
+      "nomic_recall@10": 0.5,
+      "bge_mrr": 0.0,
+      "nomic_mrr": 0.375
+    }
+  },
+  "performance": {
+    "bge_small": {
+      "embedding_dim": 384,
+      "max_seq_length": 512,
+      "model_load_s": 3.772,
+      "index_build_total_s": 57.329,
+      "index_units_per_s": 36.28,
+      "index_disk_mb": 3.05,
+      "bytes_per_unit": 1536.2,
+      "query_latency_p50_ms": 31.74,
+      "query_latency_p95_ms": 93.06,
+      "query_latency_mean_ms": 39.44,
+      "rss_peak_mb": 742.8,
+      "rss_after_load_mb": 536.8,
+      "context_tokens_mean": 545.9,
+      "context_tokens_p95": 669.2,
+      "model_weights_safetensors_mb": 133.5
+    },
+    "nomic": {
+      "embedding_dim": 768,
+      "max_seq_length": 8192,
+      "model_load_s": 7.897,
+      "index_build_total_s": 208.505,
+      "index_units_per_s": 9.98,
+      "index_disk_mb": 6.09,
+      "bytes_per_unit": 3072.2,
+      "query_latency_p50_ms": 68.49,
+      "query_latency_p95_ms": 81.4,
+      "query_latency_mean_ms": 69.6,
+      "rss_peak_mb": 1665.9,
+      "rss_after_load_mb": 1665.9,
+      "context_tokens_mean": 586.5,
+      "context_tokens_p95": 708.8,
+      "model_weights_safetensors_mb": 546.9
+    },
+    "context_tokens_note": "Memory units and the tiktoken cl100k_base tokenizer are identical for both models; per-query top-10 context totals differ only because the retrieved top-10 sets differ (nomic 586.5 vs bge-small 545.9 mean cl100k tokens/query). No model-specific tokenizer is involved.",
+    "note_on_noise": "Quality metrics are deterministic given the fixed 120-query subset; their CIs are bootstrap over queries (sampling noise, 10k resamples). Index-build and query-latency timings were taken while other agent jobs (node/pytest) shared the 8 logical cores, and the bge-small run overlapped more contention than the nomic run (bge p95 93.1 ms vs nomic p95 81.4 ms is confounded; p50 31.7 vs 68.5 ms is the more stable signal). Re-measure latency on an idle machine before quoting absolute numbers.",
+    "storage_dtype": "float32",
+    "index_footprint_basis": "N x dim x 4 bytes (npy) + id list; measured from the saved index files"
+  },
+  "environment": {
+    "cpu_logical": 8,
+    "ram_total_gb": 15.7,
+    "platform": "Windows-11-10.0.26100-SP0",
+    "python": "3.12.13",
+    "gpu": "NVIDIA GeForce RTX 3060 Laptop 6GB present; not used (CPU-only test)"
+  },
+  "not_measured": [
+    {
+      "metric": "token-F1 / BLEU / ROUGE / BERTScore / LLM-as-a-Judge",
+      "status": "BLOCKED",
+      "reason": "MemBase stage 3 needs a QA generative model and an LLM judge; no paid API key and no Ollama/local LLM on this machine. Not synthesized.",
+      "unblock": "run MemBase stage 3 (memory_evaluation.py) with a local OpenAI-compatible chat server, e.g. `python memory_evaluation.py --memory-type NaiveRAG --dataset-type LoCoMo --dataset-path <standardized> --config-path <cfg> --judge-model <local>` after starting an OpenAI-compatible endpoint; or set an API key for the judge."
+    },
+    {
+      "metric": "GPU footprint / latency (CUDA)",
+      "status": "NOT MEASURED",
+      "reason": "CPU-only is the honest, AMD-compatible engine scenario; RTX 3060 Laptop 6GB was intentionally not used.",
+      "unblock": "re-run the same harness with --device cuda on a CUDA host."
+    },
+    {
+      "metric": "Z640 Quadro P4000 / 3090 numbers",
+      "status": "NOT MEASURED",
+      "reason": "not this machine",
+      "unblock": "run the harness on those hosts"
+    },
+    {
+      "metric": "official MemBase stage-1/2/3 end-to-end numbers",
+      "status": "PARTIALLY BLOCKED",
+      "reason": "stage 1/2 NaiveRAG are LLM-free and would run, but stage-2 output drops memory-unit ids so gold-evidence recall cannot be computed; stage 3 needs an LLM.",
+      "unblock": "add id tracing to the retrieval output or evaluate stage-3 downstream."
+    },
+    {
+      "metric": "engine-native fastembed quality/latency (BAAI/bge-small-en-v1.5 and nomic-ai/nomic-embed-text-v1.5 via fastembed ONNX)",
+      "status": "NOT MEASURED (support verified only)",
+      "reason": "the engine (mnemosyne 3.15.x) embeds through fastembed 0.8.0 ONNX, not sentence-transformers. This benchmark uses sentence-transformers (the loading path named in the workstream brief). fastembed 0.8.0 lists both models in TextEmbedding.list_supported_models() (bge-small 384d / 0.067 GB; nomic 768d / 0.52 GB), so the engine can load both, but ONNX-converted weights can differ slightly from the PyTorch weights measured here.",
+      "unblock": "run the same harness against mnemosyne.core.embeddings (fastembed) on the same LoCoMo subset, or a `mnemosyne reindex --dry-run` plus a retrieval A/B on the real DB."
+    },
+    {
+      "metric": "nomic-embed-text-v1.5 without its task prefixes, and BAAI/bge-small-en-v1.5 without its query instruction",
+      "status": "NOT MEASURED",
+      "reason": "each model was measured with the usage its own model card recommends; the engine only applies prefixes when MNEMOSYNE_EMBEDDING_QUERY_PREFIX / MNEMOSYNE_EMBEDDING_DOC_PREFIX are set, so an unconfigured rollout would not reproduce these nomic numbers.",
+      "unblock": "re-run the harness with prefixes disabled for both models to bound the configuration risk."
+    },
+    {
+      "metric": "LongMemEval / RealMem / MobileMem, other LoCoMo subsets, GPU, and multi-run variance",
+      "status": "NOT MEASURED",
+      "reason": "timebox and scope: one dataset, first 4 conversations, first 30 valid QA pairs each, one deterministic run per model. The 120-query subset happened to contain no adversarial (category 5) and only 2 single-hop questions, so per-category numbers for categories 4 and 3 are anecdotal (n=2 / n=11).",
+      "unblock": "extend n-trajectories/n-queries and add LongMemEval; see scale_notes."
+    }
+  ],
+  "reindex_implication": {
+    "current_default": "BAAI/bge-small-en-v1.5 (384-dim), engine env MNEMOSYNE_EMBEDDING_MODEL",
+    "candidate": "nomic-ai/nomic-embed-text-v1.5 (768-dim)",
+    "engine_backend": "fastembed 0.8.0 in the Hermes venv supports nomic-ai/nomic-embed-text-v1.5 (768d) and BAAI/bge-small-en-v1.5 (384d); engine dim map falls back to 384 for nomic, so MNEMOSYNE_EMBEDDING_DIM=768 is mandatory",
+    "reindex_command": "MNEMOSYNE_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5 MNEMOSYNE_EMBEDDING_DIM=768 MNEMOSYNE_EMBEDDING_QUERY_PREFIX=\"search_query: \" MNEMOSYNE_EMBEDDING_DOC_PREFIX=\"search_document: \" mnemosyne reindex --yes",
+    "downgrade_command": "MNEMOSYNE_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 MNEMOSYNE_EMBEDDING_DIM=384 mnemosyne reindex --yes",
+    "dims_change": "384 -> 768, so a full reindex is mandatory; stale 384d vectors would break similarity search (checked at store/search time)",
+    "cost": "re-embeds every memory unit once; index storage doubles per unit (3,072 vs 1,536 bytes/unit float32)"
+  },
+  "raw_model_results": {
+    "bge_small": {
+      "model_key": "bge-small",
+      "hf_name": "BAAI/bge-small-en-v1.5",
+      "loader": "sentence-transformers",
+      "trust_remote_code": false,
+      "query_prefix": "Represent this sentence for searching relevant passages: ",
+      "doc_prefix": "",
+      "prefix_source": "BAAI/bge-small-en-v1.5 model card: retrieval queries should use the instruction 'Represent this sentence for searching relevant passages: '",
+      "device": "cpu",
+      "torch_num_threads": 4,
+      "environment": {
+        "python": "3.12.13",
+        "torch": "2.14.1+cpu",
+        "sentence_transformers": "5.2.3",
+        "numpy": "2.5.4",
+        "tiktoken_encoding": "cl100k_base",
+        "cpu_count_logical": 8,
+        "ram_total_gb": 15.7,
+        "platform": "Windows-11-10.0.26100-SP0"
+      },
+      "dataset_load_s": 11.269,
+      "dataset": {
+        "name": "LoCoMo",
+        "trajectories_total": 10,
+        "sessions_total": 272,
+        "messages_total": 5882,
+        "questions_total": 1986,
+        "question_type_stats": {
+          "temporal": 321,
+          "open-domain": 96,
+          "multi-hop": 282,
+          "single-hop": 841,
+          "adversarial": 446
+        }
+      },
+      "subset": {
+        "n_trajectories": 4,
+        "n_memory_units": 2080,
+        "n_queries": 120,
+        "n_queries_with_resolvable_gold": 120,
+        "queries_per_trajectory": [
+          30,
+          30,
+          30,
+          30
+        ],
+        "memory_units_per_trajectory": [
+          419,
+          369,
+          663,
+          629
+        ],
+        "gold_evidence_total": 198,
+        "gold_evidence_resolvable": 198
+      },
+      "model_load_s": 3.772,
+      "embedding_dim": 384,
+      "max_seq_length": 512,
+      "rss_after_load_mb": 536.8,
+      "index": {
+        "build_total_s": 57.329,
+        "total_units": 2080,
+        "units_per_s": 36.28,
+        "per_trajectory": [
+          {
+            "trajectory_id": "locomo-1",
+            "n_units": 419,
+            "embed_s": 12.144,
+            "units_per_s": 34.5,
+            "npy_bytes": 643712,
+            "ids_json_bytes": 5085
+          },
+          {
+            "trajectory_id": "locomo-2",
+            "n_units": 369,
+            "embed_s": 10.048,
+            "units_per_s": 36.72,
+            "npy_bytes": 566912,
+            "ids_json_bytes": 4450
+          },
+          {
+            "trajectory_id": "locomo-3",
+            "n_units": 663,
+            "embed_s": 18.508,
+            "units_per_s": 35.82,
+            "npy_bytes": 1018496,
+            "ids_json_bytes": 8145
+          },
+          {
+            "trajectory_id": "locomo-4",
+            "n_units": 629,
+            "embed_s": 16.629,
+            "units_per_s": 37.83,
+            "npy_bytes": 966272,
+            "ids_json_bytes": 7734
+          }
+        ],
+        "disk_npy_bytes_total": 3195392,
+        "disk_npy_mb_total": 3.05,
+        "disk_ids_json_bytes_total": 25414,
+        "bytes_per_unit": 1536.2,
+        "storage_dtype": "float32"
+      },
+      "rss_after_index_mb": 742.8,
+      "metrics": {
+        "recall@1": {
+          "mean": 0.264,
+          "p50": 0.0,
+          "n": 120
+        },
+        "recall@5": {
+          "mean": 0.5076,
+          "p50": 0.5,
+          "n": 120
+        },
+        "recall@10": {
+          "mean": 0.5713,
+          "p50": 1.0,
+          "n": 120
+        },
+        "mrr": {
+          "mean": 0.438,
+          "p50": 0.3333,
+          "n": 120
+        },
+        "ndcg@10": {
+          "mean": 0.4462,
+          "p50": 0.4842,
+          "n": 120
+        }
+      },
+      "metrics_by_category": {
+        "1": {
+          "n": 43,
+          "question_type": "multi-hop",
+          "recall@10_mean": 0.4549,
+          "mrr_mean": 0.3809
+        },
+        "2": {
+          "n": 64,
+          "question_type": "temporal",
+          "recall@10_mean": 0.6797,
+          "mrr_mean": 0.5244
+        },
+        "3": {
+          "n": 11,
+          "question_type": "open-domain",
+          "recall@10_mean": 0.5,
+          "mrr_mean": 0.2379
+        },
+        "4": {
+          "n": 2,
+          "question_type": "single-hop",
+          "recall@10_mean": 0.0,
+          "mrr_mean": 0.0
+        }
+      },
+      "context_cost": {
+        "tokenizer": "tiktoken cl100k_base",
+        "unit": "sum of cl100k tokens over the top-10 retrieved memory units",
+        "mean_tokens_per_query": 545.9,
+        "p50_tokens_per_query": 540.0,
+        "p95_tokens_per_query": 669.2,
+        "mean_chars_per_query": 2000.3
+      },
+      "latency": {
+        "scope": "single-query encode + cosine ranking, batch size 1, CPU-only",
+        "n_measured": 115,
+        "p50_ms": 31.74,
+        "p95_ms": 93.06,
+        "mean_ms": 39.44
+      },
+      "rss_peak_mb": 742.8,
+      "status": "ok"
+    },
+    "nomic": {
+      "model_key": "nomic",
+      "hf_name": "nomic-ai/nomic-embed-text-v1.5",
+      "loader": "sentence-transformers",
+      "trust_remote_code": true,
+      "query_prefix": "search_query: ",
+      "doc_prefix": "search_document: ",
+      "prefix_source": "nomic-embed-text-v1.5 model card: task prefixes 'search_document: ' for documents and 'search_query: ' for queries",
+      "device": "cpu",
+      "torch_num_threads": 4,
+      "environment": {
+        "python": "3.12.13",
+        "torch": "2.14.1+cpu",
+        "sentence_transformers": "5.2.3",
+        "numpy": "2.5.4",
+        "tiktoken_encoding": "cl100k_base",
+        "cpu_count_logical": 8,
+        "ram_total_gb": 15.7,
+        "platform": "Windows-11-10.0.26100-SP0"
+      },
+      "dataset_load_s": 3.544,
+      "dataset": {
+        "name": "LoCoMo",
+        "trajectories_total": 10,
+        "sessions_total": 272,
+        "messages_total": 5882,
+        "questions_total": 1986,
+        "question_type_stats": {
+          "temporal": 321,
+          "open-domain": 96,
+          "multi-hop": 282,
+          "single-hop": 841,
+          "adversarial": 446
+        }
+      },
+      "subset": {
+        "n_trajectories": 4,
+        "n_memory_units": 2080,
+        "n_queries": 120,
+        "n_queries_with_resolvable_gold": 120,
+        "queries_per_trajectory": [
+          30,
+          30,
+          30,
+          30
+        ],
+        "memory_units_per_trajectory": [
+          419,
+          369,
+          663,
+          629
+        ],
+        "gold_evidence_total": 198,
+        "gold_evidence_resolvable": 198
+      },
+      "model_load_s": 7.897,
+      "embedding_dim": 768,
+      "max_seq_length": 8192,
+      "rss_after_load_mb": 1665.9,
+      "index": {
+        "build_total_s": 208.505,
+        "total_units": 2080,
+        "units_per_s": 9.98,
+        "per_trajectory": [
+          {
+            "trajectory_id": "locomo-1",
+            "n_units": 419,
+            "embed_s": 48.502,
+            "units_per_s": 8.64,
+            "npy_bytes": 1287296,
+            "ids_json_bytes": 5085
+          },
+          {
+            "trajectory_id": "locomo-2",
+            "n_units": 369,
+            "embed_s": 36.647,
+            "units_per_s": 10.07,
+            "npy_bytes": 1133696,
+            "ids_json_bytes": 4450
+          },
+          {
+            "trajectory_id": "locomo-3",
+            "n_units": 663,
+            "embed_s": 65.25,
+            "units_per_s": 10.16,
+            "npy_bytes": 2036864,
+            "ids_json_bytes": 8145
+          },
+          {
+            "trajectory_id": "locomo-4",
+            "n_units": 629,
+            "embed_s": 58.106,
+            "units_per_s": 10.83,
+            "npy_bytes": 1932416,
+            "ids_json_bytes": 7734
+          }
+        ],
+        "disk_npy_bytes_total": 6390272,
+        "disk_npy_mb_total": 6.09,
+        "disk_ids_json_bytes_total": 25414,
+        "bytes_per_unit": 3072.2,
+        "storage_dtype": "float32"
+      },
+      "rss_after_index_mb": 1665.9,
+      "metrics": {
+        "recall@1": {
+          "mean": 0.3447,
+          "p50": 0.0,
+          "n": 120
+        },
+        "recall@5": {
+          "mean": 0.6071,
+          "p50": 1.0,
+          "n": 120
+        },
+        "recall@10": {
+          "mean": 0.681,
+          "p50": 1.0,
+          "n": 120
+        },
+        "mrr": {
+          "mean": 0.5446,
+          "p50": 0.5,
+          "n": 120
+        },
+        "ndcg@10": {
+          "mean": 0.5499,
+          "p50": 0.6131,
+          "n": 120
+        }
+      },
+      "metrics_by_category": {
+        "1": {
+          "n": 43,
+          "question_type": "multi-hop",
+          "recall@10_mean": 0.54,
+          "mrr_mean": 0.5016
+        },
+        "2": {
+          "n": 64,
+          "question_type": "temporal",
+          "recall@10_mean": 0.8125,
+          "mrr_mean": 0.6266
+        },
+        "3": {
+          "n": 11,
+          "question_type": "open-domain",
+          "recall@10_mean": 0.5,
+          "mrr_mean": 0.2668
+        },
+        "4": {
+          "n": 2,
+          "question_type": "single-hop",
+          "recall@10_mean": 0.5,
+          "mrr_mean": 0.375
+        }
+      },
+      "context_cost": {
+        "tokenizer": "tiktoken cl100k_base",
+        "unit": "sum of cl100k tokens over the top-10 retrieved memory units",
+        "mean_tokens_per_query": 586.5,
+        "p50_tokens_per_query": 583.5,
+        "p95_tokens_per_query": 708.8,
+        "mean_chars_per_query": 2176.8
+      },
+      "latency": {
+        "scope": "single-query encode + cosine ranking, batch size 1, CPU-only",
+        "n_measured": 115,
+        "p50_ms": 68.49,
+        "p95_ms": 81.4,
+        "mean_ms": 69.6
+      },
+      "rss_peak_mb": 1665.9,
+      "status": "ok"
+    }
+  }
+}
