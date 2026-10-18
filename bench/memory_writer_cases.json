@@ -1,0 +1,524 @@
+{
+  "version": 1,
+  "format": "mnemosyne-memory-writer-cases/v1",
+  "description": "Authored synthetic traces for memory-writer evaluation. No external benchmark data, real transcripts, credentials or production stores. Personal and coding cases are balanced; dev and held-out splits are fixed.",
+  "default_max_chars": 1200,
+  "replay_tools": [
+    "mnemosyne_remember",
+    "mnemosyne_recall",
+    "mnemosyne_update",
+    "mnemosyne_get",
+    "mnemosyne_stats"
+  ],
+  "cases": [
+    {
+      "id": "personal-dev-01",
+      "split": "dev",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "I take my coffee with oat milk and exactly 2 shots of espresso."},
+        {"id": "a1", "role": "assistant", "content": "Noted."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Coffee preference with exact quantity", "all": ["oat milk", "2 shots"], "subject_any": ["user"], "kind_any": ["preference"], "evidence": ["u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Invented milk or quantity", "any": ["soy milk", "whole milk", "3 shots"], "subject_any": ["user"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "coffee oat milk shots"
+    },
+    {
+      "id": "personal-dev-02",
+      "split": "dev",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "My sister Dana is vegetarian and allergic to peanuts. I still eat meat."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Dana's dietary fact, owned by Dana", "all": ["dana", "vegetarian"], "subject_any": ["other"], "subject_name_any": ["Dana"], "evidence": ["u1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "User still eats meat", "all": ["meat"], "subject_any": ["user"], "evidence": ["u1"], "op": {"op": "add"}},
+        {"id": "r3", "description": "Dana's peanut allergy owned by Dana", "all": ["dana", "peanut"], "subject_any": ["other"], "subject_name_any": ["Dana"], "evidence": ["u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Dana's diet assigned to the user", "any": ["vegetarian"], "subject_any": ["user"]},
+        {"id": "f2", "description": "Dana's allergy assigned to the user", "any": ["peanut"], "subject_any": ["user"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "Dana vegetarian peanuts"
+    },
+    {
+      "id": "personal-dev-03",
+      "split": "dev",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "I moved to Lisbon last month."}
+      ],
+      "context": [],
+      "seed_memories": [
+        {"id": "s1", "content": "The user lives in Berlin.", "subject": "user", "scope": "global"}
+      ],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Current residence changed to Lisbon", "all": ["lisbon"], "subject_any": ["user"], "kind_any": ["fact"], "evidence": ["u1"], "op": {"op": "supersede", "target": "s1"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Superseded residence presented as current", "any": ["berlin"], "subject_any": ["user"], "exempt_any": ["previously", "moved from", "former", "was"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "current city residence Lisbon"
+    },
+    {
+      "id": "personal-dev-04",
+      "split": "dev",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "I'm flying to Osaka on 2026-11-03 and returning on 2026-11-10."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Dated Osaka trip", "all": ["osaka", "2026-11-03", "2026-11-10"], "subject_any": ["user"], "kind_any": ["plan"], "evidence": ["u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Invented travel dates", "any": ["2027-11-03", "2026-12-10"], "subject_any": ["user"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "Osaka flight November"
+    },
+    {
+      "id": "personal-dev-05",
+      "split": "dev",
+      "domain": "personal",
+      "trace": [
+        {"id": "a1", "role": "assistant", "content": "You could take the 7 AM train."},
+        {"id": "u1", "role": "user", "content": "I'll take the 7 AM train."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "User adopted the train plan", "all": ["7 am", "train"], "subject_any": ["user"], "kind_any": ["plan"], "evidence": ["u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Assistant advice mislabeled as the user's plan", "any": ["assistant recommends"], "subject_any": ["user"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "7 AM train plan"
+    },
+    {
+      "id": "personal-dev-06",
+      "split": "dev",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Hi!"},
+        {"id": "a1", "role": "assistant", "content": "Hello! How can I help?"}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [],
+      "forbidden": [],
+      "allowed_extra": [],
+      "expect_no_memories": true,
+      "recall_query": "greeting"
+    },
+    {
+      "id": "personal-dev-07",
+      "split": "dev",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "I ran the Berlin marathon again in 2025, finishing in 3:42."}
+      ],
+      "context": [],
+      "seed_memories": [
+        {"id": "s1", "content": "The user ran the Berlin marathon in 2024.", "subject": "user", "scope": "global"}
+      ],
+      "preserve_seeds": ["s1"],
+      "required": [
+        {"id": "r1", "description": "Separate 2025 occurrence with exact time", "all": ["2025", "3:42"], "subject_any": ["user"], "kind_any": ["fact"], "evidence": ["u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Independent occurrences merged into a count", "any": ["twice", "two times", "2024 and 2025"], "subject_any": ["user"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "Berlin marathon 2025 finish time"
+    },
+    {
+      "id": "personal-dev-08",
+      "split": "dev",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "I'm planning to propose in Paris in June 2027."}
+      ],
+      "context": [
+        {"id": "c1", "role": "system", "content": "Retrieved context: The Eiffel Tower is 330m tall."}
+      ],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "User proposal plan, not the injected fact", "all": ["propose", "june 2027"], "subject_any": ["user"], "kind_any": ["plan"], "evidence": ["u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Injected reference material stored as a memory", "any": ["330m", "330 m", "eiffel tower is"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "proposal Eiffel Tower June 2027"
+    },
+    {
+      "id": "personal-held-01",
+      "split": "held_out",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "I've switched to light roast coffee."}
+      ],
+      "context": [],
+      "seed_memories": [
+        {"id": "s1", "content": "The user prefers dark roast coffee.", "subject": "user", "scope": "global"}
+      ],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Current coffee preference changed", "all": ["light roast"], "subject_any": ["user"], "kind_any": ["preference"], "evidence": ["u1"], "op": {"op": "supersede", "target": "s1"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Old preference presented as current", "any": ["dark roast"], "subject_any": ["user"], "exempt_any": ["previously", "former", "was", "switched from"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "current coffee roast preference"
+    },
+    {
+      "id": "personal-held-02",
+      "split": "held_out",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "My deadlift PR is 180 kg for 2 reps, and my bodyweight is 78 kg."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Exact deadlift PR and reps", "all": ["180 kg", "2 reps"], "subject_any": ["user"], "kind_any": ["fact"], "evidence": ["u1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "Exact bodyweight", "all": ["78 kg"], "subject_any": ["user"], "kind_any": ["fact"], "evidence": ["u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Rounded or converted measurements", "any": ["200 kg", "bodyweight 80", "bodyweight is 80", "180 lb"], "subject_any": ["user"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "deadlift PR bodyweight"
+    },
+    {
+      "id": "personal-held-03",
+      "split": "held_out",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "My manager Priya is based in Toronto. I'm based in Austin."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Manager location owned by Priya", "all": ["priya", "toronto"], "subject_any": ["other"], "subject_name_any": ["Priya"], "evidence": ["u1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "User location", "all": ["austin"], "subject_any": ["user"], "evidence": ["u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Manager location assigned to the user", "any": ["toronto"], "subject_any": ["user"]},
+        {"id": "f2", "description": "Manager identity assigned to the user", "any": ["priya"], "subject_any": ["user"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "manager Priya Toronto user Austin"
+    },
+    {
+      "id": "personal-held-04",
+      "split": "held_out",
+      "domain": "personal",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "I still prefer tea."}
+      ],
+      "context": [],
+      "seed_memories": [
+        {"id": "s1", "content": "The user prefers tea.", "subject": "user", "scope": "global"}
+      ],
+      "preserve_seeds": ["s1"],
+      "required": [],
+      "forbidden": [],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "tea preference"
+    },
+    {
+      "id": "coding-dev-01",
+      "split": "dev",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Fix the timeout in src/net/client.py."},
+        {"id": "a1", "role": "assistant", "content": "Updated the retry timeout in src/net/client.py."},
+        {"id": "t1", "role": "tool", "name": "pytest", "content": "pytest tests/test_client.py -q: 12 passed"}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Exact path and change", "all": ["src/net/client.py", "timeout"], "subject_any": ["repo"], "kind_any": ["decision"], "evidence": ["a1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "Observed test result", "all": ["12 passed"], "subject_any": ["repo"], "kind_any": ["fact"], "evidence": ["t1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Unverified completion claims", "any": ["tests not run", "tests failed", "test failed"], "subject_any": ["repo"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "client timeout tests passed"
+    },
+    {
+      "id": "coding-dev-02",
+      "split": "dev",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "The migration script fails in scripts/migrate.py."},
+        {"id": "t1", "role": "tool", "name": "run", "content": "Permission denied: /var/lib/app/migrations"}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Blocked migration with exact error", "all": ["permission denied", "scripts/migrate.py"], "subject_any": ["repo"], "kind_any": ["blocker"], "evidence": ["t1", "u1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Blocker rewritten as a completed fix", "any": ["fixed", "resolved", "tests pass"], "subject_any": ["repo"], "exempt_any": ["not fixed", "unfixed", "not resolved", "blocked", "permission denied"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "migration permission denied"
+    },
+    {
+      "id": "coding-dev-03",
+      "split": "dev",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Why is the build slow?"},
+        {"id": "t1", "role": "tool", "name": "du", "content": "du -sh .build/cache -> 8.2G; build uses the cache directory."},
+        {"id": "t2", "role": "tool", "name": "rm", "content": "rm -rf .build/cache failed: Read-only file system"}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Reusable diagnostic method and measured finding", "all": ["du -sh", ".build/cache", "8.2g"], "subject_any": ["repo"], "kind_any": ["experience"], "evidence": ["t1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "Environmental blocker with exact error", "all": ["read-only file system"], "subject_any": ["repo"], "kind_any": ["blocker"], "evidence": ["t2"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Trivial file operation forced into a lesson", "any": ["renamed file"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "build cache slow read-only"
+    },
+    {
+      "id": "coding-dev-04",
+      "split": "dev",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Rename foo.py to bar.py."},
+        {"id": "a1", "role": "assistant", "content": "Done."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [],
+      "forbidden": [],
+      "allowed_extra": [],
+      "expect_no_memories": true,
+      "recall_query": "rename foo bar"
+    },
+    {
+      "id": "coding-dev-05",
+      "split": "dev",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "We changed the timeout to 90 seconds in settings.py."}
+      ],
+      "context": [],
+      "seed_memories": [
+        {"id": "s1", "content": "The timeout is configured in config.py to 30 seconds.", "subject": "repo", "scope": "global"}
+      ],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "New timeout location and value", "all": ["settings.py", "90 seconds"], "subject_any": ["repo"], "kind_any": ["decision"], "evidence": ["u1"], "op": {"op": "supersede", "target": "s1"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Superseded timeout configuration presented as current", "any": ["config.py", "30 seconds"], "subject_any": ["repo"], "exempt_any": ["previously", "changed from", "former", "was"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "timeout 90 seconds settings"
+    },
+    {
+      "id": "coding-dev-06",
+      "split": "dev",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Find the legacy API key loader."},
+        {"id": "t1", "role": "tool", "name": "rg", "content": "rg -n legacy_api_key src tests -> no matches"},
+        {"id": "t2", "role": "tool", "name": "rg", "content": "rg vendor -> skipped: Permission denied"}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Scoped negative finding", "all": ["src", "tests"], "any": ["not found", "no matches"], "subject_any": ["repo"], "kind_any": ["fact"], "evidence": ["t1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "Coverage limit on the negative result", "all": ["vendor", "permission denied"], "subject_any": ["repo"], "kind_any": ["blocker"], "evidence": ["t2"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Partial search promoted to global absence", "any": ["does not exist anywhere", "not present anywhere"], "subject_any": ["repo"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "legacy API key loader not found"
+    },
+    {
+      "id": "coding-dev-07",
+      "split": "dev",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Fix the CSV export delimiter."},
+        {"id": "a1", "role": "assistant", "content": "Changed the delimiter to semicolon in export.py."},
+        {"id": "u2", "role": "user", "content": "Also update the README install command."},
+        {"id": "a2", "role": "assistant", "content": "Updated the README install command to pip install -e ."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "CSV task outcome", "all": ["export.py", "semicolon"], "subject_any": ["repo"], "evidence": ["a1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "Separate README task outcome", "all": ["readme", "pip install -e"], "subject_any": ["repo"], "evidence": ["a2"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Unrelated tasks collapsed into one claim", "any": ["one task", "single change"], "subject_any": ["repo"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "CSV delimiter README install"
+    },
+    {
+      "id": "coding-dev-08",
+      "split": "dev",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "[Retrieved docs: API v1 is deprecated.] I upgraded the client to v2 and the tests pass."},
+        {"id": "t1", "role": "tool", "name": "pytest", "content": "pytest tests/test_api.py -q: 8 passed"}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Upgrade outcome with observed tests", "all": ["v2", "tests pass"], "subject_any": ["repo"], "kind_any": ["decision"], "evidence": ["u1", "t1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Injected documentation stored as project fact", "any": ["v1 is deprecated"], "subject_any": ["repo"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "API v2 upgrade tests"
+    },
+    {
+      "id": "coding-held-01",
+      "split": "held_out",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Should we use Redis for the job queue?"},
+        {"id": "a1", "role": "assistant", "content": "Tried Redis: no persistence configured; rejected. Chose SQLite in queue.py."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Chosen queue implementation", "all": ["sqlite", "queue.py"], "subject_any": ["repo"], "kind_any": ["decision"], "evidence": ["a1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "Rejected alternative and reason", "all": ["redis"], "any": ["rejected", "not chosen"], "subject_any": ["repo"], "kind_any": ["decision"], "evidence": ["a1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Rejected alternative presented as selected", "any": ["redis selected", "chose redis"], "subject_any": ["repo"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "job queue Redis SQLite decision"
+    },
+    {
+      "id": "coding-held-02",
+      "split": "held_out",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Patch the parser."},
+        {"id": "a1", "role": "assistant", "content": "Changed parser.py to handle empty input. Tests not run."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Parser change and coordinates", "all": ["parser.py", "empty input"], "subject_any": ["repo"], "kind_any": ["decision"], "evidence": ["a1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "Verification status kept incomplete", "all": ["tests not run"], "subject_any": ["repo"], "kind_any": ["blocker"], "evidence": ["a1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Unrun tests claimed as passing", "any": ["tests pass", "tests passed", "verified passing"], "subject_any": ["repo"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "parser empty input tests not run"
+    },
+    {
+      "id": "coding-held-03",
+      "split": "held_out",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "The retry helper in src/net/client.py::fetch_with_retry drops the last error."},
+        {"id": "a1", "role": "assistant", "content": "Fixed fetch_with_retry in src/net/client.py; added a regression test."},
+        {"id": "t1", "role": "tool", "name": "pytest", "content": "pytest tests/test_client.py -q: 1 passed"}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [
+        {"id": "r1", "description": "Exact file and symbol", "all": ["src/net/client.py", "fetch_with_retry"], "subject_any": ["repo"], "kind_any": ["decision"], "evidence": ["a1"], "op": {"op": "add"}},
+        {"id": "r2", "description": "Observed regression test result", "all": ["1 passed"], "subject_any": ["repo"], "evidence": ["t1"], "op": {"op": "add"}}
+      ],
+      "forbidden": [
+        {"id": "f1", "description": "Unobserved test failure", "any": ["test failed", "tests failed"], "subject_any": ["repo"]}
+      ],
+      "allowed_extra": [],
+      "expect_no_memories": false,
+      "recall_query": "fetch_with_retry retry error regression"
+    },
+    {
+      "id": "coding-held-04",
+      "split": "held_out",
+      "domain": "coding",
+      "trace": [
+        {"id": "u1", "role": "user", "content": "Thanks, that worked!"},
+        {"id": "a1", "role": "assistant", "content": "Glad it helped."}
+      ],
+      "context": [],
+      "seed_memories": [],
+      "preserve_seeds": [],
+      "required": [],
+      "forbidden": [],
+      "allowed_extra": [],
+      "expect_no_memories": true,
+      "recall_query": "thanks worked"
+    }
+  ]
+}
