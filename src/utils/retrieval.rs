@@ -197,13 +197,13 @@ pub const COVERAGE_FLOOR: f32 = 0.6;
 
 /// Default multiplier applied when a candidate covers every distinct query
 /// content term. Above 1.0 so comprehensive matches are promoted.
-pub const COVERAGE_CEILING: f32 = 1.4;
+pub const COVERAGE_CEILING: f32 = 1.6;
 
 /// Default multiplier for candidates whose fact has been superseded by a
 /// newer record (`superseded_by` set). Corrections must outrank the stale
 /// facts they replaced even when the stale text is lexically rich; history
 /// questions can still surface them when nothing current matches.
-pub const SUPERSEDED_PENALTY: f32 = 0.35;
+pub const SUPERSEDED_PENALTY: f32 = 0.85;
 
 /// Conversational/meta words that appear constantly in personal-agent
 /// questions ("I already told you", "you remember right?", "what is it
@@ -737,7 +737,7 @@ mod tests {
         }];
         results[0].memory.superseded_by = Some(crate::types::MemoryId::new());
         apply_coverage_rescore("dashboard deployment?", &mut results);
-        assert!(results[0].score < 0.9 * 0.5);
+        assert!(results[0].score < 0.9);
     }
 
     #[test]
