@@ -97,7 +97,7 @@ impl Default for SearchConfig {
             keyword_weight: 0.40,    // BM25 keyword relevance is secondary
             graph_weight: 0.18,      // Graph connections for context
             importance_weight: 0.05, // Importance is only a tie-breaker
-            recency_weight: 0.02,    // Recency is only a slight tie-breaker
+            recency_weight: 0.00,    // Recency is only a slight tie-breaker
 
             enable_vector_search: true,
             enable_graph_expansion: true,
