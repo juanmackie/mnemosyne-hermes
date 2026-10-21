@@ -8785,7 +8785,13 @@ impl StorageBackend for LibsqlStorage {
                 + effective_weights.graph.max(0.0))
             .max(f32::EPSILON);
             let rrf_normalised = (rrf_base * 61.0 / weight_sum).min(1.0);
+            // Preserve lexical score strength: the normalized BM25 score
+            // (keyword_score) is available but RRF only uses rank. Add it as
+            // an additive signal so high-relevance lexical matches aren't
+            // drowned out by importance/recency/entity boosts.
+            let lexical_score = keyword_score.clamp(0.0, 1.0);
             let final_score = (rrf_normalised * entity_boost
+                + 0.10 * lexical_score
                 + self.search_config.importance_weight * importance_score
                 + self.search_config.recency_weight * recency_score
                 + effective_weights.graph * graph_depth_score)
