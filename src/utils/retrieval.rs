@@ -287,7 +287,7 @@ fn normalize_term(raw: &str) -> String {
 /// Distinct, normalized content terms from a natural-language query.
 /// Hyphen/slash compounds ("hermes-dashboard", "and/or") split into
 /// subtokens so compound entity names still count as term coverage.
-fn query_content_terms(query: &str) -> Vec<String> {
+pub fn query_content_terms(query: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut terms = Vec::new();
     let expanded = query.replace(['-', '/', '_'], " ");
@@ -358,6 +358,46 @@ pub fn apply_coverage_rescore(query: &str, results: &mut [SearchResult]) {
         let ratio = coverage_ratio(&terms, &result.memory);
         result.score *= coverage_factor(ratio);
     }
+
+    // Intent/slot boost: identify intent words in the query that signal
+    // what kind of information is being sought (email, contact, shift,
+    // volunteer, booking, etc.). Memories containing these intent words
+    // get a small multiplicative boost to help specific task/reference
+    // memories outrank generic entity records.
+    const INTENT_WORDS: &[&str] = &[
+        "email", "mail", "contact", "phone", "address", "booking", "reserve",
+        "shift", "volunteer", "schedule", "calendar", "password", "credential",
+        "account", "invoice", "receipt", "ticket", "confirmation",
+    ];
+    let query_lower = query.to_lowercase();
+    let active_intents: Vec<&str> = INTENT_WORDS
+        .iter()
+        .filter(|w| query_lower.contains(*w))
+        .copied()
+        .collect();
+    if !active_intents.is_empty() {
+        for result in results.iter_mut() {
+            let text = format!(
+                "{} {} {} {} {}",
+                result.memory.content,
+                result.memory.summary,
+                result.memory.context,
+                result.memory.keywords.join(" "),
+                result.memory.tags.join(" ")
+            )
+            .to_lowercase();
+            let intent_hits = active_intents
+                .iter()
+                .filter(|w| text.contains(*w))
+                .count();
+            if intent_hits > 0 {
+                // Stronger boost: 1.15x per matched intent word (was 1.05x)
+                let boost = 1.0 + 0.05 * (intent_hits as f32);
+                result.score *= boost;
+            }
+        }
+    }
+
 }
 
 /// Supersession-only demotion for pipelines that score candidates without
