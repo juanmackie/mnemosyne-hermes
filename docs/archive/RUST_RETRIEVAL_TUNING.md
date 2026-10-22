@@ -44,12 +44,24 @@ redesign, not a constant change, and needs its own measurement.
 
 ## Verification status
 
-The PR bodies report MRR gains (frozen MRR 0.7847 -> 0.9097). The scorer that
-produced them is not in the repository: `/.auto/` is gitignored, and
-`.auto/evaluate.py`, `.auto/eval_dev.jsonl`, `.auto/eval_heldout_a.jsonl` and
-`.auto/eval_heldout_b.jsonl` are absent. `eval/score.json` holds only a failure
-record (`"score": null`). Treat the gains as unverified until a runner and
-fixtures are committed.
+The scorer and its fixtures are recoverable from git history, not lost:
+
+- `b548943` (`.auto/`): `evaluate.py`, `setup_data.py`, `corpus.jsonl` (36 KB),
+  and three labelled sets, `eval_dev.jsonl`, `eval_heldout_a.jsonl` and
+  `eval_heldout_b.jsonl`. Each set has 27 queries; the dev split is
+  `correction` 6, `already_told` 5, `structured_current` 5, `entity_exact` 5,
+  `multi_constraint` 6. These names match the categories in the PR bodies.
+- `032c848` removed `.auto/` in the Python-only cleanup.
+
+The assets are not runnable as committed: `setup_data.py` and `evaluate.py`
+shell out to the retired Rust binary (`target/release/mnemosyne`). The data and
+the metric can be ported to a live surface; the invocation layer cannot.
+
+`eval/score.json` is unrelated. It comes from `task/score.py`, a write-throughput
+scorer (`write_5000_p50_ms`), not from retrieval.
+
+The MRR numbers in the PR bodies stay unverified until a runner is ported and
+run, but the fixtures that produced them are not lost.
 
 ## Flags for any future port
 
