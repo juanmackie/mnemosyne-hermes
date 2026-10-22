@@ -9,6 +9,11 @@ integrations/hermes-provider/UPSTREAM_METADATA.txt -text
 # Engine diffs are byte-hashed; preserve LF and unified-diff blank context markers.
 integrations/engine-patches/*.patch text eol=lf whitespace=-blank-at-eol
 
+# Retrieval fixtures are byte-hashed in bench/retrieval/README.md. Keep the
+# exact bytes on checkout, including on a core.autocrlf=true host. The JSON
+# reports stay under the *.json text eol=lf rule below.
+bench/retrieval/*.jsonl -text
+
 # Shell scripts should stay LF everywhere (they are executed, not compiled).
 *.sh text eol=lf
 

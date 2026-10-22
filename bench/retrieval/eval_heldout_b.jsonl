@@ -1,0 +1,27 @@
+{"query": "what's the primary email I use now?", "relevant": ["alex@riveralabs.dev for everything personal"], "category": "correction"}
+{"query": "current deployment target for hermes-dashboard?", "relevant": ["deploys to Fly.io now"], "category": "correction"}
+{"query": "did my title change recently?", "relevant": ["platform engineer since June"], "category": "correction"}
+{"query": "what OS is on this laptop after the reinstall?", "relevant": ["Ubuntu 24.04 LTS on the laptop"], "category": "correction"}
+{"query": "cache server software - still redis?", "relevant": ["replaced Redis with Valkey 8"], "category": "correction"}
+{"query": "python toolchain version after the upgrade?", "relevant": ["upgraded the system toolchain to Python 3.13"], "category": "correction"}
+{"query": "editor choice - I've repeated this enough times", "relevant": ["Neovim with LazyVim distro", "Yes Neovim again", "Neovim nightly build is pinned"], "category": "already_told"}
+{"query": "diet when booking flights with meals - what did I say?", "relevant": ["keep a vegetarian diet", "I am vegetarian", "Vegetarian since 2015", "Already told you I keep a vegetarian diet"], "category": "already_told"}
+{"query": "shellfish thing again - what exactly is off limits?", "relevant": ["allergic to shellfish", "shellfish allergy - no prawns"], "category": "already_told"}
+{"query": "sister's birthday - you have it stored right?", "relevant": ["Maya Rivera was born on March 14"], "category": "already_told"}
+{"query": "2fa - which hardware key do I carry?", "relevant": ["YubiKey 5C Nano kept on the keyring"], "category": "structured_current"}
+{"query": "mobile carrier and plan details?", "relevant": ["NOS 20GB"], "category": "structured_current"}
+{"query": "where do the work kubernetes clusters run?", "relevant": ["EKS in eu-west-1"], "category": "structured_current"}
+{"query": "terminal emulator and font setup?", "relevant": ["Ghostty with JetBrains Mono Nerd Font 13pt"], "category": "structured_current"}
+{"query": "default shell on my machines?", "relevant": ["zsh with starship prompt"], "category": "structured_current"}
+{"query": "email signature - what should it say these days?", "relevant": ["alex@riveralabs.dev with the title platform engineer"], "category": "structured_current"}
+{"query": "desktop GPU model?", "relevant": ["RTX 4080 Super, mostly used"], "category": "entity_exact"}
+{"query": "phone model and OS customization?", "relevant": ["Pixel 9 Pro on GrapheneOS"], "category": "entity_exact"}
+{"query": "external screen model?", "relevant": ["Dell U2723QE connected over USB-C"], "category": "entity_exact"}
+{"query": "home router make?", "relevant": ["Fritz!Box 7590 with guest WiFi disabled"], "category": "entity_exact"}
+{"query": "headphones model?", "relevant": ["Sony WH-1000XM5; firmware"], "category": "entity_exact"}
+{"query": "vet reminder for Biscuit - when is it due?", "relevant": ["vet appointment is due in November"], "category": "multi_constraint"}
+{"query": "gym - where do I go and at what time usually?", "relevant": ["Academia Compact"], "category": "multi_constraint"}
+{"query": "book club - what are we reading next month?", "relevant": ["November pick is Piranesi"], "category": "multi_constraint"}
+{"query": "elevator maintenance - which day was announced?", "relevant": ["elevator maintenance Saturday morning"], "category": "multi_constraint"}
+{"query": "what's in the spare parts drawer?", "relevant": ["Spare parts drawer inventory"], "category": "multi_constraint"}
+{"query": "car insurance renewal date and insurer?", "relevant": ["Car insurance renewed in July with Fidelidade"], "category": "multi_constraint"}

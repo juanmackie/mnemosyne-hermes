@@ -160,10 +160,62 @@ def test_long_query_suppresses_noise_and_keeps_multi_topic_results():
     assert {row["content"] for row in multi_topic} == {kubernetes, postgres}, multi_topic
 
 
+def test_multi_term_query_keeps_single_precise_match():
+    """A multi-term query must not discard its only matching row.
+
+    The stepped gate asked a three-token query for half its terms, so
+    "laptop specs - what machine do I have?" returned nothing even though the
+    ThinkPad row was the only laptop in scope. Coverage now lowers the score
+    instead of gating admission; the zero-overlap case still abstains.
+    """
+    Mnemosyne = _require_engine()
+    if Mnemosyne is None:
+        return
+
+    laptop = "My laptop is a ThinkPad X1 Carbon Gen 12 with 64GB RAM running Ubuntu 24.04."
+    kitchen = "The office kitchen is cleaned every Friday."
+    memories = [(laptop, {"domain": "hardware"}), (kitchen, {"domain": "office"})]
+    query = "laptop specs - what machine do I have?"
+
+    with tempfile.TemporaryDirectory() as tmp, _isolated_engine(tmp):
+        store = Mnemosyne(
+            session_id="recall-lexical-floor",
+            db_path=pathlib.Path(tmp) / "recall.db",
+        )
+        for content, metadata in memories:
+            store.remember(content, metadata=metadata, scope="session")
+        results = store.recall(query, top_k=5)
+
+    assert results, "a multi-term query dropped its only matching row"
+    assert results[0]["content"] == laptop, results
+
+
+def test_zero_overlap_query_still_returns_nothing():
+    """Lowering the admission floor must not turn nonsense into results."""
+    Mnemosyne = _require_engine()
+    if Mnemosyne is None:
+        return
+
+    with tempfile.TemporaryDirectory() as tmp, _isolated_engine(tmp):
+        store = Mnemosyne(
+            session_id="recall-lexical-floor",
+            db_path=pathlib.Path(tmp) / "recall.db",
+        )
+        store.remember(
+            "My laptop is a ThinkPad X1 Carbon Gen 12 with 64GB RAM.",
+            scope="session",
+        )
+        results = store.recall("purple bicycle quantum oatmeal", top_k=5)
+
+    assert results == [], results
+
+
 if __name__ == "__main__":
     tests = [
         test_writing_query_drops_lexical_hit_from_code_domain,
         test_long_query_suppresses_noise_and_keeps_multi_topic_results,
+        test_multi_term_query_keeps_single_precise_match,
+        test_zero_overlap_query_still_returns_nothing,
     ]
     for fn in tests:
         fn()

@@ -1,0 +1,27 @@
+{"query": "which Python version is installed now?", "relevant": ["upgraded the system toolchain to Python 3.13"], "category": "correction"}
+{"query": "what are we using for caching on the home server these days?", "relevant": ["replaced Redis with Valkey 8"], "category": "correction"}
+{"query": "how do I sync documents between machines?", "relevant": ["Synology Drive replaced Dropbox"], "category": "correction"}
+{"query": "where does the team chat live now?", "relevant": ["moved from Slack to Zulip self-hosted"], "category": "correction"}
+{"query": "am I still a data engineer?", "relevant": ["platform engineer since June"], "category": "correction"}
+{"query": "npm or pnpm for the dashboard project?", "relevant": ["pnpm is the package manager there now"], "category": "correction"}
+{"query": "my birthday - come on, you know this one", "relevant": ["My birthday is July 2"], "category": "already_told"}
+{"query": "I already told you my timezone, right? stop asking", "relevant": ["My timezone is Europe/Lisbon", "timezone is Europe/Lisbon so schedule"], "category": "already_told"}
+{"query": "the dog - what's his name and breed again?", "relevant": ["dog is called Biscuit; he is a golden retriever"], "category": "already_told"}
+{"query": "food constraints for catering: shellfish AND meat both out, correct?", "relevant": ["allergic to shellfish", "shellfish allergy - no prawns", "I am vegetarian", "keep a vegetarian diet", "Vegetarian since 2015"], "category": "already_told"}
+{"query": "you remember where I keep passwords, yes?", "relevant": ["Password manager is Bitwarden"], "category": "structured_current"}
+{"query": "where's my git hosting canonical repo?", "relevant": ["gitlab.com/arivera; mirrors exist"], "category": "structured_current"}
+{"query": "vpn profile name for office access?", "relevant": ["WireGuard; profile name 'northwind-main'"], "category": "structured_current"}
+{"query": "what usernames do I typically register with?", "relevant": ["arivera or alexrivera"], "category": "structured_current"}
+{"query": "how is riveralabs.dev hosted?", "relevant": ["riveralabs.dev is served through Cloudflare Pages"], "category": "structured_current"}
+{"query": "postgres backups - schedule and destination?", "relevant": ["pg_dump backups run nightly at 03:00"], "category": "structured_current"}
+{"query": "what GPU is in my desktop machine?", "relevant": ["RTX 4080 Super, mostly used"], "category": "entity_exact"}
+{"query": "NAS drives - which disks and how much free space?", "relevant": ["WD Red Plus"], "category": "entity_exact"}
+{"query": "home server hardware specs?", "relevant": ["Minisforum HM90"], "category": "entity_exact"}
+{"query": "which bike do I ride to work?", "relevant": ["the bike is a Kona Dew"], "category": "entity_exact"}
+{"query": "solar inverter - brand and rating?", "relevant": ["Solar inverter brand is Growatt"], "category": "entity_exact"}
+{"query": "train tickets for the September trip - booked or not?", "relevant": ["train tickets booked for the 12th"], "category": "multi_constraint"}
+{"query": "piano lessons - when and with whom?", "relevant": ["Piano lessons Wednesdays"], "category": "multi_constraint"}
+{"query": "when am I eligible to donate blood again?", "relevant": ["Blood donation eligible again from November 5"], "category": "multi_constraint"}
+{"query": "which streaming services am I paying for?", "relevant": ["Netflix shared with Maya, HBO cancelled"], "category": "multi_constraint"}
+{"query": "trash collection days at my building?", "relevant": ["Trash collection Tuesdays and Fridays"], "category": "multi_constraint"}
+{"query": "when does my passport expire?", "relevant": ["passport expires March 2027"], "category": "multi_constraint"}

@@ -72,3 +72,18 @@ run, but the fixtures that produced them are not lost.
   is wrong.
 - The loosened assertion (`score < 0.9`) no longer checks a meaningful bound;
   the original `0.9 * 0.5` pinned the 0.35 penalty.
+
+## Follow-up (2026-10-22)
+
+A replay harness now runs these fixtures against the pinned engine, and the
+engine-side change that carried the principle over is measured and shipped. The
+engine expresses query coverage as a hard admission floor in `core/beam.py`.
+That floor is now flat at 0.15, because the stepped values dropped rows that
+answered a multi-term question with one precise term.
+
+- Harness and provenance: [bench/retrieval/](../../bench/retrieval/)
+- Baseline and candidate tables: [bench/retrieval/RESULTS.md](../../bench/retrieval/RESULTS.md)
+
+The Rust constants above remain unshipped. The engine change is not a literal
+port: it keeps "coverage lowers rank instead of hiding the row" and drops the
+knobs that have no engine counterpart.

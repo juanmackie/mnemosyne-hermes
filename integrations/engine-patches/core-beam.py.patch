@@ -126,6 +126,36 @@
              results = beam.annotations.query_by_kind("mentions", value=matched_entity)
              for row in results:
                  memory_ids.add(row["memory_id"])
+@@ -1818,15 +1903,21 @@
+ 
+ 
+ def _minimum_recall_relevance(query_tokens: List[str]) -> float:
+-    """Raise the lexical gate for broad natural-language queries.
+-
+-    One matching real word is enough for short lookup-style queries, but not
+-    for broad nonsense strings like "purple bicycle quantum oatmeal".
++    """Lexical admission floor for a recall candidate.
++
++    A candidate must match at least one meaningful query token. Beyond that,
++    coverage is expressed by the score, not by a hard cutoff.
++
++    The previous stepped gate (0.5 for three tokens, 0.3 for four or more)
++    rejected rows that answered a multi-term question with one precise term.
++    "laptop specs - what machine do I have?" matches "My laptop is a ThinkPad
++    X1 Carbon Gen 12 with 64GB RAM running Ubuntu 24.04." on one of three
++    terms, so the row scored 0.33, fell under 0.5, and the query returned
++    nothing even though the answer was in the store.
++
++    Queries with no meaningful token overlap still abstain: `_lexical_relevance`
++    returns 0.0 for them, which stays under this floor.
+     """
+-    if len(query_tokens) >= 4:
+-        return 0.3
+-    if len(query_tokens) == 3:
+-        return 0.5
+     return 0.15
+ 
+ 
 @@ -2977,10 +3062,13 @@
      def __init__(self, session_id: str = "default", db_path: Path = None,
                   author_id: str = None, author_type: str = None,

@@ -1,0 +1,111 @@
+{
+  "corpus": "C:\\Users\\juanm\\Documents\\GitHub\\mnemosyne-hermes\\bench\\retrieval\\corpus.jsonl",
+  "limit": 5,
+  "reports": {
+    "eval_dev": {
+      "queries": 27,
+      "hit1": 0.5925925925925926,
+      "hit5": 0.7777777777777778,
+      "mrr": 0.6604938271604938,
+      "latency_p50_ms": 2.369400000134192,
+      "empty": 4,
+      "by_category": {
+        "already_told": {
+          "queries": 5,
+          "hit1": 0.4,
+          "mrr": 0.5
+        },
+        "correction": {
+          "queries": 6,
+          "hit1": 0.5,
+          "mrr": 0.625
+        },
+        "entity_exact": {
+          "queries": 5,
+          "hit1": 0.4,
+          "mrr": 0.45
+        },
+        "multi_constraint": {
+          "queries": 6,
+          "hit1": 1.0,
+          "mrr": 1.0
+        },
+        "structured_current": {
+          "queries": 5,
+          "hit1": 0.6,
+          "mrr": 0.6666666666666666
+        }
+      }
+    },
+    "eval_heldout_a": {
+      "queries": 27,
+      "hit1": 0.7037037037037037,
+      "hit5": 0.8888888888888888,
+      "mrr": 0.7654320987654321,
+      "latency_p50_ms": 2.2262000002228888,
+      "empty": 2,
+      "by_category": {
+        "already_told": {
+          "queries": 4,
+          "hit1": 0.5,
+          "mrr": 0.7083333333333333
+        },
+        "correction": {
+          "queries": 6,
+          "hit1": 0.8333333333333334,
+          "mrr": 0.8888888888888888
+        },
+        "entity_exact": {
+          "queries": 5,
+          "hit1": 0.8,
+          "mrr": 0.85
+        },
+        "multi_constraint": {
+          "queries": 6,
+          "hit1": 0.8333333333333334,
+          "mrr": 0.8333333333333334
+        },
+        "structured_current": {
+          "queries": 6,
+          "hit1": 0.5,
+          "mrr": 0.5416666666666666
+        }
+      }
+    },
+    "eval_heldout_b": {
+      "queries": 27,
+      "hit1": 0.6296296296296297,
+      "hit5": 0.8518518518518519,
+      "mrr": 0.7314814814814815,
+      "latency_p50_ms": 2.3569999993924284,
+      "empty": 4,
+      "by_category": {
+        "already_told": {
+          "queries": 4,
+          "hit1": 0.5,
+          "mrr": 0.75
+        },
+        "correction": {
+          "queries": 6,
+          "hit1": 0.5,
+          "mrr": 0.5833333333333334
+        },
+        "entity_exact": {
+          "queries": 5,
+          "hit1": 0.6,
+          "mrr": 0.6
+        },
+        "multi_constraint": {
+          "queries": 6,
+          "hit1": 0.6666666666666666,
+          "mrr": 0.7916666666666666
+        },
+        "structured_current": {
+          "queries": 6,
+          "hit1": 0.8333333333333334,
+          "mrr": 0.9166666666666666
+        }
+      }
+    }
+  }
+}
