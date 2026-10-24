@@ -100,6 +100,20 @@ def test_backup_retention_keeps_newest_and_touches_nothing_else(tmp_path):
     assert keep.exists(), "pruning must only ever remove snapshots this tool wrote"
 
 
+def test_same_second_snapshots_do_not_overwrite(tmp_path):
+    """Two backups in the same wall-clock second must both survive."""
+    db = make_db(tmp_path / "mnemosyne.db", rows=5)
+    backups = tmp_path / "backups"
+    for _ in range(3):
+        result = run("backup", "--db-path", str(db), "--backup-dir", str(backups), "--no-prune")
+        assert result.returncode == 0, result.stderr
+    made = sorted(p.name for p in backups.iterdir())
+    assert len(made) == 3, made
+    assert len(set(made)) == 3
+    for name in made:
+        assert name.endswith(".db") and ".partial" not in name
+
+
 def test_compact_skips_below_threshold_silently(tmp_path):
     db = make_db(tmp_path / "mnemosyne.db")
     result = run("compact", "--db-path", str(db), "--backup-dir", str(tmp_path / "bk"))

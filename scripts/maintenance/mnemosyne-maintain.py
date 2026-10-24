@@ -282,6 +282,22 @@ def run_engine(home: Path, args: list[str], db: Path) -> tuple[int, str]:
 # --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
+def unique_path(target: Path) -> Path:
+    """Never overwrite an existing snapshot.
+
+    Snapshot names carry whole seconds, and a fast host can produce several in
+    the same second (a test loop, or two jobs firing together). Overwriting would
+    silently destroy the older backup the caller was relying on.
+    """
+    if not target.exists():
+        return target
+    for index in range(2, 1000):
+        candidate = target.with_name(f"{target.stem}-{index}{target.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"no free snapshot name near {target}")
+
+
 def snapshot(db: Path, dest: Path) -> tuple[bool, str]:
     """Self-contained, verified copy of ``db`` at ``dest``.
 
@@ -319,7 +335,7 @@ def cmd_backup(args) -> int:
     target_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     label = f"-{args.label}" if args.label else ""
-    final = target_dir / f"{BACKUP_PREFIX}{stamp}{label}.db"
+    final = unique_path(target_dir / f"{BACKUP_PREFIX}{stamp}{label}.db")
     partial = final.with_suffix(".partial")
     ok, result = snapshot(db, partial)
     if not ok:
@@ -506,7 +522,7 @@ def cmd_compact(args) -> int:
     # 1. Verified checkpoint before touching the live file.
     checkpoint = Path(args.backup_dir or backup_dir(None, hermes_home(args.hermes_home)))
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    snapshot_path = checkpoint / f"{BACKUP_PREFIX}{stamp}-precompact.db"
+    snapshot_path = unique_path(checkpoint / f"{BACKUP_PREFIX}{stamp}-precompact.db")
     ok, result = snapshot(db, snapshot_path)
     if not ok:
         warn(f"compact ABORTED: checkpoint failed integrity ({result})")

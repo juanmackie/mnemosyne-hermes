@@ -386,7 +386,10 @@ def test_output_refuses_existing_sensitive_or_input_paths():
         else:
             raise AssertionError("input path accepted as output")
         accepted = module.resolve_output_path(root / "new-report.json", [source])
-        assert accepted == root / "new-report.json"
+        # Compare canonical paths: macOS maps /var to /private/var and Windows
+        # temporary directories can use 8.3 short names, so a raw comparison of
+        # a resolved path against tmp_path fails on both.
+        assert Path(accepted).resolve() == (root / "new-report.json").resolve()
 
 
 def test_cli_end_to_end_and_refusals():
