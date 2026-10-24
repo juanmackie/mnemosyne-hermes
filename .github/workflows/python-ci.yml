@@ -69,13 +69,13 @@ jobs:
         run: uv build --wheel --out-dir /tmp/wheel && ls /tmp/wheel
 
       - name: Ruff lint
-        run: ruff check src tests bench/hermes_prefetch_eval.py
+        run: ruff check src tests bench/hermes_prefetch_eval.py scripts/maintenance/mnemosyne-maintain.py
       - name: Ruff format
-        run: ruff format --check src tests bench/hermes_prefetch_eval.py
+        run: ruff format --check src tests bench/hermes_prefetch_eval.py scripts/maintenance/mnemosyne-maintain.py
       - name: Types (mypy)
         run: mypy
       - name: Shell (shellcheck)
-        run: shellcheck -S warning install.sh scripts/*.sh bench/*.sh test-all.sh
+        run: shellcheck -S warning install.sh scripts/*.sh scripts/maintenance/*.sh bench/*.sh test-all.sh
 
   engine-contract:
     name: engine-contract (py${{ matrix.python }})

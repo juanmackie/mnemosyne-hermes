@@ -36,9 +36,14 @@ Set up the Mnemosyne memory system on this Hermes agent, then keep it updated.
 3. Verify: `hermes mnemosyne doctor --no-fix` must exit 0 and
    `hermes memory status` must show mnemosyne active. Never delete or
    re-initialize an existing memory database.
-4. Do the "Keep it updated" step of that runbook: a daily, notify-only update
+4. Install the maintenance jobs: `scripts/maintenance/install-crons.sh --dry-run`,
+   show me the five jobs, then run it without `--dry-run`. These are the backup,
+   consolidation, integrity, hygiene and compaction jobs documented in
+   ~/mnemosyne-hermes/docs/MAINTENANCE.md — read that file first and tell me
+   anything in it that does not match this host.
+5. Do the "Keep it updated" step of that runbook: a daily, notify-only update
    check. Do NOT auto-apply updates unless I tell you to.
-5. Finish with a checklist: step, pass/fail, one line of evidence. If a step
+6. Finish with a checklist: step, pass/fail, one line of evidence. If a step
    fails twice, stop and show me the exact output.
 
 No API key is needed. If any step asks for one, stop and tell me.
@@ -135,6 +140,37 @@ a `sync_turn` round trip + a single-registration check). It needs real symlinks,
 so it runs on Linux/macOS; on Windows it skips. The provider's curated default
 and complete tool names are maintained in the
 [canonical Hermes tool table](docs/HERMES_INTEGRATION.md#canonical-tool-names-and-default-exposure).
+
+### Maintenance
+
+An install left alone still needs work: snapshots, tier consolidation, integrity
+checks, noise audits, and occasional compaction. Five jobs cover it, all
+`--no-agent` (no model tokens), all silent unless something needs you:
+
+```bash
+scripts/maintenance/install-crons.sh --dry-run   # show the five jobs
+scripts/maintenance/install-crons.sh             # register what is missing
+scripts/maintenance/install-crons.sh --list      # present / MISSING
+```
+
+| Job | Schedule | Command |
+| --- | --- | --- |
+| `mnemosyne-backup` | daily 02:30 | snapshot + integrity check, 14 retained |
+| `mnemosyne-consolidate` | daily 21:20 | working → episodic → BEAM tiers |
+| `mnemosyne-verify` | Sunday 03:10 | full `integrity_check`, WAL/freelist thresholds |
+| `mnemosyne-hygiene` | Sunday 03:40 | noise audit, report only |
+| `mnemosyne-compact` | 1st 03:30 | `VACUUM` above 20% freelist, after a verified checkpoint |
+
+The installer is idempotent and repairs stale wrappers; `--uninstall` removes the
+jobs and nothing else. Every command is also runnable by hand —
+`python3 scripts/maintenance/mnemosyne-maintain.py report` gives you size,
+freelist, WAL, integrity and row counts in one line.
+
+Two guarantees worth knowing before you trust it unattended: no command ever
+creates a database it did not find, and only `compact` rewrites the file (after
+writing a verified checkpoint). The failure modes that produced those rules, and
+the rest of the safety arguments, are in
+[docs/MAINTENANCE.md](docs/MAINTENANCE.md).
 
 ### Updates
 
@@ -267,10 +303,11 @@ the recall-latency harness and the one recorded measurement.
 install.sh                       provider installer (and --uninstall)
 integrations/hermes-provider/    the vendored provider + its gates
 src/mnemosyne_lite/              the standalone store, CLI and MCP server
+scripts/maintenance/             scheduled maintenance: backup, verify, consolidate, compact
 tests/                           contract and regression suites
 scripts/                         repo gates, the smoke lane, re-vendor
 bench/                           recall benchmark harness + its record
-docs/                            AGENT_SETUP, HERMES_INTEGRATION, MCP_CLIENT_CONFIGS
+docs/                            AGENT_SETUP, MAINTENANCE, HERMES_INTEGRATION, MCP_CLIENT_CONFIGS
 ```
 
 ## Contributing

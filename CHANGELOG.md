@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/maintenance/`: the scheduled maintenance suite that keeps a live
+  database healthy — `mnemosyne-maintain.py` (`backup`, `verify`,
+  `consolidate`, `hygiene`, `compact`, `report`) and an idempotent
+  `install-crons.sh` that registers five `--no-agent` Hermes cron jobs (daily
+  snapshot and consolidation, weekly verified integrity check and noise audit,
+  monthly threshold-gated `VACUUM`). Clean runs print nothing; failures exit
+  non-zero. Safety rules encoded from production: read-only commands never
+  create a database, the engine CLI is pinned to one explicit data directory
+  (it ignores `MNEMOSYNE_DB_PATH` and will otherwise invent an empty database),
+  snapshots are flattened out of WAL before being renamed, and pruning only
+  touches files this tool wrote. See `docs/MAINTENANCE.md` and the regression
+  suite in `tests/test_maintenance_script.py`.
 - `scripts/update.sh` and `scripts/update.ps1`: a notify-only `--check` (exit 10
   when `main` has new commits) and an opt-in `--apply` that fast-forwards, re-runs
   the installer, runs `doctor` and rolls back on failure. `docs/AGENT_SETUP.md`

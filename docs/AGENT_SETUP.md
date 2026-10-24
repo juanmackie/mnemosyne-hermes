@@ -150,7 +150,45 @@ the output when `MAILTO` is set). Windows Task Scheduler: run
 daily. Anything that reads Atom feeds can follow
 `https://github.com/juanmackie/mnemosyne-hermes/commits/main.atom`.
 
+## 7. Keep memory healthy
+
+Install the maintenance jobs. They are separate from updates: updates change the
+code, these keep the database itself sound.
+
+```bash
+cd ~/mnemosyne-hermes
+scripts/maintenance/install-crons.sh --dry-run   # show the plan
+scripts/maintenance/install-crons.sh             # create what is missing
+scripts/maintenance/install-crons.sh --list      # confirm: present / MISSING
+```
+
+Five jobs are registered, all `--no-agent` and silent unless something needs a
+human:
+
+| Job | Schedule | Effect |
+| --- | --- | --- |
+| `mnemosyne-backup` | daily 02:30 | Verified snapshot, 14 retained |
+| `mnemosyne-consolidate` | daily 21:20 | working → episodic → BEAM tiers |
+| `mnemosyne-verify` | Sunday 03:10 | Full integrity check + thresholds |
+| `mnemosyne-hygiene` | Sunday 03:40 | Noise audit, deletes nothing |
+| `mnemosyne-compact` | 1st 03:30 | `VACUUM` above 20% freelist, after a checkpoint |
+
+**Verify:** run one of them by hand and check the path, not just the exit code:
+
+```bash
+hermes cron run mnemosyne-verify        # queues it for the next scheduler tick
+python3 ~/mnemosyne-hermes/scripts/maintenance/mnemosyne-maintain.py report -v
+```
+
+`report` must print one line containing `integrity=ok`, a size, a freelist
+percentage and row counts. A first ever `backup` run must leave exactly one
+`mnemosyne-*.db` in `${HERMES_HOME:-~/.hermes}/backups/mnemosyne/`.
+
+Rules the agent must not relax: do not delete memory to make a job pass, do not
+lower the compaction threshold to "clean up", and do not schedule
+`hygiene clean`. Read `docs/MAINTENANCE.md` before changing any of it.
+
 ---
 References: `integrations/hermes-provider/README.md`,
-`docs/HERMES_INTEGRATION.md`, `README.md`.
+`docs/HERMES_INTEGRATION.md`, `docs/MAINTENANCE.md`, `README.md`.
 Source: `https://github.com/juanmackie/mnemosyne-hermes`
