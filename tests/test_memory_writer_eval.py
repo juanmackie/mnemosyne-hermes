@@ -60,9 +60,7 @@ def test_fixture_contract():
     splits = Counter(case["split"] for case in cases)
     assert domains == {"personal": 12, "coding": 12}, domains
     assert splits == {"dev": 16, "held_out": 8}, splits
-    assert Counter(
-        (case["domain"], case["split"]) for case in cases
-    ) == {
+    assert Counter((case["domain"], case["split"]) for case in cases) == {
         ("personal", "dev"): 8,
         ("personal", "held_out"): 4,
         ("coding", "dev"): 8,
@@ -98,9 +96,9 @@ def test_fixture_contract():
             assert "http://" not in content and "https://" not in content
             for marker in ("sk-", "AKIA", "ghp_", "-----BEGIN"):
                 assert marker not in content
-    assert (ROOT / "bench" / "memory_writer_cases.json").read_text(
-        encoding="utf-8"
-    ).count("https://") == 0
+    assert (ROOT / "bench" / "memory_writer_cases.json").read_text(encoding="utf-8").count(
+        "https://"
+    ) == 0
 
 
 def test_oracle_passes_every_case_and_domain():
@@ -162,7 +160,11 @@ def test_fabricated_memory_is_unsupported():
 def test_wrong_conclusion_is_a_forbidden_violation():
     module = _module()
     fixture = _fixture(module)
-    artifact = {"format": module.ARTIFACT_FORMAT, "writer": {"name": "test", "model": "test"}, "cases": []}
+    artifact = {
+        "format": module.ARTIFACT_FORMAT,
+        "writer": {"name": "test", "model": "test"},
+        "cases": [],
+    }
     artifact["cases"].append(
         {
             "id": "coding-held-02",
@@ -190,7 +192,11 @@ def test_wrong_conclusion_is_a_forbidden_violation():
 def test_forced_trivial_experience_fails_no_op_case():
     module = _module()
     fixture = _fixture(module)
-    artifact = {"format": module.ARTIFACT_FORMAT, "writer": {"name": "test", "model": "test"}, "cases": []}
+    artifact = {
+        "format": module.ARTIFACT_FORMAT,
+        "writer": {"name": "test", "model": "test"},
+        "cases": [],
+    }
     artifact["cases"].append(
         {
             "id": "coding-dev-04",
@@ -217,7 +223,11 @@ def test_forced_trivial_experience_fails_no_op_case():
 def test_repeated_event_merge_fails_preserve_and_forbidden():
     module = _module()
     fixture = _fixture(module)
-    artifact = {"format": module.ARTIFACT_FORMAT, "writer": {"name": "test", "model": "test"}, "cases": []}
+    artifact = {
+        "format": module.ARTIFACT_FORMAT,
+        "writer": {"name": "test", "model": "test"},
+        "cases": [],
+    }
     artifact["cases"].append(
         {
             "id": "personal-dev-07",
@@ -245,7 +255,11 @@ def test_repeated_event_merge_fails_preserve_and_forbidden():
 def test_cross_person_attribution_fails():
     module = _module()
     fixture = _fixture(module)
-    artifact = {"format": module.ARTIFACT_FORMAT, "writer": {"name": "test", "model": "test"}, "cases": []}
+    artifact = {
+        "format": module.ARTIFACT_FORMAT,
+        "writer": {"name": "test", "model": "test"},
+        "cases": [],
+    }
     artifact["cases"].append(
         {
             "id": "personal-dev-02",
@@ -300,9 +314,7 @@ def test_artifact_validation_rejects_malformed_shapes():
             {"op": "add", "target": "s1", "memory": 0}
         )
     )
-    assert errors(
-        lambda item: item["cases"][0]["operations"].append({"op": "add", "memory": 99})
-    )
+    assert errors(lambda item: item["cases"][0]["operations"].append({"op": "add", "memory": 99}))
 
 
 def test_missing_and_unexpected_cases_are_counted():
@@ -324,7 +336,11 @@ def test_missing_and_unexpected_cases_are_counted():
 def test_no_op_case_rejects_any_memory():
     module = _module()
     fixture = _fixture(module)
-    artifact = {"format": module.ARTIFACT_FORMAT, "writer": {"name": "test", "model": "test"}, "cases": []}
+    artifact = {
+        "format": module.ARTIFACT_FORMAT,
+        "writer": {"name": "test", "model": "test"},
+        "cases": [],
+    }
     artifact["cases"].append(
         {
             "id": "personal-dev-06",
@@ -430,9 +446,7 @@ def test_cli_end_to_end_and_refusals():
             capture_output=True,
         )
         assert failed.returncode == 1, failed.stdout + failed.stderr
-        assert json.loads(failed_path.read_text(encoding="utf-8"))["metrics"][
-            "passed_cases"
-        ] == 0
+        assert json.loads(failed_path.read_text(encoding="utf-8"))["metrics"]["passed_cases"] == 0
 
 
 def test_baseline_no_regression_gate():
@@ -443,7 +457,9 @@ def test_baseline_no_regression_gate():
         baseline = _oracle(module, fixture)
         candidate = copy.deepcopy(baseline)
         case = next(row for row in candidate["cases"] if row["id"] == "personal-held-02")
-        case["memories"] = [memory for memory in case["memories"] if "78 kg" not in memory["content"]]
+        case["memories"] = [
+            memory for memory in case["memories"] if "78 kg" not in memory["content"]
+        ]
         case["operations"] = [
             operation
             for operation in case["operations"]
@@ -480,7 +496,11 @@ def test_baseline_no_regression_gate():
 def test_historical_and_negated_mentions_do_not_trip_forbidden_claims():
     module = _module()
     fixture = _fixture(module)
-    artifact = {"format": module.ARTIFACT_FORMAT, "writer": {"name": "test", "model": "test"}, "cases": []}
+    artifact = {
+        "format": module.ARTIFACT_FORMAT,
+        "writer": {"name": "test", "model": "test"},
+        "cases": [],
+    }
     artifact["cases"].append(
         {
             "id": "personal-dev-03",
@@ -635,9 +655,7 @@ def test_replay_with_fake_provider_uses_isolated_temp_store():
         def shutdown(self):
             self.calls.append("shutdown")
 
-    replay = module.run_replay(
-        fixture, artifact, provider_factory=lambda: FakeProvider()
-    )
+    replay = module.run_replay(fixture, artifact, provider_factory=lambda: FakeProvider())
     assert replay["ok"] is True, replay
     assert replay["engine"] == "injected"
     assert replay["engine_pin"] and replay["engine_pin"].startswith("mnemosyne-memory")
