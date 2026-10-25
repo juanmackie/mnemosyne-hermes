@@ -92,7 +92,7 @@ MNEMOSYNE_EMBEDDING_DOC_PREFIX='search_document: ' \
 mnemosyne reindex --yes        # dry-run first; backup is taken by default
 ```
 
-Ship only after a staging reindex + engine-native retrieval A/B on the Z640.
+Ship only after a staging reindex + engine-native retrieval A/B on the the host.
 Rollback is the symmetric reindex to `BAAI/bge-small-en-v1.5` / `..._DIM=384`.
 Do not mix dimensions in one store; `..._DIM=768` is mandatory because the engine's
 dimension table has no nomic entry.
@@ -108,7 +108,7 @@ temporal slice to the plan. See [E_agent_consultation.md](./E_agent_consultation
 | Doc | Contents |
 |---|---|
 | [0_baseline_and_premises.md](./0_baseline_and_premises.md) | Premise audit, engine capability table, environment feasibility matrix |
-| [A_synapse.md](./A_synapse.md) | Provider-contract audit, 9-algorithm mapping with file:line and wiring status, Z640 runbook, conflicts |
+| [A_synapse.md](./A_synapse.md) | Provider-contract audit, 9-algorithm mapping with file:line and wiring status, host runbook, conflicts |
 | [B_widemem.md](./B_widemem.md) | Install/versions, socket-guarded offline proof, measured confidence, resolver guards, BLOCKED items |
 | [C_embeddings.md](./C_embeddings.md) / [C_embeddings.json](./C_embeddings.json) | Benchmark methodology, numbers, 95% CIs, engine reindex path |
 | [D_offline_smoke.md](./D_offline_smoke.md) | Executed offline proof (7/7 PASS); live provider state and the passing memory round-trip |
@@ -118,13 +118,13 @@ temporal slice to the plan. See [E_agent_consultation.md](./E_agent_consultation
 
 ## Blockers, flagged plainly
 
-1. **No Z640 shell / TrueNAS API access.** Synapse was not stood up (no Docker on
-   the dev box); the Z640 runbook is written but **unexecuted**. All GPU and
+1. **No the host shell / TrueNAS API access.** Synapse was not stood up (no Docker on
+   the dev box); the host runbook is written but **unexecuted**. All GPU and
    Quadro P4000 / RTX 3090 numbers are **not measured**.
 2. **No Ollama or paid API here.** widemem `add()`/`pin()` and batch conflict
    resolution, and MemBase stage 3 (F1/BLEU/LLM-judge), are **BLOCKED** with the
    exact failing commands; no scores were synthesized.
-3. **Live gateway — verified end-to-end.** The Z640 gateway (Hermes **v0.22.1**)
+3. **Live gateway — verified end-to-end.** The deployed gateway (Hermes **v0.22.1**)
    runs the provider `mnemosyne` **active/ready** with the expected pin, DB path,
    `default_scope=session`, and the canonical four tools. A real agent-turn
    memory round-trip passed on **both** transports: remember `zephyr-quokka-42`

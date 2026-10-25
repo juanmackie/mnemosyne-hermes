@@ -98,7 +98,7 @@ Two runs, same corpus, same dedicated HF cache:
 Phase-2 command:
 
 ```powershell
-$env:HF_HOME           = "C:\Users\juanm\Documents\GitHub\mnemosyne-hermes\.levelup-work\B-widemem\hf"
+$env:HF_HOME           = "~\mnemosyne-hermes\.levelup-work\B-widemem\hf"
 $env:HF_HUB_OFFLINE    = "1"
 $env:TRANSFORMERS_OFFLINE = "1"
 .\.levelup-work\B-widemem\.venv\Scripts\python.exe -u .levelup-work\B-widemem\scratch\phase2_offline.py
@@ -108,7 +108,7 @@ $env:TRANSFORMERS_OFFLINE = "1"
 
 ```
 [proof] socket.socket.connect, connect_ex, create_connection, getaddrinfo all raise
-[env] HF_HOME = C:\Users\juanm\...\.levelup-work\B-widemem\hf
+[env] HF_HOME = ~\.levelup-work\B-widemem\hf
 [env] HF_HUB_OFFLINE = 1
 [env] TRANSFORMERS_OFFLINE = 1
 [init] WideMemory constructed offline in 13.34s

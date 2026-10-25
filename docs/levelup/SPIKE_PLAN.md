@@ -112,7 +112,7 @@ legitimate updates drop on real data, revert rather than relax a guard.
 1. Add `bench/embedding_eval`: same corpus, same unit granularity, **the engine's
    retrieval path**, only the encoder swapped — the gate the live agent demanded.
    Keep bge-small vectors until it passes; rollback is the retained index.
-2. Run on the Z640 with a local LLM so F1/BLEU/judge are available there.
+2. Run on the the host with a local LLM so F1/BLEU/judge are available there.
 3. Add `bench/live_acceptance` implementing the consumer's five tests
    ([E §5](./E_agent_consultation.md#5-acceptance-tests-the-agent-proposed-adopt-as-a-gate)):
    silent index drop, forced abstention, temporal supersede, multi-hop (stretch),
@@ -120,7 +120,7 @@ legitimate updates drop on real data, revert rather than relax a guard.
 4. Record the reindex decision: **APPROVED** only if the engine-native gain beats
    run-to-run noise and rollback is proven; otherwise **REJECTED (keep bge-small)**.
 
-**Milestones.** M3.1 harness runs; M3.2 Z640 QA numbers; M3.3 decision + acceptance
+**Milestones.** M3.1 harness runs; M3.2 the host QA numbers; M3.3 decision + acceptance
 gate registered in `scripts/checks.sh`.
 
 **Rollback.** A model switch forces a full 384→768 reindex. If reindex time, index

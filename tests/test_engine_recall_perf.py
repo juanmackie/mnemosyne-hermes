@@ -137,8 +137,8 @@ def _seed_corpus(beam, count=332):
     import random
 
     random.seed(0)
-    paths = [f"/opt/data/mnemosyne_data/shard_{i:03d}/mnemosyne.db" for i in range(40)]
-    paths += [f"/opt/data/repos/mnemosyne-hermes-{i}" for i in range(20)]
+    paths = [f"/srv/mnemosyne/data/shard_{i:03d}/mnemosyne.db" for i in range(40)]
+    paths += [f"/srv/mnemosyne/checkout-{i}" for i in range(20)]
     procs = [
         "proc_" + "".join(random.choice("0123456789abcdef") for _ in range(12)) for _ in range(60)
     ]
@@ -147,12 +147,12 @@ def _seed_corpus(beam, count=332):
         "DB",
         "mnemosyne-hermes",
         "Rust-Python repository pivot",
-        "Auscoast Fire Services",
+        "Acme Fire Services",
         "Tesla P40",
-        "Z640 PSU",
-        "XPeng L03 Ultra",
-        "CBT-I",
-        "doxylamine",
+        "the host PSU",
+        "EV Route Planner",
+        "CI Pipeline",
+        "Scheduler",
         "Hermes",
         "BeamMemory",
         "hello",
@@ -183,7 +183,7 @@ def test_guard_keeps_match_set():
     import random
 
     random.seed(0)
-    paths = [f"/opt/data/mnemosyne_data/shard_{i:03d}/mnemosyne.db" for i in range(40)]
+    paths = [f"/srv/mnemosyne/data/shard_{i:03d}/mnemosyne.db" for i in range(40)]
     procs = [
         "proc_" + "".join(random.choice("0123456789abcdef") for _ in range(12)) for _ in range(60)
     ]
@@ -192,12 +192,12 @@ def test_guard_keeps_match_set():
         "DB",
         "mnemosyne-hermes",
         "Rust-Python repository pivot",
-        "Auscoast Fire Services",
+        "Acme Fire Services",
         "Tesla P40",
-        "Z640 PSU",
-        "XPeng L03 Ultra",
-        "CBT-I",
-        "doxylamine",
+        "the host PSU",
+        "EV Route Planner",
+        "CI Pipeline",
+        "Scheduler",
         "Hermes",
         "BeamMemory",
         "hello",
@@ -210,8 +210,8 @@ def test_guard_keeps_match_set():
     ] + [f"Entity{i:03d} Name" for i in range(200)]
     corpus = paths + procs + names
     queries = [
-        "Auscoast Fire Services role and responsibilities",
-        "sleep insomnia doxylamine CBT-I wife",
+        "Acme Fire Services role and responsibilities",
+        "sleep schedule evening routine lights out",
         "Tesla P40 second hand GPU bring up",
         "the",
         "hello",
@@ -219,7 +219,7 @@ def test_guard_keeps_match_set():
         "jello",
         "fire",
         "Abdias",
-        "/opt/data/mnemosyne_data/shard_007/mnemosyne.db what is in it",
+        "/srv/mnemosyne/data/shard_007/mnemosyne.db what is in it",
     ]
     mismatches = []
     for query in queries:
@@ -279,7 +279,7 @@ def test_beam_extracts_candidates_with_raw_fallback():
         assert lane_ids, "candidate extraction found no Tesla memories"
         # Fallback paths preserve legacy behavior.
         assert beam_mod._find_memories_by_entity(beam, "the") == []
-        path_query = "/opt/data/mnemosyne_data/shard_007/mnemosyne.db what is in it"
+        path_query = "/srv/mnemosyne/data/shard_007/mnemosyne.db what is in it"
         assert beam_mod._find_memories_by_entity(beam, path_query), (
             "raw fallback lost the path prefix match"
         )
@@ -308,14 +308,13 @@ def test_recall_fans_out_less_and_rank1_hits():
     with tempfile.TemporaryDirectory() as tmp, _perf_env(tmp):
         beam = beam_mod.BeamMemory(session_id="perf", db_path=os.path.join(tmp, "perf.db"))
         target = beam.remember(
-            "Auscoast Fire Services role and responsibilities: fire safety "
-            "inspection and compliance.",
+            "Acme Fire Services role and responsibilities: fire safety inspection and compliance.",
             scope="session",
         )
         known = _seed_corpus(beam)
         distinct = beam.annotations.get_distinct_values("mentions")
         assert len(distinct) >= 300, (len(known), len(distinct))
-        query = "Auscoast Fire Services role and responsibilities"
+        query = "Acme Fire Services role and responsibilities"
         calls = {"n": 0}
         real_sim = entities_mod.similarity
 

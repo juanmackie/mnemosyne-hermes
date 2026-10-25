@@ -1,7 +1,7 @@
 # Live back-and-forth with the production Hermes agent
 
 Status: **working end-to-end, verified 2026-10-18.** A real agent-turn memory
-round-trip passed on the Z640 deployment (Hermes 0.22.1, provider `mnemosyne`).
+round-trip passed on the deployment (Hermes 0.22.1, provider `mnemosyne`).
 
 ## What was investigated
 
@@ -12,7 +12,7 @@ cannot carry a conversation. Verified from its source
 - only three Telegram calls: `sendMessage`, `sendDocument`, `sendVideo`;
 - **no `getUpdates` and no receive path** — it is send-only;
 - it authenticates with a `BOT_TOKEN` (Bot API), and Bot API messages are never
-  delivered to another bot, so it cannot reach `@truenas_hermesbot`.
+  delivered to another bot, so it cannot reach `@your-bot`.
 
 Telepipe is usable only for outbound notifications. It is not a bridge.
 
@@ -33,7 +33,7 @@ WebSocket. It is useful for memory *configuration*, not iterative memory work.
 ## Why the first attempts failed (keep for the next person)
 
 1. **Wrong key source.** The authoritative key is the 64-hex `API_SERVER_KEY` in
-   `/opt/data/.env`. The dashboard's `/api/config` reported a *different* value
+   `$HERMES_HOME/.env`. The dashboard's `/api/config` reported a *different* value
    under both `gateway.api_server_key` and `env.API_SERVER_KEY`, so every request
    with that value returned `401 "Invalid gateway API key (API_SERVER_KEY)"`.
    A gateway drain+restart did not help — the value itself was wrong.
@@ -79,7 +79,7 @@ That is the end-to-end proof `LIVE_VERIFICATION.md` lacked: capture works for
 ## Usage
 
 ```powershell
-$env:HERMES_API_KEY = "<full 64-hex API_SERVER_KEY from /opt/data/.env>"
+$env:HERMES_API_KEY = "<full 64-hex API_SERVER_KEY from $HERMES_HOME/.env>"
 python .levelup-work/live_chat.py "What memory provider are you running?"
 python .levelup-work/live_chat.py          # interactive REPL
 ```

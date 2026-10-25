@@ -6,7 +6,7 @@ and the disagreement is recorded rather than smoothed over.
 
 Machine used for this audit: Windows 11 workstation, Python 3.11.15 (Hermes venv),
 `mnemosyne-memory` **3.15.1** installed, Hermes **v0.18.2**. No Docker, no Ollama,
-no Z640/TrueNAS access. NVIDIA RTX 3060 Laptop 6 GB present. See
+no TrueNAS access. NVIDIA RTX 3060 Laptop 6 GB present. See
 [environment](./D_offline_smoke.md) for what that permits and forbids.
 
 ---
@@ -37,7 +37,7 @@ where a measured gap remains."
 ## 2. What the engine already covers (so candidates are judged on delta, not overlap)
 
 `mnemosyne-memory 3.15.1`, installed at
-`C:\Users\juanm\AppData\Local\hermes\hermes-agent\venv\Lib\site-packages\mnemosyne`.
+`%LOCALAPPDATA%\hermes\hermes-agent\venv\Lib\site-packages\mnemosyne`.
 
 | Objective from the brief | Already in the engine | Evidence |
 |---|---|---|
@@ -113,13 +113,13 @@ where a measured gap remains."
 
 ## 5. Environment feasibility matrix
 
-| Capability | This box | Z640 (TrueNAS SCALE) | Consequence |
+| Capability | This box | TrueNAS SCALE | Consequence |
 |---|---|---|---|
-| Docker / FalkorDB | **absent** | present (Custom Apps) | Synapse cannot be stood up here; live stand-up is a Z640 step. Source audit only. |
-| Ollama / local LLM | **absent** | expected present | widemem `add()`/conflict resolution and MemBase Stage-3 QA are LLM-gated: blocked here, runnable on Z640. |
+| Docker / FalkorDB | **absent** | present (Custom Apps) | Synapse cannot be stood up here; live stand-up is a the host step. Source audit only. |
+| Ollama / local LLM | **absent** | expected present | widemem `add()`/conflict resolution and MemBase Stage-3 QA are LLM-gated: blocked here, runnable on the host. |
 | CUDA GPU | RTX 3060 Laptop 6 GB | Quadro P4000 / dual RTX 3090 | Do not bake CUDA into the decision; CPU-only results are the portable ones. |
 | HF / PyPI network | available | network-independent runtime target | Model/dataset fetch is a build-time step; runtime must pass with `HF_HUB_OFFLINE=1` + socket blocked. |
 | Engine + provider | installed, 3.15.1 | same pin | Offline smoke test of the shipped memory path is executable here. |
-| Z640 access | **none stated** | owner-operated | Any Z640-only number in this pack is labelled "not measured". |
+| the host access | **none stated** | owner-operated | Any host-only number in this pack is labelled "not measured". |
 
 See [D_offline_smoke.md](./D_offline_smoke.md) for the executed offline proof.

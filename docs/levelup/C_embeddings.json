@@ -280,7 +280,7 @@
       "unblock": "re-run the same harness with --device cuda on a CUDA host."
     },
     {
-      "metric": "Z640 Quadro P4000 / 3090 numbers",
+      "metric": "Quadro P4000 / 3090 numbers",
       "status": "NOT MEASURED",
       "reason": "not this machine",
       "unblock": "run the harness on those hosts"

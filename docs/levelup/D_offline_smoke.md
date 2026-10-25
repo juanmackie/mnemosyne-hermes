@@ -2,7 +2,7 @@
 
 Date: 2026-10-18. Machine: Windows 11 workstation (Python 3.11.15,
 `mnemosyne-memory` **3.15.1** installed, Hermes v0.18.2). Remote deployment
-inspected read-only via the Z640 gateway's public `/api/status` (Hermes
+inspected read-only via the deployed gateway's public `/api/status` (Hermes
 **v0.22.1**, gateway running).
 
 Verdict: **PASS — 7/7 checks, zero outbound network attempts.**
@@ -28,7 +28,7 @@ records and raises **before any `mnemosyne` import**, the pinned engine still:
 **Does not prove.** (a) The vendored provider wrapper's tool dispatch; that is
 covered by `tests/test_provider_engine_contract.py` (needs the provider
 installed). (b) A first-ever install with no cached model — the ONNX file must
-be fetched once (see §5). (c) Any Z640-only figure; the remote gateway is
+be fetched once (see §5). (c) Any host-only figure; the remote gateway is
 reachable but its authenticated memory tools were not exercised (see §6).
 
 ---
@@ -114,9 +114,9 @@ second model runtime. This is the same finding as the engine baseline
 
 ---
 
-## 5. Z640 runbook (executed here; re-run on the deployment host)
+## 5. host runbook (executed here; re-run on the deployment host)
 
-The deployed host is the TrueNAS Z640. To reproduce this proof there:
+The deployed host is the TrueNAS host. To reproduce this proof there:
 
 ```bash
 # once, with network — populate the ONNX cache
@@ -138,7 +138,7 @@ semantics.
 
 ## 6. Remote deployment state (read-only, authenticated)
 
-Reached the Z640 gateway with a **dashboard session**: the supplied access JWT had
+Reached the deployed gateway with a **dashboard session**: the supplied access JWT had
 expired, but the `hermes_session_rt` refresh token was accepted and the gateway
 rotated a fresh session (`Set-Cookie: hermes_session_at=...`). The session was used
 **read-only**; no config was changed and no cookie was written into the repo.
@@ -160,7 +160,7 @@ Authenticated reads (HTTP 200 each):
 | Request | Result |
 |---|---|
 | `GET /api/memory` | `active: "mnemosyne"`; provider `mnemosyne` `available:true, configured:true, status:"ready"`; `byterover` unavailable, `retaindb` needs_config; built-in files present (`memory` 1920 B, `user` 1317 B) |
-| `GET /api/memory/providers/mnemosyne/config` | `db_path=/opt/data/mnemosyne_data/mnemosyne.db` (set); `profile_isolation=false`; `default_scope="session"`; `tools=["mnemosyne_remember","mnemosyne_recall","mnemosyne_stats","mnemosyne_forget"]` — exactly the canonical four default tools; engine pin `mnemosyne-memory[embeddings]>=3.15.1,<3.16` |
+| `GET /api/memory/providers/mnemosyne/config` | `db_path=$HERMES_HOME/mnemosyne_data/mnemosyne.db` (set); `profile_isolation=false`; `default_scope="session"`; `tools=["mnemosyne_remember","mnemosyne_recall","mnemosyne_stats","mnemosyne_forget"]` — exactly the canonical four default tools; engine pin `mnemosyne-memory[embeddings]>=3.15.1,<3.16` |
 | `GET /api/sessions/stats` | `total: 633`, `messages: 52998`; `by_source` cron 324, telegram 253, oneshot 28, tui 12, api_server 6, cli 5, tool 3, local 2 |
 | `GET /api/sessions` | 20 session metadata rows returned (paged view) |
 
@@ -172,7 +172,7 @@ real usage (53k messages). That closes the "is the provider actually running
 somewhere?" question that `LIVE_VERIFICATION.md` had left open.
 
 **Now verified — live agent-turn memory round-trip.** Once the full 64-hex
-`API_SERVER_KEY` from `/opt/data/.env` was used (the dashboard's `/api/config`
+`API_SERVER_KEY` from `$HERMES_HOME/.env` was used (the dashboard's `/api/config`
 reported a *different* key, and a masked value arrived first), both transports
 were exercised against the live gateway:
 

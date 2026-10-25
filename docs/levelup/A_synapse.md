@@ -1,7 +1,7 @@
 # A. Synapse (Ardha-Eco-System/synapse) as a Hermes memory provider
 
 Status: workstream A, 2026-10-18. Static source audit only — **no live stand-up was
-possible on this machine** (no Docker, no Ollama, no Z640/TrueNAS access; confirmed
+possible on this machine** (no Docker, no Ollama, no TrueNAS access; confirmed
 below). Every claim cites a file:line or a command output. Where the 2026-08-24
 brief and the tree disagree, the tree wins.
 
@@ -140,7 +140,7 @@ report-only (salience, forgetting, prediction error, consolidation); 2 with no
 call site at all (schema extraction, cognitive map). This matches the code but not
 `README.md:80-102`'s "all nine wired".
 
-## 4. Dependencies, self-host audit, and the Z640/TrueNAS runbook
+## 4. Dependencies, self-host audit, and the TrueNAS runbook
 
 ### 4.1 What must run
 
@@ -148,7 +148,7 @@ call site at all (schema extraction, cognitive map). This matches the code but n
 | --- | --- | --- | --- |
 | FalkorDB server (Docker, Linux image) | **yes** — every read/write goes through it | $0 self-hosted; FalkorDB python client MIT (PyPI classifier) | `provider.py:87,92-97`; `retrieval.py:35-42`; `docker/docker-compose.yml:1-12` |
 | Graphiti library (in-process, no server) | **yes** | Apache-2.0 (`license_expression` on PyPI); pulls `neo4j`, `openai`, `posthog` (telemetry), numpy, pydantic, tenacity | `pyproject.toml:17-19`; PyPI metadata for graphiti-core 0.31.1 |
-| OpenAI-compatible LLM + embeddings endpoint | **yes** at init and on ingest (entity/edge extraction, embeddings, reranker) | cloud default = paid/SaaS (violates the $0 mandate); local Ollama/vLLM on Z640 = $0 | `provider.py:98-117`; `config.py:24-27` (defaults `gpt-4o-mini`, `text-embedding-3-small`); README claims local Ollama works (`README.md:227-238`) |
+| OpenAI-compatible LLM + embeddings endpoint | **yes** at init and on ingest (entity/edge extraction, embeddings, reranker) | cloud default = paid/SaaS (violates the $0 mandate); local Ollama/vLLM on the host = $0 | `provider.py:98-117`; `config.py:24-27` (defaults `gpt-4o-mini`, `text-embedding-3-small`); README claims local Ollama works (`README.md:227-238`) |
 | Python ≥3.11 | yes | — | `pyproject.toml:6`; Hermes venv is 3.11.15 (verified) |
 | Docker / Linux containers | yes, on whatever host runs FalkorDB | $0 | `docker-compose.yml:2-3` (`falkordb/falkordb:latest`, no `platform:` key, Linux-only image) |
 | OS keyring / cloud key / Postgres / Neo4j server | no | — | tree imports only `falkordb` + `graphiti_core` |
@@ -157,7 +157,7 @@ call site at all (schema extraction, cognitive map). This matches the code but n
 
 - Docker Desktop/WSL2 is needed to run the FalkorDB Linux image; there is no
   Windows-native FalkorDB service, and Docker is not installed here
-  (`docker: not found`). Z640/TrueNAS is the only plausible host on this network.
+  (`docker: not found`). TrueNAS is the only plausible host on this network.
 - The Python code itself is portable: no `os.fork`, `fcntl`, signals, `/proc`, or
   absolute Unix paths were found in `src/`.
 - Installing the provider as a Hermes plugin needs a directory symlink or a copy;
@@ -165,9 +165,9 @@ call site at all (schema extraction, cognitive map). This matches the code but n
   `install.ps1`/`--copy` path exists for the same reason,
   `docs/HERMES_INTEGRATION.md:42-48`).
 
-### 4.3 Z640/TrueNAS runbook (to be executed on the Z640 host, not here)
+### 4.3 TrueNAS runbook (to be executed on the the host host, not here)
 
-I could not touch the Z640 from this workstation, so this is the exact sequence to
+I could not touch the the host from this workstation, so this is the exact sequence to
 run there; treat it as unexecuted.
 
 1. **TrueNAS → Apps → Discover/Custom App → "Install via YAML"** (SCALE 24.10+
@@ -203,11 +203,11 @@ run there; treat it as unexecuted.
 4. **On the Hermes workstation** (Windows), in the gateway process environment
    (Hermes reads its `.env`; see `docs/user-guide.md:67-77`):
    ```text
-   SYNAPSE_FALKORDB_HOST=<z640-lan-ip>
+   SYNAPSE_FALKORDB_HOST=<host-lan-ip>
    SYNAPSE_FALKORDB_PORT=6379
    SYNAPSE_FALKORDB_PASSWORD=<if enabled>
    SYNAPSE_LLM_API_KEY=dummy-nonempty       # required by is_available even for Ollama
-   SYNAPSE_LLM_BASE_URL=http://<z640-lan-ip>:11434/v1
+   SYNAPSE_LLM_BASE_URL=http://<host-lan-ip>:11434/v1
    SYNAPSE_LLM_MODEL=qwen2.5:7b-instruct
    SYNAPSE_EMBEDDING_MODEL=nomic-embed-text
    SYNAPSE_HALF_LIFE_DAYS=7
@@ -222,10 +222,10 @@ run there; treat it as unexecuted.
    gateway (Hermes caches provider modules; see
    `docs/HERMES_INTEGRATION.md:68-71`).
 6. **Verify, in order**:
-   - from Windows: `Test-NetConnection <z640> -Port 6379` → TcpTestSucceeded;
-   - `python -c "import falkordb; print(falkordb.FalkorDB(host='<z640>', port=6379).connection.ping())"`
-     (or `redis-cli -h <z640> PING`) → `True`/`PONG`;
-   - `curl http://<z640>:11434/v1/models` returns the two models;
+   - from Windows: `Test-NetConnection <host> -Port 6379` → TcpTestSucceeded;
+   - `python -c "import falkordb; print(falkordb.FalkorDB(host='<host>', port=6379).connection.ping())"`
+     (or `redis-cli -h <host> PING`) → `True`/`PONG`;
+   - `curl http://<host>:11434/v1/models` returns the two models;
    - `hermes memory status` shows provider `synapse` available/active;
    - one Hermes turn with a durable fact, then a `synapse_query` for it;
    - graph inspection: run `python scripts/consolidate.py --group-id <profile>`
@@ -300,13 +300,13 @@ run there; treat it as unexecuted.
 
 ## 7. Risks (ranked)
 
-1. **Unverified live behaviour.** No Docker/Ollama/Z640 here, so nothing in this
+1. **Unverified live behaviour.** No Docker/Ollama/the host here, so nothing in this
    doc was executed against a running FalkorDB/Graphiti. Risk compounds with the
    unpinned Graphiti floor (E14): the `OpenAIGenericClient` import may not exist in
    the declared minimum version.
 2. **Mandate compliance, not just engineering.** Cloud defaults are paid/SaaS;
    Graphiti telemetry is default-on; the FalkorDB port is unauthenticated in the
-   shipped compose. All three need explicit mitigation on the Z640 runbook.
+   shipped compose. All three need explicit mitigation on the host runbook.
 3. **Overclaim vs code.** "Nine algorithms wired" and "brain mode loads profile
    facts from the graph" are not true in code (E9, §3). Any donor work must port
    *behaviour*, not the docs.

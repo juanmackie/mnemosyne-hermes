@@ -192,12 +192,12 @@ before switching a large production DB; that engine-native measurement was not p
 |---|---|---|
 | token-F1, BLEU, ROUGE, BERTScore, LLM-as-a-Judge | **BLOCKED** | Stage 3 needs a generative QA model + judge. No paid API key and no Ollama/local LLM on this machine; scores were not synthesized. Unblock: start an OpenAI-compatible local chat server and run `memory_evaluation.py` with `--judge-model <local model>` (or provide a judge API key), after stages 1–2. |
 | GPU footprint / latency | not measured | CPU-only is the honest, AMD-compatible engine scenario; the RTX 3060 was deliberately not used. Unblock: rerun the harness with `--device cuda`. |
-| Z640 Quadro P4000 / RTX 3090 numbers | not measured | not this machine. Unblock: run the same harness there. |
+| Quadro P4000 / RTX 3090 numbers | not measured | not this machine. Unblock: run the same harness there. |
 | official MemBase 3-stage end-to-end numbers | partially blocked | Stage 2 drops memory-unit ids, so gold-evidence recall cannot be computed from its output; stage 3 needs an LLM. Unblock: carry ids through stage 2 (or evaluate stage 3 only). |
 | engine-native fastembed/ONNX quality | not measured (support verified only) | The benchmark path is sentence-transformers as specified in the brief; fastembed 0.8.0's model registry contains both models but ONNX weights may differ. Unblock: run the same harness against `mnemosyne.core.embeddings` on this subset, or a `mnemosyne reindex --dry-run` + retrieval A/B on a real DB. |
 | nomic without task prefixes / bge without instruction | not measured | Each model was used per its own model card. Since the engine only applies prefixes when the env vars are set, an unconfigured rollout would not match these nomic numbers. Unblock: rerun with prefixes disabled for both. |
 | LongMemEval / RealMem / MobileMem, adversarial questions, multi-subset variance | not measured | Timebox: one dataset, 4 conversations, 120 queries. The subset happened to contain no adversarial (category 5) and only 2 single-hop questions, so those per-category rows are anecdotal: temporal n=64, multi-hop n=43, open-domain n=11, single-hop n=2. Unblock: extend to LongMemEval and a larger LoCoMo slice; quality CIs would tighten similarly. |
-| GPU/on-device Z640-class CPU numbers | not measured | see above. |
+| GPU/on-device server-class CPU numbers | not measured | see above. |
 
 ## 6. Caveats / risks in this measurement
 

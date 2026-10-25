@@ -1,5 +1,5 @@
 {
-  "corpus": "C:\\Users\\juanm\\Documents\\GitHub\\mnemosyne-hermes\\bench\\retrieval\\corpus.jsonl",
+  "corpus": "bench/retrieval/corpus.jsonl",
   "limit": 5,
   "reports": {
     "eval_dev": {

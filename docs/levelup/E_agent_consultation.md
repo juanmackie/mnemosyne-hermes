@@ -1,7 +1,7 @@
 # E. Live agent consultation — what the memory consumer says
 
 Date: 2026-10-18. Method: five **read-only** prompts sent to the production Hermes
-agent (v0.22.1, Z640) over the api_server OpenAI transport
+agent (v0.22.1, the host) over the api_server OpenAI transport
 (`/v1/chat/completions`, `X-Hermes-Session-Key: levelup-consult`), each in a fresh
 session. The agent was asked not to write memories or modify anything; it used its
 own read-only tools to answer. Raw replies:
@@ -16,9 +16,9 @@ against the system that actually uses it.
 |---|---|
 | Provider | `mnemosyne` (`config.yaml`: `provider: mnemosyne`, `memory_enabled: true`) |
 | Top-level provider tools | `mnemosyne_remember`, `mnemosyne_recall`, `mnemosyne_stats`, `mnemosyne_forget` (4, as designed) |
-| **Additional MCP surface** | **36** `mcp__mnemosyne__*` tools from `/opt/data/mnemosyne-venv/bin/mnemosyne mcp` (triple/graph/persona/canonical/hygiene/sync/…) |
+| **Additional MCP surface** | **36** `mcp__mnemosyne__*` tools from `$HERMES_HOME/mnemosyne-venv/bin/mnemosyne mcp` (triple/graph/persona/canonical/hygiene/sync/…) |
 | Engine | `mnemosyne 3.15.1`, regular `site-packages` install, **Python 3.13**; no `mnemosyne 2.4.0` collision, no shadowing (editable package is `mnemosyne_hermes 0.1.0` only) |
-| DB | `/opt/data/mnemosyne_data/mnemosyne.db`, 55,861,248 bytes, WAL active; backups in `/opt/data/backups/` |
+| DB | `$HERMES_HOME/mnemosyne_data/mnemosyne.db`, 55,861,248 bytes, WAL active; backups in `$HERMES_HOME/backups/` |
 | Embeddings | `BAAI/bge-small-en-v1.5`, dim 384, **fastembed 0.8.0**, `embeddings_off: false` |
 | Importance | 0.0–1.0 float observed; `importance_weight: 0.2` is the hybrid weight, not a scale |
 | Working memory | 2,925 total / 2,390 consolidated / **535 unconsolidated** |
@@ -66,12 +66,12 @@ first; flag + telemetry + kill switch) are now the plan.
 
 1. **Import hygiene is clean.** It corrected its own first answer: no editable
    `mnemosyne 2.4.0`; `import mnemosyne` resolves to
-   `/opt/data/mnemosyne-venv/lib/python3.13/site-packages/mnemosyne/__init__.py`
+   `$HERMES_HOME/mnemosyne-venv/lib/python3.13/site-packages/mnemosyne/__init__.py`
    at **3.15.1**. The editable package is `mnemosyne_hermes 0.1.0` (the bridge).
    The repo's name-collision warning is therefore **not** triggered on this host.
 2. **Double surface is live — and doubled in processes.** The 4 provider tools and
    the 36 MCP tools are both active. The agent observed **two MCP server
-   processes** (`/opt/data/mnemosyne-venv/bin/python …/bin/mnemosyne mcp`):
+   processes** (`$HERMES_HOME/mnemosyne-venv/bin/python …/bin/mnemosyne mcp`):
    PID 91185 (old gateway pgid 157) and PID 95708 (current gateway pgid 95634).
    Same DB. Identical recall queries returned **different result sets** on the two
    surfaces (only 2 of 5 overlapped). That is an orphan-process / scope-drift
