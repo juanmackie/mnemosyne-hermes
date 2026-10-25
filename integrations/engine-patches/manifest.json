@@ -1,52 +1,53 @@
 {
-  "distribution": "mnemosyne-memory",
-  "version": "3.15.1",
-  "files": {
-    "core/beam.py": {
-      "original_sha256": "00d79c0642a01b666473fd6e36749ed012802930ea8694eb24f3b17593a20aa0",
-      "patched_sha256": "3e3fe10fdff747cecadfb55a7752ede51b1abc43d2ec5894bba461cc796493d5",
-      "patch": "core-beam.py.patch",
-      "patch_sha256": "d37de37e79a75b19da32e94eb6e71baf7863bb8c8ed5eec4188eb4786327c618",
-      "previous_patched_sha256": [
-        "4ef04dc556cf017b3ba16d066db8c6bcd40bb82d975fc93b1ffa5bc98561973d",
-        "37486513142ed95bef4e1ea44166e936214d5b820cde323a477f10975387d933",
-        "a0f314151c3a79bb9712f2f871e35e501053e9ed92695b5bf7b301a779fa9eee",
-        "71c4d38b0c8147f3a016ff0c1a0a4b8f377700db6de4797a55328a64161bd5d0",
-        "791fc249154473de291f5a1f8fd4588e13267004e7f8e1ea6732779a0eeb058c"
-      ]
-    },
-    "core/entities.py": {
-      "original_sha256": "a2fe3855ec6280e46f676b80c3364ab8917f4d3e59cfa5af7530815b395eaf6b",
-      "patched_sha256": "c7fe68084c5ed876673f756e7a35186eebf63a16668cd324a1d38d50be0579aa",
-      "patch": "core-entities.py.patch",
-      "patch_sha256": "a7743457b95adc78746f7c972d70f055e7afccf06aef972addaaef6a8169e4ab"
-    },
-    "core/memory.py": {
-      "original_sha256": "c7088c7bbe84054ad66b97b6c281d15b1ee00dc9b08811a28852034a86dcf1fc",
-      "patched_sha256": "9d88ac16727e30f2522db84a310f1303e86fb72938a552f981cf5b0ce7aaf8d2",
-      "patch": "core-memory.py.patch",
-      "patch_sha256": "a32413a25a5fb0b679412676fc0dd72456a8e55eb34824138c45c6100c86a944",
-      "previous_patched_sha256": [
-        "e2a0e57068d82e7c1a7384200a30d2ea542ec76e1655d4a5ed5b45dbb51678a2"
-      ]
-    },
-    "mcp_tools.py": {
-      "original_sha256": "65b766bd2d4a09401c1c0b2ab492ee254cc97fccf493140c2455de12e64c1dda",
-      "patched_sha256": "8d540920eb006a9edbb2f7983572d68ee438a4257445159bf3eea664e738afcd",
-      "patch": "mcp_tools.py.patch",
-      "patch_sha256": "1b400601bd772a4167760e4323f3ba374a6979007ec4b2c3541eac6bb856870b"
-    },
-    "core/llm_conflict_detector.py": {
-      "original_sha256": "043cfde68ccaf4f23b41db5d04f0f31d5864c69bfb91ec19e1fb39ae73c5415c",
-      "patched_sha256": "59320e060ec8c4fc8fc14d1516831ed4771e7e587da5180232fcad66b1723fa3",
-      "patch": "core-llm-conflict-detector.py.patch",
-      "patch_sha256": "d321f10b744bdd984733fa075a09460a88a879d3f4049b00db54b1ebbb77f673"
-    },
-    "diagnose.py": {
-      "original_sha256": "7c74619bc6e55f66f728ae6ab357e246dbb95342d4de12c19b7390d89e06fd1c",
-      "patched_sha256": "b0be091c40a19643b8c92e68324ed03e5323ed4fb6404e312c2870289e090a0b",
-      "patch": "diagnose.py.patch",
-      "patch_sha256": "9f7313bc184a32bb7d626f376356ec180a96afa4ee7e3b32adbbde8a555852a8"
-    }
+ "distribution": "mnemosyne-memory",
+ "version": "3.15.1",
+ "files": {
+  "core/beam.py": {
+   "original_sha256": "00d79c0642a01b666473fd6e36749ed012802930ea8694eb24f3b17593a20aa0",
+   "patched_sha256": "b33f65cfd032d1e5c4db9288c08ca0379ed37275c0ee5adb4a2f7f4829348f25",
+   "patch": "core-beam.py.patch",
+   "patch_sha256": "649840fb4de4c55994996342c11fe54b0f17e06a95dc14ee3a772f3fd6e30956",
+   "previous_patched_sha256": [
+    "3e3fe10fdff747cecadfb55a7752ede51b1abc43d2ec5894bba461cc796493d5",
+    "4ef04dc556cf017b3ba16d066db8c6bcd40bb82d975fc93b1ffa5bc98561973d",
+    "37486513142ed95bef4e1ea44166e936214d5b820cde323a477f10975387d933",
+    "a0f314151c3a79bb9712f2f871e35e501053e9ed92695b5bf7b301a779fa9eee",
+    "71c4d38b0c8147f3a016ff0c1a0a4b8f377700db6de4797a55328a64161bd5d0",
+    "791fc249154473de291f5a1f8fd4588e13267004e7f8e1ea6732779a0eeb058c"
+   ]
+  },
+  "core/entities.py": {
+   "original_sha256": "a2fe3855ec6280e46f676b80c3364ab8917f4d3e59cfa5af7530815b395eaf6b",
+   "patched_sha256": "c7fe68084c5ed876673f756e7a35186eebf63a16668cd324a1d38d50be0579aa",
+   "patch": "core-entities.py.patch",
+   "patch_sha256": "a7743457b95adc78746f7c972d70f055e7afccf06aef972addaaef6a8169e4ab"
+  },
+  "core/memory.py": {
+   "original_sha256": "c7088c7bbe84054ad66b97b6c281d15b1ee00dc9b08811a28852034a86dcf1fc",
+   "patched_sha256": "9d88ac16727e30f2522db84a310f1303e86fb72938a552f981cf5b0ce7aaf8d2",
+   "patch": "core-memory.py.patch",
+   "patch_sha256": "a32413a25a5fb0b679412676fc0dd72456a8e55eb34824138c45c6100c86a944",
+   "previous_patched_sha256": [
+    "e2a0e57068d82e7c1a7384200a30d2ea542ec76e1655d4a5ed5b45dbb51678a2"
+   ]
+  },
+  "mcp_tools.py": {
+   "original_sha256": "65b766bd2d4a09401c1c0b2ab492ee254cc97fccf493140c2455de12e64c1dda",
+   "patched_sha256": "8d540920eb006a9edbb2f7983572d68ee438a4257445159bf3eea664e738afcd",
+   "patch": "mcp_tools.py.patch",
+   "patch_sha256": "1b400601bd772a4167760e4323f3ba374a6979007ec4b2c3541eac6bb856870b"
+  },
+  "core/llm_conflict_detector.py": {
+   "original_sha256": "043cfde68ccaf4f23b41db5d04f0f31d5864c69bfb91ec19e1fb39ae73c5415c",
+   "patched_sha256": "59320e060ec8c4fc8fc14d1516831ed4771e7e587da5180232fcad66b1723fa3",
+   "patch": "core-llm-conflict-detector.py.patch",
+   "patch_sha256": "d321f10b744bdd984733fa075a09460a88a879d3f4049b00db54b1ebbb77f673"
+  },
+  "diagnose.py": {
+   "original_sha256": "7c74619bc6e55f66f728ae6ab357e246dbb95342d4de12c19b7390d89e06fd1c",
+   "patched_sha256": "b0be091c40a19643b8c92e68324ed03e5323ed4fb6404e312c2870289e090a0b",
+   "patch": "diagnose.py.patch",
+   "patch_sha256": "9f7313bc184a32bb7d626f376356ec180a96afa4ee7e3b32adbbde8a555852a8"
   }
+ }
 }

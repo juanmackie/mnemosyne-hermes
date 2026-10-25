@@ -35,6 +35,31 @@ from datetime import datetime, timedelta
 _host_llm_registration_lock = threading.Lock()
 
 # LOCAL PATCH (P15): supported Hermes versions do not ship this helper.
+def _exc_location(exc: BaseException) -> str:
+    """file:line of the raising frame — safe to log, unlike the message."""
+    try:
+        tb = exc.__traceback__
+        while tb is not None and tb.tb_next is not None:
+            tb = tb.tb_next
+        if tb is None:
+            return "unknown"
+        return "%s:%s" % (os.path.basename(tb.tb_frame.f_code.co_filename), tb.tb_lineno)
+    except Exception:
+        return "unknown"
+
+
+def _sleep_with_local_only(beam, beam_lock) -> None:
+    """One consolidation with the host LLM switched off for its duration."""
+    from mnemosyne.core import local_llm as _local_llm
+    saved = getattr(_local_llm, "HOST_LLM_ENABLED", None)
+    try:
+        _local_llm.HOST_LLM_ENABLED = False
+        beam.sleep(db_lock=beam_lock)
+    finally:
+        if saved is not None:
+            _local_llm.HOST_LLM_ENABLED = saved
+
+
 def spawn_context_thread(target: Callable[[], Any], *, name: Optional[str] = None,
                          daemon: bool = True) -> threading.Thread:
     """Start a stdlib thread with the caller's contextvars copied.
@@ -3439,7 +3464,19 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         sleep_beam.agent_context = agent_context
                     # The audited engine releases db_lock only for model work;
                     # all SQL/statement lifetimes remain serialized with P19.
-                    sleep_beam.sleep(db_lock=beam_lock)
+                    try:
+                        sleep_beam.sleep(db_lock=beam_lock)
+                    except TypeError as model_exc:
+                        # A TypeError out of the summariser path used to abort the
+                        # whole batch, leaving every row unconsolidated until the
+                        # next maintenance pass. Retry once with the host backend
+                        # off: the engine then takes its local AAAK path and still
+                        # consolidates. Rows already marked are skipped on retry.
+                        logger.warning(
+                            "Mnemosyne %s worker TypeError at %s — retrying with the local fallback",
+                            trigger, _exc_location(model_exc),
+                        )
+                        _sleep_with_local_only(sleep_beam, beam_lock)
                 except BaseException as inner:
                     worker_error = inner
                     if isinstance(inner, Exception):

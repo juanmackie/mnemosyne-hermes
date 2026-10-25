@@ -1218,6 +1218,42 @@ def _call_and_signal(fn, results, done):
         done.set()
 
 
+def test_session_end_retries_locally_when_the_summariser_raises_typeerror(monkeypatch):
+    """A TypeError from the summariser must not leave the batch unconsolidated."""
+    provider = _provider()
+    calls = []
+
+    class _BoomOnceBeam(_Beam):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.sleep_calls = 0
+
+        def sleep(self, *, db_lock=None):
+            self.sleep_calls += 1
+            calls.append(self.sleep_calls)
+            if self.sleep_calls == 1:
+                raise TypeError("summarizer exploded")
+
+    beams = []
+
+    def make_worker(**kwargs):
+        beam = _BoomOnceBeam(**kwargs)
+        beams.append(beam)
+        return beam
+
+    monkeypatch.setattr(provider_mod, "_get_beam_class", lambda: make_worker)
+    local_llm = pytest.importorskip("mnemosyne.core.local_llm")
+    monkeypatch.setattr(local_llm, "HOST_LLM_ENABLED", True, raising=False)
+
+    provider._start_consolidation("session_end")
+    _join_consolidation(provider)
+
+    assert calls == [1, 2], calls
+    assert local_llm.HOST_LLM_ENABLED is True, "the host switch must be restored"
+    snapshot = provider._consolidation_status_snapshot()
+    assert snapshot["state"] == "succeeded", snapshot
+
+
 def _join_consolidation(provider):
     thread = getattr(provider, "_consolidation_thread", None)
     if thread is not None:
