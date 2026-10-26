@@ -104,3 +104,23 @@ MRR is deterministic for a fixed engine build and fixture set. Recall counters
 cannot leak between queries because each query runs on a fresh copy of the
 seeded database. Latency fields in the JSON records come from the recording
 machine and are not part of the ranking claim.
+
+## Embedding A/B on the retrieval corpus (Kaggle, 2026-10-26)
+
+`run_eval.py` now honours `MNEMOSYNE_EVAL_EMBEDDINGS=on` to exercise the dense
+path (default remains off, preserving the lexical baseline and existing tests).
+A GPU run on Kaggle encoded the 177-row corpus with `BAAI/bge-small-en-v1.5`
+and `BAAI/bge-base-en-v1.5` and replayed all three splits with embeddings on.
+
+| Model | dev MRR | heldout_a MRR | heldout_b MRR |
+| --- | --- | --- | --- |
+| bge-small-en-v1.5 (embeddings on) | 0.6605 | 0.7654 | 0.7315 |
+| bge-base-en-v1.5 (embeddings on) | 0.6605 | 0.7654 | 0.7315 |
+| lexical baseline (embeddings off) | 0.6605 | 0.7654 | 0.7315 |
+
+No measurable MRR difference on this synthetic corpus: the lexical admission
+floor dominates and dense recall adds nothing, consistent with the
+`MNEMOSYNE_EMBEDDINGS_OFF` guidance. This corpus cannot discriminate
+embedding models; the reindex decision stays on the BEIR scifact bake-off
+(bge-base winner) pending a staging A/B on a real memory corpus. Raw artifact:
+`bench/retrieval/retrieval_embeddings_ab_results.json`.

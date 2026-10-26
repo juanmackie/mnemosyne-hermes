@@ -245,7 +245,17 @@ def main() -> int:
     )
 
     with tempfile.TemporaryDirectory(prefix="mnemosyne-fixture-seed-") as scratch:
-        os.environ["MNEMOSYNE_EMBEDDINGS_OFF"] = "1"
+        if os.environ.get("MNEMOSYNE_EVAL_EMBEDDINGS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            os.environ.pop("MNEMOSYNE_EMBEDDINGS_OFF", None)
+            os.environ.pop("MNEMOSYNE_NO_EMBEDDINGS", None)
+            os.environ.pop("MNEMOSYNE_SKIP_EMBEDDINGS", None)
+        else:
+            os.environ["MNEMOSYNE_EMBEDDINGS_OFF"] = "1"
         os.environ["MNEMOSYNE_DATA_DIR"] = str(Path(scratch) / "data")
         os.environ["HERMES_HOME"] = scratch
 
