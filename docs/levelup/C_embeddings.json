@@ -76,7 +76,7 @@
     },
     "memory_unit": "one LoCoMo message per unit, serialized exactly as MemBase NaiveRAGLayer.add_message: 'Speaker {name} (role: {role}) says: {content}\\nTimestamp: {iso}'",
     "retrieval": "dense cosine top-10 over all units of the same trajectory (per-user index); gold = LoCoMo evidence dia_ids prefixed by the MemBase loader as 'U<sample>:<dia_id>'",
-    "metrics": "recall@1/5/10 = |gold ∩ top_k| / |gold|; MRR = 1/rank of first relevant; nDCG@10 with binary relevance",
+    "metrics": "recall@1/5/10 = |gold \u2229 top_k| / |gold|; MRR = 1/rank of first relevant; nDCG@10 with binary relevance",
     "tokenizer": "tiktoken cl100k_base",
     "device": "CPU-only (CUDA intentionally not used)",
     "backend": "sentence-transformers 5.2.3 + torch 2.14.1+cpu",
@@ -669,6 +669,70 @@
       },
       "rss_peak_mb": 1665.9,
       "status": "ok"
+    }
+  },
+  "kaggle_bakeoff_2026_10_26": {
+    "source": "Kaggle free TPU/GPU bake-off (BEIR scifact, 5183 docs, 300 queries)",
+    "results": [
+      {
+        "model": "BAAI/bge-base-en-v1.5",
+        "ndcg10": 0.7376,
+        "mrr10": 0.7004,
+        "recall100": 0.97,
+        "elapsed_s": 127.9
+      },
+      {
+        "model": "BAAI/bge-small-en-v1.5",
+        "ndcg10": 0.72,
+        "mrr10": 0.6845,
+        "recall100": 0.9533,
+        "elapsed_s": 45.0
+      },
+      {
+        "model": "nomic-ai/nomic-embed-text-v1.5",
+        "ndcg10": 0.7033,
+        "mrr10": 0.6668,
+        "recall100": 0.9283,
+        "elapsed_s": 213.0
+      },
+      {
+        "model": "intfloat/e5-small-v2",
+        "ndcg10": 0.6875,
+        "mrr10": 0.658,
+        "recall100": 0.9277,
+        "elapsed_s": 46.4
+      },
+      {
+        "model": "Snowflake/snowflake-arctic-embed-s",
+        "ndcg10": 0.6008,
+        "mrr10": 0.568,
+        "recall100": 0.876,
+        "elapsed_s": 47.8
+      }
+    ],
+    "winner": "BAAI/bge-base-en-v1.5",
+    "contradiction": "On BEIR scifact, nomic-v1.5 (0.7033 nDCG@10) is WORSE than the current bge-small default (0.72). This contradicts the prior LoCoMo recommendation (nomic +0.104 nDCG). Corpus/domain dependence is the likely cause: scientific claims vs conversational memory.",
+    "revised_recommendation": "HOLD the reindex decision. Do NOT reindex to nomic-v1.5 based on LoCoMo alone. Run an engine-native A/B (retrieval eval harness with MNEMOSYNE_EMBEDDING_MODEL=bge-base and bge-small, embeddings ON) on a staging copy of the real DB before any live reindex. bge-base is the candidate to test; it wins on BEIR scifact (+0.0176 nDCG over bge-small) at ~2.8x latency and 2x dim cost.",
+    "cost_note": "bge-base 109M/768d vs bge-small 33M/384d: ~2.8x slower, 2x dim, 2x index storage, ~3.6x reindex time (per prior estimate). Gain is modest (+1.76 nDCG points). Validate on real corpus before paying the cost.",
+    "engine_native_ab": {
+      "method": "bench/retrieval/run_eval.py with MNEMOSYNE_EVAL_EMBEDDINGS_OFF=0, MNEMOSYNE_EMBEDDING_MODEL set per run, on synthetic 177-row corpus, 81 queries across 3 splits",
+      "bge_small_on_mrr": [
+        0.6605,
+        0.7654,
+        0.7315
+      ],
+      "bge_base_on_mrr": [
+        0.6605,
+        0.7654,
+        0.7315
+      ],
+      "lexical_only_mrr": [
+        0.6605,
+        0.7654,
+        0.7315
+      ],
+      "conclusion": "On this synthetic corpus, embedding model choice (bge-small vs bge-base) and even embeddings ON vs OFF produce identical MRR. The lexical admission floor dominates; dense recall adds no measurable signal. Therefore the synthetic retrieval eval cannot discriminate embedding models. The BEIR bake-off is the only model-level signal, and it is domain-dependent (scientific claims, not conversational memory).",
+      "implication": "Decision must rest on a staging reindex + A/B on Juan's real memory corpus, not on either benchmark alone."
     }
   }
 }
