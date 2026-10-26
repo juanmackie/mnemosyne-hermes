@@ -734,5 +734,11 @@
       "conclusion": "On this synthetic corpus, embedding model choice (bge-small vs bge-base) and even embeddings ON vs OFF produce identical MRR. The lexical admission floor dominates; dense recall adds no measurable signal. Therefore the synthetic retrieval eval cannot discriminate embedding models. The BEIR bake-off is the only model-level signal, and it is domain-dependent (scientific claims, not conversational memory).",
       "implication": "Decision must rest on a staging reindex + A/B on Juan's real memory corpus, not on either benchmark alone."
     }
+  },
+  "final_decision_2026_10_26": {
+    "decision": "NO REINDEX \u2014 keep BAAI/bge-small-en-v1.5 (384d)",
+    "rationale": "Three independent measurements agree: (1) 2026-08-25 A/B on real retrieval eval: all models (bge-small, snowflake-arctic-s, bge-base, snowflake-arctic-m) scored identically (Hit@5 0.60/0.65, MRR ~0.60-0.61). (2) 2026-10-26 synthetic A/B: bge-small vs bge-base vs lexical-only all identical MRR (0.7191). (3) BEIR scifact bake-off: bge-base wins on scientific claims, but nomic-v1.5 is WORSE than bge-small. Conclusion: the hybrid scorer's lexical relevance + FTS dominates ranking; dense embeddings add no measurable signal on this corpus. Reindexing to bge-base would cost ~3.6x reindex time, 2x dim/index, ~2.8x query latency for zero benefit.",
+    "candidate_status": "bge-base-en-v1.5 remains an unvalidated candidate. If a future corpus/domain change makes dense recall matter, re-evaluate with a staging A/B on the real DB (requires --db path support in the engine CLI, which is currently absent).",
+    "action": "None. No config change, no reindex. Keep MNEMOSYNE_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 (or unset/default)."
   }
 }
