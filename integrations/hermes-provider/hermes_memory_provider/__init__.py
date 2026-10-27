@@ -34,7 +34,7 @@ from datetime import datetime, timedelta
 # LOCAL PATCH: P22 registration/cleanup ownership spans provider instances.
 _host_llm_registration_lock = threading.Lock()
 
-# LOCAL PATCH (P15): supported Hermes versions do not ship this helper.
+# LOCAL PATCH (P35): a summariser TypeError retries once on the local AAAK path.
 def _exc_location(exc: BaseException) -> str:
     """file:line of the raising frame — safe to log, unlike the message."""
     try:
@@ -60,6 +60,7 @@ def _sleep_with_local_only(beam, beam_lock) -> None:
             _local_llm.HOST_LLM_ENABLED = saved
 
 
+# LOCAL PATCH (P15): supported Hermes versions do not ship this helper.
 def spawn_context_thread(target: Callable[[], Any], *, name: Optional[str] = None,
                          daemon: bool = True) -> threading.Thread:
     """Start a stdlib thread with the caller's contextvars copied.
@@ -3467,6 +3468,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     try:
                         sleep_beam.sleep(db_lock=beam_lock)
                     except TypeError as model_exc:
+                        # LOCAL PATCH (P35): retry once without the host LLM.
                         # A TypeError out of the summariser path used to abort the
                         # whole batch, leaving every row unconsolidated until the
                         # next maintenance pass. Retry once with the host backend

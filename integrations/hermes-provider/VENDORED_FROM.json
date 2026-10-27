@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "w-sjNmyzTvey5OcJMKdAzJR2X6YxAcmZbANiw4oIqyg",
-      "bytes": 265644,
-      "lines": 5545
+      "sha256": "OxBiOLrqBcd2u2I_lwvYEyEGgWLevj1r-lKO8QjX-Rs",
+      "bytes": 267465,
+      "lines": 5584
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",

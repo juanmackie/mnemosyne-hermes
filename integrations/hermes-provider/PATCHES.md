@@ -389,6 +389,17 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Verification | `tests/test_provider_prefetch.py::test_prefetch_cache_observes_recall_score_floor_changes` fails with stale context before this patch and passes after it. |
 | Upstream | Preserve while the audited engine recall cutoff is local. |
 
+### P35 — consolidation survives a summariser TypeError
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (new `_exc_location`, new `_sleep_with_local_only`, the `sleep_beam.sleep()` call in the consolidation worker) |
+| Date | 2026-10-26 |
+| Reason | Session-end consolidation runs in a worker. Any `TypeError` raised by the summariser path escaped `beam.sleep()`, so the whole batch stayed unconsolidated until the next maintenance pass and the log showed only `TypeError: <redacted>`, hiding the raising frame. |
+| Behaviour | The worker catches the `TypeError`, logs the raising `file:line` through `_exc_location()`, and retries the same batch once with the host LLM switched off (`_sleep_with_local_only()`), so the engine takes its local AAAK path and still consolidates. Rows already marked are skipped on the retry, so a retry cannot double-consolidate. The engine-side companion change is `_safe_summarise()` in `integrations/engine-patches/core-beam.py.patch`. |
+| Verification | `tests/test_provider_consolidation.py` (retry path, log content, no double consolidation); injecting a `TypeError` into `summarize_memories` aborted `sleep()` before the patch and consolidates via AAAK after it. |
+| Upstream | Not sent; the engine-side half is carried as an audited engine patch, so keep both halves together. |
+
 ## Sync procedure (run on every upstream release)
 
 ```bash
