@@ -32,7 +32,11 @@ history keep it; do not restore it.
 | `tests/` | Contract and regression suites (see Verification) |
 | `scripts/` | Repo gates and helpers: `checks.sh` (registry), `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh`, `upstream-drift-check.py`, `update.sh` / `update.ps1` (check/apply updates) |
 | `bench/` | The recall-latency harness (`measure.sh`) and its record (`README.md`) |
+| `bench/mnemobench/` | Power planning records and MnemoBench-specific standalone evaluation tools |
+| `foundry/` | Declarative compute jobs and the policy-enforcing local/offload runner; never use private data on Kaggle |
+| `models/` | Shipped model artifacts and their compatibility/hash manifest; no artifact is enabled without verified provenance |
 | `docs/` | `AGENT_SETUP.md`, `HERMES_INTEGRATION.md`, `MCP_CLIENT_CONFIGS.md`; `docs/archive/` is historical |
+| `bench/sim/` | Deterministic synthetic MnemoSim event and probe generator; simulator labels are ground truth |
 | `examples/` | Runnable usage examples |
 | Root docs | `README.md`, `TROUBLESHOOTING.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `MCP_SERVER.md`, `AGENTS.md`, `LICENSE`, `NOTICE` |
 

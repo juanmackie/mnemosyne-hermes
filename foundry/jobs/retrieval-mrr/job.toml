@@ -1,0 +1,65 @@
+name = "retrieval-mrr"
+version = 1
+backend = "local"
+entry = ["python", "foundry/jobs/retrieval-mrr/run.py", "{output}"]
+time_budget_seconds = 7200
+seed = 20261101
+data_class = "synthetic"
+engine_distribution = "mnemosyne-memory"
+engine_version = "3.15.1"
+engine_patch_manifest = "integrations/engine-patches/manifest.json"
+
+[[inputs]]
+path = "foundry/jobs/retrieval-mrr/run.py"
+sha256 = "8d780428fe1f903962285d8016dad36d9c20c7f5999e8277feb8a08f502f3afb"
+
+[[inputs]]
+path = "bench/retrieval/run_eval.py"
+sha256 = "77f7134b2352cf550d1e5cedaaaf70e00ef0848aeb880f51cb4e5f3e6c585bb7"
+
+[[inputs]]
+path = "bench/retrieval/corpus.jsonl"
+sha256 = "19b36cce896ade29efb267d254924d6c7c975f19fe5bda7de6e1ecb4979a0481"
+
+[[inputs]]
+path = "bench/retrieval/eval_dev.jsonl"
+sha256 = "cd9f16dd94eb8e46b783dfe5faa1ff4df5771fa8a600ad85476b26514a7e2de0"
+
+[[inputs]]
+path = "bench/retrieval/eval_heldout_a.jsonl"
+sha256 = "8d3388647a008b45e041896234360a8a10ce3cdf7e3062516934099997654518"
+
+[[inputs]]
+path = "bench/retrieval/eval_heldout_b.jsonl"
+sha256 = "ac6d52d2e83463df6d203bb6391d69d2ae22b44921b8a4943b3bf751af940831"
+
+[[inputs]]
+path = "integrations/engine-patches/manifest.json"
+sha256 = "8c943cbca964a752fdacbb3fbe59af4175ac55df0d966d51de5d241a364651fb"
+
+[[inputs]]
+path = "integrations/engine-patches/core-beam.py.patch"
+sha256 = "649840fb4de4c55994996342c11fe54b0f17e06a95dc14ee3a772f3fd6e30956"
+
+[[inputs]]
+path = "integrations/engine-patches/core-entities.py.patch"
+sha256 = "a7743457b95adc78746f7c972d70f055e7afccf06aef972addaaef6a8169e4ab"
+
+[[inputs]]
+path = "integrations/engine-patches/core-llm-conflict-detector.py.patch"
+sha256 = "d321f10b744bdd984733fa075a09460a88a879d3f4049b00db54b1ebbb77f673"
+
+[[inputs]]
+path = "integrations/engine-patches/core-memory.py.patch"
+sha256 = "a32413a25a5fb0b679412676fc0dd72456a8e55eb34824138c45c6100c86a944"
+
+[[inputs]]
+path = "integrations/engine-patches/diagnose.py.patch"
+sha256 = "9f7313bc184a32bb7d626f376356ec180a96afa4ee7e3b32adbbde8a555852a8"
+
+[[inputs]]
+path = "integrations/engine-patches/mcp_tools.py.patch"
+sha256 = "1b400601bd772a4167760e4323f3ba374a6979007ec4b2c3541eac6bb856870b"
+
+[[outputs]]
+path = "retrieval.json"

@@ -26,6 +26,7 @@ run "${PYTHON_BIN:-python3}" tests/test_engine_recall_perf.py
 run "${PYTHON_BIN:-python3}" tests/test_engine_recall_precision.py
 run "${PYTHON_BIN:-python3}" tests/test_engine_recall_scope.py
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_precision_recall_eval.py -q
+run "${PYTHON_BIN:-python3}" -m pytest tests/test_mnemobench_phase0.py -q
 run "${PYTHON_BIN:-python3}" tests/test_memory_writer_eval.py
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_consolidation.py -q
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_prefetch.py tests/test_provider_lifecycle.py tests/test_provider_eval.py tests/test_install_powershell.py -q

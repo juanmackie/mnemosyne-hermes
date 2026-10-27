@@ -1,0 +1,21 @@
+{
+  "assumptions": {
+    "alpha": 0.05,
+    "metric_range": [
+      -1,
+      1
+    ],
+    "multiplicity": "Holm correction required across each registered sweep; sample sizes shown use unadjusted alpha and are lower bounds when corrected",
+    "paired_difference_sd_upper_bound": 1.0,
+    "power": 0.8
+  },
+  "current_fixture_mde": 0.539165,
+  "current_fixture_queries": 27,
+  "format": "mnemosyne-mnemobench-power/v1",
+  "method": "paired normal-approximation screening; confirm with paired bootstrap",
+  "minimum_effect_sample_sizes": {
+    "0.025": 12559,
+    "0.05": 3140,
+    "0.1": 785
+  }
+}

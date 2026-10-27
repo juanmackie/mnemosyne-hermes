@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mnemosyne:schemas:mnemosim-event-v0",
+  "title": "MnemoSim event v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "life_id", "domain", "subject", "attribute", "value", "valid_from", "valid_to", "transaction_at", "provenance", "disposition", "injection"],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "life_id": {"type": "string", "minLength": 1},
+    "domain": {"enum": ["personal", "coding", "homelab"]},
+    "subject": {"type": "string", "minLength": 1},
+    "attribute": {"type": "string", "minLength": 1},
+    "value": {"type": "string"},
+    "valid_from": {"type": ["string", "null"], "format": "date-time"},
+    "valid_to": {"type": ["string", "null"], "format": "date-time"},
+    "transaction_at": {"type": "string", "format": "date-time"},
+    "provenance": {"enum": ["user_stated", "tool_observed", "inferred", "hypothetical", "quoted_third_party"]},
+    "disposition": {"enum": ["store", "never_store"]},
+    "injection": {"type": "boolean"}
+  }
+}
