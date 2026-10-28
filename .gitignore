@@ -77,3 +77,15 @@ docs/VALIDATION_RESULTS.md
 .claude/hillclimb/*/state.json
 .claude/hillclimb/*/trajectory/
 .claude/hillclimb/*
+
+# Dream-RSI scratch evaluator entry (not part of the package)
+src/q5_evaluator.py
+scratch_join.py
+scratch_probe.py
+scratch_probe2.py
+scratch_probe3.py
+scratch_probe4.py
+scratch_probe5.py
+scratch_probe6.py
+scratch_probe7.py
+scratch_probe8.py

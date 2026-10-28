@@ -147,6 +147,35 @@ class PythonMemoryStorage:
     # current, so opening stays O(1) instead of reindexing the corpus.
     FTS_SCHEMA_VERSION = 2
 
+    # Rowid-aligned mirror of the BM25 tie-break columns. The recall ranking
+    # joins this narrow table (~48 bytes/row) instead of `memories` (whose rows
+    # carry the full content text), so the ORDER BY sorter and its rowid probes
+    # touch far fewer cache lines than full memory rows. Kept in lockstep with
+    # every write via the AFTER triggers below, inside the same transaction;
+    # the id/created_at/importance columns are exactly recall's ORDER BY key.
+    # `AFTER UPDATE OF importance, created_at, id` (not plain AFTER UPDATE) so
+    # the buffered access-count flush UPDATEs access_count/last_accessed
+    # without touching the mirror.
+    RECALL_KEYS_SCHEMA = """
+        CREATE TABLE IF NOT EXISTS recall_keys (
+            rowid INTEGER PRIMARY KEY,
+            importance INTEGER,
+            created_at REAL,
+            id TEXT
+        )
+    """
+    RECALL_KEYS_TRIGGERS = (
+        "CREATE TRIGGER IF NOT EXISTS recall_keys_ai AFTER INSERT ON memories BEGIN "
+        "INSERT INTO recall_keys (rowid, importance, created_at, id) "
+        "VALUES (new.rowid, new.importance, new.created_at, new.id); END",
+        "CREATE TRIGGER IF NOT EXISTS recall_keys_ad AFTER DELETE ON memories BEGIN "
+        "DELETE FROM recall_keys WHERE rowid = old.rowid; END",
+        "CREATE TRIGGER IF NOT EXISTS recall_keys_au "
+        "AFTER UPDATE OF importance, created_at, id ON memories "
+        "BEGIN UPDATE recall_keys SET importance = new.importance, "
+        "created_at = new.created_at, id = new.id WHERE rowid = old.rowid; END",
+    )
+
     # Tuples, not lists: shared class-level constants must not be mutable.
     # idx_memories_namespace(namespace) used to sit here. It is a strict PREFIX
     # of idx_memories_ns_created(namespace, created_at) below, so it stored a
@@ -1000,6 +1029,21 @@ class PythonMemoryStorage:
                     init_conn.execute("VACUUM")
                     init_conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
                     init_conn.commit()
+                # recall_keys backfill. The mirror is created after the
+                # (possibly compacting) migration so its rowids are final —
+                # VACUUM may renumber hidden rowids. Count-then-fill keeps
+                # re-opens O(1); INSERT OR IGNORE lets concurrent cold opens
+                # converge on the same mirror.
+                init_conn.execute(self.RECALL_KEYS_SCHEMA)
+                for ddl in self.RECALL_KEYS_TRIGGERS:
+                    init_conn.execute(ddl)
+                if init_conn.execute("SELECT COUNT(*) FROM recall_keys").fetchone()[0] == 0:
+                    init_conn.execute(
+                        "INSERT OR IGNORE INTO recall_keys "
+                        "(rowid, importance, created_at, id) "
+                        "SELECT rowid, importance, created_at, id FROM memories"
+                    )
+                init_conn.commit()
             except Exception:
                 init_conn.rollback()
                 raise
@@ -1121,23 +1165,45 @@ class PythonMemoryStorage:
         `LIMIT` could drop a different row between two identical queries. The
         tie-break is the store's own importance/recency order.
         """
+        if namespace or min_importance is not None:
+            sql = (
+                "SELECT m.* FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid "
+                "WHERE memories_fts MATCH ?"
+            )
+            params: list[Any] = [match]
+            if namespace:
+                sql += " AND m.namespace = ?"
+                params.append(namespace)
+            if min_importance is not None:
+                sql += " AND m.importance >= ?"
+                params.append(min_importance)
+            # `m.id` last: BM25 ties are common (identical text, identical scores),
+            # and without a unique final key `LIMIT` can drop a different row
+            # between two identical queries.
+            sql += (
+                " ORDER BY bm25(memories_fts), m.importance DESC, "
+                "m.created_at DESC, m.id LIMIT ?"
+            )
+            params.append(max_results)
+            return conn.execute(sql, params).fetchall()
+        # Unfiltered (the wide, common case): rank against the narrow
+        # recall_keys mirror instead of probing full memory rows, so sorter
+        # records shrink to (rowid, rank, importance, created_at, id) and the
+        # content bytes never ride through the 3000-row sort. The inner rank
+        # keeps the full BM25 tie-break plus the LIMIT; the outer join fetches
+        # m.* for the selected rows only and re-applies the same key, so rows
+        # and order are identical to the query above — just smaller records
+        # and fewer cache lines per probe.
         sql = (
-            "SELECT m.* FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid "
-            "WHERE memories_fts MATCH ?"
+            "SELECT m.* FROM ("
+            "SELECT memories_fts.rowid AS rid, bm25(memories_fts) AS r "
+            "FROM memories_fts JOIN recall_keys k ON k.rowid = memories_fts.rowid "
+            "WHERE memories_fts MATCH ? "
+            "ORDER BY r, k.importance DESC, k.created_at DESC, k.id LIMIT ?) t "
+            "JOIN memories m ON m.rowid = t.rid "
+            "ORDER BY t.r, m.importance DESC, m.created_at DESC, m.id"
         )
-        params: list[Any] = [match]
-        if namespace:
-            sql += " AND m.namespace = ?"
-            params.append(namespace)
-        if min_importance is not None:
-            sql += " AND m.importance >= ?"
-            params.append(min_importance)
-        # `m.id` last: BM25 ties are common (identical text, identical scores),
-        # and without a unique final key `LIMIT` can drop a different row between
-        # two identical queries.
-        sql += " ORDER BY bm25(memories_fts), m.importance DESC, m.created_at DESC, m.id LIMIT ?"
-        params.append(max_results)
-        return conn.execute(sql, params).fetchall()
+        return conn.execute(sql, (match, max_results)).fetchall()
 
     def _recall_substring(self, conn, query, namespace, max_results, min_importance):
         """Literal substring scan, for queries FTS5 cannot tokenize.
