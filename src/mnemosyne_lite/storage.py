@@ -20,9 +20,10 @@ import sqlite3
 import threading
 import time
 from typing import Any
-from .records import Query, ThreadState
-from .plan import count_sql, fold_accesses, plan_consolidation, predicate
+
 from . import schema as _schema
+from .plan import count_sql, fold_accesses, predicate
+from .records import AccessBatch, Query, ThreadState
 from .schema import actions_from
 
 logger = logging.getLogger(__name__)
@@ -385,14 +386,9 @@ class PythonMemoryStorage:
         SQLite connections are not shareable across threads, so cache one per
         thread. Use close() to release it.
         """
-        # try/except beats getattr-with-default on the every-recall path
-        # (CPython 3.11+: zero cost until the attribute is actually missing).
-        try:
-            conn = self._state().conn
-            if conn is not None:
-                return conn
-        except AttributeError:
-            pass
+        conn = self._state().conn
+        if conn is not None:
+            return conn
         conn = self._new_conn()
         self._state().conn = conn
         # A reconnect resets both numbers a version is built from, so an entry
@@ -689,12 +685,12 @@ class PythonMemoryStorage:
         only ever pays it once per several thousand calls.
         """
         try:
-            # The counter lives on the thread-local (one per connection), NOT on
-            # self: reading `self._checkpoint_counter` cross-thread never matched
+            # The counter lives in the thread-local state (one per connection),
+            # NOT on self: reading `self._checkpoint_counter` cross-thread never matched
             # the value just written, so with wal_autocheckpoint=0 nothing was
             # ever checkpointed until close() and the WAL grew unbounded
             # (281MB WAL next to a 36KB database, measured).
-            counter = getattr(self._local, "_checkpoint_counter", 0) + 1
+            counter = self._state().checkpoint_counter + 1
             self._state().checkpoint_counter = counter
             if counter % self.WAL_CHECKPOINT_INTERVAL != 0:
                 return
@@ -728,8 +724,7 @@ class PythonMemoryStorage:
         is ~0.1us on the memo-hit path where a per-id Counter.update cost
         ~0.9us — and warm recall p50 lives entirely on that path.
         """
-        # pending is never set to None (flush swaps in a fresh list), so
-        # AttributeError is the only miss case — try/except is the cheap path.
+        # The state record owns the lazily allocated pending list.
         state = self._state()
         if state.pending is None:
             state.pending = []
@@ -749,7 +744,7 @@ class PythonMemoryStorage:
         self._state().pending_hits = 0
         # Expand batches to per-id totals only here — flushes are rare
         # (hundreds of recalls apart), so the per-id work is amortized.
-        counts = fold_accesses(batch)
+        counts = fold_accesses(AccessBatch(tuple(batch)))
         now = time.time()
         try:
             conn = self._conn()
@@ -1087,16 +1082,14 @@ class PythonMemoryStorage:
             "success": True,
         }
 
-    def _search_version(self, conn):
+    def _search_version(self, conn, ignored_changes):
         # data_version detects other connections; total_changes detects this
         # one, minus changes already attributed to access-count flushes (see
         # _flush_accesses): UPDATEs of access_count/last_accessed change no
         # searchable text, so they must not invalidate the recall memo.
-        # Callers all hold a connection from _conn() on this thread, which
-        # seeds ignored_changes — direct read, no getattr.
         return (
             conn.execute("PRAGMA data_version").fetchone()[0],
-            conn.total_changes - self._state().ignored_changes,
+            conn.total_changes - ignored_changes,
         )
 
     def _recall_fulltext(self, conn, match, namespace, max_results, min_importance):
@@ -1116,8 +1109,7 @@ class PythonMemoryStorage:
             # and without a unique final key `LIMIT` can drop a different row
             # between two identical queries.
             sql += (
-                " ORDER BY bm25(memories_fts), m.importance DESC, "
-                "m.created_at DESC, m.id LIMIT ?"
+                " ORDER BY bm25(memories_fts), m.importance DESC, m.created_at DESC, m.id LIMIT ?"
             )
             return conn.execute(sql, (*params, max_results)).fetchall()
         # Unfiltered (the wide, common case): rank against the narrow
@@ -1198,16 +1190,22 @@ class PythonMemoryStorage:
             max_results = 100
 
         conn = self._conn()
-        memo_version = self._search_version(conn)
+        state = self._local.state
+        memo_version = self._search_version(conn, state.ignored_changes)
         key = (query, namespace, max_results, min_importance)
-        entry = self._recall_cache.get(key)
+        cache = state.recall_cache
+        if cache is None:
+            cache = state.recall_cache = {}
+        entry = cache.get(key)
         if entry is not None and entry[0] == memo_version:
             cached, ids = entry[1], entry[2]
             if cached:
-                pending = self._pending()
+                pending = state.pending
+                if pending is None:
+                    pending = state.pending = []
                 pending.append(ids)
-                hits = self._state().pending_hits + len(ids)
-                self._state().pending_hits = hits
+                hits = state.pending_hits + len(ids)
+                state.pending_hits = hits
                 if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
                     self._flush_accesses()
             # r.copy() == dict(r) (same shallow copy) but ~20% cheaper —
@@ -1228,7 +1226,6 @@ class PythonMemoryStorage:
 
         results = [self._row_to_dict(row) for row in rows]
         ids = tuple(r["id"] for r in results)
-        cache = self._recall_cache
         if len(cache) >= self.RECALL_CACHE_MAX:
             with contextlib.suppress(StopIteration, KeyError):
                 cache.pop(next(iter(cache)))
@@ -1238,10 +1235,12 @@ class PythonMemoryStorage:
         # commit was 60% of a median recall (p50 0.310 -> 0.119ms) and it was
         # the write that let a WAL checkpoint stall a read. See _flush_accesses().
         if results:
-            pending = self._pending()
+            pending = state.pending
+            if pending is None:
+                pending = state.pending = []
             pending.append(ids)
-            hits = self._state().pending_hits + len(results)
-            self._state().pending_hits = hits
+            hits = state.pending_hits + len(results)
+            state.pending_hits = hits
             if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
                 self._flush_accesses()
 
@@ -1297,96 +1296,10 @@ class PythonMemoryStorage:
         return [self._row_to_dict(row) for row in rows]
 
     def consolidate(self, namespace: str | None = None, auto_apply: bool = False) -> dict[str, Any]:
-        """
-        Consolidate similar memories (dedup by content prefix).
+        """Consolidate exact duplicates within an optional namespace."""
+        from .consolidation import consolidate
 
-        Args:
-            namespace: Optional namespace filter
-            auto_apply: Actually delete duplicates if True
-
-        Returns:
-            Consolidation results
-
-        Two different rules, deliberately kept apart:
-
-        * ``duplicate_groups`` is a HEURISTIC proposal — rows sharing a
-          namespace and the first 50 lowercased characters. Useful to review,
-          never a delete criterion.
-        * ``exact_duplicate_groups`` is the DELETE rule — rows whose FULL
-          content is byte-identical within one namespace. The prefix rule used
-          to drive deletion, which removed real memories that merely started
-          alike ("Q3 revenue was 12%" vs "Q3 revenue was 13%").
-        """
-        conn = self._conn()
-        try:
-            where = " WHERE namespace = ?" if namespace else ""
-            params = (namespace,) if namespace else ()
-            total = conn.execute("SELECT COUNT(*) FROM memories" + where, params).fetchone()[0]
-            # SQLite lower() folds ASCII without ICU; non-ASCII proposal-prefix
-            # grouping can differ from Python str.lower(). This is only a
-            # review hint count: exact duplicate detection/deletion below uses
-            # the full SQLite text value and remains byte-exact.
-            proposal_groups = conn.execute(
-                "SELECT COUNT(*) FROM (SELECT namespace, substr(lower(content), 1, 50) "
-                "FROM memories" + where + " GROUP BY namespace, substr(lower(content), 1, 50) "
-                "HAVING COUNT(*) > 1)", params
-            ).fetchone()[0]
-            exact_groups = conn.execute(
-                "SELECT COUNT(*) FROM (SELECT namespace, content FROM memories" + where +
-                " GROUP BY namespace, content HAVING COUNT(*) > 1)", params
-            ).fetchone()[0]
-            duplicates = conn.execute(
-                "SELECT id, namespace, substr(content, 1, 80), importance, created_at FROM memories WHERE "
-                "(namespace, content) IN (SELECT namespace, content FROM memories" + where +
-                " GROUP BY namespace, content HAVING COUNT(*) > 1)", params
-            ).fetchall()
-        except sqlite3.Error as e:
-            # A failed read used to report "0 duplicate groups", i.e. a clean
-            # bill of health for a store it could not read.
-            logger.exception("Consolidate read failed")
-            raise StorageError(f"consolidate read failed on {self.db_path}: {e}") from e
-
-        removed = 0
-
-        if auto_apply and duplicates:
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                ranked_losers = [
-                    row[0] for row in conn.execute(
-                        "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "
-                        "(PARTITION BY namespace, content ORDER BY importance DESC, "
-                        "created_at ASC, id ASC) AS rank FROM memories WHERE "
-                        "(namespace, content) IN (SELECT namespace, content FROM memories" +
-                        where + " GROUP BY namespace, content HAVING COUNT(*) > 1)) "
-                        "WHERE rank > 1", params
-                    )
-                ]
-                delete_ids = plan_consolidation(ranked_losers).delete_ids
-                conn.executemany("DELETE FROM memories WHERE id = ?", ((item,) for item in delete_ids))
-                removed = len(delete_ids)
-                conn.commit()
-            except sqlite3.Error as e:
-                conn.rollback()
-                logger.exception("Consolidate delete failed")
-                raise StorageError(f"consolidate delete failed on {self.db_path}: {e}") from e
-            self._flush_accesses()
-            self._maybe_checkpoint()
-
-        return {
-            "total": total,
-            "duplicate_groups": proposal_groups,
-            "exact_duplicate_groups": exact_groups,
-            # Bounded preview so a caller can show what --auto-apply would
-            # remove before confirming.
-            "candidates": []
-            if auto_apply
-            else [
-                {"id": row[0], "namespace": row[1], "preview": row[2]}
-                for row in duplicates
-            ][:50],
-            "removed": removed,
-            "auto_applied": auto_apply,
-        }
+        return consolidate(self, namespace, auto_apply)
 
     def count(self, namespace: str | None = None) -> int:
         """

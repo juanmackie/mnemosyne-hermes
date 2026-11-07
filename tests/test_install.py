@@ -392,8 +392,10 @@ def test_concurrent_installs_serialize_the_shared_hermes_home(installer):
     hermes(venv / "bin/hermes")
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _n: run("--copy"), range(2)))
-    assert all(result.returncode == 0 or "another Mnemosyne installer is running" in result.stderr
-               for result in results)
+    assert all(
+        result.returncode == 0 or "another Mnemosyne installer is running" in result.stderr
+        for result in results
+    )
     installed = home / "plugins" / "mnemosyne"
     assert (installed / "__init__.py").is_file()
     assert (installed / "PROVENANCE.json").is_file()

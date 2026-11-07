@@ -42,9 +42,13 @@ and increments a counter; the summary must report `network_attempts: []` and
 
 ```python
 _real_connect = socket.socket.connect
+
+
 def _blocked(self, address, *a, **k):
     ATTEMPTS.append(str(address))
     raise OSError(f"offline-smoke: outbound network blocked -> {address}")
+
+
 socket.socket.connect = _blocked
 socket.create_connection = _blocked_create
 ```

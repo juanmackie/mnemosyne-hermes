@@ -17,8 +17,8 @@ PROVIDER_ROOT = ROOT / "integrations" / "hermes-provider"
 if str(PROVIDER_ROOT) not in sys.path:
     sys.path.insert(0, str(PROVIDER_ROOT))
 
-from hermes_memory_provider import cli  # noqa: E402
 import hermes_memory_provider as provider_mod  # noqa: E402
+from hermes_memory_provider import cli  # noqa: E402
 
 
 def _make_store(path, *, audit=True):

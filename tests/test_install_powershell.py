@@ -387,6 +387,8 @@ def test_windows_installer_serializes_and_stages_replacement():
     assert source.index("Test-InstallerCopy $stagedPlugin") < source.index(
         "Move-Item -LiteralPath $Plugin -Destination $previousPlugin"
     )
-    assert source.index("if (-not (Test-HermesLoaderSelection))") < source.index("$deployCommitted = $true")
+    assert source.index("if (-not (Test-HermesLoaderSelection))") < source.index(
+        "$deployCommitted = $true"
+    )
     assert "Invoke-Hermes @('config', 'set', 'memory.provider', $restoreProvider)" in source
     assert "could not restore previous provider; recovery copy remains" in source

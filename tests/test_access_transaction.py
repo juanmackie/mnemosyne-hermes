@@ -1,4 +1,5 @@
 """A failed best-effort access batch must not leak into a later write."""
+
 import sys
 import tempfile
 import unittest
@@ -15,12 +16,16 @@ class AccessTransactionTests(unittest.TestCase):
             first = store.remember("first", "ns", 5)["id"]
             second = store.remember("second", "ns", 5)["id"]
             conn = store._conn()
-            conn.execute("CREATE TEMP TRIGGER reject_access BEFORE UPDATE OF access_count ON memories "
-                         "WHEN OLD.id = '%s' BEGIN SELECT RAISE(ABORT, 'injected'); END" % second)
+            conn.execute(
+                "CREATE TEMP TRIGGER reject_access BEFORE UPDATE OF access_count ON memories "
+                f"WHEN OLD.id = '{second}' BEGIN SELECT RAISE(ABORT, 'injected'); END"
+            )
             store._pending().append((first, second))
             store._flush_accesses()
             store.remember("later write", "ns", 5)
-            count = conn.execute("SELECT access_count FROM memories WHERE id = ?", (first,)).fetchone()[0]
+            count = conn.execute(
+                "SELECT access_count FROM memories WHERE id = ?", (first,)
+            ).fetchone()[0]
             self.assertEqual(count, 0)
             store.close()
 

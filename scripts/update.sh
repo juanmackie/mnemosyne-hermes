@@ -75,7 +75,7 @@ git rev-parse --git-dir >/dev/null 2>&1 || {
 # One run at a time: a scheduler can fire again before a slow install finishes.
 LOCK="$(git rev-parse --git-dir)/mnemosyne-update.lock"
 LOCK_ACQUIRED=false
-for attempt in 1 2 3; do
+for _ in 1 2 3; do
   if mkdir "$LOCK" 2>/dev/null; then
     # A contender may have removed an empty stale directory between mkdir and
     # this write. Verify ownership before any fetch or checkout mutation.

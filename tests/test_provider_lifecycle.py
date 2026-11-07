@@ -59,11 +59,14 @@ def _engine_transaction_context():
     core.__path__ = []
     beam = types.ModuleType("mnemosyne.core.beam")
     beam._deferred_commits = _deferred_commits
-    with patch.dict(sys.modules, {
-        "mnemosyne": mnemosyne,
-        "mnemosyne.core": core,
-        "mnemosyne.core.beam": beam,
-    }):
+    with patch.dict(
+        sys.modules,
+        {
+            "mnemosyne": mnemosyne,
+            "mnemosyne.core": core,
+            "mnemosyne.core.beam": beam,
+        },
+    ):
         yield
 
 
@@ -477,7 +480,8 @@ def test_native_previous_content_without_session_mapping_does_not_delete_by_text
 def test_turn_author_metadata_tracks_each_speaker_without_startup_identity():
     provider = _provider()
     provider.on_turn_start(1, "first", author_id="user-a", author_name="Ada", author_is_bot=False)
-    _sync_turn(provider,
+    _sync_turn(
+        provider,
         "question one",
         "answer one",
         session_id="s1",
@@ -489,7 +493,9 @@ def test_turn_author_metadata_tracks_each_speaker_without_startup_identity():
     assert tool["metadata"]["turn_author"] == first
 
     provider.on_turn_start(2, "second", author_id="user-b", author_name="Lin", author_is_bot=False)
-    _sync_turn(provider, "question two", "answer two", session_id="s2", turn_author={"id": "user-c"})
+    _sync_turn(
+        provider, "question two", "answer two", session_id="s2", turn_author={"id": "user-c"}
+    )
     user_rows = [row for row in provider._beam.rows.values() if row["source"] == "conversation"]
     assert user_rows[-1]["metadata"]["turn_author"] == {"id": "user-c"}
     assert "startup-user-must-not-be-current-speaker" not in json.dumps(provider._beam.rows)

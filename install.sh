@@ -137,7 +137,7 @@ release_installer_lock() {
 acquire_installer_lock() {
   INSTALL_LOCK="$HERMES_HOME/.mnemosyne-installer.lock"
   mkdir -p "$HERMES_HOME"
-  for attempt in 1 2 3; do
+  for _ in 1 2 3; do
     if mkdir "$INSTALL_LOCK" 2>/dev/null; then
       printf '%s\n' "$$" >"$INSTALL_LOCK/pid" 2>/dev/null || true
       if [[ "$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then

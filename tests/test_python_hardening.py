@@ -12,10 +12,10 @@ Covers the bugs that were fixed, each of which used to silently misbehave:
 
 import hashlib
 import os
+import random
 import sqlite3
 import sys
 import tempfile
-import random
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
@@ -24,14 +24,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from mnemosyne_lite.db_path import resolve_db_path
 from mnemosyne_lite.plan import fallback_terms, fold_accesses, plan_consolidation
+from mnemosyne_lite.records import AccessBatch
 from mnemosyne_lite.schema import (
-    MIGRATIONS,
     MIGRATABLE_SCHEMA_VERSIONS,
+    MIGRATIONS,
     SCHEMA_VERSION,
     actions_from,
 )
-from mnemosyne_lite.tools import call_tool
 from mnemosyne_lite.storage import PythonMemoryStorage, StorageSchemaError
+from mnemosyne_lite.tools import call_tool
 
 # The lite store's exact column list. Anything else is a foreign database
 # (notably the mnemosyne-memory
@@ -50,14 +51,21 @@ def _sha(path):
 
 def test_access_folding_is_a_pure_batch_aggregation():
     batches = [("a", "b"), ("a",), ("b", "c", "a")]
-    assert fold_accesses(batches) == {"a": 3, "b": 2, "c": 1}
+    assert fold_accesses(AccessBatch(tuple(batches))) == {"a": 3, "b": 2, "c": 1}
     assert batches == [("a", "b"), ("a",), ("b", "c", "a")]
 
 
 def test_consolidation_plan_deduplicates_delete_ids_without_mutation():
-    ids = ["b", "c", "b"]
-    assert plan_consolidation(ids).delete_ids == ("b", "c")
-    assert ids == ["b", "c", "b"]
+    members = [
+        (1, "lower", 3, 10.0),
+        (1, "best", 8, 20.0),
+        (1, "early", 8, 10.0),
+        (2, "only", 5, 5.0),
+    ]
+    plan = plan_consolidation(members)
+    assert plan.keep_ids == ("early", "only")
+    assert plan.delete_ids == ("lower", "best")
+    assert members[0] == (1, "lower", 3, 10.0)
 
 
 def test_sync_turn_skip_policy_and_capture_are_stable():
@@ -94,7 +102,9 @@ def test_recall_count_predicates_stay_in_parity_for_seeded_queries():
             ns = rng.choice([None, "ns", "other"])
             importance = rng.choice([None, 0, 5, 9])
             count = store.count_matching(term, namespace=ns, min_importance=importance)
-            assert count == len(store.recall(term, namespace=ns, min_importance=importance, max_results=100))
+            assert count == len(
+                store.recall(term, namespace=ns, min_importance=importance, max_results=100)
+            )
         store.close()
 
 
@@ -102,7 +112,12 @@ def test_schema_migration_table_covers_supported_version_edges():
     assert tuple((source, target) for source, target, _ in MIGRATIONS) == ((0, 1), (1, 2), (2, 3))
     assert SCHEMA_VERSION == PythonMemoryStorage.SCHEMA_VERSION == 3
     assert MIGRATABLE_SCHEMA_VERSIONS == PythonMemoryStorage.MIGRATABLE_SCHEMA_VERSIONS == (0, 1, 2)
-    assert actions_from(0) == ("create_memories", "create_fts", "rebuild_fts", "remove_content_lower")
+    assert actions_from(0) == (
+        "create_memories",
+        "create_fts",
+        "rebuild_fts",
+        "remove_content_lower",
+    )
     assert actions_from(2) == ("remove_content_lower",)
     assert actions_from(3) == ()
 

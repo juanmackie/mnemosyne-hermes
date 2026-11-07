@@ -292,8 +292,7 @@ def unique_path(target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     for index in range(1, 1000):
         candidate = (
-            target if index == 1
-            else target.with_name(f"{target.stem}-{index}{target.suffix}")
+            target if index == 1 else target.with_name(f"{target.stem}-{index}{target.suffix}")
         )
         try:
             # exists()+return had a TOCTOU race: concurrent backup and

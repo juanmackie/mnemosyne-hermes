@@ -1,10 +1,11 @@
 """Restoring a store must coordinate with existing SQLite connections."""
+
 import sqlite3
+import sys
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from mnemosyne_lite.cli import cmd_restore
@@ -25,7 +26,9 @@ class LiveRestoreTests(unittest.TestCase):
             source = PythonMemoryStorage(backup)
             source.remember("restored content", "ns", 5)
             source.close()
-            self.assertEqual(cmd_restore(Namespace(backup=backup, db_path=live, yes=True, format="json")), 0)
+            self.assertEqual(
+                cmd_restore(Namespace(backup=backup, db_path=live, yes=True, format="json")), 0
+            )
             old.remember("after restore", "ns", 5)
             fresh = PythonMemoryStorage(live)
             contents = {row["content"] for row in fresh.list_memories()}

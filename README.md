@@ -292,7 +292,8 @@ The provider resolves its database in this order: `memory.mnemosyne.db_path`
 **The lite store** is one SQLite file with no dependencies beyond the standard
 library and one connection per thread. Query planning and access folding are
 pure functions in `src/mnemosyne_lite/plan.py`; schema transition metadata lives
-in `schema.py`, and the immutable MCP tool table lives in `tooltable.py`. Its recall
+in `schema.py`, exact-duplicate SQL execution lives in `consolidation.py`, and
+the immutable MCP tool table lives in `tooltable.py`. Its recall
 memo is per-thread for a reason: the version that validates a memo entry is
 built from the calling thread's own connection, so a shared memo let one thread
 read another's rows. Memo entries remain dictionaries because dataclass

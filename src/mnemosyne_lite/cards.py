@@ -17,6 +17,8 @@ verified citation. Created dates are rendered as UTC calendar dates.
 import re
 from datetime import UTC, datetime
 
+from .records import RowBatch
+
 # A character the FTS5 unicode61 tokenizer keeps: a letter or a digit.
 _TOKEN_RE = re.compile(r"[^\W_]", re.UNICODE)
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
@@ -90,16 +92,31 @@ def build_snippet(content: str, query: str, width: int = DEFAULT_SNIPPET_CHARS) 
     return truncate(window, width)
 
 
-def _card_body(index: int, row: dict, query: str, max_chars: int) -> list[str]:
-    row_id = row.get("id", "-")
-    namespace = row.get("namespace", "-")
-    importance = row.get("importance", "-")
+_CARD_FIELDS = ("id", "namespace", "importance", "content", "context", "created_at")
+
+
+def _row_batch(rows: list[dict]) -> RowBatch:
+    return RowBatch(
+        _CARD_FIELDS,
+        tuple(tuple(row.get(name) for row in rows) for name in _CARD_FIELDS),
+    )
+
+
+def _card_body(
+    index: int, batch: RowBatch, row_index: int, query: str, max_chars: int
+) -> list[str]:
+    row_id, namespace, importance, content, context, created_at = (
+        column[row_index] for column in batch.columns
+    )
+    row_id = row_id if row_id is not None else "-"
+    namespace = namespace if namespace is not None else "-"
+    importance = importance if importance is not None else "-"
     lines = [f"[{index}] {row_id} · {namespace} · importance {importance}"]
-    body = truncate(_single_line(str(row.get("content", ""))), max_chars)
+    body = truncate(_single_line(str(content or "")), max_chars)
     lines.append(f"  {body}" if body else "  -")
     if query:
-        lines.append(f"  match: {build_snippet(str(row.get('content', '')), query)}")
-    context = _single_line(str(row.get("context") or ""))
+        lines.append(f"  match: {build_snippet(str(content or ''), query)}")
+    context = _single_line(str(context or ""))
     if context:
         lines.append(
             truncate(
@@ -107,7 +124,7 @@ def _card_body(index: int, row: dict, query: str, max_chars: int) -> list[str]:
                 DEFAULT_METADATA_CHARS,
             )
         )
-    created = _utc_date(row.get("created_at"))
+    created = _utc_date(created_at)
     if created:
         lines.append(f"  created (UTC): {created}")
     return lines
@@ -141,9 +158,10 @@ def render_recall_cards(
     header = f'mnemosyne-lite recall · query "{query}" · {count_label} · {indexed_total} memories indexed'
     if not rows:
         return header + "\n(no matches; try fewer or different words)"
+    batch = _row_batch(rows)
     out = [header]
-    for i, row in enumerate(rows, start=1):
-        out.extend(_card_body(i, row, query, max_chars))
+    for i in range(len(rows)):
+        out.extend(_card_body(i + 1, batch, i, query, max_chars))
     return "\n".join(out)
 
 
@@ -156,7 +174,8 @@ def render_list_cards(
     header = f"mnemosyne-lite list · shown {len(rows)} · {indexed_total} memories indexed"
     if not rows:
         return header + "\n(no memories found)"
+    batch = _row_batch(rows)
     out = [header]
-    for i, row in enumerate(rows, start=1):
-        out.extend(_card_body(i, row, "", max_chars))
+    for i in range(len(rows)):
+        out.extend(_card_body(i + 1, batch, i, "", max_chars))
     return "\n".join(out)

@@ -17,9 +17,10 @@ import os
 import sys
 import tempfile
 from collections import Counter, defaultdict
-from datetime import date, datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 CASES_FORMAT = "mnemosyne-memory-writer-cases/v1"
 ARTIFACT_FORMAT = "mnemosyne-memory-writer-artifact/v1"
@@ -34,25 +35,49 @@ MAX_OPERATIONS = 100
 MAX_EVIDENCE = 20
 
 CASE_KEYS = {
-    "id", "split", "domain", "trace", "context", "seed_memories",
-    "preserve_seeds", "required", "forbidden", "allowed_extra",
-    "expect_no_memories", "recall_query", "max_chars",
+    "id",
+    "split",
+    "domain",
+    "trace",
+    "context",
+    "seed_memories",
+    "preserve_seeds",
+    "required",
+    "forbidden",
+    "allowed_extra",
+    "expect_no_memories",
+    "recall_query",
+    "max_chars",
 }
 MESSAGE_KEYS = {"id", "role", "content", "name"}
 CLAIM_KEYS = {
-    "id", "description", "all", "any", "subject_any", "subject_name_any",
-    "kind_any", "evidence", "exempt_any", "op", "valid_until",
+    "id",
+    "description",
+    "all",
+    "any",
+    "subject_any",
+    "subject_name_any",
+    "kind_any",
+    "evidence",
+    "exempt_any",
+    "op",
+    "valid_until",
 }
 SEED_KEYS = {"id", "content", "subject", "scope"}
 MEMORY_KEYS = {
-    "content", "kind", "subject", "subject_name", "scope", "valid_until",
+    "content",
+    "kind",
+    "subject",
+    "subject_name",
+    "scope",
+    "valid_until",
     "evidence",
 }
 OPERATION_KEYS = {"op", "target", "memory"}
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _sha256(path: Path) -> str:
@@ -66,7 +91,9 @@ def _text(value: Any) -> str:
 def _terms(value: Any) -> list[str]:
     if value is None:
         return []
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
         raise ValueError("term lists must contain non-empty strings")
     return [_text(item) for item in value]
 
@@ -83,7 +110,9 @@ def _read_json(path: Path) -> Any:
         raise ValueError(f"cannot read JSON from {path}: {error}") from error
 
 
-def resolve_output_path(output: str | os.PathLike[str], inputs: Iterable[str | os.PathLike[str]]) -> Path:
+def resolve_output_path(
+    output: str | os.PathLike[str], inputs: Iterable[str | os.PathLike[str]]
+) -> Path:
     """Return a new output path, refusing overwrite, stores and input paths."""
     path = Path(output).expanduser().resolve(strict=False)
     parent = path.parent
@@ -131,7 +160,12 @@ def validate_fixture(fixture: Any) -> list[str]:
     if not isinstance(fixture, dict):
         return ["fixture: must be an object"]
     unknown = set(fixture) - {
-        "version", "format", "description", "default_max_chars", "replay_tools", "cases",
+        "version",
+        "format",
+        "description",
+        "default_max_chars",
+        "replay_tools",
+        "cases",
     }
     if unknown:
         _add(errors, "fixture", f"unknown keys: {sorted(unknown)}")
@@ -146,7 +180,11 @@ def validate_fixture(fixture: Any) -> list[str]:
         _add(errors, "fixture", "default_max_chars must be a positive bounded integer")
         default_max = 2000
     tools = fixture.get("replay_tools")
-    if not isinstance(tools, list) or not tools or any(not isinstance(item, str) or not item.strip() for item in tools):
+    if (
+        not isinstance(tools, list)
+        or not tools
+        or any(not isinstance(item, str) or not item.strip() for item in tools)
+    ):
         _add(errors, "fixture", "replay_tools must be a non-empty list of tool names")
     cases = fixture.get("cases")
     if not isinstance(cases, list) or not cases:
@@ -235,7 +273,11 @@ def validate_fixture(fixture: Any) -> list[str]:
             _add(errors, where, "preserve_seeds must be a list of seed ids")
             preserve = []
         if set(preserve) - seed_ids:
-            _add(errors, where, f"preserve_seeds references unknown seeds: {sorted(set(preserve) - seed_ids)}")
+            _add(
+                errors,
+                where,
+                f"preserve_seeds references unknown seeds: {sorted(set(preserve) - seed_ids)}",
+            )
         for field in ("required", "forbidden", "allowed_extra"):
             claims = case.get(field)
             if not isinstance(claims, list):
@@ -266,15 +308,25 @@ def validate_fixture(fixture: Any) -> list[str]:
                 if not all_terms and not any_terms:
                     _add(errors, claim_where, "must have non-empty all or any terms")
                 for name in ("subject_any", "subject_name_any", "kind_any", "exempt_any"):
-                    if name in claim:
-                        if not isinstance(claim[name], list) or any(
+                    if name in claim and (
+                        not isinstance(claim[name], list)
+                        or any(
                             not isinstance(item, str) or not item.strip() for item in claim[name]
-                        ):
-                            _add(errors, claim_where, f"{name} must contain non-empty strings")
+                        )
+                    ):
+                        _add(errors, claim_where, f"{name} must contain non-empty strings")
                 if "subject_any" in claim and set(claim["subject_any"]) - SUBJECTS:
-                    _add(errors, claim_where, f"unknown subject_any values: {sorted(set(claim['subject_any']) - SUBJECTS)}")
+                    _add(
+                        errors,
+                        claim_where,
+                        f"unknown subject_any values: {sorted(set(claim['subject_any']) - SUBJECTS)}",
+                    )
                 if "kind_any" in claim and set(claim["kind_any"]) - KINDS:
-                    _add(errors, claim_where, f"unknown kind_any values: {sorted(set(claim['kind_any']) - KINDS)}")
+                    _add(
+                        errors,
+                        claim_where,
+                        f"unknown kind_any values: {sorted(set(claim['kind_any']) - KINDS)}",
+                    )
                 if "valid_until" in claim:
                     try:
                         _validate_date(claim["valid_until"], claim_where)
@@ -282,12 +334,18 @@ def validate_fixture(fixture: Any) -> list[str]:
                         _add(errors, claim_where, str(error))
                 evidence = claim.get("evidence")
                 if evidence is not None:
-                    if not isinstance(evidence, list) or not evidence or any(
-                        not isinstance(item, str) or not item.strip() for item in evidence
+                    if (
+                        not isinstance(evidence, list)
+                        or not evidence
+                        or any(not isinstance(item, str) or not item.strip() for item in evidence)
                     ):
                         _add(errors, claim_where, "evidence must be a non-empty list of trace ids")
                     elif set(evidence) - trace_ids:
-                        _add(errors, claim_where, f"evidence references unknown trace ids: {sorted(set(evidence) - trace_ids)}")
+                        _add(
+                            errors,
+                            claim_where,
+                            f"evidence references unknown trace ids: {sorted(set(evidence) - trace_ids)}",
+                        )
                 elif field in {"required", "allowed_extra"}:
                     _add(errors, claim_where, "evidence is required")
                 if "op" in claim:
@@ -308,7 +366,9 @@ def _validate_date(value: Any, where: str) -> None:
         raise ValueError(f"valid_until is not a valid date: {value}") from error
 
 
-def _validate_expected_operation(operation: Any, seed_ids: set[str], where: str, errors: list[str]) -> None:
+def _validate_expected_operation(
+    operation: Any, seed_ids: set[str], where: str, errors: list[str]
+) -> None:
     if not isinstance(operation, dict):
         _add(errors, where, "op must be an object")
         return
@@ -320,9 +380,8 @@ def _validate_expected_operation(operation: Any, seed_ids: set[str], where: str,
     if operation.get("op") == "add":
         if "target" in operation:
             _add(errors, where, "add expected op must not have a target")
-    elif operation.get("op") in {"update", "supersede"}:
-        if operation.get("target") not in seed_ids:
-            _add(errors, where, "expected update/supersede target is not a seed id")
+    elif operation.get("op") in {"update", "supersede"} and operation.get("target") not in seed_ids:
+        _add(errors, where, "expected update/supersede target is not a seed id")
 
 
 def load_fixture(path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -408,12 +467,20 @@ def validate_artifact(artifact: Any, fixture: dict[str, Any] | None = None) -> l
             if not isinstance(content, str) or not content.strip():
                 _add(errors, memory_where, "content must be a non-empty string")
             elif len(content) > max_chars:
-                _add(errors, memory_where, f"content exceeds max_chars ({len(content)} > {max_chars})")
+                _add(
+                    errors,
+                    memory_where,
+                    f"content exceeds max_chars ({len(content)} > {max_chars})",
+                )
             if memory.get("kind") not in KINDS:
                 _add(errors, memory_where, "kind is not recognized")
             if memory.get("subject") not in SUBJECTS:
                 _add(errors, memory_where, "subject is not recognized")
-            if "subject_name" in memory and memory["subject_name"] is not None and not isinstance(memory["subject_name"], str):
+            if (
+                "subject_name" in memory
+                and memory["subject_name"] is not None
+                and not isinstance(memory["subject_name"], str)
+            ):
                 _add(errors, memory_where, "subject_name must be a string or null")
             if memory.get("scope") not in SCOPES:
                 _add(errors, memory_where, "scope is not recognized")
@@ -423,8 +490,10 @@ def validate_artifact(artifact: Any, fixture: dict[str, Any] | None = None) -> l
                 except ValueError as error:
                     _add(errors, memory_where, str(error))
             evidence = memory.get("evidence")
-            if not isinstance(evidence, list) or not evidence or any(
-                not isinstance(item, str) or not item.strip() for item in evidence
+            if (
+                not isinstance(evidence, list)
+                or not evidence
+                or any(not isinstance(item, str) or not item.strip() for item in evidence)
             ):
                 _add(errors, memory_where, "evidence must be a non-empty list of trace ids")
             elif len(evidence) > MAX_EVIDENCE:
@@ -434,7 +503,11 @@ def validate_artifact(artifact: Any, fixture: dict[str, Any] | None = None) -> l
             if fixture_case is not None and isinstance(evidence, list):
                 trace_ids = {message["id"] for message in fixture_case["trace"]}
                 if set(evidence) - trace_ids:
-                    _add(errors, memory_where, f"evidence references ids outside the trace: {sorted(set(evidence) - trace_ids)}")
+                    _add(
+                        errors,
+                        memory_where,
+                        f"evidence references ids outside the trace: {sorted(set(evidence) - trace_ids)}",
+                    )
         referenced: set[int] = set()
         for operation_index, operation in enumerate(operations):
             operation_where = f"{where} operations[{operation_index}]"
@@ -454,7 +527,11 @@ def validate_artifact(artifact: Any, fixture: dict[str, Any] | None = None) -> l
                 _add(errors, operation_where, "memory index is out of range")
             else:
                 if memory_index in referenced:
-                    _add(errors, operation_where, "memory index is referenced by more than one operation")
+                    _add(
+                        errors,
+                        operation_where,
+                        "memory index is referenced by more than one operation",
+                    )
                 referenced.add(memory_index)
             if op == "add":
                 if "target" in operation and operation["target"] is not None:
@@ -489,11 +566,11 @@ def _subject_matches(memory: dict[str, Any], claim: dict[str, Any]) -> bool:
         return False
     if "subject_name_any" in claim:
         name = memory.get("subject_name")
-        if not isinstance(name, str) or name.lower() not in {item.lower() for item in claim["subject_name_any"]}:
+        if not isinstance(name, str) or name.lower() not in {
+            item.lower() for item in claim["subject_name_any"]
+        }:
             return False
-    if "kind_any" in claim and memory.get("kind") not in claim["kind_any"]:
-        return False
-    return True
+    return not ("kind_any" in claim and memory.get("kind") not in claim["kind_any"])
 
 
 def _claim_matches(memory: dict[str, Any], claim: dict[str, Any]) -> bool:
@@ -512,9 +589,7 @@ def _forbidden_matches(memory: dict[str, Any], claim: dict[str, Any]) -> bool:
         return False
     exempt = [_text(item) for item in claim.get("exempt_any", [])]
     content = _text(memory.get("content", ""))
-    if exempt and any(term in content for term in exempt):
-        return False
-    return True
+    return not (exempt and any(term in content for term in exempt))
 
 
 def _expected_operation_present(
@@ -571,9 +646,7 @@ def _case_score(case: dict[str, Any], candidate: dict[str, Any] | None) -> dict[
             failures.append(f"memory {index} cites evidence outside the trace")
     required_matches: dict[str, list[int]] = {}
     for claim in case["required"]:
-        matches = [
-            index for index, memory in enumerate(memories) if _claim_matches(memory, claim)
-        ]
+        matches = [index for index, memory in enumerate(memories) if _claim_matches(memory, claim)]
         required_matches[claim["id"]] = matches
         if not matches:
             result["missing_required"].append(claim["id"])
@@ -654,9 +727,7 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         found_required += len(row["required_found"])
     metrics["required_claims"] = total_required
     metrics["required_claims_found"] = found_required
-    metrics["required_claim_recall"] = (
-        found_required / total_required if total_required else 1.0
-    )
+    metrics["required_claim_recall"] = found_required / total_required if total_required else 1.0
     return metrics
 
 
@@ -698,9 +769,7 @@ def score_artifact(fixture: dict[str, Any], artifact: Any) -> dict[str, Any]:
         }
     candidate_cases = {case["id"]: case for case in artifact["cases"]}
     fixture_ids = {case["id"] for case in fixture["cases"]}
-    rows = [
-        _case_score(case, candidate_cases.get(case["id"])) for case in fixture["cases"]
-    ]
+    rows = [_case_score(case, candidate_cases.get(case["id"])) for case in fixture["cases"]]
     metrics = _aggregate(rows)
     metrics["case_count"] = len(fixture["cases"])
     metrics["cases_provided"] = len(candidate_cases)
@@ -748,9 +817,7 @@ def oracle_artifact(fixture: dict[str, Any]) -> dict[str, Any]:
             operation = dict(claim.get("op", {"op": "add"}))
             operation["memory"] = len(memories) - 1
             operations.append(operation)
-        cases.append(
-            {"id": case["id"], "memories": memories, "operations": operations}
-        )
+        cases.append({"id": case["id"], "memories": memories, "operations": operations})
     return {
         "format": ARTIFACT_FORMAT,
         "writer": {
@@ -793,7 +860,8 @@ def _compare(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, A
         "regressions": regressions,
         "baseline_passed_cases": baseline["metrics"]["passed_cases"],
         "candidate_passed_cases": candidate["metrics"]["passed_cases"],
-        "passed_case_delta": candidate["metrics"]["passed_cases"] - baseline["metrics"]["passed_cases"],
+        "passed_case_delta": candidate["metrics"]["passed_cases"]
+        - baseline["metrics"]["passed_cases"],
         "baseline_required_claim_recall": baseline["metrics"]["required_claim_recall"],
         "candidate_required_claim_recall": candidate["metrics"]["required_claim_recall"],
     }
@@ -825,10 +893,19 @@ def _engine_pin() -> str | None:
     try:
         import tomllib
 
-        path = Path(__file__).resolve().parents[1] / "integrations" / "hermes-provider" / "pyproject.toml"
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "integrations"
+            / "hermes-provider"
+            / "pyproject.toml"
+        )
         dependencies = tomllib.loads(path.read_text(encoding="utf-8"))["project"]["dependencies"]
         return next(
-            (dependency for dependency in dependencies if dependency.startswith("mnemosyne-memory")),
+            (
+                dependency
+                for dependency in dependencies
+                if dependency.startswith("mnemosyne-memory")
+            ),
             None,
         )
     except Exception:
@@ -896,7 +973,9 @@ class _replay_environment:
         )
 
     def __exit__(self, *_exc: Any) -> None:
-        for key in [key for key in os.environ if key.startswith("MNEMOSYNE_") or key == "HERMES_HOME"]:
+        for key in [
+            key for key in os.environ if key.startswith("MNEMOSYNE_") or key == "HERMES_HOME"
+        ]:
             os.environ.pop(key, None)
         os.environ.update(self.saved)
 
@@ -956,7 +1035,9 @@ def run_replay(
                         shared_surface_path=str(root / "shared" / "mnemosyne.db"),
                     )
                     if getattr(provider, "_init_error", None):
-                        raise RuntimeError(f"provider initialization failed: {provider._init_error}")
+                        raise RuntimeError(
+                            f"provider initialization failed: {provider._init_error}"
+                        )
                     _configure_replay_tools(provider, tools)
                     for tool in tools:
                         if not provider.has_tool(tool):
@@ -1000,7 +1081,9 @@ def run_replay(
                         else:
                             target = seed_ids.get(operation.get("target", ""))
                             if not target:
-                                raise RuntimeError(f"unknown seed target: {operation.get('target')}")
+                                raise RuntimeError(
+                                    f"unknown seed target: {operation.get('target')}"
+                                )
                             _call_provider(
                                 provider,
                                 "mnemosyne_update",
@@ -1136,7 +1219,9 @@ def main(argv: list[str] | None = None) -> int:
             baseline_data = _read_json(args.baseline)
             baseline = score_artifact(fixture, baseline_data)
             if not baseline["artifact"]["valid"]:
-                raise ValueError("baseline artifact is invalid:\n" + "\n".join(baseline["artifact"]["errors"]))
+                raise ValueError(
+                    "baseline artifact is invalid:\n" + "\n".join(baseline["artifact"]["errors"])
+                )
         replay = None
         if args.replay_provider:
             if not candidate["artifact"]["valid"]:

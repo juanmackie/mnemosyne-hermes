@@ -760,8 +760,10 @@ def test_concurrent_sync_turns_are_serialized_as_complete_transactions():
         assert failures == []
 
         expected = {
-            f"[USER] {user_texts[0]}", f"[ASSISTANT] {assistant_texts[0]}",
-            f"[USER] {user_texts[1]}", f"[ASSISTANT] {assistant_texts[1]}",
+            f"[USER] {user_texts[0]}",
+            f"[ASSISTANT] {assistant_texts[0]}",
+            f"[USER] {user_texts[1]}",
+            f"[ASSISTANT] {assistant_texts[1]}",
         }
         actual = {
             row[0]
