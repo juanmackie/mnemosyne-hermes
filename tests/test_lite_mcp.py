@@ -213,6 +213,7 @@ def test_no_match_search_is_a_successful_empty_mcp_result():
 
 if __name__ == "__main__":
     tests = [
+        test_lite_tool_table_contract_is_stable,
         test_round_trip_over_the_mcp_protocol,
         test_notifications_and_unknown_methods,
         test_missing_store_is_refused_not_fabricated,

@@ -8,6 +8,8 @@ MIGRATIONS = (
     (1, 2, ("create_fts", "rebuild_fts")),
     (2, 3, ("remove_content_lower",)),
 )
+SCHEMA_VERSION = MIGRATIONS[-1][1]
+MIGRATABLE_SCHEMA_VERSIONS = tuple(source for source, _target, _actions in MIGRATIONS)
 
 
 def actions_from(version: int) -> tuple[str, ...]:

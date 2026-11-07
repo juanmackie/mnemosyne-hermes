@@ -85,10 +85,10 @@ class PythonMemoryStorage:
     # downgrade-migrate it.
     #
     # 1 -> 2 added FTS5; 2 -> 3 removes content_lower and its redundant indexes.
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = _schema.SCHEMA_VERSION
     # Versions this release opens and migrates forward. 0 is a legacy lite
     # store written before the sentinel existed, or an empty file.
-    MIGRATABLE_SCHEMA_VERSIONS = (0, 1, 2)
+    MIGRATABLE_SCHEMA_VERSIONS = _schema.MIGRATABLE_SCHEMA_VERSIONS
 
     # The exact column set this store writes to `memories`. Anything else is
     # not ours and is refused untouched.
