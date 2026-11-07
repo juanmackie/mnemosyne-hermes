@@ -6,90 +6,23 @@ provider does not use them: it is engine-backed and exposes the engine's own
 """
 
 from .storage import PythonMemoryStorage
+from .plan import fallback_terms
+from .tooltable import ALIASES, TOOL_BY_NAME, schemas
 
 SKIP_CONTEXTS = {"cron", "flush", "subagent", "background", "skill_loop"}
 
 
 def tool_schemas():
-    namespace = {"type": "string", "minLength": 1}
-    search = {
-        "query": {"type": "string", "minLength": 1},
-        "namespace": namespace,
-        "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
-        "min_importance": {"type": "integer", "minimum": 0, "maximum": 10},
-        "max_chars": {"type": "integer", "minimum": 50, "maximum": 2000},
-    }
-    definitions = [
-        (
-            "mnemosyne_memory_search",
-            "Search local memory by ranked full-text (FTS5/BM25). Returns capped cited cards.",
-            search,
-            ["query"],
-        ),
-        (
-            "mnemosyne_memory_remember",
-            "Store a local memory without enrichment",
-            {
-                "content": {"type": "string", "minLength": 1},
-                "namespace": namespace,
-                "importance": {"type": "integer", "minimum": 0, "maximum": 10},
-                "context": {"type": "string"},
-            },
-            ["content"],
-        ),
-        (
-            "mnemosyne_prefetch",
-            "Recall context for a conversation. Same ranked search plus card text for injection.",
-            search,
-            ["query"],
-        ),
-        (
-            "mnemosyne_sync_turn",
-            "Capture user-authored text from a completed turn",
-            {
-                "user_text": {"type": "string"},
-                "assistant_text": {"type": "string"},
-                "namespace": namespace,
-                "session_id": {"type": "string"},
-                "execution_context": {"type": "string"},
-                "speaker": {"type": "string"},
-                "policy_owner": {"type": "string"},
-            },
-            ["user_text"],
-        ),
-    ]
-    return [
-        {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": False,
-            },
-        }
-        for name, description, properties, required in definitions
-    ]
+    return schemas()
 
 
-def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"):
-    name = name.replace("mnemosyne.", "mnemosyne_", 1)
-    name = {
-        "mnemosyne_remember": "mnemosyne_memory_remember",
-        "mnemosyne_recall": "mnemosyne_memory_search",
-    }.get(name, name)
-    schemas = {schema["name"]: schema["parameters"] for schema in tool_schemas()}
-    if name not in schemas:
-        raise ValueError(f"Unknown tool: {name}")
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be an object")
-    schema = schemas[name]
-    for key in schema["required"]:
+def _validate(name, arguments):
+    spec = TOOL_BY_NAME[name]
+    for key in spec.required:
         if key not in arguments:
             raise ValueError(f"Missing argument: {key}")
     for key, value in arguments.items():
-        rule = schema["properties"].get(key)
+        rule = spec.properties.get(key)
         if rule is None:
             raise ValueError(f"Unknown argument: {key}")
         if rule["type"] == "string":
@@ -101,71 +34,70 @@ def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"
                 )
         elif type(value) is not int or not rule["minimum"] <= value <= rule["maximum"]:
             raise ValueError(f"Invalid {key}")
-    namespace = arguments.get("namespace", namespace)
-    if name == "mnemosyne_memory_remember":
-        result = storage.remember(
-            arguments["content"],
-            namespace,
-            arguments.get("importance", 5),
-            context=arguments.get("context"),
-        )
-        return {"ok": True, "results": [result], "count": 1, "namespace": namespace}
-    if name == "mnemosyne_sync_turn":
-        text = arguments["user_text"]
-        if (
-            arguments.get("execution_context") in SKIP_CONTEXTS
-            or arguments.get("speaker", "user") != "user"
-            # "mnemosyne-rust" was the retired Rust policy owner; accepting it
-            # would let a client that no longer exists capture turns here.
-            or arguments.get("policy_owner", "mnemosyne") not in ("", "mnemosyne")
-            or not text.strip()
-        ):
-            return {"ok": True, "synced": False, "status": "skipped"}
-        result = storage.remember(text, namespace, 5, context="sync_turn")
-        return {"ok": True, "synced": True, "status": "captured", "source_memory_id": result["id"]}
+
+
+def _remember(storage, args, namespace):
+    result = storage.remember(args["content"], namespace, args.get("importance", 5), context=args.get("context"))
+    return {"ok": True, "results": [result], "count": 1, "namespace": namespace}
+
+
+def _sync_turn(storage, args, namespace):
+    text = args["user_text"]
+    if (
+        args.get("execution_context") in SKIP_CONTEXTS
+        or args.get("speaker", "user") != "user"
+        # "mnemosyne-rust" was the retired Rust policy owner; accepting it
+        # would let a client that no longer exists capture turns here.
+        or args.get("policy_owner", "mnemosyne") not in ("", "mnemosyne")
+        or not text.strip()
+    ):
+        return {"ok": True, "synced": False, "status": "skipped"}
+    result = storage.remember(text, namespace, 5, context="sync_turn")
+    return {"ok": True, "synced": True, "status": "captured", "source_memory_id": result["id"]}
+
+
+def _search(storage, args, namespace, *, prefetch):
     results = storage.recall(
-        arguments["query"],
+        args["query"],
         namespace=namespace,
-        max_results=arguments.get("max_results", 10),
-        min_importance=arguments.get("min_importance"),
+        max_results=args.get("max_results", 10),
+        min_importance=args.get("min_importance"),
     )
     # ponytail: bounded keyword fallback for conversational prefetch; use ranked
     # semantic retrieval only when measured recall quality justifies it.
     used_fallback = False
-    if not results and name == "mnemosyne_prefetch":
-        import re
-
+    if not results and prefetch:
         seen = set()
-        for word in list(dict.fromkeys(re.findall(r"\w{4,}", arguments["query"].lower())))[:8]:
+        for word in fallback_terms(args["query"]):
             for row in storage.recall(
                 word,
                 namespace=namespace,
-                max_results=arguments.get("max_results", 10),
-                min_importance=arguments.get("min_importance"),
+                max_results=args.get("max_results", 10),
+                min_importance=args.get("min_importance"),
             ):
                 if row["id"] not in seen:
                     seen.add(row["id"])
                     results.append(row)
         results = sorted(results, key=lambda r: (r["importance"], r["created_at"]), reverse=True)[
-            : arguments.get("max_results", 10)
+            : args.get("max_results", 10)
         ]
         used_fallback = True
     from .cards import DEFAULT_CARD_CHARS, render_recall_cards
 
-    max_chars = arguments.get("max_chars", DEFAULT_CARD_CHARS)
+    max_chars = args.get("max_chars", DEFAULT_CARD_CHARS)
     total = (
         len(results)
         if used_fallback
         else storage.count_matching(
-            arguments["query"],
+            args["query"],
             namespace=namespace,
-            min_importance=arguments.get("min_importance"),
+            min_importance=args.get("min_importance"),
         )
     )
     indexed = storage.count()
     cards = render_recall_cards(
         results,
-        arguments["query"],
+        args["query"],
         total,
         indexed,
         max_chars,
@@ -183,3 +115,19 @@ def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"
     if used_fallback:
         result["total_is_bounded"] = True
     return result
+
+
+def call_tool(storage: PythonMemoryStorage, name, arguments, namespace="default"):
+    name = name.replace("mnemosyne.", "mnemosyne_", 1)
+    name = ALIASES.get(name, name)
+    if name not in TOOL_BY_NAME:
+        raise ValueError(f"Unknown tool: {name}")
+    if not isinstance(arguments, dict):
+        raise ValueError("arguments must be an object")
+    _validate(name, arguments)
+    namespace = arguments.get("namespace", namespace)
+    if name == "mnemosyne_memory_remember":
+        return _remember(storage, arguments, namespace)
+    if name == "mnemosyne_sync_turn":
+        return _sync_turn(storage, arguments, namespace)
+    return _search(storage, arguments, namespace, prefetch=name == "mnemosyne_prefetch")

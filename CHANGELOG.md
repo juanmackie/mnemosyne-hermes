@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The lite surface now keeps query predicates, access folding, schema transition
+  metadata and MCP tool definitions in small data-oriented modules. Consolidation
+  groups and ranks duplicates in SQLite, and tool dispatch uses focused handlers.
+  Recall memo rows remain dictionaries: immutable record conversion regressed the
+  measured memo-hit path, so the benchmark-driven fallback in the refactor plan
+  was retained.
+
 ### Fixed
 
 - Engine recall supports an opt-in relative score cutoff across linear,

@@ -289,11 +289,14 @@ The provider resolves its database in this order: `memory.mnemosyne.db_path`
 `$HERMES_HOME`. The full provider documentation is
 [integrations/hermes-provider/README.md](integrations/hermes-provider/README.md).
 
-**The lite store** is one SQLite file with an inline schema, no dependencies
-beyond the standard library, and a per-thread connection per thread. Its recall
+**The lite store** is one SQLite file with no dependencies beyond the standard
+library and one connection per thread. Query planning and access folding are
+pure functions in `src/mnemosyne_lite/plan.py`; schema transition metadata lives
+in `schema.py`, and the immutable MCP tool table lives in `tooltable.py`. Its recall
 memo is per-thread for a reason: the version that validates a memo entry is
 built from the calling thread's own connection, so a shared memo let one thread
-read another's rows. `tests/test_python_hardening.py` and
+read another's rows. Memo entries remain dictionaries because dataclass
+conversion measurably slowed cache hits. `tests/test_python_hardening.py` and
 `tests/test_recall_freshness.py` cover the storage-safety rules; `bench/` holds
 the recall-latency harness and the one recorded measurement.
 

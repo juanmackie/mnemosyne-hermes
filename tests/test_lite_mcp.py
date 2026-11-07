@@ -22,11 +22,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import mnemosyne_lite  # noqa: E402
 from mnemosyne_lite.mcp import serve  # noqa: E402
+from mnemosyne_lite.tools import tool_schemas  # noqa: E402
+from mnemosyne_lite.tooltable import ALIASES  # noqa: E402
 from mnemosyne_lite.storage import (  # noqa: E402
     PythonMemoryStorage,
     StorageError,
     StorageSchemaError,
 )
+
+
+def test_lite_tool_table_contract_is_stable():
+    assert [tool["name"] for tool in tool_schemas()] == [
+        "mnemosyne_memory_search",
+        "mnemosyne_memory_remember",
+        "mnemosyne_prefetch",
+        "mnemosyne_sync_turn",
+    ]
+    assert ALIASES == {
+        "mnemosyne_remember": "mnemosyne_memory_remember",
+        "mnemosyne_recall": "mnemosyne_memory_search",
+    }
+
+
 
 
 def _serve(db_path, requests):

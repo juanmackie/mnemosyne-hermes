@@ -15,6 +15,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import random
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
@@ -22,6 +23,9 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from mnemosyne_lite.db_path import resolve_db_path
+from mnemosyne_lite.plan import fallback_terms, fold_accesses, plan_consolidation
+from mnemosyne_lite.schema import MIGRATIONS, actions_from
+from mnemosyne_lite.tools import call_tool
 from mnemosyne_lite.storage import PythonMemoryStorage, StorageSchemaError
 
 # The lite store's exact column list. Anything else is a foreign database
@@ -37,6 +41,63 @@ LEGACY_MEMORIES_DDL = (
 
 def _sha(path):
     return hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
+def test_access_folding_is_a_pure_batch_aggregation():
+    batches = [("a", "b"), ("a",), ("b", "c", "a")]
+    assert fold_accesses(batches) == {"a": 3, "b": 2, "c": 1}
+    assert batches == [("a", "b"), ("a",), ("b", "c", "a")]
+
+
+def test_consolidation_plan_deduplicates_delete_ids_without_mutation():
+    ids = ["b", "c", "b"]
+    assert plan_consolidation(ids).delete_ids == ("b", "c")
+    assert ids == ["b", "c", "b"]
+
+
+def test_sync_turn_skip_policy_and_capture_are_stable():
+    with tempfile.TemporaryDirectory() as d:
+        store = PythonMemoryStorage(os.path.join(d, "sync.db"))
+        for arguments in (
+            {"user_text": "remember me", "execution_context": "cron"},
+            {"user_text": "remember me", "speaker": "assistant"},
+            {"user_text": "remember me", "policy_owner": "other"},
+            {"user_text": "   "},
+        ):
+            assert call_tool(store, "mnemosyne_sync_turn", arguments)["status"] == "skipped"
+        assert store.count() == 0
+        result = call_tool(store, "mnemosyne_sync_turn", {"user_text": "keep this"})
+        assert result["status"] == "captured"
+        assert store.recall("keep")[0]["context"] == "sync_turn"
+        store.close()
+
+
+def test_prefetch_fallback_terms_are_unique_and_bounded():
+    assert fallback_terms("Alpha alpha beta cat 12345") == ("alpha", "beta", "12345")
+    assert len(fallback_terms(" ".join(f"word{i}" for i in range(20)))) == 8
+
+
+def test_recall_count_predicates_stay_in_parity_for_seeded_queries():
+    with tempfile.TemporaryDirectory() as d:
+        store = PythonMemoryStorage(os.path.join(d, "parity.db"))
+        samples = ["alpha beta", "beta gamma", "alpha gamma", "delta alpha"]
+        for i in range(40):
+            store.remember(samples[i % len(samples)], "ns" if i % 2 else "other", i % 11)
+        rng = random.Random(824)
+        for _ in range(50):
+            term = rng.choice(["alpha", "beta", "gamma", "delta", "omega", "***"])
+            ns = rng.choice([None, "ns", "other"])
+            importance = rng.choice([None, 0, 5, 9])
+            count = store.count_matching(term, namespace=ns, min_importance=importance)
+            assert count == len(store.recall(term, namespace=ns, min_importance=importance, max_results=100))
+        store.close()
+
+
+def test_schema_migration_table_covers_supported_version_edges():
+    assert tuple((source, target) for source, target, _ in MIGRATIONS) == ((0, 1), (1, 2), (2, 3))
+    assert actions_from(0) == ("create_memories", "create_fts", "rebuild_fts", "remove_content_lower")
+    assert actions_from(2) == ("remove_content_lower",)
+    assert actions_from(3) == ()
 
 
 def _columns(path):
