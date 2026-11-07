@@ -34,5 +34,3 @@ class ToolSpec:
     description: str
     properties: dict[str, dict[str, Any]]
     required: tuple[str, ...]
-
-

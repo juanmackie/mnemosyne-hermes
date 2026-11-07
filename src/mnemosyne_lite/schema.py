@@ -15,15 +15,21 @@ MIGRATABLE_SCHEMA_VERSIONS = tuple(source for source, _target, _actions in MIGRA
 def actions_from(version: int) -> tuple[str, ...]:
     """Return the ordered transition actions needed to reach the latest schema."""
     return tuple(
-        action
-        for source, _target, actions in MIGRATIONS
-        if source >= version
-        for action in actions
+        action for source, _target, actions in MIGRATIONS if source >= version for action in actions
     )
 
+
 MEMORY_COLUMNS = (
-    "id", "content", "namespace", "importance", "context", "summary", "keywords",
-    "created_at", "access_count", "last_accessed",
+    "id",
+    "content",
+    "namespace",
+    "importance",
+    "context",
+    "summary",
+    "keywords",
+    "created_at",
+    "access_count",
+    "last_accessed",
 )
 PRE_V3_MEMORY_COLUMNS = MEMORY_COLUMNS + ("content_lower",)
 FTS_SCHEMA_VERSION = 2

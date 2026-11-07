@@ -5,8 +5,8 @@ provider does not use them: it is engine-backed and exposes the engine's own
 `mnemosyne_memory_*` tools (see integrations/hermes-provider/).
 """
 
-from .storage import PythonMemoryStorage
 from .plan import fallback_terms
+from .storage import PythonMemoryStorage
 from .tooltable import ALIASES, TOOL_BY_NAME, schemas
 
 SKIP_CONTEXTS = {"cron", "flush", "subagent", "background", "skill_loop"}
@@ -37,7 +37,9 @@ def _validate(name, arguments):
 
 
 def _remember(storage, args, namespace):
-    result = storage.remember(args["content"], namespace, args.get("importance", 5), context=args.get("context"))
+    result = storage.remember(
+        args["content"], namespace, args.get("importance", 5), context=args.get("context")
+    )
     return {"ok": True, "results": [result], "count": 1, "namespace": namespace}
 
 
