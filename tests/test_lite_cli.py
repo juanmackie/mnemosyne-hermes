@@ -466,6 +466,15 @@ def test_format_json_emits_one_parseable_document():
         assert set(lines[1]) == {"-", " "}, out
         assert "json please" in lines[2], out
 
+        code, out, err = _run(["--db-path", db, "list"])
+        assert code == 0, (code, err)
+        lines = out.splitlines()
+        assert len(lines) == 3, out
+        assert lines[0].startswith("ID") and "CONTENT" in lines[0], out
+        assert "NAMESPACE" in lines[0] and "IMPORTANCE" in lines[0], out
+        assert set(lines[1]) == {"-", " "}, out
+        assert "json please" in lines[2], out
+
 
 if __name__ == "__main__":
     tests = [value for key, value in sorted(globals().items()) if key.startswith("test_")]

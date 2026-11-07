@@ -20,6 +20,10 @@ import sqlite3
 import threading
 import time
 from typing import Any
+from .records import Query, ThreadState
+from .plan import count_sql, fold_accesses, plan_consolidation, predicate
+from . import schema as _schema
+from .schema import actions_from
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +85,10 @@ class PythonMemoryStorage:
     # downgrade-migrate it.
     #
     # 1 -> 2 added FTS5; 2 -> 3 removes content_lower and its redundant indexes.
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = _schema.SCHEMA_VERSION
     # Versions this release opens and migrates forward. 0 is a legacy lite
     # store written before the sentinel existed, or an empty file.
-    MIGRATABLE_SCHEMA_VERSIONS = (0, 1, 2)
+    MIGRATABLE_SCHEMA_VERSIONS = _schema.MIGRATABLE_SCHEMA_VERSIONS
 
     # The exact column set this store writes to `memories`. Anything else is
     # not ours and is refused untouched.
@@ -93,34 +97,10 @@ class PythonMemoryStorage:
     # mnemosyne-memory engine's own `memories` table has 24 columns *including*
     # namespace, so a namespace check adopts a live engine bank and rewrites
     # every row (measured: 137 engine DBs in ~/.mnemosyne, all silently mutated).
-    MEMORY_COLUMNS = (
-        "id",
-        "content",
-        "namespace",
-        "importance",
-        "context",
-        "summary",
-        "keywords",
-        "created_at",
-        "access_count",
-        "last_accessed",
-    )
-    PRE_V3_MEMORY_COLUMNS = MEMORY_COLUMNS + ("content_lower",)
+    MEMORY_COLUMNS = _schema.MEMORY_COLUMNS
+    PRE_V3_MEMORY_COLUMNS = _schema.PRE_V3_MEMORY_COLUMNS
 
-    SCHEMA = """
-        CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY,
-            content TEXT NOT NULL,
-            namespace TEXT NOT NULL,
-            importance INTEGER DEFAULT 5 CHECK(importance >= 0 AND importance <= 10),
-            context TEXT,
-            summary TEXT,
-            keywords TEXT,
-            created_at REAL DEFAULT 0,
-            access_count INTEGER DEFAULT 0,
-            last_accessed REAL
-        )
-    """
+    SCHEMA = _schema.SCHEMA
 
     # Full-text index over `memories.content`, plus the triggers that keep it in
     # sync. This is an external-content FTS5 table: it stores the index only and
@@ -129,23 +109,11 @@ class PythonMemoryStorage:
     # `AFTER UPDATE OF content` (not plain AFTER UPDATE) matters: the buffered
     # access-count flush UPDATEs access_count/last_accessed on every recall
     # batch, and reindexing the row for that would be pure churn.
-    FTS_DDL = (
-        "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
-        "content, content='memories', content_rowid='rowid', tokenize='unicode61')",
-        "CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN "
-        "INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content); END",
-        "CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN "
-        "INSERT INTO memories_fts(memories_fts, rowid, content) "
-        "VALUES ('delete', old.rowid, old.content); END",
-        "CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE OF content ON memories "
-        "BEGIN INSERT INTO memories_fts(memories_fts, rowid, content) "
-        "VALUES ('delete', old.rowid, old.content); "
-        "INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content); END",
-    )
+    FTS_DDL = _schema.FTS_DDL
     # The schema generation that introduced the index. A store classified below
     # this needs `rebuild` once; above it, the triggers have kept the index
     # current, so opening stays O(1) instead of reindexing the corpus.
-    FTS_SCHEMA_VERSION = 2
+    FTS_SCHEMA_VERSION = _schema.FTS_SCHEMA_VERSION
 
     # Rowid-aligned mirror of the BM25 tie-break columns. The recall ranking
     # joins this narrow table (~48 bytes/row) instead of `memories` (whose rows
@@ -156,25 +124,8 @@ class PythonMemoryStorage:
     # `AFTER UPDATE OF importance, created_at, id` (not plain AFTER UPDATE) so
     # the buffered access-count flush UPDATEs access_count/last_accessed
     # without touching the mirror.
-    RECALL_KEYS_SCHEMA = """
-        CREATE TABLE IF NOT EXISTS recall_keys (
-            rowid INTEGER PRIMARY KEY,
-            importance INTEGER,
-            created_at REAL,
-            id TEXT
-        )
-    """
-    RECALL_KEYS_TRIGGERS = (
-        "CREATE TRIGGER IF NOT EXISTS recall_keys_ai AFTER INSERT ON memories BEGIN "
-        "INSERT INTO recall_keys (rowid, importance, created_at, id) "
-        "VALUES (new.rowid, new.importance, new.created_at, new.id); END",
-        "CREATE TRIGGER IF NOT EXISTS recall_keys_ad AFTER DELETE ON memories BEGIN "
-        "DELETE FROM recall_keys WHERE rowid = old.rowid; END",
-        "CREATE TRIGGER IF NOT EXISTS recall_keys_au "
-        "AFTER UPDATE OF importance, created_at, id ON memories "
-        "BEGIN UPDATE recall_keys SET importance = new.importance, "
-        "created_at = new.created_at, id = new.id WHERE rowid = old.rowid; END",
-    )
+    RECALL_KEYS_SCHEMA = _schema.RECALL_KEYS_SCHEMA
+    RECALL_KEYS_TRIGGERS = _schema.RECALL_KEYS_TRIGGERS
 
     # Tuples, not lists: shared class-level constants must not be mutable.
     # idx_memories_namespace(namespace) used to sit here. It is a strict PREFIX
@@ -203,28 +154,12 @@ class PythonMemoryStorage:
     # the whole cost: an append-ordered created_at index costs one hot tail
     # page, and paying for a b-tree the checkpoint re-copies turns out to
     # buy back more than it bills on this schema. Not shipped.
-    INDEXES = (
-        "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_memories_ns_created ON memories(namespace, created_at)",
-    )
+    INDEXES = _schema.INDEXES
 
     # Obsolete indexes, dropped by name on open. Indexes whose *columns* change
     # are handled in _init_schema instead (it compares the stored DDL and
     # rebuilds), because IF NOT EXISTS matches on the name only.
-    DROPPED_INDEXES = (
-        "DROP INDEX IF EXISTS idx_memories_ns_rank",
-        "DROP INDEX IF EXISTS idx_memories_namespace",
-        # idx_memories_importance lured the planner into walking
-        # the importance index in random row order for unfiltered
-        # recall (a bound LIKE hid the leading wildcard, so the
-        # planner assumed LIKE-opt may apply). A sequential scan
-        # + temp b-tree sort is ~4x faster; list(sort=importance)
-        # sorts cheaply without it at this scale.
-        "DROP INDEX IF EXISTS idx_memories_importance",
-        "DROP INDEX IF EXISTS idx_memories_recall",
-        "DROP INDEX IF EXISTS idx_memories_rank",
-        "DROP INDEX IF EXISTS idx_memories_lower_null",
-    )
+    DROPPED_INDEXES = _schema.DROPPED_INDEXES
 
     def __init__(self, db_path: str, *, migration_backup_base: str | None = None):
         """
@@ -249,6 +184,7 @@ class PythonMemoryStorage:
         self._migration_backup_base = migration_backup_base or db_path
         self._ensure_db_dir()
         self._local = threading.local()
+        self._local.state = ThreadState()
         # Background WAL drain (see _drain_wal). Started lazily from the WRITE
         # path, so a read-only store never spawns a thread or a second
         # connection. _fold_now is the writer's side of the handshake: the drain
@@ -308,10 +244,18 @@ class PythonMemoryStorage:
         full-text index made that snapshot unnecessary: this memo only holds the
         rows a thread actually asked for.
         """
-        cache = getattr(self._local, "recall_cache", None)
+        state = self._state()
+        cache = state.recall_cache
         if cache is None:
-            cache = self._local.recall_cache = {}
+            cache = state.recall_cache = {}
         return cache
+
+    def _state(self) -> ThreadState:
+        """Return the current thread's explicitly initialized state bundle."""
+        state = getattr(self._local, "state", None)
+        if state is None:
+            state = self._local.state = ThreadState()
+        return state
 
     # Cold start used to die here: 9/16 simultaneous opens crashed on the review
     # host (journal_mode=WAL returns SQLITE_BUSY when another connection holds an
@@ -444,34 +388,26 @@ class PythonMemoryStorage:
         # try/except beats getattr-with-default on the every-recall path
         # (CPython 3.11+: zero cost until the attribute is actually missing).
         try:
-            conn = self._local.conn
+            conn = self._state().conn
             if conn is not None:
                 return conn
         except AttributeError:
             pass
         conn = self._new_conn()
-        self._local.conn = conn
+        self._state().conn = conn
         # A reconnect resets both numbers a version is built from, so an entry
         # left by the previous connection could otherwise match the new one.
-        self._local.recall_cache = None
-        # First connection for this thread: seed the counters so the recall
-        # hot path can read them directly (no getattr-with-default per call).
-        # close() leaves them in place — ignored_changes must outlive a
-        # reconnect within the same thread.
-        if not hasattr(self._local, "pending_hits"):
-            self._local.pending_hits = 0
-        if not hasattr(self._local, "ignored_changes"):
-            self._local.ignored_changes = 0
+        self._state().recall_cache = None
         return conn
 
     def close(self) -> None:
         """Flush buffered access counts, stop the reaper, close this connection."""
         self._flush_accesses()
         self._stop_drain()
-        conn = getattr(self._local, "conn", None)
+        conn = self._state().conn
         if conn is not None:
             conn.close()
-            self._local.conn = None
+            self._state().conn = None
 
     # Checkpoint when the WAL outgrows this. Called from the write paths only.
     #
@@ -759,7 +695,7 @@ class PythonMemoryStorage:
             # ever checkpointed until close() and the WAL grew unbounded
             # (281MB WAL next to a 36KB database, measured).
             counter = getattr(self._local, "_checkpoint_counter", 0) + 1
-            self._local._checkpoint_counter = counter
+            self._state().checkpoint_counter = counter
             if counter % self.WAL_CHECKPOINT_INTERVAL != 0:
                 return
             wal = self.db_path + "-wal"
@@ -794,11 +730,10 @@ class PythonMemoryStorage:
         """
         # pending is never set to None (flush swaps in a fresh list), so
         # AttributeError is the only miss case — try/except is the cheap path.
-        try:
-            return self._local.pending
-        except AttributeError:
-            pending = self._local.pending = []
-            return pending
+        state = self._state()
+        if state.pending is None:
+            state.pending = []
+        return state.pending
 
     def _flush_accesses(self) -> None:
         """Write out buffered recall access counts. Best effort by design.
@@ -810,14 +745,11 @@ class PythonMemoryStorage:
         pending = self._pending()
         if not pending:
             return
-        batch, self._local.pending = pending, []
-        self._local.pending_hits = 0
+        batch, self._state().pending = pending, []
+        self._state().pending_hits = 0
         # Expand batches to per-id totals only here — flushes are rare
         # (hundreds of recalls apart), so the per-id work is amortized.
-        counts: dict[str, int] = {}
-        for ids in batch:
-            for mem_id in ids:
-                counts[mem_id] = counts.get(mem_id, 0) + 1
+        counts = fold_accesses(batch)
         now = time.time()
         try:
             conn = self._conn()
@@ -832,7 +764,7 @@ class PythonMemoryStorage:
             # Record how many rows this flush touched so _search_version can
             # ignore them: access-count writes do not change searchable content.
             # _conn() ran above on this thread, so ignored_changes exists.
-            self._local.ignored_changes += conn.total_changes - before
+            self._state().ignored_changes += conn.total_changes - before
             committed = True
         except sqlite3.Error:
             if "conn" in locals() and conn.in_transaction:
@@ -977,6 +909,7 @@ class PythonMemoryStorage:
         init_conn = self._connect(self.CLASSIFY_BUSY_TIMEOUT_MS)
         try:
             kind, classified_version = self._classify_schema(init_conn)
+            migration_actions = actions_from(classified_version)
             if kind == "ours" and classified_version < self.SCHEMA_VERSION:
                 backup_path = f"{self._migration_backup_base}.pre-v3.{time.time_ns()}.bak"
                 backup_conn = sqlite3.connect(backup_path)
@@ -997,7 +930,7 @@ class PythonMemoryStorage:
                 init_conn.execute(self.SCHEMA)
                 for ddl in self.FTS_DDL:
                     init_conn.execute(ddl)
-                if classified_version < self.FTS_SCHEMA_VERSION:
+                if "rebuild_fts" in migration_actions:
                     # A store from before the index (or a legacy one from before
                     # the sentinel) has no indexed rows: build it now, inside
                     # the same transaction, so the corpus is never searchable
@@ -1006,7 +939,7 @@ class PythonMemoryStorage:
                 for drop_sql in self.DROPPED_INDEXES:
                     init_conn.execute(drop_sql)
                 columns = {row[1] for row in init_conn.execute("PRAGMA table_info(memories)")}
-                if "content_lower" in columns:
+                if "remove_content_lower" in migration_actions and "content_lower" in columns:
                     compact_after_migration = True
                     self._remove_content_lower(init_conn)
                 for ddl in self.INDEXES:
@@ -1163,7 +1096,7 @@ class PythonMemoryStorage:
         # seeds ignored_changes — direct read, no getattr.
         return (
             conn.execute("PRAGMA data_version").fetchone()[0],
-            conn.total_changes - self._local.ignored_changes,
+            conn.total_changes - self._state().ignored_changes,
         )
 
     def _recall_fulltext(self, conn, match, namespace, max_results, min_importance):
@@ -1174,17 +1107,11 @@ class PythonMemoryStorage:
         tie-break is the store's own importance/recency order.
         """
         if namespace or min_importance is not None:
+            where, params = predicate(Query(match, "", namespace, min_importance, max_results))
             sql = (
                 "SELECT m.* FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid "
-                "WHERE memories_fts MATCH ?"
+                f"WHERE {where}"
             )
-            params: list[Any] = [match]
-            if namespace:
-                sql += " AND m.namespace = ?"
-                params.append(namespace)
-            if min_importance is not None:
-                sql += " AND m.importance >= ?"
-                params.append(min_importance)
             # `m.id` last: BM25 ties are common (identical text, identical scores),
             # and without a unique final key `LIMIT` can drop a different row
             # between two identical queries.
@@ -1192,8 +1119,7 @@ class PythonMemoryStorage:
                 " ORDER BY bm25(memories_fts), m.importance DESC, "
                 "m.created_at DESC, m.id LIMIT ?"
             )
-            params.append(max_results)
-            return conn.execute(sql, params).fetchall()
+            return conn.execute(sql, (*params, max_results)).fetchall()
         # Unfiltered (the wide, common case): rank against the narrow
         # recall_keys mirror instead of probing full memory rows, so sorter
         # records shrink to (rowid, rank, importance, created_at, id) and the
@@ -1222,14 +1148,9 @@ class PythonMemoryStorage:
         takes the punctuation literally while folding ASCII case without a
         duplicated text column.
         """
-        sql = "SELECT * FROM memories WHERE instr(lower(content), lower(?)) > 0"
-        params: list[Any] = [query]
-        if namespace:
-            sql += " AND namespace = ?"
-            params.append(namespace)
-        if min_importance is not None:
-            sql += " AND importance >= ?"
-            params.append(min_importance)
+        where, base_params = predicate(Query(None, query, namespace, min_importance))
+        sql = f"SELECT * FROM memories m WHERE {where}"
+        params: list[Any] = list(base_params)
         # `id` last for the same reason as the full-text path: without a unique
         # final key, equally-ranked rows come back in an arbitrary order and
         # `LIMIT` can drop a different one between two identical queries.
@@ -1285,8 +1206,8 @@ class PythonMemoryStorage:
             if cached:
                 pending = self._pending()
                 pending.append(ids)
-                hits = self._local.pending_hits + len(ids)
-                self._local.pending_hits = hits
+                hits = self._state().pending_hits + len(ids)
+                self._state().pending_hits = hits
                 if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
                     self._flush_accesses()
             # r.copy() == dict(r) (same shallow copy) but ~20% cheaper —
@@ -1319,8 +1240,8 @@ class PythonMemoryStorage:
         if results:
             pending = self._pending()
             pending.append(ids)
-            hits = self._local.pending_hits + len(results)
-            self._local.pending_hits = hits
+            hits = self._state().pending_hits + len(results)
+            self._state().pending_hits = hits
             if len(pending) >= self.ACCESS_FLUSH_DISTINCT or hits >= self.ACCESS_FLUSH_HITS:
                 self._flush_accesses()
 
@@ -1398,41 +1319,51 @@ class PythonMemoryStorage:
         """
         conn = self._conn()
         try:
-            sql = "SELECT id, content, namespace, importance, created_at FROM memories"
-            params: list[Any] = []
-            if namespace:
-                sql += " WHERE namespace = ?"
-                params.append(namespace)
-
-            rows = conn.execute(sql, params).fetchall()
+            where = " WHERE namespace = ?" if namespace else ""
+            params = (namespace,) if namespace else ()
+            total = conn.execute("SELECT COUNT(*) FROM memories" + where, params).fetchone()[0]
+            # SQLite lower() folds ASCII without ICU; non-ASCII proposal-prefix
+            # grouping can differ from Python str.lower(). This is only a
+            # review hint count: exact duplicate detection/deletion below uses
+            # the full SQLite text value and remains byte-exact.
+            proposal_groups = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT namespace, substr(lower(content), 1, 50) "
+                "FROM memories" + where + " GROUP BY namespace, substr(lower(content), 1, 50) "
+                "HAVING COUNT(*) > 1)", params
+            ).fetchone()[0]
+            exact_groups = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT namespace, content FROM memories" + where +
+                " GROUP BY namespace, content HAVING COUNT(*) > 1)", params
+            ).fetchone()[0]
+            duplicates = conn.execute(
+                "SELECT id, namespace, substr(content, 1, 80), importance, created_at FROM memories WHERE "
+                "(namespace, content) IN (SELECT namespace, content FROM memories" + where +
+                " GROUP BY namespace, content HAVING COUNT(*) > 1)", params
+            ).fetchall()
         except sqlite3.Error as e:
             # A failed read used to report "0 duplicate groups", i.e. a clean
             # bill of health for a store it could not read.
             logger.exception("Consolidate read failed")
             raise StorageError(f"consolidate read failed on {self.db_path}: {e}") from e
 
-        proposals: dict[str, list[str]] = {}
-        exact: dict[str, list[sqlite3.Row]] = {}
-        for row in rows:
-            proposals.setdefault(f"{row[2]}:{row[1][:50].lower()}", []).append(row[0])
-            exact.setdefault(f"{row[2]}:{row[1]}", []).append(row)
-
-        proposal_groups = {k: v for k, v in proposals.items() if len(v) > 1}
-        exact_groups = {k: v for k, v in exact.items() if len(v) > 1}
         removed = 0
 
-        if auto_apply and exact_groups:
+        if auto_apply and duplicates:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                for group in exact_groups.values():
-                    # Keep the most important row, ties broken by the earliest
-                    # write so repeated runs are deterministic.
-                    best = max(group, key=lambda r: (r[3] or 0, -(r[4] or 0)))
-                    for row in group:
-                        if row[0] == best[0]:
-                            continue
-                        conn.execute("DELETE FROM memories WHERE id = ?", (row[0],))
-                        removed += 1
+                ranked_losers = [
+                    row[0] for row in conn.execute(
+                        "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "
+                        "(PARTITION BY namespace, content ORDER BY importance DESC, "
+                        "created_at ASC, id ASC) AS rank FROM memories WHERE "
+                        "(namespace, content) IN (SELECT namespace, content FROM memories" +
+                        where + " GROUP BY namespace, content HAVING COUNT(*) > 1)) "
+                        "WHERE rank > 1", params
+                    )
+                ]
+                delete_ids = plan_consolidation(ranked_losers).delete_ids
+                conn.executemany("DELETE FROM memories WHERE id = ?", ((item,) for item in delete_ids))
+                removed = len(delete_ids)
                 conn.commit()
             except sqlite3.Error as e:
                 conn.rollback()
@@ -1442,17 +1373,16 @@ class PythonMemoryStorage:
             self._maybe_checkpoint()
 
         return {
-            "total": len(rows),
-            "duplicate_groups": len(proposal_groups),
-            "exact_duplicate_groups": len(exact_groups),
+            "total": total,
+            "duplicate_groups": proposal_groups,
+            "exact_duplicate_groups": exact_groups,
             # Bounded preview so a caller can show what --auto-apply would
             # remove before confirming.
             "candidates": []
             if auto_apply
             else [
-                {"id": row[0], "namespace": row[2], "preview": row[1][:80]}
-                for group in exact_groups.values()
-                for row in group
+                {"id": row[0], "namespace": row[1], "preview": row[2]}
+                for row in duplicates
             ][:50],
             "removed": removed,
             "auto_applied": auto_apply,
@@ -1498,23 +1428,8 @@ class PythonMemoryStorage:
             raise ValueError("query cannot be empty")
         conn = self._conn()
         try:
-            match = _fts_match_expression(query)
-            if match is None:
-                sql = "SELECT COUNT(*) FROM memories WHERE instr(lower(content), lower(?)) > 0"
-                params: list[Any] = [query]
-            else:
-                sql = (
-                    "SELECT COUNT(*) FROM memories_fts "
-                    "JOIN memories m ON m.rowid = memories_fts.rowid "
-                    "WHERE memories_fts MATCH ?"
-                )
-                params = [match]
-            if namespace:
-                sql += " AND m.namespace = ?" if match is not None else " AND namespace = ?"
-                params.append(namespace)
-            if min_importance is not None:
-                sql += " AND m.importance >= ?" if match is not None else " AND importance >= ?"
-                params.append(min_importance)
+            query_plan = Query(_fts_match_expression(query), query, namespace, min_importance)
+            sql, params = count_sql(query_plan)
             row = conn.execute(sql, params).fetchone()
             return row[0] if row else 0
         except sqlite3.Error as e:
