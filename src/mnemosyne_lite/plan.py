@@ -46,7 +46,9 @@ def count_sql(query: Query) -> tuple[str, tuple[object, ...]]:
     if query.match is None:
         sql = f"SELECT COUNT(*) FROM memories m WHERE {clause}"
     else:
-        sql = ("SELECT COUNT(*) FROM memories_fts "
-               "JOIN memories m ON m.rowid = memories_fts.rowid "
-               f"WHERE {clause}")
+        sql = (
+            "SELECT COUNT(*) FROM memories_fts "
+            "JOIN memories m ON m.rowid = memories_fts.rowid "
+            f"WHERE {clause}"
+        )
     return sql, params

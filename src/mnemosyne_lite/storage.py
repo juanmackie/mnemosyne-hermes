@@ -20,9 +20,10 @@ import sqlite3
 import threading
 import time
 from typing import Any
-from .records import Query, ThreadState
-from .plan import count_sql, fold_accesses, plan_consolidation, predicate
+
 from . import schema as _schema
+from .plan import count_sql, fold_accesses, plan_consolidation, predicate
+from .records import Query, ThreadState
 from .schema import actions_from
 
 logger = logging.getLogger(__name__)
@@ -1116,8 +1117,7 @@ class PythonMemoryStorage:
             # and without a unique final key `LIMIT` can drop a different row
             # between two identical queries.
             sql += (
-                " ORDER BY bm25(memories_fts), m.importance DESC, "
-                "m.created_at DESC, m.id LIMIT ?"
+                " ORDER BY bm25(memories_fts), m.importance DESC, m.created_at DESC, m.id LIMIT ?"
             )
             return conn.execute(sql, (*params, max_results)).fetchall()
         # Unfiltered (the wide, common case): rank against the narrow
@@ -1329,16 +1329,21 @@ class PythonMemoryStorage:
             proposal_groups = conn.execute(
                 "SELECT COUNT(*) FROM (SELECT namespace, substr(lower(content), 1, 50) "
                 "FROM memories" + where + " GROUP BY namespace, substr(lower(content), 1, 50) "
-                "HAVING COUNT(*) > 1)", params
+                "HAVING COUNT(*) > 1)",
+                params,
             ).fetchone()[0]
             exact_groups = conn.execute(
-                "SELECT COUNT(*) FROM (SELECT namespace, content FROM memories" + where +
-                " GROUP BY namespace, content HAVING COUNT(*) > 1)", params
+                "SELECT COUNT(*) FROM (SELECT namespace, content FROM memories"
+                + where
+                + " GROUP BY namespace, content HAVING COUNT(*) > 1)",
+                params,
             ).fetchone()[0]
             duplicates = conn.execute(
                 "SELECT id, namespace, substr(content, 1, 80), importance, created_at FROM memories WHERE "
-                "(namespace, content) IN (SELECT namespace, content FROM memories" + where +
-                " GROUP BY namespace, content HAVING COUNT(*) > 1)", params
+                "(namespace, content) IN (SELECT namespace, content FROM memories"
+                + where
+                + " GROUP BY namespace, content HAVING COUNT(*) > 1)",
+                params,
             ).fetchall()
         except sqlite3.Error as e:
             # A failed read used to report "0 duplicate groups", i.e. a clean
@@ -1352,17 +1357,22 @@ class PythonMemoryStorage:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 ranked_losers = [
-                    row[0] for row in conn.execute(
+                    row[0]
+                    for row in conn.execute(
                         "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "
                         "(PARTITION BY namespace, content ORDER BY importance DESC, "
                         "created_at ASC, id ASC) AS rank FROM memories WHERE "
-                        "(namespace, content) IN (SELECT namespace, content FROM memories" +
-                        where + " GROUP BY namespace, content HAVING COUNT(*) > 1)) "
-                        "WHERE rank > 1", params
+                        "(namespace, content) IN (SELECT namespace, content FROM memories"
+                        + where
+                        + " GROUP BY namespace, content HAVING COUNT(*) > 1)) "
+                        "WHERE rank > 1",
+                        params,
                     )
                 ]
                 delete_ids = plan_consolidation(ranked_losers).delete_ids
-                conn.executemany("DELETE FROM memories WHERE id = ?", ((item,) for item in delete_ids))
+                conn.executemany(
+                    "DELETE FROM memories WHERE id = ?", ((item,) for item in delete_ids)
+                )
                 removed = len(delete_ids)
                 conn.commit()
             except sqlite3.Error as e:
@@ -1380,10 +1390,9 @@ class PythonMemoryStorage:
             # remove before confirming.
             "candidates": []
             if auto_apply
-            else [
-                {"id": row[0], "namespace": row[1], "preview": row[2]}
-                for row in duplicates
-            ][:50],
+            else [{"id": row[0], "namespace": row[1], "preview": row[2]} for row in duplicates][
+                :50
+            ],
             "removed": removed,
             "auto_applied": auto_apply,
         }
