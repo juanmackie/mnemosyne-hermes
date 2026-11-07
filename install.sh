@@ -127,6 +127,35 @@ fail() {
 }
 note() { printf '  %s\n' "$*"; }
 
+release_installer_lock() {
+  if [[ -n "${INSTALL_LOCK:-}" && "$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
+    rm -f "$INSTALL_LOCK/pid"
+    rmdir "$INSTALL_LOCK" 2>/dev/null || true
+  fi
+}
+
+acquire_installer_lock() {
+  INSTALL_LOCK="$HERMES_HOME/.mnemosyne-installer.lock"
+  mkdir -p "$HERMES_HOME"
+  for attempt in 1 2 3; do
+    if mkdir "$INSTALL_LOCK" 2>/dev/null; then
+      printf '%s\n' "$$" >"$INSTALL_LOCK/pid" 2>/dev/null || true
+      if [[ "$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
+        trap release_installer_lock EXIT
+        return 0
+      fi
+      continue
+    fi
+    INSTALL_OWNER="$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)"
+    if [[ "$INSTALL_OWNER" =~ ^[0-9]+$ ]] && kill -0 "$INSTALL_OWNER" 2>/dev/null; then
+      fail "another Mnemosyne installer is running (pid $INSTALL_OWNER, lock: $INSTALL_LOCK)"
+    fi
+    rm -f "$INSTALL_LOCK/pid" 2>/dev/null || true
+    rmdir "$INSTALL_LOCK" 2>/dev/null || true
+  done
+  fail "could not acquire installer lock $INSTALL_LOCK"
+}
+
 PLUGIN_LINK="$HERMES_HOME/plugins/mnemosyne"
 CONFIG_FILE="$HERMES_HOME/config.yaml"
 
@@ -379,6 +408,13 @@ EOF
     fi
   fi
 
+  # Serialize install/uninstall mutations for this Hermes home, then recheck
+  # the mutable target after any earlier read-only preflight.
+  acquire_installer_lock
+  if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]] && ! verify_installed_copy "$PLUGIN_LINK"; then
+    fail "refusing to remove $PLUGIN_LINK: it changed after preflight"
+  fi
+
   # A real directory passed the complete-copy/source check above, so it is
   # safe to remove only after the explicit confirmation step.
   if [[ -L "$PLUGIN_LINK" ]]; then
@@ -448,6 +484,27 @@ if [[ -z "$HERMES_CLI" && -f "$CONFIG_FILE" ]]; then
   fi
 fi
 
+# Keep the selected provider available for rollback if activation or final
+# verification fails after the candidate plugin is promoted.
+CONFIG_WAS_PRESENT=false
+CONFIG_OLD_PROVIDER=""
+if [[ -f "$CONFIG_FILE" ]]; then
+  CONFIG_WAS_PRESENT=true
+  if ! CONFIG_OLD_PROVIDER="$("$VENV_PY" - "$CONFIG_FILE" <<'CONFIGREAD'
+import pathlib
+import sys
+import yaml
+
+data = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+memory = data.get("memory") if isinstance(data, dict) else None
+provider = memory.get("provider", "") if isinstance(memory, dict) else ""
+print(provider if isinstance(provider, str) else "")
+CONFIGREAD
+)"; then
+    fail "could not read the current memory.provider before installation"
+  fi
+fi
+
 cat <<EOF
 Hermes provider install plan
   repo             : $ROOT
@@ -483,6 +540,10 @@ if [[ "$ASSUME_YES" != true ]]; then
   fi
 fi
 
+# Serialize install/uninstall changes to the same Hermes home. Revalidate the
+# plugin after acquiring the lock because the earlier plan/preflight was read-only.
+acquire_installer_lock
+
 # Never replace a real directory based only on a user-editable marker file.
 # Validate its complete inventory and hashes before removing it later.
 if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]] && ! verify_installed_copy "$PLUGIN_LINK"; then
@@ -510,27 +571,83 @@ fi
 # Deploy the directory before PM resolves the provider dependency union. The
 # selected memory.provider config names this directory's pyproject declaration.
 echo "== Installing the plugin directory"
-mkdir -p "$(dirname "$PLUGIN_LINK")"
+PLUGIN_PARENT="$(dirname "$PLUGIN_LINK")"
+mkdir -p "$PLUGIN_PARENT"
 if [[ -e "$PLUGIN_LINK" && ! -L "$PLUGIN_LINK" ]] && ! verify_installed_copy "$PLUGIN_LINK"; then
   fail "$PLUGIN_LINK changed after preflight; refusing to overwrite it"
 fi
-rm -rf "$PLUGIN_LINK"
-if [[ "$COPY_MODE" != true ]]; then
-  ln -s "$PROVIDER_PKG" "$PLUGIN_LINK" 2>/dev/null || true
-fi
+DEPLOY_ROOT="$(mktemp -d "$PLUGIN_PARENT/.mnemosyne-install.XXXXXX")"
+DEPLOY_STAGE="$DEPLOY_ROOT/plugin"
+DEPLOY_PREVIOUS="$DEPLOY_ROOT/previous"
+DEPLOY_PROMOTED=false
+DEPLOY_COMMITTED=false
+CONFIG_CHANGE_STARTED=false
+CONFIG_CREATED=false
+cleanup_deploy() {
+  local exit_status=$?
+  if [[ "$exit_status" -ne 0 && "${DEPLOY_PROMOTED:-false}" == true && "${DEPLOY_COMMITTED:-false}" != true ]]; then
+    if [[ "${CONFIG_CHANGE_STARTED:-false}" == true && -n "$HERMES_CLI" ]]; then
+      if ! "$HERMES_CLI" config set memory.provider "$CONFIG_OLD_PROVIDER" >/dev/null 2>&1; then
+        note "could not restore the previous memory.provider value '$CONFIG_OLD_PROVIDER'"
+      elif [[ "$HERMES_PM" == true ]] && ! "$HERMES_CLI" pm install >/dev/null 2>&1; then
+        note "could not restore Hermes PM's dependency selection after install failure"
+      fi
+    elif [[ "${CONFIG_CREATED:-false}" == true && "$CONFIG_WAS_PRESENT" != true ]]; then
+      rm -f "$CONFIG_FILE"
+    fi
+    if [[ -e "$PLUGIN_LINK" || -L "$PLUGIN_LINK" ]]; then
+      rm -rf "$PLUGIN_LINK" || note "could not remove the failed provider deployment at $PLUGIN_LINK"
+    fi
+    if [[ -e "$DEPLOY_PREVIOUS" || -L "$DEPLOY_PREVIOUS" ]]; then
+      if ! mv "$DEPLOY_PREVIOUS" "$PLUGIN_LINK"; then
+        note "could not restore the previous provider; recovery copy remains at $DEPLOY_PREVIOUS"
+      fi
+    fi
+  fi
+  if [[ -n "${DEPLOY_ROOT:-}" ]]; then
+    if [[ -e "$DEPLOY_PREVIOUS" || -L "$DEPLOY_PREVIOUS" ]]; then
+      note "preserving provider recovery copy at $DEPLOY_PREVIOUS"
+    else
+      rm -rf "$DEPLOY_ROOT"
+    fi
+  fi
+  release_installer_lock
+  return 0
+}
+trap cleanup_deploy EXIT
+
 PLUGIN_REAL="$("$VENV_PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PLUGIN_LINK" 2>/dev/null || true)"
 PROVIDER_REAL="$("$VENV_PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PROVIDER_PKG" 2>/dev/null || true)"
+if [[ "$COPY_MODE" != true && -n "$PLUGIN_REAL" && "$PLUGIN_REAL" == "$PROVIDER_REAL" ]]; then
+  ln -s "$PROVIDER_PKG" "$DEPLOY_STAGE"
+  note "prepared a link to $PROVIDER_PKG"
+else
+  cp -R "$PROVIDER_PKG" "$DEPLOY_STAGE"
+  write_provenance "$DEPLOY_STAGE" "$PROVIDER_PKG"
+  note "prepared a verified COPY at $PLUGIN_LINK"
+fi
+[[ -f "$DEPLOY_STAGE/__init__.py" ]] || fail "staged provider has no __init__.py; refusing deployment"
+
+# Preserve the current verified installation until the replacement is complete.
+# The stage is on the same filesystem, so the final rename is atomic for a new
+# path; if replacing a directory requires two renames, restore the old directory
+# immediately if promotion fails.
+if [[ -e "$PLUGIN_LINK" || -L "$PLUGIN_LINK" ]]; then
+  mv "$PLUGIN_LINK" "$DEPLOY_PREVIOUS"
+fi
+if ! mv "$DEPLOY_STAGE" "$PLUGIN_LINK"; then
+  if [[ -e "$DEPLOY_PREVIOUS" || -L "$DEPLOY_PREVIOUS" ]]; then
+    mv "$DEPLOY_PREVIOUS" "$PLUGIN_LINK" || true
+  fi
+  fail "could not promote staged provider into $PLUGIN_LINK"
+fi
+DEPLOY_PROMOTED=true
 if [[ "$COPY_MODE" == true ]] || [[ -z "$PLUGIN_REAL" || "$PLUGIN_REAL" != "$PROVIDER_REAL" ]]; then
-  rm -rf "$PLUGIN_LINK"
-  cp -R "$PROVIDER_PKG" "$PLUGIN_LINK"
-  write_provenance "$PLUGIN_LINK" "$PROVIDER_PKG"
   note "installed a COPY at $PLUGIN_LINK (no symlink support here)"
   note "  re-run this script after changing provider code: a copy does not track it"
 else
-  note "linked $PLUGIN_LINK -> $PROVIDER_PKG"
+  note "linked $PLUGIN_LINK -> $PROVIDER_REAL"
 fi
-[[ -f "$PLUGIN_LINK/__init__.py" ]] || fail "$PLUGIN_LINK has no __init__.py; the Hermes memory
-       provider loader would skip it (it requires __init__.py with register_memory_provider)"
 
 # Patch the engine itself: the standalone `mnemosyne mcp` process bypasses
 # hermes_memory_provider. Refuse unreviewed source drift before plugin/config
@@ -539,6 +656,7 @@ if [[ "$HERMES_PM" == true ]]; then
   # Setting the memory provider is the supported provider-selection input to
   # PM's dependency union. `pm install` resolves and selects that union.
   echo "== Selecting the provider so Hermes PM can admit its declared dependencies"
+  CONFIG_CHANGE_STARTED=true
   "$HERMES_CLI" config set memory.provider mnemosyne
   "$HERMES_CLI" pm install
   # On PM-managed installs the selected generation can differ from the
@@ -574,9 +692,11 @@ esac
 # --- 5. config --------------------------------------------------------------
 echo "== Selecting the provider"
 if [[ "$HERMES_PM" != true && -n "$HERMES_CLI" ]]; then
+  CONFIG_CHANGE_STARTED=true
   "$HERMES_CLI" config set memory.provider mnemosyne
 elif [[ ! -f "$CONFIG_FILE" ]]; then
   mkdir -p "$(dirname "$CONFIG_FILE")"
+  CONFIG_CREATED=true
   printf 'memory:\n  provider: mnemosyne\n' >"$CONFIG_FILE"
   note "created $CONFIG_FILE with memory.provider=mnemosyne"
 fi
@@ -673,6 +793,11 @@ LOADERPY
     fail "Hermes memory-provider loader does not resolve mnemosyne to the deployed provider class"
   fi
 fi
+
+# Keep the old plugin and config available until every activation check passed.
+DEPLOY_COMMITTED=true
+rm -rf "$DEPLOY_ROOT"
+DEPLOY_ROOT=""
 
 cat <<EOF
 

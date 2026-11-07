@@ -29,6 +29,7 @@ run "${PYTHON_BIN:-python3}" -m pytest tests/test_precision_recall_eval.py -q
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_mnemobench_phase0.py -q
 run "${PYTHON_BIN:-python3}" tests/test_memory_writer_eval.py
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_consolidation.py -q
+run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_pending.py -q
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_prefetch.py tests/test_provider_lifecycle.py tests/test_provider_eval.py tests/test_install_powershell.py -q
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_audit.py tests/test_provider_inspection.py tests/test_provider_evidence.py tests/test_lite_mcp.py tests/test_lite_describe_cards.py -q
 run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_maintenance.py tests/test_test_runner.py -q

@@ -332,11 +332,13 @@ def test_failed_restore_v2_backup_leaves_destination_and_no_staging_files():
             conn.executescript((ROOT / "tests/fixtures/lite-v2.sql").read_text(encoding="utf-8"))
         assert _run(["--db-path", str(dest), "remember", "--content", "original"])[0] == 0
         before = dest.read_bytes()
-        with mock.patch.object(CLI.os, "replace", side_effect=OSError("replacement refused")):
+        with mock.patch.object(
+            CLI, "_install_staged_database", side_effect=OSError("install refused")
+        ):
             code, _, err = _run(
                 ["--db-path", str(dest), "restore", "--backup", str(source), "--yes"]
             )
-        assert code == 1 and "replacement refused" in err, (code, err)
+        assert code == 1 and "install refused" in err, (code, err)
         assert dest.read_bytes() == before
         assert not list(pathlib.Path(d).glob("memory.db.restore-tmp.*"))
 

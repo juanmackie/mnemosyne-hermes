@@ -8,6 +8,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -180,13 +181,17 @@ def installer(tmp_path):
         if fail:
             action = "exit 7\n"
         elif not noop:
-            action = 'printf "memory:\\n  provider: mnemosyne\\n" > "$HERMES_HOME/config.yaml"\n'
+            action = (
+                'if [[ "${1:-}" == "config" && "${2:-}" == "set" ]]; then '
+                'printf "memory:\\n  provider: %s\\n" "$4" > "$HERMES_HOME/config.yaml"; fi\n'
+            )
         _script(
             path,
             'printf "%s\\n" "$0 $*" >> "$TEST_HERMES_LOG"\n'
             'if [[ "${1:-}" == "pm" && "${2:-}" == "status" ]]; then exit 3; fi\n' + action,
         )
 
+    run.provider_source = provider / "__init__.py"
     return run, hermes, venv, commands, home, install_log, hermes_log
 
 
@@ -309,3 +314,87 @@ def test_package_manager_owns_provider_dependencies_without_uv_injection(install
     collision = run()
     assert collision.returncode != 0, collision.stdout + collision.stderr
     assert "loader does not resolve mnemosyne" in collision.stdout + collision.stderr
+
+
+def test_failed_copy_preserves_existing_verified_provider(installer):
+    run, hermes, venv, commands, home, _installs, _calls = installer
+    hermes(venv / "bin/hermes")
+    first = run("--copy")
+    assert first.returncode == 0, first.stdout + first.stderr
+    installed = home / "plugins" / "mnemosyne"
+    old_init = (installed / "__init__.py").read_bytes()
+    old_provenance = (installed / "PROVENANCE.json").read_bytes()
+
+    _script(commands / "cp", "exit 73\n")
+    second = run("--copy")
+    assert second.returncode != 0
+    assert (installed / "__init__.py").read_bytes() == old_init
+    assert (installed / "PROVENANCE.json").read_bytes() == old_provenance
+    assert not list((home / "plugins").glob(".mnemosyne-install.*"))
+
+
+def test_failed_post_promotion_verification_restores_previous_provider_and_config(installer):
+    run, hermes, venv, _commands, home, _installs, _calls = installer
+    hermes(venv / "bin/hermes")
+    first = run("--copy")
+    assert first.returncode == 0, first.stdout + first.stderr
+    installed = home / "plugins" / "mnemosyne"
+    previous_init = (installed / "__init__.py").read_bytes()
+    previous_provenance = (installed / "PROVENANCE.json").read_bytes()
+
+    (home / "config.yaml").write_text("memory:\n  provider: local\n", encoding="utf-8")
+    source_init = run.provider_source
+    source_init.write_text(
+        source_init.read_text(encoding="utf-8").replace(
+            "def is_available(self): return True", "def is_available(self): return False"
+        ),
+        encoding="utf-8",
+    )
+    result = run("--copy")
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (installed / "__init__.py").read_bytes() == previous_init
+    assert (installed / "PROVENANCE.json").read_bytes() == previous_provenance
+    assert "provider: local" in (home / "config.yaml").read_text(encoding="utf-8")
+    assert not list((home / "plugins").glob(".mnemosyne-install.*"))
+
+
+def test_live_installer_lock_refuses_without_mutating_home(installer):
+    run, hermes, venv, _commands, home, installs, _calls = installer
+    hermes(venv / "bin/hermes")
+    lock = home / ".mnemosyne-installer.lock"
+    lock.mkdir()
+    (lock / "pid").write_text(str(os.getpid()), encoding="ascii")
+    before = (home / "config.yaml").read_bytes()
+    result = run()
+    assert result.returncode != 0
+    assert "another Mnemosyne installer is running" in result.stderr
+    assert (home / "config.yaml").read_bytes() == before
+    assert not installs.exists()
+    assert not (home / "plugins").exists()
+    assert lock.is_dir()
+
+
+def test_installer_recovers_dead_owner_lock(installer):
+    run, hermes, venv, _commands, home, _installs, _calls = installer
+    hermes(venv / "bin/hermes")
+    lock = home / ".mnemosyne-installer.lock"
+    lock.mkdir()
+    (lock / "pid").write_text("999999999", encoding="ascii")
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not lock.exists()
+    assert (home / "plugins" / "mnemosyne" / "__init__.py").is_file()
+
+
+def test_concurrent_installs_serialize_the_shared_hermes_home(installer):
+    run, hermes, venv, _commands, home, _installs, _calls = installer
+    hermes(venv / "bin/hermes")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _n: run("--copy"), range(2)))
+    assert all(result.returncode == 0 or "another Mnemosyne installer is running" in result.stderr
+               for result in results)
+    installed = home / "plugins" / "mnemosyne"
+    assert (installed / "__init__.py").is_file()
+    assert (installed / "PROVENANCE.json").is_file()
+    assert not (home / ".mnemosyne-installer.lock").exists()

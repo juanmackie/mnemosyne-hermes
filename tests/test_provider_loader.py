@@ -208,6 +208,9 @@ def test_patched_hook_signatures_and_accept_and_store():
     assert provider._beam.calls[-1]["metadata"]["hermes_native_mirror"]["target"] == "user"
 
     # 4. F1 stores tool turns only when the operator opts in via sync_roles.
+    # This smoke test focuses on role-selection compatibility; atomicity is
+    # exercised separately with transaction-capable fixtures.
+    mod._atomic_sync_turn_writes = lambda _beam: contextlib.nullcontext()
     turns = [
         {"role": "user", "content": "run the tests"},
         {"role": "tool", "name": "bash", "content": "21 tests OK"},

@@ -9,6 +9,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+import types
 import uuid
 from unittest.mock import patch
 
@@ -23,6 +24,54 @@ import hermes_memory_provider as provider_mod  # noqa: E402
 from hermes_memory_provider import cli as cli_mod  # noqa: E402
 
 
+class _TransactionalConnection(sqlite3.Connection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._defer_commit = False
+
+    def commit(self):
+        if not self._defer_commit:
+            super().commit()
+
+    def _real_commit(self):
+        super().commit()
+
+
+@contextlib.contextmanager
+def _deferred_commits(conn):
+    conn._defer_commit = True
+    try:
+        yield
+    except BaseException:
+        conn._defer_commit = False
+        conn.rollback()
+        raise
+    else:
+        conn._defer_commit = False
+        conn._real_commit()
+
+
+@contextlib.contextmanager
+def _engine_transaction_context():
+    mnemosyne = types.ModuleType("mnemosyne")
+    mnemosyne.__path__ = []
+    core = types.ModuleType("mnemosyne.core")
+    core.__path__ = []
+    beam = types.ModuleType("mnemosyne.core.beam")
+    beam._deferred_commits = _deferred_commits
+    with patch.dict(sys.modules, {
+        "mnemosyne": mnemosyne,
+        "mnemosyne.core": core,
+        "mnemosyne.core.beam": beam,
+    }):
+        yield
+
+
+def _sync_turn(provider, *args, **kwargs):
+    with _engine_transaction_context():
+        provider.sync_turn(*args, **kwargs)
+
+
 def test_pinned_host_fixture_hashes_match_source_ledger():
     directory = ROOT / "tests/fixtures/hermes_main_a28a5d03"
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
@@ -32,7 +81,7 @@ def test_pinned_host_fixture_hashes_match_source_ledger():
 
 class NativeMirrorBeam:
     def __init__(self, db_path=":memory:"):
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, factory=_TransactionalConnection)
         self.session_id = "engine-profile"
         self.db_path = db_path
         self.invalidations = []
@@ -428,7 +477,7 @@ def test_native_previous_content_without_session_mapping_does_not_delete_by_text
 def test_turn_author_metadata_tracks_each_speaker_without_startup_identity():
     provider = _provider()
     provider.on_turn_start(1, "first", author_id="user-a", author_name="Ada", author_is_bot=False)
-    provider.sync_turn(
+    _sync_turn(provider,
         "question one",
         "answer one",
         session_id="s1",
@@ -440,7 +489,7 @@ def test_turn_author_metadata_tracks_each_speaker_without_startup_identity():
     assert tool["metadata"]["turn_author"] == first
 
     provider.on_turn_start(2, "second", author_id="user-b", author_name="Lin", author_is_bot=False)
-    provider.sync_turn("question two", "answer two", session_id="s2", turn_author={"id": "user-c"})
+    _sync_turn(provider, "question two", "answer two", session_id="s2", turn_author={"id": "user-c"})
     user_rows = [row for row in provider._beam.rows.values() if row["source"] == "conversation"]
     assert user_rows[-1]["metadata"]["turn_author"] == {"id": "user-c"}
     assert "startup-user-must-not-be-current-speaker" not in json.dumps(provider._beam.rows)
@@ -449,7 +498,7 @@ def test_turn_author_metadata_tracks_each_speaker_without_startup_identity():
 def test_sync_turn_accepts_legacy_call_without_turn_author():
     provider = _provider()
     provider.on_turn_start(1, "message", author_id="current-user")
-    provider.sync_turn("question", "", session_id="legacy")
+    _sync_turn(provider, "question", "", session_id="legacy")
     assert next(iter(provider._beam.rows.values()))["metadata"]["turn_author"] == {
         "id": "current-user"
     }

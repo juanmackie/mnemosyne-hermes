@@ -74,11 +74,35 @@ git rev-parse --git-dir >/dev/null 2>&1 || {
 
 # One run at a time: a scheduler can fire again before a slow install finishes.
 LOCK="$(git rev-parse --git-dir)/mnemosyne-update.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "ERROR: another update is running (lock: $LOCK)" >&2
+LOCK_ACQUIRED=false
+for attempt in 1 2 3; do
+  if mkdir "$LOCK" 2>/dev/null; then
+    # A contender may have removed an empty stale directory between mkdir and
+    # this write. Verify ownership before any fetch or checkout mutation.
+    printf '%s\n' "$$" >"$LOCK/pid" 2>/dev/null || true
+    if [[ "$(cat "$LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
+      LOCK_ACQUIRED=true
+      break
+    fi
+    continue
+  fi
+
+  OWNER="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  if [[ "$OWNER" =~ ^[0-9]+$ ]] && kill -0 "$OWNER" 2>/dev/null; then
+    echo "ERROR: another update is running (pid $OWNER, lock: $LOCK)" >&2
+    exit 1
+  fi
+  # No live owner means a previous process died before its EXIT trap. Remove
+  # only the known owner file and directory; rmdir arbitrates concurrent
+  # reclaimers, and the ownership check above catches a lost mkdir race.
+  rm -f "$LOCK/pid" 2>/dev/null || true
+  rmdir "$LOCK" 2>/dev/null || true
+done
+if [[ "$LOCK_ACQUIRED" != true ]]; then
+  echo "ERROR: could not acquire update lock (lock: $LOCK)" >&2
   exit 1
 fi
-trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+trap 'if [[ "$(cat "$LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true; fi' EXIT
 
 git fetch --quiet "$REMOTE" "$BRANCH" || {
   echo "ERROR: could not fetch $REMOTE $BRANCH" >&2
@@ -127,7 +151,7 @@ done
 
 install_and_verify() {
   # ${arr[@]+...}: an empty array is an unbound variable under `set -u` on bash < 4.4
-  ./install.sh --yes ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"} || return 1
+  bash ./install.sh --yes ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"} || return 1
   if [[ -n "$HERMES_BIN" ]]; then
     "$HERMES_BIN" mnemosyne doctor --no-fix || return 1
   else

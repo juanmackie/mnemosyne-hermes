@@ -15,6 +15,7 @@ a standalone plugin deployed through the plugin system.
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 import hashlib
 import json
 import logging
@@ -33,6 +34,44 @@ from datetime import datetime, timedelta
 
 # LOCAL PATCH: P22 registration/cleanup ownership spans provider instances.
 _host_llm_registration_lock = threading.Lock()
+
+
+# LOCAL PATCH: P38 commit all role and identity rows from one turn together.
+@contextmanager
+def _atomic_sync_turn_writes(beam):
+    """Defer BEAM sub-helper commits across one turn, rolling back on failure.
+
+    The pinned engine's _deferred_commits context manager is private and
+    degrades to a no-op for ordinary sqlite connections. Require its connection
+    protocol and an idle connection so sync_turn never appears atomic while
+    silently committing each role independently or rolling back unrelated work.
+    """
+    conn = getattr(beam, "conn", None)
+    if (
+        conn is None
+        or getattr(conn, "_defer_commit", None) is not False
+        or not callable(getattr(conn, "_real_commit", None))
+        or getattr(conn, "in_transaction", True)
+    ):
+        raise RuntimeError("BEAM connection cannot provide an idle deferred-commit transaction")
+
+    from mnemosyne.core.beam import _deferred_commits
+
+    try:
+        with _deferred_commits(conn):
+            yield
+    except BaseException:
+        # The pinned engine rolls back ordinary Exceptions. Its context manager
+        # only resets the defer flag for BaseException, so clean that transaction
+        # here too before allowing cancellation or process-control errors up.
+        try:
+            conn._defer_commit = False
+            if conn.in_transaction:
+                conn.rollback()
+        except Exception:
+            pass
+        raise
+
 
 # LOCAL PATCH (P35): a summariser TypeError retries once on the local AAAK path.
 def _exc_location(exc: BaseException) -> str:
@@ -1651,6 +1690,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._prefetch_errors: Dict[str, int] = {}
         self._prefetch_last_context = ""
         self._prefetch_last_bank_counts: Dict[str, int] = {}
+        # LOCAL PATCH: P37 cache payloads are per invocation. Concurrent
+        # prefetch calls may interleave between recall and cache insertion.
+        self._prefetch_call_state = threading.local()
         self._prefetch_recall_changes = 0
         self._prefetch_conn_identity = None
         # Profile memory isolation: when enabled, each Hermes profile gets its own
@@ -2672,6 +2714,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         ``general`` profile retains the prior ranking thresholds; P23 source
         classification and aggregate budgeting apply to all profiles."""
         self._ensure_prefetch_state()
+        self._prefetch_call_state.recall_ids = []
+        self._prefetch_call_state.bank_counts = {}
         with self._prefetch_cache_lock:
             self._prefetch_stats["last_error"] = None
             self._prefetch_last_context = ""
@@ -2762,8 +2806,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 with self._prefetch_cache_lock:
                     self._prefetch_cache[key] = (
                         time.monotonic(), rendered,
-                        dict(getattr(self, "_prefetch_last_bank_counts", {})),
-                        list(getattr(self, "_prefetch_last_recall_ids", [])),
+                        dict(getattr(self._prefetch_call_state, "bank_counts", {})),
+                        list(getattr(self._prefetch_call_state, "recall_ids", [])),
                     )
                     self._prefetch_cache.move_to_end(key)
                     while len(self._prefetch_cache) > 8:
@@ -2805,6 +2849,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             self._prefetch_recall_changes = 0
         if not hasattr(self, "_prefetch_conn_identity"):
             self._prefetch_conn_identity = None
+        if not hasattr(self, "_prefetch_call_state"):
+            self._prefetch_call_state = threading.local()
 
     # LOCAL PATCH: P23 retain BeamMemory's recall_count/last_recalled side
     # effects on cache hits, while treating those provider-owned updates as
@@ -3009,20 +3055,23 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 recall_ms = (time.perf_counter() - recall_started) * 1000
                 recall_changes = int(getattr(self._beam.conn, "total_changes", 0)) - changes_before_recall
                 self._prefetch_recall_changes += max(recall_changes, 0)
-                self._prefetch_last_recall_ids = [
+                recall_ids = [
                     (str(row.get("id")), str(row.get("tier")))
                     for row in results
                     if row.get("id") and row.get("tier") in {"working", "episodic"}
                 ]
+                self._prefetch_call_state.recall_ids = recall_ids
             self._ensure_prefetch_state()
             with self._prefetch_cache_lock:
                 self._prefetch_stats["last_lock_wait_ms"] = lock_wait_ms
                 self._prefetch_stats["last_recall_ms"] = recall_ms
             if not results:
-                self._prefetch_last_bank_counts = {
+                bank_counts = {
                     "rows_seen": 0, "selected": 0, "skipped_low_quality": 0,
                     "skipped_source": 0, "skipped_relevance": 0,
                 }
+                self._prefetch_call_state.bank_counts = bank_counts
+                self._prefetch_last_bank_counts = bank_counts
                 return ""
             # Filter out low-relevance results to prevent context pollution.
             # Importance alone is not enough for silent injection: a memory must
@@ -3058,6 +3107,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # Cap back to the intended injection size after over-fetch+filter.
             filtered = filtered[:profile.top_k]
             counts["selected"] = len(filtered)
+            self._prefetch_call_state.bank_counts = dict(counts)
             self._prefetch_last_bank_counts = counts
             if not filtered:
                 return ""
@@ -3202,60 +3252,61 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             )
         try:
             with self._ensure_beam_access_lock():
-                if "user" in self._sync_roles and user_content and len(user_content) > 5 and not self._should_filter(user_content):
-                    user_limit = _sync_turn_user_limit()
-                    uc = user_content[:user_limit] if user_limit > 0 else user_content
-                    user_metadata = turn_metadata(
-                        user_content, "user", messages, host_session_id, author,
-                    )
-                    self._beam.remember(
-                        content=f"[USER] {uc}",
-                        source="conversation",
-                        importance=0.5,
-                        scope=self._default_scope,
-                        extract_entities=True,
-                        metadata=user_metadata,
-                    )
-                    self._capture_identity_signals(
-                        user_content, turn_author=author, source_metadata=user_metadata,
-                    )
-                if "assistant" in self._sync_roles and assistant_content and len(assistant_content) > 10 and not self._should_filter(assistant_content):
-                    assistant_limit = _sync_turn_assistant_limit()
-                    ac = assistant_content[:assistant_limit] if assistant_limit > 0 else assistant_content
-                    assistant_metadata = turn_metadata(
-                        assistant_content, "assistant", messages, host_session_id, author,
-                    )
-                    self._beam.remember(
-                        content=f"[ASSISTANT] {ac}",
-                        source="conversation",
-                        importance=0.15,
-                        scope=self._default_scope,
-                        extract_entities=True,
-                        metadata=assistant_metadata,
-                    )
-                if "tool" in self._sync_roles and messages:
-                    # LOCAL PATCH (F1): store the tool/function turns that the
-                    # user/assistant strings cannot carry. Opt-in via
-                    # sync_roles, last N messages only, per-message cap.
-                    tool_turns = [
-                        m for m in messages
-                        if str(m.get("role", "")).lower() in ("tool", "function")
-                        and str(m.get("content") or "").strip()
-                    ][-self.SYNC_TOOL_MESSAGE_LIMIT:]
-                    for m in tool_turns:
-                        text = str(m.get("content"))[:self.SYNC_TOOL_MESSAGE_CHAR_LIMIT]
-                        role = str(m.get("role", "tool")).lower()
-                        tool_metadata = turn_metadata(
-                            str(m.get("content") or ""), role, messages, host_session_id, author,
+                with _atomic_sync_turn_writes(self._beam):
+                    if "user" in self._sync_roles and user_content and len(user_content) > 5 and not self._should_filter(user_content):
+                        user_limit = _sync_turn_user_limit()
+                        uc = user_content[:user_limit] if user_limit > 0 else user_content
+                        user_metadata = turn_metadata(
+                            user_content, "user", messages, host_session_id, author,
                         )
-                        tool_metadata.update({"role": role, "name": m.get("name")})
                         self._beam.remember(
-                            content=f"[TOOL] {text}",
-                            source="conversation_tool",
-                            importance=0.2,
+                            content=f"[USER] {uc}",
+                            source="conversation",
+                            importance=0.5,
                             scope=self._default_scope,
-                            metadata=tool_metadata,
+                            extract_entities=True,
+                            metadata=user_metadata,
                         )
+                        self._capture_identity_signals(
+                            user_content, turn_author=author, source_metadata=user_metadata,
+                        )
+                    if "assistant" in self._sync_roles and assistant_content and len(assistant_content) > 10 and not self._should_filter(assistant_content):
+                        assistant_limit = _sync_turn_assistant_limit()
+                        ac = assistant_content[:assistant_limit] if assistant_limit > 0 else assistant_content
+                        assistant_metadata = turn_metadata(
+                            assistant_content, "assistant", messages, host_session_id, author,
+                        )
+                        self._beam.remember(
+                            content=f"[ASSISTANT] {ac}",
+                            source="conversation",
+                            importance=0.15,
+                            scope=self._default_scope,
+                            extract_entities=True,
+                            metadata=assistant_metadata,
+                        )
+                    if "tool" in self._sync_roles and messages:
+                        # LOCAL PATCH (F1): store the tool/function turns that the
+                        # user/assistant strings cannot carry. Opt-in via
+                        # sync_roles, last N messages only, per-message cap.
+                        tool_turns = [
+                            m for m in messages
+                            if str(m.get("role", "")).lower() in ("tool", "function")
+                            and str(m.get("content") or "").strip()
+                        ][-self.SYNC_TOOL_MESSAGE_LIMIT:]
+                        for m in tool_turns:
+                            text = str(m.get("content"))[:self.SYNC_TOOL_MESSAGE_CHAR_LIMIT]
+                            role = str(m.get("role", "tool")).lower()
+                            tool_metadata = turn_metadata(
+                                str(m.get("content") or ""), role, messages, host_session_id, author,
+                            )
+                            tool_metadata.update({"role": role, "name": m.get("name")})
+                            self._beam.remember(
+                                content=f"[TOOL] {text}",
+                                source="conversation_tool",
+                                importance=0.2,
+                                scope=self._default_scope,
+                                metadata=tool_metadata,
+                            )
             self._turn_count += 1
             if self._auto_sleep_enabled and self._turn_count % 10 == 0:
                 self._maybe_auto_sleep()
@@ -4370,11 +4421,34 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             if str(record_path.parent) != str(pending_dir):
                 failed.append({"id": pid, "error": "invalid: path traversal"})
                 continue
+            applying_path = record_path.with_suffix(record_path.suffix + ".applying")
             if not record_path.is_file():
-                failed.append({"id": pid, "error": "pending record not found"})
+                reason = (
+                    "pending record is already claimed or needs recovery"
+                    if applying_path.is_file()
+                    else "pending record not found"
+                )
+                failed.append({"id": pid, "error": reason})
                 continue
 
             try:
+                # LOCAL PATCH: P36 atomically claim an approval before applying
+                # it. Concurrent retries used to both read the same JSON and
+                # commit duplicate memories before either unlinked the record.
+                # Keep an ambiguous claim after errors/crashes: replaying it
+                # could duplicate a write whose commit succeeded before failure.
+                try:
+                    claim_fd = os.open(
+                        applying_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                    )
+                except FileExistsError:
+                    failed.append({"id": pid, "error": "pending record already claimed"})
+                    continue
+                else:
+                    os.close(claim_fd)
+                if not record_path.is_file():
+                    failed.append({"id": pid, "error": "pending record already claimed"})
+                    continue
                 record = json.loads(record_path.read_text())
                 if record.get("id") != pid:
                     failed.append({"id": pid, "error": "id mismatch"})
@@ -4384,6 +4458,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 if not content:
                     failed.append({"id": pid, "error": "empty content"})
                     record_path.unlink(missing_ok=True)
+                    applying_path.unlink(missing_ok=True)
                     continue
 
                 memory_id = self._beam.remember(
@@ -4402,6 +4477,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     ),
                 )
                 record_path.unlink(missing_ok=True)
+                applying_path.unlink(missing_ok=True)
                 applied.append({"id": pid, "memory_id": memory_id})
             except Exception as exc:
                 failed.append({"id": pid, "error": str(exc)})

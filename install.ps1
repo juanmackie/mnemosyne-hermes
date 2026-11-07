@@ -23,6 +23,20 @@ $env:HERMES_HOME = $HermesHome
 
 function Fail([string]$Message) { throw "ERROR: $Message" }
 function Say([string]$Message) { Write-Host "  $Message" }
+function Enter-InstallerLock {
+    $lockPath = Join-Path $HermesHome '.mnemosyne-installer.lock'
+    New-Item -ItemType Directory -Force -Path $HermesHome | Out-Null
+    try {
+        # Windows releases this exclusive handle on process exit, including a
+        # forced termination, so the persistent lock file cannot become stale.
+        $script:InstallerLockStream = [IO.File]::Open(
+            $lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None
+        )
+    } catch {
+        Fail "another Mnemosyne installer is running or the lock is inaccessible: $lockPath"
+    }
+}
 
 function Invoke-PythonCode([string]$Code, [string[]]$Arguments = @()) {
     # PowerShell 5.1 drops embedded quotes when passing multiline -c code to a
@@ -353,6 +367,10 @@ if ($Uninstall) {
         if (-not [Console]::IsInputRedirected) { if ((Read-Host 'Proceed? [y/N]') -notmatch '^(y|yes)$') { Fail 'cancelled; nothing changed' } }
         else { Fail 'refusing to uninstall without confirmation (pass -Yes, or -DryRun to inspect)' }
     }
+    Enter-InstallerLock
+    if ((Test-Path -LiteralPath $Plugin) -and -not (Test-ReparsePoint $Plugin) -and -not (Test-InstallerCopy $Plugin)) {
+        Fail "refusing to remove ${Plugin}: it changed after preflight"
+    }
     if ($HermesCommand -and (Read-ConfigProvider) -eq 'mnemosyne') {
         Invoke-Hermes @('config', 'set', 'memory.provider', '')
         if ($HermesPM) { Invoke-Hermes @('pm', 'install') }
@@ -392,34 +410,100 @@ if (-not $Yes) {
     else { Fail 'refusing to install without confirmation (pass -Yes, or -DryRun to inspect)' }
 }
 
+Enter-InstallerLock
 if ((Test-Path -LiteralPath $Plugin) -and (Test-ReparsePoint $Plugin) -and -not (Test-InstallerLink $Plugin)) { Fail "${Plugin} exists as a reparse point to a different target; refusing to overwrite it" }
 if ((Test-Path -LiteralPath $Plugin) -and -not (Test-ReparsePoint $Plugin) -and -not (Test-InstallerCopy $Plugin)) {
     Fail "${Plugin} exists but is not an intact installer-created copy; refusing to overwrite it"
 }
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Plugin) | Out-Null
-if (Test-Path -LiteralPath $Plugin) {
-    if (Test-ReparsePoint $Plugin) { Remove-Item -LiteralPath $Plugin -Force }
-    else { Remove-Item -LiteralPath $Plugin -Recurse -Force }
+$configWasPresent = Test-Path -LiteralPath $Config -PathType Leaf
+$oldConfigProvider = Read-ConfigProvider
+$configMutationStarted = $false
+$deployCommitted = $false
+$pluginParent = Split-Path -Parent $Plugin
+New-Item -ItemType Directory -Force -Path $pluginParent | Out-Null
+$deployRoot = Join-Path $pluginParent ('.mnemosyne-install-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $deployRoot | Out-Null
+$stagedPlugin = Join-Path $deployRoot 'plugin'
+$previousPlugin = Join-Path $deployRoot 'previous'
+try {
+    Copy-Item -LiteralPath $Provider -Destination $stagedPlugin -Recurse
+    Write-Provenance $stagedPlugin
+    if (-not (Test-InstallerCopy $stagedPlugin)) { Fail 'staged plugin copy failed provenance verification' }
+    if (-not (Test-Path -LiteralPath (Join-Path $stagedPlugin '__init__.py'))) { Fail 'staged plugin has no __init__.py' }
+    if (Test-Path -LiteralPath $Plugin) { Move-Item -LiteralPath $Plugin -Destination $previousPlugin }
+    try {
+        Move-Item -LiteralPath $stagedPlugin -Destination $Plugin
+    } catch {
+        if (Test-Path -LiteralPath $previousPlugin) { Move-Item -LiteralPath $previousPlugin -Destination $Plugin }
+        throw
+    }
+} catch {
+    if (Test-Path -LiteralPath $previousPlugin) {
+        Write-Warning "preserving provider recovery copy at ${previousPlugin}"
+    } elseif (Test-Path -LiteralPath $deployRoot) {
+        Remove-Item -LiteralPath $deployRoot -Recurse -Force
+    }
+    throw
 }
-Copy-Item -LiteralPath $Provider -Destination $Plugin -Recurse
-Write-Provenance $Plugin
 
-if ($HermesPM) {
-    Invoke-Hermes @('config', 'set', 'memory.provider', 'mnemosyne')
-    Invoke-Hermes @('pm', 'install')
-    $VenvPython = Resolve-PmPython
-    & $VenvPython (Join-Path $Root 'scripts/apply_engine_patches.py')
-    if ($LASTEXITCODE -ne 0) { Fail 'audited engine patches could not be applied to the admitted Hermes PM environment' }
-} else {
-    Install-LegacyPackages
+try {
+    if ($HermesPM) {
+        $configMutationStarted = $true
+        Invoke-Hermes @('config', 'set', 'memory.provider', 'mnemosyne')
+        Invoke-Hermes @('pm', 'install')
+        $VenvPython = Resolve-PmPython
+        & $VenvPython (Join-Path $Root 'scripts/apply_engine_patches.py')
+        if ($LASTEXITCODE -ne 0) { Fail 'audited engine patches could not be applied to the admitted Hermes PM environment' }
+    } else {
+        Install-LegacyPackages
+    }
+
+    if (-not $HermesPM) {
+        $configMutationStarted = $true
+        Invoke-Hermes @('config', 'set', 'memory.provider', 'mnemosyne')
+    }
+    if ((Read-ConfigProvider) -ne 'mnemosyne') { Fail 'Hermes config does not select memory.provider=mnemosyne' }
+    if (-not (Test-Path -LiteralPath (Join-Path $Plugin '__init__.py'))) { Fail "$Plugin has no __init__.py" }
+    if (-not (Test-InstallerCopy $Plugin)) { Fail 'installed plugin copy failed provenance verification' }
+    if (-not (Test-ProviderRegistration)) { Fail 'installed plugin does not expose exactly one available provider and CLI command' }
+    if (-not (Test-EngineImport)) { Fail "mnemosyne-memory engine cannot be imported from $VenvPython" }
+    if (-not (Test-HermesLoaderSelection)) { Fail 'Hermes memory-provider loader does not resolve mnemosyne to the deployed provider class' }
+
+    $deployCommitted = $true
+    Write-Host "`nInstalled. Restart Hermes so it loads the provider."
+    Write-Host "Database (created on first write): $DbPath"
+} catch {
+    if ($configMutationStarted -and $HermesCommand) {
+        try {
+            $restoreProvider = if ($configWasPresent) { $oldConfigProvider } else { '' }
+            Invoke-Hermes @('config', 'set', 'memory.provider', $restoreProvider)
+            if ($HermesPM) { Invoke-Hermes @('pm', 'install') }
+        } catch {
+            Write-Warning "could not restore the previous provider selection: $_"
+        }
+    }
+    if (Test-Path -LiteralPath $Plugin) {
+        try {
+            if (Test-ReparsePoint $Plugin) { Remove-Item -LiteralPath $Plugin -Force }
+            else { Remove-Item -LiteralPath $Plugin -Recurse -Force }
+        } catch {
+            Write-Warning "could not remove failed provider deployment at ${Plugin}: $_"
+        }
+    }
+    if (Test-Path -LiteralPath $previousPlugin) {
+        try { Move-Item -LiteralPath $previousPlugin -Destination $Plugin }
+        catch { Write-Warning "could not restore previous provider; recovery copy remains at ${previousPlugin}: $_" }
+    }
+    throw
+} finally {
+    if ($deployCommitted) {
+        if (Test-Path -LiteralPath $deployRoot) {
+            try { Remove-Item -LiteralPath $deployRoot -Recurse -Force }
+            catch { Write-Warning "could not remove installer backup directory ${deployRoot}: $_" }
+        }
+    } elseif (-not (Test-Path -LiteralPath $previousPlugin)) {
+        if (Test-Path -LiteralPath $deployRoot) { Remove-Item -LiteralPath $deployRoot -Recurse -Force }
+    } else {
+        Write-Warning "preserving provider recovery copy at ${previousPlugin}"
+    }
 }
-
-if (-not $HermesPM) { Invoke-Hermes @('config', 'set', 'memory.provider', 'mnemosyne') }
-if ((Read-ConfigProvider) -ne 'mnemosyne') { Fail 'Hermes config does not select memory.provider=mnemosyne' }
-if (-not (Test-Path -LiteralPath (Join-Path $Plugin '__init__.py'))) { Fail "$Plugin has no __init__.py" }
-if (-not (Test-InstallerCopy $Plugin)) { Fail 'installed plugin copy failed provenance verification' }
-if (-not (Test-ProviderRegistration)) { Fail 'installed plugin does not expose exactly one available provider and CLI command' }
-if (-not (Test-EngineImport)) { Fail "mnemosyne-memory engine cannot be imported from $VenvPython" }
-if (-not (Test-HermesLoaderSelection)) { Fail 'Hermes memory-provider loader does not resolve mnemosyne to the deployed provider class' }
-Write-Host "`nInstalled. Restart Hermes so it loads the provider."
-Write-Host "Database (created on first write): $DbPath"

@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import types
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
@@ -28,6 +29,43 @@ if str(PROVIDER_ROOT) not in sys.path:
     sys.path.insert(0, str(PROVIDER_ROOT))
 
 import hermes_memory_provider as provider_mod  # noqa: E402
+
+
+class _TransactionalConnection(sqlite3.Connection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._defer_commit = False
+
+    def commit(self):
+        if not self._defer_commit:
+            super().commit()
+
+    def _real_commit(self):
+        super().commit()
+
+
+@contextmanager
+def _deferred_commits(conn):
+    conn._defer_commit = True
+    try:
+        yield
+    except BaseException:
+        conn._defer_commit = False
+        conn.rollback()
+        raise
+    else:
+        conn._defer_commit = False
+        conn._real_commit()
+
+
+def _engine_transaction_modules():
+    mnemosyne = types.ModuleType("mnemosyne")
+    mnemosyne.__path__ = []
+    core = types.ModuleType("mnemosyne.core")
+    core.__path__ = []
+    beam = types.ModuleType("mnemosyne.core.beam")
+    beam._deferred_commits = _deferred_commits
+    return {"mnemosyne": mnemosyne, "mnemosyne.core": core, "mnemosyne.core.beam": beam}
 from hermes_memory_provider import cli as cli_mod  # noqa: E402
 
 
@@ -228,7 +266,9 @@ class _PausedTransactionBeam:
     """A real SQLite transaction held open by a failing background turn."""
 
     def __init__(self):
-        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.conn = sqlite3.connect(
+            ":memory:", check_same_thread=False, factory=_TransactionalConnection
+        )
         self.conn.execute(
             "CREATE TABLE working_memory (content, importance, timestamp, source, session_id)"
         )
@@ -279,12 +319,13 @@ def _during_failed_sync(operation):
     sync = threading.Thread(target=provider.sync_turn, args=("uncommitted turn", ""), daemon=True)
     caller = threading.Thread(target=call, daemon=True)
     try:
-        sync.start()
-        assert beam.inserted.wait(5), "sync_turn did not start its transaction"
-        caller.start()
-        assert started.wait(5), "concurrent provider call did not start"
-        # Give an unguarded caller time to read/commit the pending transaction.
-        overlapped = finished.wait(0.2)
+        with patch.dict(sys.modules, _engine_transaction_modules()):
+            sync.start()
+            assert beam.inserted.wait(5), "sync_turn did not start its transaction"
+            caller.start()
+            assert started.wait(5), "concurrent provider call did not start"
+            # Give an unguarded caller time to read/commit the pending transaction.
+            overlapped = finished.wait(0.2)
     finally:
         beam.release.set()
         sync.join(timeout=5)

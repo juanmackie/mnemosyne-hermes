@@ -374,3 +374,19 @@ def test_package_manager_path_uses_hermes_pm_without_uv_mutation(fake_windows_in
     assert "config set memory.provider mnemosyne" in calls
     assert "pm install" in calls
     assert not install_log.exists(), "PM owns the selected environment; uv must not mutate it"
+
+
+def test_windows_installer_serializes_and_stages_replacement():
+    source = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    assert "[IO.FileShare]::None" in source
+    assert "$script:InstallerLockStream" in source
+    assert source.index("Enter-InstallerLock\nif ((Test-Path -LiteralPath $Plugin)") < source.index(
+        "Copy-Item -LiteralPath $Provider -Destination $stagedPlugin -Recurse"
+    )
+    assert "Test-InstallerCopy $stagedPlugin" in source
+    assert source.index("Test-InstallerCopy $stagedPlugin") < source.index(
+        "Move-Item -LiteralPath $Plugin -Destination $previousPlugin"
+    )
+    assert source.index("if (-not (Test-HermesLoaderSelection))") < source.index("$deployCommitted = $true")
+    assert "Invoke-Hermes @('config', 'set', 'memory.provider', $restoreProvider)" in source
+    assert "could not restore previous provider; recovery copy remains" in source

@@ -673,6 +673,109 @@ def test_write_read_coherence():
         assert memory_id not in ids, f"recall still returns a forgotten row: {recalled}"
 
 
+def test_sync_turn_failure_rolls_back_and_retry_commits_all_roles():
+    if _require_engine() is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        provider = _init_contract_provider(tmp, session_id="sync_turn_atomic")
+        provider._sync_roles = {"user", "assistant"}
+        user_text = "atomic turn rollback user cinder-42"
+        assistant_text = "atomic turn rollback assistant cinder-42"
+        beam = provider._beam
+        remember = beam.remember
+        calls = 0
+
+        def fail_on_second_role(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected second-role failure")
+            return remember(**kwargs)
+
+        beam.remember = fail_on_second_role
+        provider.sync_turn(user_text, assistant_text)
+        rows = beam.conn.execute(
+            "SELECT content FROM working_memory WHERE content IN (?, ?)",
+            (f"[USER] {user_text}", f"[ASSISTANT] {assistant_text}"),
+        ).fetchall()
+        assert rows == [], "the first role survived a later role failure"
+        assert provider._sync_turn_diagnostics()["failed"] == 1
+
+        beam.remember = remember
+        provider.sync_turn(user_text, assistant_text)
+        rows = {
+            row[0]
+            for row in beam.conn.execute(
+                "SELECT content FROM working_memory WHERE content IN (?, ?)",
+                (f"[USER] {user_text}", f"[ASSISTANT] {assistant_text}"),
+            )
+        }
+        assert rows == {f"[USER] {user_text}", f"[ASSISTANT] {assistant_text}"}
+        assert provider._sync_turn_diagnostics()["completed"] == 1
+
+
+def test_concurrent_sync_turns_are_serialized_as_complete_transactions():
+    if _require_engine() is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        provider = _init_contract_provider(tmp, session_id="sync_turn_concurrency")
+        provider._sync_roles = {"user", "assistant"}
+        beam = provider._beam
+        remember = beam.remember
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        user_texts = (
+            "atomic concurrent first user jade-17",
+            "atomic concurrent second user jade-17",
+        )
+        assistant_texts = (
+            "atomic concurrent first assistant jade-17",
+            "atomic concurrent second assistant jade-17",
+        )
+
+        def block_first_user(**kwargs):
+            if kwargs["content"] == f"[USER] {user_texts[0]}":
+                first_entered.set()
+                assert release_first.wait(5)
+            return remember(**kwargs)
+
+        beam.remember = block_first_user
+        failures = []
+
+        def sync(index):
+            try:
+                provider.sync_turn(user_texts[index], assistant_texts[index])
+            except BaseException as exc:
+                failures.append(exc)
+
+        first = threading.Thread(target=sync, args=(0,))
+        second = threading.Thread(target=sync, args=(1,))
+        first.start()
+        assert first_entered.wait(5)
+        second.start()
+        release_first.set()
+        first.join(10)
+        second.join(10)
+        assert not first.is_alive() and not second.is_alive()
+        assert failures == []
+
+        expected = {
+            f"[USER] {user_texts[0]}", f"[ASSISTANT] {assistant_texts[0]}",
+            f"[USER] {user_texts[1]}", f"[ASSISTANT] {assistant_texts[1]}",
+        }
+        actual = {
+            row[0]
+            for row in beam.conn.execute(
+                "SELECT content FROM working_memory WHERE content IN (?, ?, ?, ?)",
+                tuple(expected),
+            )
+        }
+        assert actual == expected
+        diagnostics = provider._sync_turn_diagnostics()
+        assert diagnostics["completed"] == 2
+        assert diagnostics["failed"] == 0
+
+
 def test_engine_global_update_and_bind_order():
     """Exercise BEAM itself: P20 cannot hide an engine update failure."""
     BeamMemory = _require_engine()

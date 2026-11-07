@@ -431,3 +431,36 @@ Promote this snapshot to a formal, separately-versioned fork if either holds:
 
 Until then, vendoring keeps the fix/pin/hotfix ability that a bare dependency
 does not, without the rename and dual-versioning cost of a fork.
+
+### P36 — atomically claim pending approval writes
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_handle_apply_pending`) |
+| Date | 2026-11-07 |
+| Reason | Concurrent apply calls could both read a pending JSON record and commit duplicate memories before either removed it. |
+| Behaviour | An exclusive `.applying` claim is created before reading/applying. A concurrent call fails closed. The claim is retained on ambiguous errors or crashes so a possibly committed write is not silently replayed; operators must inspect and recover that record. |
+| Verification | `tests/test_provider_pending.py::test_concurrent_pending_apply_only_applies_once` gates a blocked first write and concurrent second apply; the fake BEAM must receive exactly one call. |
+| Upstream | Not sent. |
+
+### P37 — isolate concurrent prefetch cache payloads
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`prefetch`, `_prefetch_bank`, `_ensure_prefetch_state`) |
+| Date | 2026-11-07 |
+| Reason | Concurrent prefetch calls shared the last recall IDs and bank counts. One call could cache another query's recall IDs, so a later cache hit updated recall statistics for the wrong memories. |
+| Behaviour | Keep recall IDs and bank counts in thread-local per-call state and snapshot that state into the query's cache entry. Aggregate diagnostic fields remain best effort. |
+| Verification | `tests/test_provider_pending.py::test_prefetch_cache_payload_keeps_recall_ids_per_call` forces query A to pause after recall while query B overwrites the old shared fields; each cache entry must retain its own IDs. |
+| Upstream | Not sent. |
+
+### P38 — make turn capture atomic
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`sync_turn`, `_atomic_sync_turn_writes`) |
+| Date | 2026-11-07 |
+| Reason | A later role write could fail after an earlier `remember()` had committed, leaving a partial user/assistant/tool turn. |
+| Behaviour | Under the existing per-provider BEAM lock, use the pinned engine's `_deferred_commits` transaction to defer all `remember()` and enrichment commits until every selected role and identity write succeeds. Roll back the transaction on failure; refuse to write if the connection is not an idle deferred-commit BEAM connection. Retries then start from a clean turn, and concurrent calls serialize before opening their transaction. |
+| Verification | `tests/test_provider_pending.py::test_sync_turn_failure_rolls_back_prior_role_write_and_retry_completes` and `::test_concurrent_sync_turns_commit_as_whole_turns`; real-engine regressions in `tests/test_provider_engine_contract.py` verify rollback, retry, and concurrent serialization. |
+| Upstream | Not sent. Depends on the pinned engine's `_BeamConnection` and `_deferred_commits` implementation; revisit if the engine pin changes. |

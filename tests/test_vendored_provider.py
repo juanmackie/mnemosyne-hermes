@@ -57,7 +57,15 @@ def test_directory_plugin_requirements_are_audited():
     metadata = MANIFEST.get("metadata_files", {})
     assert set(metadata) == {"hermes_memory_provider/pyproject.toml"}
     requirements = tomllib.loads((PACKAGE / "pyproject.toml").read_text(encoding="utf-8"))
-    assert requirements["project"]["dependencies"] == [MANIFEST["engine_dependency"]["pin"]]
+    pin = MANIFEST["engine_dependency"]["pin"]
+    android_pin = pin.replace("[embeddings]", "")
+    # P25 splits the unchanged version range for Android because sqlite-vec,
+    # included by the embeddings extra, has no Android artifact.
+    expected = {
+        f"{pin}; sys_platform != 'android'",
+        f"{android_pin}; sys_platform == 'android'",
+    }
+    assert set(requirements["project"]["dependencies"]) == expected
 
 
 def test_local_patches_are_declared():

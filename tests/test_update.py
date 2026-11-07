@@ -120,6 +120,17 @@ def test_check_reports_update_without_changing_the_checkout(repos):
     assert not (user / "install.log").exists()
 
 
+
+def test_check_recovers_lock_left_by_dead_process(repos):
+    _seed, user = repos
+    lock = user / ".git" / "mnemosyne-update.lock"
+    lock.mkdir()
+    (lock / "pid").write_text("999999999", encoding="ascii")
+    result = _run(user, "--check", "--quiet")
+    assert result.returncode == 0, result.stderr
+    assert not lock.exists()
+
+
 def test_apply_fast_forwards_reinstalls_and_forwards_install_args(repos, fake_hermes):
     seed, user = repos
     _publish(seed)

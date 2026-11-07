@@ -147,6 +147,11 @@ def _install_gated_sleep(monkeypatch, provider, *, release=None):
 
 def test_auto_sleep_does_not_block_sync_prefetch_or_recall_tool(monkeypatch):
     provider = _provider()
+    # This test's fake BEAM records calls in memory; the atomic write contract
+    # is covered by the transactional fakes and real-engine contract lane.
+    monkeypatch.setattr(
+        provider_mod, "_atomic_sync_turn_writes", lambda _beam: contextlib.nullcontext()
+    )
     started, release, workers = _install_gated_sleep(monkeypatch, provider)
     sync_duration = []
     sync_thread = threading.Thread(

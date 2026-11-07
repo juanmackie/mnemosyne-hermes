@@ -18,6 +18,7 @@ if str(PROVIDER_ROOT) not in sys.path:
     sys.path.insert(0, str(PROVIDER_ROOT))
 
 from hermes_memory_provider import cli  # noqa: E402
+import hermes_memory_provider as provider_mod  # noqa: E402
 
 
 def _make_store(path, *, audit=True):
@@ -379,7 +380,12 @@ def test_sync_turn_attaches_only_exact_host_message_references():
         },
     ]
 
-    provider.sync_turn(user_text, assistant_text, messages=messages)
+    # This fixture tests source-reference mapping with a recording fake BEAM;
+    # transaction behavior is exercised by the dedicated sync-turn regressions.
+    with patch.object(
+        provider_mod, "_atomic_sync_turn_writes", lambda _beam: contextlib.nullcontext()
+    ):
+        provider.sync_turn(user_text, assistant_text, messages=messages)
 
     assert len(provider._beam.items) == 3
     for stored, message_id in zip(
@@ -411,7 +417,10 @@ def test_sync_turn_attaches_only_exact_host_message_references():
             "id": "duplicate-id",
         },
     ]
-    provider.sync_turn(user_text, assistant_text, messages=duplicate_id_messages)
+    with patch.object(
+        provider_mod, "_atomic_sync_turn_writes", lambda _beam: contextlib.nullcontext()
+    ):
+        provider.sync_turn(user_text, assistant_text, messages=duplicate_id_messages)
     stored_tool = next(
         item for item in provider._beam.items if item["source"] == "conversation_tool"
     )
