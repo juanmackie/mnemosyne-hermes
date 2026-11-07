@@ -252,8 +252,8 @@ def cmd_restore(args):
 
     The restore is staged rather than in place. The source is replayed into a
     fresh temporary file next to the destination, that file is opened as a
-    store to prove it really is one, and only then is it moved over the
-    destination. Before this, a dump was replayed straight onto the live
+    store to prove it really is one, and only then is it copied into an
+    existing destination with SQLite's backup API (or moved to a new path). Before this, a dump was replayed straight onto the live
     database (colliding with its tables), nothing checked that the source was a
     Mnemosyne store, and a bad restore destroyed the previous contents with no
     way back.
@@ -347,7 +347,35 @@ def cmd_restore(args):
         # after the permanent destination so it survives as a useful backup,
         # rather than an orphan named after the temporary staging file.
         PythonMemoryStorage(staged, migration_backup_base=dest).close()
-        os.replace(staged, dest)
+        if os.path.exists(dest):
+            # Replacing a live SQLite file bypasses its locks and leaves open
+            # connections attached to the old inode and shared WAL. Use the
+            # backup API so SQLite coordinates the replacement with readers and
+            # writers and invalidates their views.
+            src = sqlite3.connect(staged)
+            dst = sqlite3.connect(dest)
+            try:
+                target_page_size = dst.execute("PRAGMA page_size").fetchone()[0]
+                if src.execute("PRAGMA page_size").fetchone()[0] != target_page_size:
+                    # SQLite cannot change the page size of a WAL destination.
+                    # Convert the disposable staging copy, then rebuild its
+                    # external-content index after VACUUM may renumber rowids.
+                    src.execute("PRAGMA journal_mode=DELETE")
+                    src.execute(f"PRAGMA page_size={target_page_size}")
+                    src.execute("VACUUM")
+                    src.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+                    src.execute("DELETE FROM recall_keys")
+                    src.execute(
+                        "INSERT INTO recall_keys (rowid, importance, created_at, id) "
+                        "SELECT rowid, importance, created_at, id FROM memories"
+                    )
+                    src.commit()
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
+        else:
+            os.replace(staged, dest)
     except StorageError as e:
         print(f"ERROR: {backup_path} is not a Mnemosyne store: {e}", file=sys.stderr)
         return 1

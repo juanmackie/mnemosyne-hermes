@@ -822,10 +822,12 @@ class PythonMemoryStorage:
         try:
             conn = self._conn()
             before = conn.total_changes
+            conn.execute("SAVEPOINT access_batch")
             conn.executemany(
                 "UPDATE memories SET access_count = access_count + ?, last_accessed = ? WHERE id = ?",
                 [(hits, now, mem_id) for mem_id, hits in counts.items()],
             )
+            conn.execute("RELEASE SAVEPOINT access_batch")
             conn.commit()
             # Record how many rows this flush touched so _search_version can
             # ignore them: access-count writes do not change searchable content.
@@ -833,6 +835,12 @@ class PythonMemoryStorage:
             self._local.ignored_changes += conn.total_changes - before
             committed = True
         except sqlite3.Error:
+            if "conn" in locals() and conn.in_transaction:
+                try:
+                    conn.execute("ROLLBACK TO SAVEPOINT access_batch")
+                    conn.execute("RELEASE SAVEPOINT access_batch")
+                except sqlite3.Error:
+                    conn.rollback()
             logger.warning("Failed to apply buffered access counts", exc_info=True)
             committed = False
         if committed:

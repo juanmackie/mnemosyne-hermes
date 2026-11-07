@@ -289,11 +289,20 @@ def unique_path(target: Path) -> Path:
     the same second (a test loop, or two jobs firing together). Overwriting would
     silently destroy the older backup the caller was relying on.
     """
-    if not target.exists():
-        return target
-    for index in range(2, 1000):
-        candidate = target.with_name(f"{target.stem}-{index}{target.suffix}")
-        if not candidate.exists():
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for index in range(1, 1000):
+        candidate = (
+            target if index == 1
+            else target.with_name(f"{target.stem}-{index}{target.suffix}")
+        )
+        try:
+            # exists()+return had a TOCTOU race: concurrent backup and
+            # compaction could both select and overwrite the same snapshot.
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        else:
+            os.close(fd)
             return candidate
     raise FileExistsError(f"no free snapshot name near {target}")
 
@@ -337,8 +346,14 @@ def cmd_backup(args) -> int:
     label = f"-{args.label}" if args.label else ""
     final = unique_path(target_dir / f"{BACKUP_PREFIX}{stamp}{label}.db")
     partial = final.with_suffix(".partial")
-    ok, result = snapshot(db, partial)
+    try:
+        ok, result = snapshot(db, partial)
+    except Exception:
+        final.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
+        raise
     if not ok:
+        final.unlink(missing_ok=True)
         partial.unlink(missing_ok=True)
         warn(f"backup FAILED: snapshot integrity check returned {result}")
         return 1
@@ -523,8 +538,14 @@ def cmd_compact(args) -> int:
     checkpoint = Path(args.backup_dir or backup_dir(None, hermes_home(args.hermes_home)))
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     snapshot_path = unique_path(checkpoint / f"{BACKUP_PREFIX}{stamp}-precompact.db")
-    ok, result = snapshot(db, snapshot_path)
+    try:
+        ok, result = snapshot(db, snapshot_path)
+    except Exception as exc:
+        snapshot_path.unlink(missing_ok=True)
+        warn(f"compact ABORTED: checkpoint failed ({exc})")
+        return 1
     if not ok:
+        snapshot_path.unlink(missing_ok=True)
         warn(f"compact ABORTED: checkpoint failed integrity ({result})")
         return 1
 

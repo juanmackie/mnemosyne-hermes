@@ -214,3 +214,33 @@ def test_corrupt_database_fails_verify(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_unique_snapshot_path_reservation_is_atomic_under_threads(tmp_path):
+    import importlib.util
+    import threading
+
+    spec = importlib.util.spec_from_file_location("mnemosyne_maintain", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    target = tmp_path / "same-second.db"
+    barrier = threading.Barrier(12)
+    paths = []
+    errors = []
+
+    def reserve():
+        try:
+            barrier.wait()
+            paths.append(module.unique_path(target))
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    workers = [threading.Thread(target=reserve) for _ in range(12)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert not errors
+    assert len(set(paths)) == 12
+    assert all(path.is_file() for path in paths)
