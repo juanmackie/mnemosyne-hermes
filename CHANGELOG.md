@@ -38,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional `review --id ID --evidence FILE` semantic mode: checks one visible
+  memory against an explicit bounded transcript excerpt through the existing
+  Hermes model adapter. Exact-quote citations and strict verdict validation
+  produce correction proposals only. Includes an eight-case synthetic evaluator;
+  live model accuracy has not yet been measured.
+
+- `hermes mnemosyne review`: a bounded, read-only JSON queue of missing source
+  evidence, unavailable originals, unreadable metadata, truncated content and
+  exact duplicate candidates. Provider guidance distinguishes tested lessons
+  from hypotheses and keeps evidence searchable; no new model job or store.
+
 - `scripts/maintenance/`: the scheduled maintenance suite that keeps a live
   database healthy — `mnemosyne-maintain.py` (`backup`, `verify`,
   `consolidate`, `hygiene`, `compact`, `report`) and an idempotent

@@ -119,6 +119,15 @@ optional read-only Markdown evidence export. See the provider's
 [inspection guide](integrations/hermes-provider/README.md#inspect-evidence-and-recorded-history)
 for session selection, source references, limits, and partial-history coverage.
 
+Review memory evidence manually with
+`hermes mnemosyne review --session-id YOUR_SESSION --limit 20`. This bounded,
+read-only JSON queue flags source gaps and exact duplicates without model
+calls or automatic edits. Provider guidance now distinguishes tested lessons
+from hypotheses and asks for supporting evidence. For a single-note model check,
+add `--id MEMORY_ID --evidence /path/to/excerpt.json`; this optional mode returns
+a cited correction proposal and never applies it. See the
+[source-grounded review workflow and design tradeoffs](docs/MEMORY_REVIEW.md).
+
 ## Verify
 
 ```bash
