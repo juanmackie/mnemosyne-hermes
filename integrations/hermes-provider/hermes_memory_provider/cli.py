@@ -326,6 +326,15 @@ def register_cli(subparser):
     inspect_cmd.add_argument("--all-sessions", action="store_true", help="Explicit local-operator access across sessions")
     inspect_cmd.add_argument("--format", choices=("json",), help="By-ID inspection format (JSON)")
 
+    # LOCAL PATCH: P40 manual, read-only review; no engine or LLM initialization.
+    review_cmd = mn_cmds.add_parser("review", help="Find bounded memory evidence review candidates")
+    review_cmd.add_argument("--session-id", default="hermes_default", help="Session whose memories are visible")
+    review_cmd.add_argument("--all-sessions", action="store_true", help="Explicit local-operator access across sessions")
+    review_cmd.add_argument("--limit", type=int, default=20, help="Maximum candidates (1-100); scans at most 200 rows")
+    # LOCAL PATCH: P41 a single explicit target/excerpt enables proposal-only model checking.
+    review_cmd.add_argument("--id", dest="memory_id", help="Check one visible memory against --evidence")
+    review_cmd.add_argument("--evidence", help="Explicit transcript excerpt JSON; makes one Hermes model call (requires --id)")
+
     history_cmd = mn_cmds.add_parser("history", help="Show partial audit history for one memory ID")
     history_cmd.add_argument("--id", dest="memory_id", required=True, help="Memory ID")
     history_cmd.add_argument("--session-id", default="hermes_default", help="Session whose events are visible")
@@ -428,6 +437,44 @@ def _readonly_inspect(args: Any) -> int:
         raise SystemExit(1) from exc
 
 
+# LOCAL PATCH: P40 dispatch before host LLM registration or engine construction.
+def _readonly_review(args: Any) -> int:
+    try:
+        from hermes_memory_provider.evidence import review_snapshot
+
+        # LOCAL PATCH: P41 keep both modes ahead of engine/registry initialization.
+        memory_id = getattr(args, "memory_id", None)
+        evidence_path = getattr(args, "evidence", None)
+        if memory_id or evidence_path:
+            if not memory_id or not evidence_path:
+                raise ValueError("Source checking requires both --id and --evidence")
+            if getattr(args, "limit", 20) != 20:
+                raise ValueError("--limit only applies to the mechanical review queue")
+            from hermes_memory_provider.evidence import read_snapshot
+            from hermes_memory_provider.source_check import check_memory, read_transcript
+
+            rows = read_snapshot(
+                _inspection_db_path(), session_id=getattr(args, "session_id", "hermes_default"),
+                all_sessions=bool(getattr(args, "all_sessions", False)), memory_id=memory_id, limit=1,
+            )
+            if not rows:
+                raise ValueError("Memory is not available in this selection")
+            result = check_memory(rows[0], read_transcript(evidence_path))
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        result = review_snapshot(
+            _inspection_db_path(),
+            session_id=getattr(args, "session_id", "hermes_default"),
+            all_sessions=bool(getattr(args, "all_sessions", False)),
+            limit=_bounded_limit(args, 20),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    except Exception as exc:
+        print(f"Review failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
 def _readonly_history(args: Any) -> int:
     """Print bounded, ownership-filtered audit events for a memory ID."""
     try:
@@ -476,7 +523,7 @@ def mnemosyne_command(args):
     """Dispatch ``hermes mnemosyne <subcommand>``."""
     cmd = getattr(args, "mnemosyne_cmd", None)
     if not cmd:
-        print("Usage: hermes mnemosyne {stats|sleep|version|inspect|history|clear|export|import}")
+        print("Usage: hermes mnemosyne {stats|sleep|version|inspect|review|history|clear|export|import}")
         return 1
 
     # LOCAL PATCH: P27 inspection must never construct BeamMemory because its
@@ -486,6 +533,8 @@ def mnemosyne_command(args):
     if cmd == "inspect" and getattr(args, "all_sessions", False):
         print("Error: --all-sessions is only available with inspect --id", file=sys.stderr)
         raise SystemExit(1)
+    if cmd == "review":
+        return _readonly_review(args)
     if cmd == "history":
         return _readonly_history(args)
 

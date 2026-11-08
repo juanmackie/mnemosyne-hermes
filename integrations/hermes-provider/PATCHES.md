@@ -475,3 +475,25 @@ does not, without the rename and dual-versioning cost of a fork.
 | Behaviour | `doctor` adds a critical check that `BeamMemory.__init__` and `Mnemosyne.__init__` accept `seed_config`. A failure names the classes and the fix (`scripts/apply_engine_patches.py`). No runtime path changes; the argument stays required, with no fallback. |
 | Verification | `tests/test_provider_db_path.py::test_engine_accepts_seed_config_check` runs the check against fake engine modules with and without the parameter. |
 | Upstream | Not sent. Retire with the engine patches once an audited release ships `seed_config`. |
+
+### P40 — source-grounded lessons and bounded manual memory review
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/__init__.py`, `cli.py`, `evidence.py` |
+| Date | 2026-11-08 |
+| Reason | Apply the components-of-agent-memory findings using existing capture, evidence, consolidation and injection rather than introducing another store or background model loop. |
+| Behaviour | Prompt guidance leaves salience to the agent, distinguishes hypotheses from tested lessons, records supporting evidence and keeps injected anchors small. `hermes mnemosyne review` reads at most 200 visible working/episodic rows and emits at most 100 mechanical review candidates with explicit coverage/truncation. References remain unauthenticated lookup aids; no factual verification, automatic merging, deletion, model call, engine initialization, new registration or database writes. |
+| Verification | `tests/test_provider_inspection.py` covers visibility, byte-identical reads/refusals, limits, missing originals, duplicates and truncated-prefix exclusion; `tests/test_provider_prefetch.py` checks guidance. Both suites are registered in `scripts/checks.sh`. |
+| Upstream | Not sent. |
+
+### P41 — one-memory source checking with cited correction proposals
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/cli.py`, `source_check.py` |
+| Date | 2026-11-08 |
+| Reason | The mechanical review queue cannot detect a plausible false note. Add a small, manually invoked semantic experiment before considering recurring reflection. |
+| Behaviour | `review --id ID --evidence FILE` checks one visible complete memory against an explicitly supplied bounded transcript excerpt. Reuses `HermesAuxLLMBackend.complete` once, without engine construction, backend registry changes, extra credentials, transcript discovery or writes. Strict JSON verdicts distinguish supported/contradicted/insufficient; only contradictions may propose a replacement. Citations must name supplied messages and contain exact quotes. Existing references must match session, message and explicit namespace; legacy namespaces fail closed. Missing references are labelled operator-selected. Neither source authentication nor semantic entailment is claimed. Original/evidence SHA-256 hashes identify proposal inputs. |
+| Verification | `tests/test_provider_source_check.py` (registered in `scripts/checks.sh`) covers citation/schema rejection, uncertainty/preservation, source bounds and namespace association, read-only CLI visibility, and scorer regressions. `bench/source_check_eval.py --run-model` evaluates eight authored synthetic cases via the existing Hermes model; deterministic unit-test judges validate plumbing only. |
+| Upstream | Not sent. No automatic apply or scheduler is introduced. |

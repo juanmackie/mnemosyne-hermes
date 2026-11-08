@@ -8,7 +8,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,8 +17,8 @@ PROVIDER_ROOT = ROOT / "integrations" / "hermes-provider"
 if str(PROVIDER_ROOT) not in sys.path:
     sys.path.insert(0, str(PROVIDER_ROOT))
 
-from hermes_memory_provider import cli  # noqa: E402
 import hermes_memory_provider as provider_mod  # noqa: E402
+from hermes_memory_provider import cli  # noqa: E402
 
 
 def _make_store(path, *, audit=True):
@@ -426,3 +426,152 @@ def test_sync_turn_attaches_only_exact_host_message_references():
     )
     assert stored_tool["content"] == f"[TOOL] {tool_text}"
     assert "source_ref" not in stored_tool["metadata"]
+
+
+def test_review_is_bounded_readonly_and_does_not_initialize_engine():
+    with tempfile.TemporaryDirectory() as temp:
+        db = pathlib.Path(temp) / "engine.db"
+        _make_store(db)
+        before = db.read_bytes()
+        args = Namespace(
+            mnemosyne_cmd="review", session_id="session-a", all_sessions=False, limit=1
+        )
+        with (
+            patch.object(cli, "resolve_effective_db_path", return_value=str(db)),
+            patch.dict(sys.modules, {"mnemosyne.core.beam": None}),
+        ):
+            report = _capture(lambda: cli.mnemosyne_command(args))
+        assert report["scanned"] == 2
+        assert report["candidate_count"] == 2
+        assert report["shown"] == 1
+        assert report["candidates_truncated"] is True
+        assert report["scan_truncated"] is False
+        assert report["candidates"][0]["reasons"] == ["source_unavailable"]
+        assert "foreign" not in json.dumps(report)
+        assert db.read_bytes() == before
+
+
+def test_review_flags_duplicates_and_missing_originals_without_claiming_verification():
+    from hermes_memory_provider.evidence import review_snapshot
+
+    with tempfile.TemporaryDirectory() as temp:
+        db = pathlib.Path(temp) / "engine.db"
+        _make_store(db)
+        with sqlite3.connect(db) as connection:
+            reference = json.dumps(
+                {
+                    "source_ref": {
+                        "session_id": "session-a",
+                        "message_id": "123",
+                        "origin": "host",
+                    }
+                }
+            )
+            connection.execute(
+                "UPDATE working_memory SET metadata_json = ? WHERE id = 'own'", (reference,)
+            )
+            connection.execute(
+                "INSERT INTO episodic_memory VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "summary",
+                    " OWN  content ",
+                    "sleep_consolidation",
+                    "session-a",
+                    "session",
+                    "{}",
+                    "2026-10-08",
+                    "own,foreign,deleted",
+                ),
+            )
+            connection.execute(
+                "UPDATE working_memory SET metadata_json = 'broken' WHERE id = 'global'"
+            )
+        report = review_snapshot(db, session_id="session-a")
+        rows = {row["id"]: row for row in report["candidates"]}
+        assert "own" not in rows  # A reference is a lookup aid, not a truth claim.
+        assert rows["summary"]["duplicate_of"] == {"id": "own", "memory_store": "working"}
+        assert rows["summary"]["reasons"] == ["originals_unavailable", "exact_duplicate"]
+        assert rows["summary"]["original_ids"] == ["own"]
+        assert rows["global"]["reasons"] == ["source_unavailable", "metadata_unreadable"]
+        assert "foreign" not in json.dumps(report)
+        assert "deleted" not in json.dumps(report)
+        all_rows = review_snapshot(db, session_id="session-a", all_sessions=True)
+        assert all_rows["selection"] == "all_sessions"
+        assert all_rows["scanned"] == 4
+
+
+def test_review_does_not_match_truncated_prefixes_and_marks_scan_bound():
+    from hermes_memory_provider.evidence import review_snapshot
+
+    with tempfile.TemporaryDirectory() as temp:
+        db = pathlib.Path(temp) / "engine.db"
+        _make_store(db)
+        with sqlite3.connect(db) as connection:
+            connection.executemany(
+                "INSERT INTO working_memory VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        f"long-{i:03}",
+                        "x" * 4000 + str(i),
+                        "conversation",
+                        "session-a",
+                        "session",
+                        "{}",
+                        "2026-11-01",
+                    )
+                    for i in range(201)
+                ],
+            )
+        report = review_snapshot(db, session_id="session-a", limit=100)
+        assert report["scanned"] == 200
+        assert report["scan_truncated"] is True
+        assert report["shown"] == 100
+        assert report["candidate_count"] == 200
+        assert all(
+            row["reasons"] == ["source_unavailable", "content_requires_full_read"]
+            for row in report["candidates"]
+        )
+
+
+def test_review_refuses_missing_foreign_corrupt_and_invalid_limit():
+    from hermes_memory_provider.evidence import EvidenceError, review_snapshot
+
+    with tempfile.TemporaryDirectory() as temp:
+        db = pathlib.Path(temp) / "engine.db"
+        with patch.object(cli, "resolve_effective_db_path", return_value=str(db)):
+            try:
+                cli.mnemosyne_command(Namespace(mnemosyne_cmd="review"))
+            except SystemExit as exc:
+                assert exc.code == 1
+            else:
+                raise AssertionError("missing database accepted")
+        assert not db.exists()
+        for content in (b"not sqlite", b""):
+            db.write_bytes(content)
+            try:
+                review_snapshot(db)
+            except EvidenceError:
+                pass
+            else:
+                raise AssertionError("foreign database accepted")
+            assert db.read_bytes() == content
+        for limit in (0, 101, True, "2"):
+            try:
+                review_snapshot(db, limit=limit)
+            except EvidenceError:
+                pass
+            else:
+                raise AssertionError("invalid limit accepted")
+
+
+def test_review_cli_registration_routes_to_readonly_command():
+    parser = ArgumentParser()
+    cli.register_cli(parser)
+    args = parser.parse_args(
+        ["review", "--session-id", "session-a", "--all-sessions", "--limit", "7"]
+    )
+    assert args.mnemosyne_cmd == "review"
+    assert args.session_id == "session-a"
+    assert args.all_sessions is True
+    assert args.limit == 7
+    assert args.func is cli.mnemosyne_command

@@ -266,3 +266,21 @@ Triage per `PATCHES.md`, then re-vendor the changed files and update
 re-running the contract audit. A re-vendor or pin change must pass
 `./test-all.sh --require-engine` (the engine-backed contract lane:
 every tool against the real engine, never skips when strict).
+
+## Manual evidence review
+
+`hermes mnemosyne review --session-id YOUR_SESSION --limit 20` reports bounded
+mechanical review candidates from the existing read-only evidence projection.
+It scans at most 200 visible working/episodic rows, returns at most 100
+candidates, and explicitly marks scan/output truncation. Default visibility is
+own-session plus global; `--all-sessions` is an explicit local-operator option.
+No engine initialization, model calls, new store, or automatic edits occur.
+References aid lookup and do not verify truth; see the
+[review workflow](../../docs/MEMORY_REVIEW.md) before interpreting the signals.
+
+For optional semantic checking, add `--id MEMORY_ID --evidence /path/to/excerpt.json`.
+This checks one visible complete note with one existing Hermes auxiliary-model
+call. Strictly validated verdicts and exact-quote citations produce proposals
+only; neither the database nor transcript is changed. The evidence file is
+operator-supplied and unauthenticated. See the workflow above for the bounded
+JSON format, reference/namespace matching, failure behavior and synthetic eval.

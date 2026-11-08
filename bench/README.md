@@ -211,3 +211,13 @@ does not establish retrieval or production improvement.
   new result against an older generic `search_*` number without checking which
   path it represents.
 - Contract-frozen: namespace semantics, DB path, tool names, `integrations/`.
+
+## `source_check_eval.py` — proposal-only source checking
+
+`python bench/source_check_eval.py --run-model` explicitly makes up to eight
+calls through the existing Hermes auxiliary model against authored synthetic
+memory/transcript pairs. It reads no live memory store. The JSON report counts
+successful corrections, false proposals on correct notes and on insufficient
+evidence, and errors. Scripted judges in unit tests test the scorer, not model
+accuracy. No live-model performance result is recorded yet. See
+[the workflow and limits](../docs/MEMORY_REVIEW.md#evaluate-before-scheduling).

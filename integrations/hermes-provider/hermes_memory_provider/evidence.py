@@ -234,6 +234,59 @@ def read_snapshot(db_path: str | Path, *, session_id: str = "hermes_default",
         raise EvidenceError(f"Engine evidence unavailable ({type(exc).__name__})") from exc
 
 
+# LOCAL PATCH: P40 deterministic review candidates over the existing bounded
+# evidence projection. Signals request investigation; none establish truth.
+def review_snapshot(db_path: str | Path, *, session_id: str = "hermes_default",
+                    all_sessions: bool = False, limit: int = 20) -> dict[str, Any]:
+    """Find source gaps and exact duplicate notes without writing or model calls."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise EvidenceError("limit must be between 1 and 100")
+    rows = read_snapshot(db_path, session_id=session_id, all_sessions=all_sessions,
+                         limit=MAX_ROWS + 1)
+    scan_truncated = len(rows) > MAX_ROWS
+    rows = rows[:MAX_ROWS]
+    seen: dict[str, tuple[str, str]] = {}
+    candidates = []
+    for row in rows:
+        reasons = []
+        reference = source_reference(row.get("metadata"))
+        if not reference and not row.get("summary_of"):
+            reasons.append("source_unavailable")
+        if row.get("metadata_error"):
+            reasons.append("metadata_unreadable")
+        if row.get("lineage_unavailable"):
+            reasons.append("originals_unavailable")
+        if row.get("content_truncated"):
+            reasons.append("content_requires_full_read")
+        content = " ".join(str(row.get("content") or "").split()).casefold()
+        duplicate_of = None
+        # A shared truncated prefix cannot prove two notes are identical.
+        if content and not row.get("content_truncated"):
+            if content in seen:
+                reasons.append("exact_duplicate")
+                duplicate_of = dict(zip(("id", "memory_store"), seen[content]))
+            else:
+                seen[content] = (row["id"], row["memory_store"])
+        if reasons:
+            candidate = {
+                "id": row["id"], "memory_store": row["memory_store"],
+                "reasons": reasons, "source_reference": reference,
+                "original_ids": row.get("summary_of", [])[:20],
+                "original_ids_truncated": len(row.get("summary_of", [])) > 20,
+            }
+            if duplicate_of:
+                candidate["duplicate_of"] = duplicate_of
+            candidates.append(candidate)
+    return {
+        "selection": "all_sessions" if all_sessions else "session_and_global",
+        "scanned": len(rows), "scan_truncated": scan_truncated,
+        "candidate_count": len(candidates), "shown": min(limit, len(candidates)),
+        "candidates_truncated": len(candidates) > limit,
+        "coverage": "working/episodic projection only; signals are not factual verification",
+        "candidates": candidates[:limit],
+    }
+
+
 def _text(value: Any, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[:limit - 1] + "…"
