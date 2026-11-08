@@ -727,6 +727,27 @@ def test_db_writable_unresolved_path_is_failure():
         assert "could not be resolved" in msg, msg
 
 
+def test_engine_accepts_seed_config_check():
+    # Issue #37: an engine without the audited patches must fail doctor by name.
+    def engine(beam_kwargs, memory_kwargs):
+        beam = types.ModuleType("mnemosyne.core.beam")
+        memory = types.ModuleType("mnemosyne.core.memory")
+        ns = {}
+        exec(f"class BeamMemory:\n def __init__(self, {beam_kwargs}): pass", ns)
+        exec(f"class Mnemosyne:\n def __init__(self, {memory_kwargs}): pass", ns)
+        beam.BeamMemory, memory.Mnemosyne = ns["BeamMemory"], ns["Mnemosyne"]
+        return {"mnemosyne.core.beam": beam, "mnemosyne.core.memory": memory}
+
+    check = _module_attr(cli_mod, "_engine_accepts_seed_config")
+    with patch.dict(sys.modules, engine("seed_config=True", "seed_config=True")):
+        ok, _ = check()
+        assert ok is True
+    with patch.dict(sys.modules, engine("session_id=None", "seed_config=True")):
+        ok, msg = check()
+        assert ok is False and "BeamMemory" in msg and "Mnemosyne" not in msg, msg
+        assert "apply_engine_patches" in msg, msg
+
+
 if __name__ == "__main__":
     tests = [
         test_db_path_from_env,
@@ -756,6 +777,7 @@ if __name__ == "__main__":
         test_db_writable_fresh_install_parents_missing,
         test_db_writable_existing_file_and_parent,
         test_db_writable_unresolved_path_is_failure,
+        test_engine_accepts_seed_config_check,
     ]
     for fn in tests:
         fn()

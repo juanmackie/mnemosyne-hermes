@@ -464,3 +464,14 @@ does not, without the rename and dual-versioning cost of a fork.
 | Behaviour | Under the existing per-provider BEAM lock, use the pinned engine's `_deferred_commits` transaction to defer all `remember()` and enrichment commits until every selected role and identity write succeeds. Roll back the transaction on failure; refuse to write if the connection is not an idle deferred-commit BEAM connection. Retries then start from a clean turn, and concurrent calls serialize before opening their transaction. |
 | Verification | `tests/test_provider_pending.py::test_sync_turn_failure_rolls_back_prior_role_write_and_retry_completes` and `::test_concurrent_sync_turns_commit_as_whole_turns`; real-engine regressions in `tests/test_provider_engine_contract.py` verify rollback, retry, and concurrent serialization. |
 | Upstream | Not sent. Depends on the pinned engine's `_BeamConnection` and `_deferred_commits` implementation; revisit if the engine pin changes. |
+
+### P39 — doctor flags an engine without the audited patches
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/cli.py` (`_engine_accepts_seed_config`, `doctor`) |
+| Date | 2026-11-08 |
+| Reason | Published `mnemosyne-memory` 3.15.1 has no `seed_config` constructor argument (see P31). After an engine reinstall without the audited patches the provider fails at runtime with `TypeError: ... unexpected keyword argument 'seed_config'` and nothing points at the cause (issue #37). |
+| Behaviour | `doctor` adds a critical check that `BeamMemory.__init__` and `Mnemosyne.__init__` accept `seed_config`. A failure names the classes and the fix (`scripts/apply_engine_patches.py`). No runtime path changes; the argument stays required, with no fallback. |
+| Verification | `tests/test_provider_db_path.py::test_engine_accepts_seed_config_check` runs the check against fake engine modules with and without the parameter. |
+| Upstream | Not sent. Retire with the engine patches once an audited release ships `seed_config`. |

@@ -27,9 +27,9 @@
       "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "3BCRjCAtmNSvWT2-O2CyRoZYhXcPzgeExbIz1t5LOPU",
-      "bytes": 41072,
-      "lines": 894
+      "sha256": "C0SmDHE441hz_2E5q_KJTaDXI5_IzQH7z9Zqa5NO1I8",
+      "bytes": 41903,
+      "lines": 914
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
