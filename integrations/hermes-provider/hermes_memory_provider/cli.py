@@ -286,6 +286,24 @@ def _db_integrity(db_path):
         return False, str(e)
 
 
+def _engine_accepts_seed_config():
+    # LOCAL PATCH: P39 the provider passes seed_config=False; an engine without
+    # the audited patches raises a bare TypeError at runtime. Name the cause.
+    import inspect
+    from mnemosyne.core.beam import BeamMemory
+    from mnemosyne.core.memory import Mnemosyne
+    missing = [
+        cls.__name__ for cls in (BeamMemory, Mnemosyne)
+        if "seed_config" not in inspect.signature(cls.__init__).parameters
+    ]
+    if missing:
+        return False, (
+            f"{', '.join(missing)} reject seed_config; run "
+            "scripts/apply_engine_patches.py (or ./install.sh) and restart"
+        )
+    return True, "BeamMemory and Mnemosyne accept seed_config"
+
+
 def register_cli(subparser):
     """Register CLI subcommands for ``hermes mnemosyne``."""
     mn_cmds = subparser.add_subparsers(dest="mnemosyne_cmd")
@@ -563,6 +581,8 @@ def mnemosyne_command(args):
         try:
             import mnemosyne.core.beam  # noqa: F401
             critical.append(("engine importable", True, f"v{engine_version()}"))
+            # LOCAL PATCH: P39
+            critical.append(("engine patches applied", *_engine_accepts_seed_config()))
         except Exception as e:
             critical.append(("engine importable", False, str(e)))
         count, detail = _provider_registration_count()

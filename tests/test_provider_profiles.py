@@ -275,6 +275,13 @@ def test_successful_doctor_no_fix_leaves_store_and_file_inventory_unchanged(tmp_
     engine_core = types.ModuleType("mnemosyne.core")
     engine_core.__path__ = []
     engine_beam = types.ModuleType("mnemosyne.core.beam")
+    engine_memory = types.ModuleType("mnemosyne.core.memory")
+
+    class _Engine:
+        def __init__(self, seed_config=True):
+            pass
+
+    engine_beam.BeamMemory = engine_memory.Mnemosyne = _Engine
     before = {
         str(path.relative_to(tmp_path)): path.read_bytes()
         for path in tmp_path.rglob("*")
@@ -288,6 +295,7 @@ def test_successful_doctor_no_fix_leaves_store_and_file_inventory_unchanged(tmp_
                 "mnemosyne": engine,
                 "mnemosyne.core": engine_core,
                 "mnemosyne.core.beam": engine_beam,
+                "mnemosyne.core.memory": engine_memory,
             },
         ),
         patch.object(cli, "_provider_registration_count", return_value=(1, "synthetic discovery")),
