@@ -125,7 +125,16 @@ read-only JSON queue flags source gaps and exact duplicates without model
 calls or automatic edits. Provider guidance now distinguishes tested lessons
 from hypotheses and asks for supporting evidence. For a single-note model check,
 add `--id MEMORY_ID --evidence /path/to/excerpt.json`; this optional mode returns
-a cited correction proposal and never applies it. See the
+a cited correction proposal and never applies it. Add `--correction` when the
+user explicitly corrected that fact: the proposal is unchanged, but a
+content-free event (IDs, session selector, hashes, verdict, timestamp) is
+recorded in a local sidecar ledger. `review-outcome` records
+accepted/rejected/corrected_again and verifies the current memory against the
+recorded hashes; `review-pending` lists unresolved proposals; `review-stats`
+reports acceptance, verified-acceptance and false-correction rates. An exact
+prior-replacement match from a new explicit correction marks the prior proposal
+corrected_again automatically. The ledger is local diagnostic data, not memory,
+and nothing is applied automatically. See the
 [source-grounded review workflow and design tradeoffs](docs/MEMORY_REVIEW.md).
 
 ## Verify

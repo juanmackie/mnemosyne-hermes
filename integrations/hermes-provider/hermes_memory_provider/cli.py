@@ -334,6 +334,37 @@ def register_cli(subparser):
     # LOCAL PATCH: P41 a single explicit target/excerpt enables proposal-only model checking.
     review_cmd.add_argument("--id", dest="memory_id", help="Check one visible memory against --evidence")
     review_cmd.add_argument("--evidence", help="Explicit transcript excerpt JSON; makes one Hermes model call (requires --id)")
+    # LOCAL PATCH: P42 an explicit user correction is the first bounded review trigger.
+    review_cmd.add_argument(
+        "--correction",
+        action="store_true",
+        help="Record an explicit user-correction review in the local sidecar ledger",
+    )
+    review_cmd.add_argument(
+        "--correction-message-id",
+        help="User-role message ID in --evidence that carries the correction",
+    )
+
+    # LOCAL PATCH: P42 content-free outcome recording and counts.
+    outcome_cmd = mn_cmds.add_parser(
+        "review-outcome", help="Record an outcome for a reviewed correction proposal"
+    )
+    outcome_cmd.add_argument(
+        "--proposal", required=True, help="Proposal ID printed by review --correction"
+    )
+    outcome_cmd.add_argument(
+        "--outcome",
+        required=True,
+        choices=("accepted", "rejected", "corrected_again"),
+        help="accepted, rejected, or corrected_again",
+    )
+    mn_cmds.add_parser("review-stats", help="Summarize local correction-review outcomes")
+    pending_cmd = mn_cmds.add_parser(
+        "review-pending", help="List correction proposals with no recorded outcome"
+    )
+    pending_cmd.add_argument(
+        "--limit", type=int, default=20, help="Maximum pending proposals (1-100)"
+    )
 
     history_cmd = mn_cmds.add_parser("history", help="Show partial audit history for one memory ID")
     history_cmd.add_argument("--id", dest="memory_id", required=True, help="Memory ID")
@@ -437,6 +468,19 @@ def _readonly_inspect(args: Any) -> int:
         raise SystemExit(1) from exc
 
 
+# LOCAL PATCH: P42 the trigger is an explicit user correction, not an inferred one.
+def _validate_correction_evidence(bundle: Any, correction_message_id: str | None) -> None:
+    user_ids = {
+        message["id"] for message in bundle["messages"] if message["role"] == "user"
+    }
+    if not user_ids:
+        raise ValueError("--correction requires at least one user message in the evidence excerpt")
+    if correction_message_id is not None and correction_message_id not in user_ids:
+        raise ValueError(
+            "--correction-message-id must name a user message in the evidence excerpt"
+        )
+
+
 # LOCAL PATCH: P40 dispatch before host LLM registration or engine construction.
 def _readonly_review(args: Any) -> int:
     try:
@@ -445,6 +489,12 @@ def _readonly_review(args: Any) -> int:
         # LOCAL PATCH: P41 keep both modes ahead of engine/registry initialization.
         memory_id = getattr(args, "memory_id", None)
         evidence_path = getattr(args, "evidence", None)
+        correction = bool(getattr(args, "correction", False))
+        correction_message_id = getattr(args, "correction_message_id", None)
+        if correction_message_id and not correction:
+            raise ValueError("--correction-message-id requires --correction")
+        if correction and (not memory_id or not evidence_path):
+            raise ValueError("--correction requires both --id and --evidence")
         if memory_id or evidence_path:
             if not memory_id or not evidence_path:
                 raise ValueError("Source checking requires both --id and --evidence")
@@ -453,13 +503,48 @@ def _readonly_review(args: Any) -> int:
             from hermes_memory_provider.evidence import read_snapshot
             from hermes_memory_provider.source_check import check_memory, read_transcript
 
+            path = _inspection_db_path()
             rows = read_snapshot(
-                _inspection_db_path(), session_id=getattr(args, "session_id", "hermes_default"),
+                path, session_id=getattr(args, "session_id", "hermes_default"),
                 all_sessions=bool(getattr(args, "all_sessions", False)), memory_id=memory_id, limit=1,
             )
             if not rows:
                 raise ValueError("Memory is not available in this selection")
-            result = check_memory(rows[0], read_transcript(evidence_path))
+            bundle = read_transcript(evidence_path)
+            if correction:
+                _validate_correction_evidence(bundle, correction_message_id)
+            result = check_memory(rows[0], bundle)
+            if correction:
+                # LOCAL PATCH: P42 record identity, hashes and verdict only.
+                from hermes_memory_provider.review_ledger import record_review
+
+                try:
+                    recorded = record_review(
+                        path,
+                        result,
+                        trigger="explicit_correction",
+                        correction_message_id=correction_message_id,
+                        session_id=getattr(args, "session_id", "hermes_default"),
+                        all_sessions=bool(getattr(args, "all_sessions", False)),
+                    )
+                except Exception as exc:
+                    # The model call already produced evidence worth reading;
+                    # report it, mark measurement as missing, and still fail.
+                    result["trigger"] = "explicit_correction"
+                    result["review_id"] = None
+                    result["proposal_id"] = None
+                    result["ledger"] = {"recorded": False, "error": str(exc)}
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                    raise
+                result["trigger"] = "explicit_correction"
+                result["review_id"] = recorded["review_id"]
+                result["proposal_id"] = recorded["proposal_id"]
+                result["ledger"] = {
+                    "path": recorded["ledger_path"],
+                    "recorded": True,
+                    "superseded": recorded["superseded"],
+                    "warnings": recorded["warnings"],
+                }
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         result = review_snapshot(
@@ -472,6 +557,103 @@ def _readonly_review(args: Any) -> int:
         return 0
     except Exception as exc:
         print(f"Review failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+# LOCAL PATCH: P42 compare the current memory with the proposal's recorded hashes.
+def _observe_proposal(path: Any, proposal: Any) -> str:
+    from hermes_memory_provider.evidence import read_snapshot
+    from hermes_memory_provider.review_ledger import content_sha256
+
+    rows = read_snapshot(
+        path,
+        session_id=proposal["session_id"],
+        all_sessions=proposal["all_sessions"],
+        memory_id=proposal["memory_id"],
+        limit=1,
+    )
+    if not rows:
+        return "missing"
+    row = rows[0]
+    if row.get("content_truncated"):
+        # Both recorded hashes describe complete memories of at most 4,000
+        # characters, so a longer current row cannot match either.
+        return "changed_otherwise"
+    digest = content_sha256(str(row.get("content") or ""))
+    if digest == proposal["original_sha256"]:
+        return "matches_original"
+    if digest == proposal["replacement_sha256"]:
+        return "matches_proposal"
+    return "changed_otherwise"
+
+
+def _outcome_warnings(outcome: str, observed: str) -> list[str]:
+    if outcome == "accepted" and observed == "matches_original":
+        return ["The current memory still matches the original; acceptance is unverified."]
+    if outcome == "accepted" and observed in ("changed_otherwise", "missing"):
+        return [
+            "The current memory does not match the proposed replacement; acceptance is unverified."
+        ]
+    if outcome == "rejected" and observed == "matches_proposal":
+        return ["The current memory already matches the rejected proposal."]
+    if outcome == "corrected_again" and observed == "matches_original":
+        return ["The current memory still matches the original; corrected_again is unverified."]
+    return []
+
+
+# LOCAL PATCH: P42 explicit outcomes and counts, still ahead of engine construction.
+def _readonly_review_outcome(args: Any) -> int:
+    try:
+        from hermes_memory_provider.review_ledger import (
+            find_proposal, ledger_path, read_events, record_outcome,
+        )
+
+        path = _inspection_db_path()
+        proposal = find_proposal(read_events(ledger_path(path)), str(args.proposal))
+        observed = _observe_proposal(path, proposal)
+        recorded = record_outcome(
+            path, str(args.proposal), str(args.outcome), observed=observed
+        )
+        print(json.dumps({
+            "ok": True,
+            "proposal_id": recorded["proposal_id"],
+            "outcome": recorded["outcome"],
+            "observed": observed,
+            "warnings": _outcome_warnings(str(args.outcome), observed),
+            "ledger": recorded["ledger_path"],
+        }, ensure_ascii=False, indent=2))
+        return 0
+    except Exception as exc:
+        print(f"Review outcome failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+def _readonly_review_pending(args: Any) -> int:
+    try:
+        from hermes_memory_provider.review_ledger import (
+            ledger_path, pending_proposals, read_events,
+        )
+
+        path = ledger_path(_inspection_db_path())
+        result = pending_proposals(read_events(path), limit=_bounded_limit(args, 20))
+        result["ledger"] = str(path)
+        result["ledger_exists"] = path.exists()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    except Exception as exc:
+        print(f"Review pending failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+def _readonly_review_stats(args: Any) -> int:
+    try:
+        from hermes_memory_provider.review_ledger import ledger_path, read_events, summarize
+
+        path = ledger_path(_inspection_db_path())
+        print(json.dumps(summarize(read_events(path), path), ensure_ascii=False, indent=2))
+        return 0
+    except Exception as exc:
+        print(f"Review stats failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
 
@@ -523,7 +705,7 @@ def mnemosyne_command(args):
     """Dispatch ``hermes mnemosyne <subcommand>``."""
     cmd = getattr(args, "mnemosyne_cmd", None)
     if not cmd:
-        print("Usage: hermes mnemosyne {stats|sleep|version|inspect|review|history|clear|export|import}")
+        print("Usage: hermes mnemosyne {stats|sleep|version|inspect|review|review-outcome|review-stats|review-pending|history|clear|export|import}")
         return 1
 
     # LOCAL PATCH: P27 inspection must never construct BeamMemory because its
@@ -535,6 +717,12 @@ def mnemosyne_command(args):
         raise SystemExit(1)
     if cmd == "review":
         return _readonly_review(args)
+    if cmd == "review-outcome":
+        return _readonly_review_outcome(args)
+    if cmd == "review-stats":
+        return _readonly_review_stats(args)
+    if cmd == "review-pending":
+        return _readonly_review_pending(args)
     if cmd == "history":
         return _readonly_history(args)
 

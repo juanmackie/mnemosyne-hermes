@@ -457,7 +457,7 @@ def test_review_flags_duplicates_and_missing_originals_without_claiming_verifica
     with tempfile.TemporaryDirectory() as temp:
         db = pathlib.Path(temp) / "engine.db"
         _make_store(db)
-        with sqlite3.connect(db) as connection:
+        with contextlib.closing(sqlite3.connect(db)) as connection:
             reference = json.dumps(
                 {
                     "source_ref": {
@@ -486,6 +486,7 @@ def test_review_flags_duplicates_and_missing_originals_without_claiming_verifica
             connection.execute(
                 "UPDATE working_memory SET metadata_json = 'broken' WHERE id = 'global'"
             )
+            connection.commit()
         report = review_snapshot(db, session_id="session-a")
         rows = {row["id"]: row for row in report["candidates"]}
         assert "own" not in rows  # A reference is a lookup aid, not a truth claim.
@@ -506,7 +507,7 @@ def test_review_does_not_match_truncated_prefixes_and_marks_scan_bound():
     with tempfile.TemporaryDirectory() as temp:
         db = pathlib.Path(temp) / "engine.db"
         _make_store(db)
-        with sqlite3.connect(db) as connection:
+        with contextlib.closing(sqlite3.connect(db)) as connection:
             connection.executemany(
                 "INSERT INTO working_memory VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
@@ -522,6 +523,7 @@ def test_review_does_not_match_truncated_prefixes_and_marks_scan_bound():
                     for i in range(201)
                 ],
             )
+            connection.commit()
         report = review_snapshot(db, session_id="session-a", limit=100)
         assert report["scanned"] == 200
         assert report["scan_truncated"] is True

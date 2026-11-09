@@ -119,6 +119,109 @@ existing provider tools. Re-read the current memory before applying any change:
 the original hash identifies the input, not a lock or an automatic conflict check.
 No automated apply command or recurring job is added.
 
+## Close the loop on an explicit user correction
+
+Mark the check as a correction trigger when the user has explicitly corrected a
+remembered fact:
+
+```bash
+hermes mnemosyne review --session-id YOUR_SESSION --id MEMORY_ID \
+  --evidence /path/outside-repo/excerpt.json --correction \
+  --correction-message-id 7
+```
+
+`--correction` requires both `--id` and `--evidence`, and the excerpt must
+contain at least one `user` message. `--correction-message-id` is optional and
+must name a user message; the ledger records that ID, not its text. This flag
+does not fetch a transcript, invent a correction message or infer that an
+ordinary assistant turn was a correction. The excerpt still has to contain the
+relevant original and correction messages.
+
+The result is the same proposal-only JSON, plus `trigger`, `review_id`,
+`proposal_id` and `ledger` fields. The command appends one review event to
+`<db_path>.review-ledger.jsonl` beside the provider store. The event contains
+IDs, the session/visibility selector, SHA-256 hashes of the original memory,
+supplied evidence and proposed replacement, the verdict, the trigger and a
+timestamp. It never stores memory text, transcript text, citation quotes, the
+model's reason or the replacement. It is a local diagnostic record, not a second
+memory store and not an authority on truth.
+
+A `supported` or `insufficient` verdict is recorded too, with no proposal. That
+is how an unsupported correction trigger becomes visible instead of disappearing.
+
+Inspect the proposal and the cited evidence, then record what actually happened:
+
+```bash
+hermes mnemosyne review-outcome --proposal PROPOSAL_ID --outcome accepted
+hermes mnemosyne review-outcome --proposal PROPOSAL_ID --outcome rejected
+hermes mnemosyne review-outcome --proposal PROPOSAL_ID --outcome corrected_again
+```
+
+- `accepted`: the change was applied and is still believed correct.
+- `rejected`: the proposal was not applied because it was wrong or not useful.
+- `corrected_again`: the change was applied, but the result was later corrected.
+
+The latest recorded outcome wins. Applying a proposal remains a separate action
+through the existing provider tools; recording an outcome does not edit memory.
+
+`review-outcome` also reads the current memory with the selector recorded at
+review time and compares its content hash with the original and replacement
+hashes. It reports one observed state:
+
+| Observed | Meaning |
+| --- | --- |
+| `matches_original` | The note is unchanged; an `accepted` outcome is unverified. |
+| `matches_proposal` | The current text exactly matches the proposed replacement. |
+| `changed_otherwise` | The note differs from both recorded hashes. |
+| `missing` | The note is not found in the recorded selection. |
+
+The outcome event stores that observation and a `source` (`explicit`, or
+`observed_rerun` for the automatic supersession below). Warnings are returned
+when an outcome conflicts with the observation, but they do not block the
+record: the operator can still be right about a state the read-only projection
+cannot see.
+
+A new explicit correction also checks the ledger. If its current memory hash
+equals a prior proposal's exact replacement hash, that prior proposal was
+applied, and if the new review proposes a different replacement, the prior
+proposal is marked `corrected_again` with source `observed_rerun`. This is the
+only automatic inference: an exact hash match plus a new explicit correction.
+It does not edit memory and does not infer acceptance from a silent rerun.
+
+To see what still needs a decision:
+
+```bash
+hermes mnemosyne review-pending
+```
+
+lists proposals without a recorded outcome, oldest first. The IDs are the ones
+`review-outcome` accepts, so losing the original command output does not lose
+the feedback loop.
+
+```bash
+hermes mnemosyne review-stats
+```
+
+prints review, trigger and verdict counts, pending proposals, observed states,
+outcome sources, and rates:
+
+- `acceptance_rate = accepted / decided`
+- `verified_acceptance_rate = accepted_verified / decided`
+- `false_correction_rate = (rejected + corrected_again) / decided`
+- `decided = accepted + rejected + corrected_again`
+
+`accepted_verified` counts accepted outcomes whose current memory exactly
+matched the proposed replacement; `accepted_unverified` counts the rest. Rates
+are `null` until at least one proposal has a recorded outcome. They measure
+explicit and evaluated outcomes, not an assumption that an unrecorded proposal
+was accepted, and they do not prove the memory is true.
+
+The ledger stays local and is never exported automatically. There is no export
+command in this milestone. Deliberately not added: automatic application,
+background scanning, transcript discovery, a new tool registration, a schema
+change, a recurring model job, or code self-modification. Those need measured
+proposal accuracy and a reviewed regression case first.
+
 ## Agent workflow
 
 1. Start with a concrete question or task. Recall relevant notes; read injected
@@ -136,7 +239,10 @@ No automated apply command or recurring job is added.
 5. Correct only evidence-supported errors through the configured provider
    tools. Default exposure includes remember/recall/stats/forget; update and
    validation tools require explicit configuration. Review itself never applies
-   changes. A duplicate signal alone is insufficient grounds for deletion.
+   changes. A duplicate signal alone is insufficient grounds for deletion. For
+   an explicit user correction, run the review with `--correction`, then record
+   the outcome after applying or declining the proposal. `review-pending` lists
+   proposals that still need a decision.
 6. Keep native `MEMORY.md`/`USER.md` anchors short. Use searchable provider
    records for detail and skills for procedures. A read-only Markdown export
    can aid navigation; it remains a projection rather than a second authority.
@@ -152,20 +258,31 @@ single unexplained failure into a universal rule. A caller-supplied
    tiers, exposes evidence and budgets injected context. Reimplementing these
    would create competing behavior. Lite remains a separate keyword store.
 2. **Delete unnecessary work.** No new wiki database, graph service, tool
-   registration, scheduler, API key, schema or model dependency.
-3. **Simplify.** Reuse the existing read-only evidence reader and configured-tool
-   prompt. Mechanical signals request investigation, not automatic decisions.
+   registration, scheduler, API key, schema or model dependency. The outcome
+   ledger is an append-only sidecar, not a second memory store.
+3. **Simplify.** Reuse the existing read-only evidence reader, source checker,
+   Hermes model adapter and configured-tool prompt. Mechanical signals request
+   investigation, not automatic decisions. One `--correction` flag is the whole
+   new trigger; it does not infer corrections from ordinary turns.
 4. **Shorten feedback cycles.** A capped JSON queue supports immediate manual
-   inspection. Local/keyless regression tests cover ownership and safety.
-5. **Automate last.** No new recurring model jobs. Consider automation only
-   after a task-specific evaluation shows improved answers and acceptable cost.
-   Existing token-free tier consolidation is unchanged and is not advertised
-   as semantic verification of notes.
+   inspection. `review-outcome` compares the current memory against the
+   recorded hashes, `review-pending` lists decisions that are still open, and
+   `review-stats` turns those observations into acceptance and false-correction
+   rates without another model call. Local/keyless regression tests cover
+   ownership and safety.
+5. **Automate last.** No new recurring model jobs. The exact-hash supersession
+   observation is automated because it follows from two explicitly recorded
+   inputs; the decision to apply or reject a proposal is not. Consider broader
+   automation only after a task-specific evaluation shows improved answers,
+   acceptable cost and a measured proposal false-correction rate. Existing
+   token-free tier consolidation is unchanged and is not advertised as semantic
+   verification of notes.
 
-A full wiki, recurring source checking or memory promotion would need a measured
-retrieval problem and an evaluation against the simpler search-plus-review path.
-This change makes no benchmark improvement claim and performs no live gateway
-verification.
+A full wiki, recurring source checking, automatic correction or memory promotion
+would need a measured retrieval problem and an evaluation against the simpler
+search-plus-review path. This change makes no benchmark improvement claim and
+performs no live gateway verification. The ledger measures decisions people and
+agents record; it does not establish model accuracy by itself.
 
 ## Evaluate before scheduling
 
@@ -174,8 +291,13 @@ incorrect notes, an explicit correction, correct/conditional/negated notes,
 missing evidence, an assistant guess and an embedded instruction attempt.
 The evaluator records supported-note false proposals, insufficient-evidence
 false proposals, successful corrections, judgment errors and per-case output.
-Expected verdicts and replacement terms are authored independently of the model;
-replacement scoring is intentionally simple and still needs human inspection.
+It also reports `false_proposal_rate` over the supported and insufficient cases
+and `correction_pass_rate` over the contradicted cases, so a review-logic change
+can be compared on the same authored set. Expected verdicts and replacement
+terms are authored independently of the model; replacement scoring is
+intentionally simple and still needs human inspection. These are synthetic
+rates, not the local acceptance/false-correction rates that `review-stats`
+computes from recorded outcomes.
 
 In an environment where the Hermes auxiliary adapter is usable, run:
 

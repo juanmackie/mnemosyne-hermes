@@ -27,9 +27,9 @@
       "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "yGFbs-81waUcRsCDGs52WRUMesslDnvxDY4c8FUH31s",
-      "bytes": 44687,
-      "lines": 963
+      "sha256": "deiMPHUQ4IqdBLnOnIAMK8lgwniaap7WK3yoH9ZLGzw",
+      "bytes": 52873,
+      "lines": 1151
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -65,6 +65,11 @@
       "sha256": "k8u1hjyYaOl9K09FJZRlp7hn6_yvsNYHi404Vf8O1cw",
       "bytes": 8939,
       "lines": 163
+    },
+    "hermes_memory_provider/review_ledger.py": {
+      "sha256": "QoxBOffq7GaSfvQEQ7NRKaFy5FTmOPIba6dmyHf-zyY",
+      "bytes": 20674,
+      "lines": 487
     }
   },
   "engine_dependency": {
@@ -115,7 +120,8 @@
       "P30 remove SUPPORTED_HERMES_RANGE, TESTED_HERMES_VERSIONS and check_hermes_version; doctor only prints the detected Hermes version",
       "P31 selected-profile read-only config and shared store resolution; reset settings on reinitialization, skip engine config seeding, and read-only active-profile doctor",
       "P40 source-grounded memory guidance and bounded read-only manual evidence review",
-      "P41 one-memory source checking with exact-quote citations and proposal-only output"
+      "P41 one-memory source checking with exact-quote citations and proposal-only output",
+      "P42 explicit user-correction trigger records a content-free review event and exposes verified review-outcome/review-pending/review-stats"
     ],
     "hermes_memory_provider/pyproject.toml": [
       "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"
@@ -133,6 +139,9 @@
     ],
     "hermes_memory_provider/source_check.py": [
       "P41 one-memory source checking with exact-quote citations and proposal-only output"
+    ],
+    "hermes_memory_provider/review_ledger.py": [
+      "P42 content-free local review ledger with verified outcomes, pending lists and exact-replacement supersession; no memory text, transcript text, quotes or replacements"
     ]
   },
   "metadata_files": {

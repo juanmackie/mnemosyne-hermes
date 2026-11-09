@@ -284,3 +284,18 @@ call. Strictly validated verdicts and exact-quote citations produce proposals
 only; neither the database nor transcript is changed. The evidence file is
 operator-supplied and unauthenticated. See the workflow above for the bounded
 JSON format, reference/namespace matching, failure behavior and synthetic eval.
+
+Add `--correction` when the user has explicitly corrected the fact. The excerpt
+must contain a user message; `--correction-message-id` optionally names it. The
+proposal is unchanged, but the command appends a content-free review event to
+`<db>.review-ledger.jsonl` beside the store (IDs, session selector, hashes of
+the original/evidence/replacement, verdict and timestamp; no memory or
+transcript text, quotes, reason or replacement). Record the decision with
+`review-outcome --proposal ID --outcome accepted|rejected|corrected_again`; it
+compares the current memory against the recorded hashes and reports `observed`
+plus warnings. `review-pending` lists unresolved proposals, `review-stats`
+reports counts, accepted-verified counts, and acceptance/false-correction rates.
+An exact match between a new correction's original text and a prior proposal's
+replacement marks that prior proposal `corrected_again` with source
+`observed_rerun`. The ledger is local measurement, not memory, and nothing is
+applied automatically.
