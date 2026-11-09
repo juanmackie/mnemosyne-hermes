@@ -119,7 +119,8 @@ def check_memory(memory: dict[str, Any], bundle: dict[str, Any], *,
         raise EvidenceError("Source checking requires a complete memory of 1-4000 characters")
     if memory.get("metadata_error") or memory.get("metadata_truncated"):
         raise EvidenceError("Unreadable memory metadata prevents source association checks")
-    reference = source_reference(memory.get("metadata"))
+    # LOCAL PATCH: P42 validate provenance-backed references from snapshots.
+    reference = source_reference(memory.get("metadata")) or memory.get("source_reference")
     if reference:
         if (reference["session_id"] != bundle["session_id"]
                 or reference.get("message_id_namespace") != bundle["message_id_namespace"]

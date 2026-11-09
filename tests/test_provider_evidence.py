@@ -82,6 +82,27 @@ def test_host_reference_requires_unique_exact_message_and_stable_identifiers():
     assert "source_ref" not in turn_metadata(message["content"], "user", [message], "")
 
 
+def test_snapshot_uses_memory_provenance_when_metadata_has_no_reference(tmp_path):
+    db = tmp_path / "engine.db"
+    connection = _database(db)
+    connection.execute("CREATE TABLE memory_provenance (memory_id TEXT, source_kind TEXT, session_id TEXT, turn_id TEXT, evidence_quote TEXT)")
+    _remember(connection, "from-prov")
+    connection.execute("INSERT INTO memory_provenance VALUES ('from-prov','raw_turn','own','7','durable synthetic fact')")
+    connection.commit()
+    connection.close()
+    row = read_snapshot(db, session_id="own", memory_id="from-prov")[0]
+    assert row["source_reference"]["session_id"] == "own"
+    assert row["source_reference"]["message_id"] == "7"
+    assert row["source_origin"] == "provenance"
+    assert row["original_ids"] == ["7"]
+    from hermes_memory_provider.evidence import review_snapshot
+    report = review_snapshot(db, session_id="own", limit=20)
+    assert all(candidate["source_reference"] for candidate in report["candidates"])
+    assert report["verifiable_only"] is True
+    full = review_snapshot(db, session_id="own", limit=20, verifiable_only=False)
+    assert full["candidate_count"] >= report["candidate_count"]
+
+
 def test_host_reference_keeps_platform_and_internal_id_namespaces_separate():
     current = {
         "role": "user",

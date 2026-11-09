@@ -27,9 +27,9 @@
       "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "yGFbs-81waUcRsCDGs52WRUMesslDnvxDY4c8FUH31s",
-      "bytes": 44687,
-      "lines": 963
+      "sha256": "8-fnluKsybkCepkgjkVPa7_9ieKYqdMMVvN1XNSmNaI",
+      "bytes": 45276,
+      "lines": 969
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -52,9 +52,9 @@
       "lines": 396
     },
     "hermes_memory_provider/evidence.py": {
-      "sha256": "OBm06jluXWCcSDvpMKTyi2RHE9T8zBpdXqQLfw_aLaM",
-      "bytes": 18541,
-      "lines": 379
+      "sha256": "ewtXkN_gBW05EMmfzTR9mH8MlwtfB23C3LI8yyCZIhI",
+      "bytes": 20101,
+      "lines": 404
     },
     "hermes_memory_provider/configuration.py": {
       "sha256": "Mli5dG0X7O_TaGDAXlcFU_vCuSq79NaYR6tcB3ZrTno",
@@ -62,9 +62,9 @@
       "lines": 153
     },
     "hermes_memory_provider/source_check.py": {
-      "sha256": "k8u1hjyYaOl9K09FJZRlp7hn6_yvsNYHi404Vf8O1cw",
-      "bytes": 8939,
-      "lines": 163
+      "sha256": "q-Byl7ri3FOzY65yU10q470wPvh1mJLRll3drQk1gtI",
+      "bytes": 9050,
+      "lines": 164
     }
   },
   "engine_dependency": {
@@ -115,7 +115,8 @@
       "P30 remove SUPPORTED_HERMES_RANGE, TESTED_HERMES_VERSIONS and check_hermes_version; doctor only prints the detected Hermes version",
       "P31 selected-profile read-only config and shared store resolution; reset settings on reinitialization, skip engine config seeding, and read-only active-profile doctor",
       "P40 source-grounded memory guidance and bounded read-only manual evidence review",
-      "P41 one-memory source checking with exact-quote citations and proposal-only output"
+      "P41 one-memory source checking with exact-quote citations and proposal-only output",
+      "P42 expose --all-candidates for the full source gap"
     ],
     "hermes_memory_provider/pyproject.toml": [
       "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"
@@ -126,13 +127,15 @@
     "hermes_memory_provider/evidence.py": [
       "P28 new local read-only source-reference normalization and bounded Markdown projection; no engine schema changes",
       "P32 keep internal and platform message-ID namespaces distinct, normalize integer host IDs, and retain untyped legacy references",
-      "P40 source-grounded memory guidance and bounded read-only manual evidence review"
+      "P40 source-grounded memory guidance and bounded read-only manual evidence review",
+      "P42 use engine provenance when legacy metadata lacks refs and filter review queue candidates by verifiability"
     ],
     "hermes_memory_provider/configuration.py": [
       "P31 new local read-only selected-profile configuration and shared database/bank resolution; reject unreadable config and ambiguous bank identity"
     ],
     "hermes_memory_provider/source_check.py": [
-      "P41 one-memory source checking with exact-quote citations and proposal-only output"
+      "P41 one-memory source checking with exact-quote citations and proposal-only output",
+      "P42 validate provenance-backed references from snapshots"
     ]
   },
   "metadata_files": {
