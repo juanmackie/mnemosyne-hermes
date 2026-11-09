@@ -1,6 +1,6 @@
 ---
 name: mnemosyne-lite
-description: Search the local mnemosyne-lite SQLite store and get a few ranked, cited cards instead of reading raw tables. Use when the user asks about past memories ("have we seen this before", "what did we decide", "find notes about ..."), or before any recall call. Also use to create a store with init and summarise it with describe.
+description: Search or write the local mnemosyne-lite SQLite store. Use when the user asks about past memories, asks to remember something, or before a recall call. Also use to create a store with init and summarise it with describe.
 ---
 
 # mnemosyne-lite: search local memory without reading tables
@@ -55,6 +55,15 @@ mnemosyne-lite describe
 a missing path instead of fabricating an empty database. A foreign file
 is refused byte-identically: a mistyped `--db-path` never becomes an
 empty store that reports "0 memories".
+
+## Remembering
+
+Save information the user asks to remember or that is clearly useful in a
+future session. Prefer durable decisions, plans, and lessons over details
+readily recovered from the current environment. Include the source or reason
+when available; label untested hypotheses as such. When relying on a memory,
+check its source or current state if accuracy or freshness matters. A stored
+note is evidence to investigate, not proof that its contents remain true.
 
 ## MCP
 
