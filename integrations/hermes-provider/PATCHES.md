@@ -498,13 +498,23 @@ does not, without the rename and dual-versioning cost of a fork.
 | Verification | `tests/test_provider_source_check.py` (registered in `scripts/checks.sh`) covers citation/schema rejection, uncertainty/preservation, source bounds and namespace association, read-only CLI visibility, and scorer regressions. `bench/source_check_eval.py --run-model` evaluates eight authored synthetic cases via the existing Hermes model; deterministic unit-test judges validate plumbing only. |
 | Upstream | Not sent. No automatic apply or scheduler is introduced. |
 
-### P42 — provenance-backed source references for review
+### P43 — provenance-backed source references for review
 
 | | |
 | --- | --- |
 | Files | `hermes_memory_provider/evidence.py`, `source_check.py`, `cli.py` |
 | Date | 2026-11-09 |
 | Reason | Existing engine provenance rows link legacy memories to recorded sessions and turns even when `metadata_json` has no source reference. |
-| Behaviour | Read-only snapshots use provenance as an unauthenticated source association when metadata lacks a reference. Review queues default to candidates with a reference or visible lineage; `--all-candidates` exposes the complete gap. Source checking continues to enforce transcript session, message and namespace matching. |
-| Verification | `tests/test_provider_evidence.py` and `tests/test_provider_source_check.py` cover provenance-backed snapshots and citation association. |
+| Behaviour | Read-only snapshots use provenance as an unauthenticated source association when metadata lacks a reference. Review queues default to candidates with a reference or visible lineage; `--all-candidates` exposes the complete gap. Inspection output preserves provenance references, and source checking enforces transcript session, message and namespace matching. |
+| Verification | `tests/test_provider_evidence.py`, `tests/test_provider_inspection.py` and `tests/test_provider_source_check.py` cover provenance-backed snapshots, inspection and citation association. |
 | Upstream | Not sent. |
+### P42 — measured explicit-correction loop
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/cli.py`, `hermes_memory_provider/review_ledger.py` (new local module) |
+| Date | 2026-11-09 |
+| Reason | The review workflow produced a cited proposal but could not distinguish a user's explicit correction from a speculative check, and had no local way to measure whether its proposals were accepted or later proved wrong. |
+| Behaviour | `review --id ID --evidence FILE --correction` reuses the P41 proposal-only source checker and requires the excerpt to contain a `user` message; `--correction-message-id` optionally pins which user message carried the correction. It appends one content-free event to `<db>.review-ledger.jsonl` beside the resolved store: review/trigger/verdict IDs, memory ID/store, session/visibility selector, original/evidence/replacement SHA-256, correction message ID and timestamp, with no memory text, transcript text, citation quotes, reason or replacement. A non-contradicted verdict is recorded too, without a proposal. `review-outcome --proposal ID --outcome accepted\|rejected\|corrected_again` reads the current memory with the recorded selector, reports `observed` (`matches_original`, `matches_proposal`, `changed_otherwise`, `missing`) plus unverified-outcome warnings, and stores that observation and source. `review-pending` lists proposals with no outcome. If a new explicit correction's original hash equals a prior proposal's exact replacement hash and proposes a different replacement, the prior proposal is marked `corrected_again` with source `observed_rerun`; this is the only inferred outcome. `review-stats` folds the ledger into counts, `accepted_verified`/`accepted_unverified`, `acceptance_rate`, `verified_acceptance_rate`, `false_correction_rate`, outcome sources and observed states. Rates are `null` until a proposal has a recorded outcome. The ledger is a local diagnostic sidecar, not a second memory authority; writes refuse symlinks and non-regular files, and malformed lines fail loudly. |
+| Verification | `tests/test_provider_review_ledger.py` (registered in `scripts/checks.sh`) covers content exclusion, deterministic IDs, duplicate dedupe, successive outcomes, supported/insufficient reviews, malformed/truncated lines, unknown proposals, symlink refusal, CLI proposal→outcome→stats flow, read-only plain review, observed acceptance verification, pending lists, and exact-replacement supersession without duplicate rerun effects. `bench/source_check_eval.py` now reports `correction_pass_rate` and `false_proposal_rate` over its authored cases. |
+| Upstream | Not sent. Deliberately no automatic apply, background scan, transcript fetch, schema change, tool registration or code self-modification. |

@@ -44,6 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produce correction proposals only. Includes an eight-case synthetic evaluator;
   live model accuracy has not yet been measured.
 
+- Explicit-correction review loop: `review --correction` marks a user-authored
+  correction and records a content-free review event (IDs, session selector,
+  original/evidence/replacement hashes, verdict, timestamp) in
+  `<db>.review-ledger.jsonl`. `review-outcome` records
+  accepted/rejected/corrected_again and compares the current memory against the
+  recorded hashes, reporting `observed` and unverified-outcome warnings.
+  `review-pending` lists unresolved proposals. An exact prior-replacement match
+  from a new explicit correction marks the prior proposal `corrected_again`
+  with source `observed_rerun`. `review-stats` reports acceptance,
+  verified-acceptance and false-correction rates. No memory text, transcript
+  text, quotes or replacements enter the ledger; nothing is applied
+  automatically. The synthetic evaluator now also reports
+  `correction_pass_rate` and `false_proposal_rate`.
+
 - `hermes mnemosyne review`: a bounded, read-only JSON queue of missing source
   evidence, unavailable originals, unreadable metadata, truncated content and
   exact duplicate candidates. Provider guidance distinguishes tested lessons

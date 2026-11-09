@@ -139,7 +139,7 @@ def _open_snapshot(db_path: str | Path) -> sqlite3.Connection:
 def _read_rows(connection: sqlite3.Connection, *, session_id: str, all_sessions: bool,
                memory_id: str | None, limit: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    # LOCAL PATCH: P42 use engine provenance when legacy metadata lacks refs.
+    # LOCAL PATCH: P43 use engine provenance when legacy metadata lacks refs.
     has_provenance = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_provenance'"
     ).fetchone() is not None

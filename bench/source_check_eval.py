@@ -67,23 +67,36 @@ def evaluate(
                     "error": str(exc),
                 }
             )
+    contradictions = sum(row["expected"] == "contradicted" for row in results)
+    corrections_passed = sum(row["expected"] == "contradicted" and row["passed"] for row in results)
+    correct_memories = sum(row["expected"] == "supported" for row in results)
+    insufficient_cases = sum(row["expected"] == "insufficient" for row in results)
+    false_proposals = sum(
+        row["expected"] in ("supported", "insufficient") and row["proposal"] for row in results
+    )
+    non_correction_cases = correct_memories + insufficient_cases
+
+    def rate(numerator: int, denominator: int) -> float | None:
+        return None if denominator == 0 else round(numerator / denominator, 4)
+
     return {
         "format": "mnemosyne-source-check-eval/v1",
         "coverage": "small authored synthetic corpus; not a production quality estimate",
         "cases": len(results),
         "passed": sum(row["passed"] for row in results),
         "errors": sum("error" in row for row in results),
-        "contradictions": sum(row["expected"] == "contradicted" for row in results),
-        "corrections_passed": sum(
-            row["expected"] == "contradicted" and row["passed"] for row in results
-        ),
-        "correct_memories": sum(row["expected"] == "supported" for row in results),
+        "contradictions": contradictions,
+        "corrections_passed": corrections_passed,
+        "correction_pass_rate": rate(corrections_passed, contradictions),
+        "correct_memories": correct_memories,
         "correct_memory_false_proposals": sum(
             row["expected"] == "supported" and row["proposal"] for row in results
         ),
+        "insufficient_cases": insufficient_cases,
         "insufficient_false_proposals": sum(
             row["expected"] == "insufficient" and row["proposal"] for row in results
         ),
+        "false_proposal_rate": rate(false_proposals, non_correction_cases),
         "results": results,
     }
 

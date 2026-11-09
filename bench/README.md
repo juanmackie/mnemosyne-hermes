@@ -218,6 +218,9 @@ does not establish retrieval or production improvement.
 calls through the existing Hermes auxiliary model against authored synthetic
 memory/transcript pairs. It reads no live memory store. The JSON report counts
 successful corrections, false proposals on correct notes and on insufficient
-evidence, and errors. Scripted judges in unit tests test the scorer, not model
-accuracy. No live-model performance result is recorded yet. See
+evidence, and errors, and reports `correction_pass_rate` and
+`false_proposal_rate` on the authored labels. Scripted judges in unit tests test
+the scorer, not model accuracy. These synthetic rates are separate from the
+local acceptance/false-correction rates recorded by `review-stats`. No live-model
+performance result is recorded yet. See
 [the workflow and limits](../docs/MEMORY_REVIEW.md#evaluate-before-scheduling).
