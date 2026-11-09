@@ -331,6 +331,11 @@ def register_cli(subparser):
     review_cmd.add_argument("--session-id", default="hermes_default", help="Session whose memories are visible")
     review_cmd.add_argument("--all-sessions", action="store_true", help="Explicit local-operator access across sessions")
     review_cmd.add_argument("--limit", type=int, default=20, help="Maximum candidates (1-100); scans at most 200 rows")
+    candidate_mode = review_cmd.add_mutually_exclusive_group()
+    candidate_mode.add_argument("--verifiable-only", dest="verifiable_only", action="store_true", default=True,
+                                help="Show only candidates with source references or visible lineage (default)")
+    candidate_mode.add_argument("--all-candidates", dest="verifiable_only", action="store_false",
+                                help="Include candidates without source references")
     # LOCAL PATCH: P41 a single explicit target/excerpt enables proposal-only model checking.
     review_cmd.add_argument("--id", dest="memory_id", help="Check one visible memory against --evidence")
     review_cmd.add_argument("--evidence", help="Explicit transcript excerpt JSON; makes one Hermes model call (requires --id)")
@@ -456,7 +461,8 @@ def _readonly_inspect(args: Any) -> int:
             row["lineage_truncated"] = bool(row.get("lineage_truncated")) or len(lineage) > 20
             row["summary_of"] = lineage[:20]
             row.pop("metadata", None)
-            row["source_reference"] = source_reference(rows[0].get("metadata"))
+            # LOCAL PATCH: P43 preserve the provenance fallback in inspection output.
+            row["source_reference"] = source_reference(rows[0].get("metadata")) or rows[0].get("source_reference")
         print(json.dumps({
             "status": "found" if row else "not_found",
             "coverage": "current record only; audit history may be partial",
@@ -552,6 +558,7 @@ def _readonly_review(args: Any) -> int:
             session_id=getattr(args, "session_id", "hermes_default"),
             all_sessions=bool(getattr(args, "all_sessions", False)),
             limit=_bounded_limit(args, 20),
+            verifiable_only=bool(getattr(args, "verifiable_only", not bool(getattr(args, "all_candidates", False)))),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0

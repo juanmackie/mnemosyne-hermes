@@ -434,7 +434,8 @@ def test_review_is_bounded_readonly_and_does_not_initialize_engine():
         _make_store(db)
         before = db.read_bytes()
         args = Namespace(
-            mnemosyne_cmd="review", session_id="session-a", all_sessions=False, limit=1
+            mnemosyne_cmd="review", session_id="session-a", all_sessions=False, limit=1,
+            all_candidates=True,
         )
         with (
             patch.object(cli, "resolve_effective_db_path", return_value=str(db)),
@@ -487,7 +488,7 @@ def test_review_flags_duplicates_and_missing_originals_without_claiming_verifica
                 "UPDATE working_memory SET metadata_json = 'broken' WHERE id = 'global'"
             )
             connection.commit()
-        report = review_snapshot(db, session_id="session-a")
+        report = review_snapshot(db, session_id="session-a", verifiable_only=False)
         rows = {row["id"]: row for row in report["candidates"]}
         assert "own" not in rows  # A reference is a lookup aid, not a truth claim.
         assert rows["summary"]["duplicate_of"] == {"id": "own", "memory_store": "working"}
@@ -496,7 +497,7 @@ def test_review_flags_duplicates_and_missing_originals_without_claiming_verifica
         assert rows["global"]["reasons"] == ["source_unavailable", "metadata_unreadable"]
         assert "foreign" not in json.dumps(report)
         assert "deleted" not in json.dumps(report)
-        all_rows = review_snapshot(db, session_id="session-a", all_sessions=True)
+        all_rows = review_snapshot(db, session_id="session-a", all_sessions=True, verifiable_only=False)
         assert all_rows["selection"] == "all_sessions"
         assert all_rows["scanned"] == 4
 
@@ -524,7 +525,7 @@ def test_review_does_not_match_truncated_prefixes_and_marks_scan_bound():
                 ],
             )
             connection.commit()
-        report = review_snapshot(db, session_id="session-a", limit=100)
+        report = review_snapshot(db, session_id="session-a", limit=100, verifiable_only=False)
         assert report["scanned"] == 200
         assert report["scan_truncated"] is True
         assert report["shown"] == 100

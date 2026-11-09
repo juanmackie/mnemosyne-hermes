@@ -318,3 +318,10 @@ revision: Hermes is absent from the development interpreter. A successful run
 on this small corpus would be a smoke test, not evidence that unattended
 correction is safe. Expand the corpus with independently reviewed, nonprivate
 cases before considering automation.
+# Provenance-backed verification
+
+The read-only review and source checker can use `memory_provenance` as a
+first-class source reference when a memory has no metadata reference. These
+references identify the recorded session and turn for transcript association;
+they do not authenticate the underlying claim. Memories without either a
+metadata reference or provenance remain unverifiable, which is an honest gap.

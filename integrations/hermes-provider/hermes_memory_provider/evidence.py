@@ -139,6 +139,10 @@ def _open_snapshot(db_path: str | Path) -> sqlite3.Connection:
 def _read_rows(connection: sqlite3.Connection, *, session_id: str, all_sessions: bool,
                memory_id: str | None, limit: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    # LOCAL PATCH: P43 use engine provenance when legacy metadata lacks refs.
+    has_provenance = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_provenance'"
+    ).fetchone() is not None
     for table, store in (("working_memory", "working"), ("episodic_memory", "episodic")):
         columns = _columns(connection, table)
         fields = ["id", "source", "session_id", "scope",
@@ -178,6 +182,24 @@ def _read_rows(connection: sqlite3.Connection, *, session_id: str, all_sessions:
             except (TypeError, ValueError):
                 record["metadata"] = {}
                 record["metadata_error"] = "invalid_json_object"
+            reference = source_reference(record["metadata"])
+            record["source_origin"] = "metadata" if reference else None
+            if reference is None and has_provenance:
+                provenance = connection.execute(
+                    "SELECT session_id, turn_id FROM memory_provenance WHERE memory_id = ? LIMIT 1",
+                    (record["id"],),
+                ).fetchone()
+                if provenance:
+                    session = _identifier(provenance["session_id"])
+                    turn = _identifier(provenance["turn_id"])
+                    if session and turn:
+                        record["source_reference"] = {
+                            "session_id": session, "message_id": turn,
+                            "message_id_namespace": "internal", "origin": "provenance",
+                            "origin_authenticated": False,
+                        }
+                        record["original_ids"] = [turn]
+                        record["source_origin"] = "provenance"
             record["memory_store"] = store
             # Lineage is an identifier list, not authority to open originals.
             raw_lineage = str(record.pop("summary_of", "") or "")
@@ -237,7 +259,8 @@ def read_snapshot(db_path: str | Path, *, session_id: str = "hermes_default",
 # LOCAL PATCH: P40 deterministic review candidates over the existing bounded
 # evidence projection. Signals request investigation; none establish truth.
 def review_snapshot(db_path: str | Path, *, session_id: str = "hermes_default",
-                    all_sessions: bool = False, limit: int = 20) -> dict[str, Any]:
+                    all_sessions: bool = False, limit: int = 20,
+                    verifiable_only: bool = True) -> dict[str, Any]:
     """Find source gaps and exact duplicate notes without writing or model calls."""
     if type(limit) is not int or not 1 <= limit <= 100:
         raise EvidenceError("limit must be between 1 and 100")
@@ -249,7 +272,7 @@ def review_snapshot(db_path: str | Path, *, session_id: str = "hermes_default",
     candidates = []
     for row in rows:
         reasons = []
-        reference = source_reference(row.get("metadata"))
+        reference = source_reference(row.get("metadata")) or row.get("source_reference")
         if not reference and not row.get("summary_of"):
             reasons.append("source_unavailable")
         if row.get("metadata_error"):
@@ -267,12 +290,13 @@ def review_snapshot(db_path: str | Path, *, session_id: str = "hermes_default",
                 duplicate_of = dict(zip(("id", "memory_store"), seen[content]))
             else:
                 seen[content] = (row["id"], row["memory_store"])
-        if reasons:
+        if reasons and (not verifiable_only or reference or row.get("summary_of")):
             candidate = {
                 "id": row["id"], "memory_store": row["memory_store"],
                 "reasons": reasons, "source_reference": reference,
-                "original_ids": row.get("summary_of", [])[:20],
-                "original_ids_truncated": len(row.get("summary_of", [])) > 20,
+                "original_ids": (row.get("summary_of") or row.get("original_ids", []))[:20],
+                "original_ids_truncated": len(row.get("summary_of") or row.get("original_ids", [])) > 20,
+                "source_origin": row.get("source_origin"),
             }
             if duplicate_of:
                 candidate["duplicate_of"] = duplicate_of
@@ -283,6 +307,7 @@ def review_snapshot(db_path: str | Path, *, session_id: str = "hermes_default",
         "candidate_count": len(candidates), "shown": min(limit, len(candidates)),
         "candidates_truncated": len(candidates) > limit,
         "coverage": "working/episodic projection only; signals are not factual verification",
+        "verifiable_only": verifiable_only,
         "candidates": candidates[:limit],
     }
 

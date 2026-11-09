@@ -498,6 +498,16 @@ does not, without the rename and dual-versioning cost of a fork.
 | Verification | `tests/test_provider_source_check.py` (registered in `scripts/checks.sh`) covers citation/schema rejection, uncertainty/preservation, source bounds and namespace association, read-only CLI visibility, and scorer regressions. `bench/source_check_eval.py --run-model` evaluates eight authored synthetic cases via the existing Hermes model; deterministic unit-test judges validate plumbing only. |
 | Upstream | Not sent. No automatic apply or scheduler is introduced. |
 
+### P43 — provenance-backed source references for review
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/evidence.py`, `source_check.py`, `cli.py` |
+| Date | 2026-11-09 |
+| Reason | Existing engine provenance rows link legacy memories to recorded sessions and turns even when `metadata_json` has no source reference. |
+| Behaviour | Read-only snapshots use provenance as an unauthenticated source association when metadata lacks a reference. Review queues default to candidates with a reference or visible lineage; `--all-candidates` exposes the complete gap. Inspection output preserves provenance references, and source checking enforces transcript session, message and namespace matching. |
+| Verification | `tests/test_provider_evidence.py`, `tests/test_provider_inspection.py` and `tests/test_provider_source_check.py` cover provenance-backed snapshots, inspection and citation association. |
+| Upstream | Not sent. |
 ### P42 — measured explicit-correction loop
 
 | | |
