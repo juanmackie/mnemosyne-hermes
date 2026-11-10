@@ -78,12 +78,23 @@ jobs:
         run: shellcheck -S warning install.sh scripts/*.sh scripts/maintenance/*.sh bench/*.sh test-all.sh
 
   engine-contract:
-    name: engine-contract (py${{ matrix.python }})
-    runs-on: ubuntu-latest
+    name: engine-contract (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.13"]
+        # Keep the Linux compatibility endpoints and exercise the native
+        # Windows install/engine path once at the current supported Python.
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+            label: py3.11
+          - os: ubuntu-latest
+            python: "3.13"
+            label: py3.13
+          - os: windows-latest
+            python: "3.13"
+            label: windows, py3.13
     steps:
       # actions/checkout v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -95,7 +106,11 @@ jobs:
         run: |
           set -euo pipefail
           uv venv --python ${{ matrix.python }} .venv
-          py="$PWD/.venv/bin/python"
+          if [[ -x .venv/bin/python ]]; then
+            py="$PWD/.venv/bin/python"
+          else
+            py="$PWD/.venv/Scripts/python.exe"
+          fi
           echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
           # The pin comes from integrations/hermes-provider/pyproject.toml
           # (single source); installing the provider pulls the pinned engine.
