@@ -481,7 +481,7 @@ separately; the fork decision does not replace that review.
 | Reason | Concurrent apply calls could both read a pending JSON record and commit duplicate memories before either removed it. |
 | Behaviour | An exclusive `.applying` claim is created before reading/applying. A concurrent call fails closed. The claim is retained on ambiguous errors or crashes so a possibly committed write is not silently replayed; operators must inspect and recover that record. |
 | Verification | `tests/test_provider_pending.py::test_concurrent_pending_apply_only_applies_once` gates a blocked first write and concurrent second apply; the fake BEAM must receive exactly one call. |
-| Upstream | Not sent. |
+| Upstream | Not submitted separately; equivalent atomic claim helpers are now present in both the [repo-path provider](https://github.com/mnemosyne-oss/mnemosyne/blob/main/hermes_memory_provider/__init__.py) and [standalone provider](https://github.com/mnemosyne-oss/mnemosyne/blob/main/integrations/hermes/src/mnemosyne_hermes/__init__.py). |
 
 ### P37 — isolate concurrent prefetch cache payloads
 
@@ -492,7 +492,7 @@ separately; the fork decision does not replace that review.
 | Reason | Concurrent prefetch calls shared the last recall IDs and bank counts. One call could cache another query's recall IDs, so a later cache hit updated recall statistics for the wrong memories. |
 | Behaviour | Keep recall IDs and bank counts in thread-local per-call state and snapshot that state into the query's cache entry. Aggregate diagnostic fields remain best effort. |
 | Verification | `tests/test_provider_pending.py::test_prefetch_cache_payload_keeps_recall_ids_per_call` forces query A to pause after recall while query B overwrites the old shared fields; each cache entry must retain its own IDs. |
-| Upstream | Not sent. |
+| Upstream | Not ported: the current upstream [repo-path provider](https://github.com/mnemosyne-oss/mnemosyne/blob/main/hermes_memory_provider/__init__.py) serializes the complete prefetch path under its Beam-access lock and has no analogous per-query prefetch cache. This patch targets the pinned snapshot's retired cache architecture. |
 
 ### P38 — make turn capture atomic
 
