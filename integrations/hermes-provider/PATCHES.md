@@ -503,7 +503,7 @@ separately; the fork decision does not replace that review.
 | Reason | A later role write could fail after an earlier `remember()` had committed, leaving a partial user/assistant/tool turn. |
 | Behaviour | Under the existing per-provider BEAM lock, use the pinned engine's `_deferred_commits` transaction to defer all `remember()` and enrichment commits until every selected role and identity write succeeds. Roll back the transaction on failure; refuse to write if the connection is not an idle deferred-commit BEAM connection. Retries then start from a clean turn, and concurrent calls serialize before opening their transaction. |
 | Verification | `tests/test_provider_pending.py::test_sync_turn_failure_rolls_back_prior_role_write_and_retry_completes` and `::test_concurrent_sync_turns_commit_as_whole_turns`; real-engine regressions in `tests/test_provider_engine_contract.py` verify rollback, retry, and concurrent serialization. |
-| Upstream | Not sent. Depends on the pinned engine's `_BeamConnection` and `_deferred_commits` implementation; revisit if the engine pin changes. |
+| Upstream | Candidate under [E09 in issue #828](https://github.com/mnemosyne-oss/mnemosyne/issues/828); not submitted pending maintainer guidance. The current upstream engine has `_deferred_commits`, but its provider also records in-memory verbatim-ledger proofs during each capture. A port must roll those back along with database writes; the pinned 3.15.1 helper cannot be copied unchanged. |
 
 ### P39 — doctor flags an engine without the audited patches
 
