@@ -492,7 +492,7 @@ separately; the fork decision does not replace that review.
 | Reason | Concurrent prefetch calls shared the last recall IDs and bank counts. One call could cache another query's recall IDs, so a later cache hit updated recall statistics for the wrong memories. |
 | Behaviour | Keep recall IDs and bank counts in thread-local per-call state and snapshot that state into the query's cache entry. Aggregate diagnostic fields remain best effort. |
 | Verification | `tests/test_provider_pending.py::test_prefetch_cache_payload_keeps_recall_ids_per_call` forces query A to pause after recall while query B overwrites the old shared fields; each cache entry must retain its own IDs. |
-| Upstream | Not sent. |
+| Upstream | Not ported: the current upstream [repo-path provider](https://github.com/mnemosyne-oss/mnemosyne/blob/main/hermes_memory_provider/__init__.py) serializes the complete prefetch path under its Beam-access lock and has no analogous per-query prefetch cache. This patch targets the pinned snapshot's retired cache architecture. |
 
 ### P38 — make turn capture atomic
 
