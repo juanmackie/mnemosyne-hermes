@@ -130,6 +130,7 @@ def installer(tmp_path):
         # cannot remove it, making uninstall report "still appears installed".
         'export PYTHONPATH="$TEST_MODULES"\nexec "$TEST_PYTHON" -S "$@"\n',
     )
+    (venv / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
     commands = tmp_path / "commands"
     _script(commands / "uv", 'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n')
     home = tmp_path / "home"

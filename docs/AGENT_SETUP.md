@@ -108,18 +108,19 @@ tool for both noticing and applying them:
 a diverged history or another branch, and never touches the memory database.
 Pass the same `--venv` / `--hermes-home` you gave the installer after `--`.
 
-**Following a tag instead of `main`.** `--branch` accepts any ref, so an
-installation that must not track a red `main` can pin to a tag:
+**Following a branch instead of `main`.** `--branch` accepts a branch name.
+`--apply` requires the checkout to be on that branch and fast-forwards it. Use
+a branch that exists on the remote and that you control; tag checkouts are not
+supported by `--apply`:
 
 ```bash
-scripts/update.sh --check --branch stable   # exit 10 when the tag moved
-scripts/update.sh --apply --branch stable
+scripts/update.sh --check --branch release  # exit 10 when the branch advances
+scripts/update.sh --apply --branch release
 ```
 
-The checkout must be on that ref for `--apply` (`git checkout stable`), and you
-own moving the tag once the run you trust is green. Nothing here creates tags
-for you; `main` remains the default and the only channel this repository
-publishes.
+The checkout must be on the selected branch for `--apply` (for example,
+`git checkout release`). The repository currently publishes updates through
+`main`; it does not create release branches for you.
 
 **Notify only (default).** Hermes can run a script on a schedule and deliver its
 output; empty output is silent. Check `hermes cron create --help` on your
