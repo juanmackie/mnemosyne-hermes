@@ -456,13 +456,21 @@ The threshold was 783 lines. Four of the seven upstream files are untouched
 The consequence is concrete and already visible: the hash ledger mostly records
 our own edits, a patch-regeneration commit silently dropped a hunk and left
 `main` red for two weeks (see `../engine-patches/README.md`), and none of the
-43 patches has been offered upstream. Forking is a product decision, not a
-mechanical edit, so this file records the measurement instead of pretending the
-trigger has not fired. Until the decision is taken, the digest gate and the
-behavioural recall tests are what keep a silent divergence from shipping.
+43 patches has been offered upstream.
 
-Until then, vendoring keeps the fix/pin/hotfix ability that a bare dependency
-does not, without the rename and dual-versioning cost of a fork.
+### Decision (2026-11-10): promote to a formal fork
+
+The measured threshold is met by a wide margin and the patch-regeneration
+failure demonstrates the maintenance cost of carrying this much local code as
+a nominal upstream snapshot. We will promote the provider to a separately
+versioned fork. This records the direction; it does not change the provider id,
+engine pin, installer, or shipped source in this commit. Until the fork is
+extracted and its migration is reviewed, keep the current digest gate,
+`mnemosyne-memory[embeddings]>=3.15.1,<3.16` pin, and strict engine-contract
+lane. The extraction work must preserve the documented Hermes contracts and
+must not put a competing `mnemosyne` distribution or import package ahead of
+the engine. General fixes that still apply cleanly upstream can be offered
+separately; the fork decision does not replace that review.
 
 ### P36 — atomically claim pending approval writes
 
