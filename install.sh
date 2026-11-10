@@ -719,6 +719,26 @@ case "$ENGINE_FILE" in
 "$ROOT"/src/*) fail "the engine import resolved to this repo ($ENGINE_FILE) instead of the
        installed engine; uninstall whatever put src/ ahead of site-packages in $VENV" ;;
 esac
+# An engine that imports is not necessarily the patched one: a different
+# 'mnemosyne' copy earlier on the import path (another venv, a .pth file, a
+# hand-installed build) imports cleanly and still breaks session startup with
+# 'BeamMemory.__init__() got an unexpected keyword argument seed_config' —
+# the reported desktop failure. The installer must not report success against it.
+if ! "$VENV_PY" - <<'PYEOF'
+import inspect
+from mnemosyne.core.beam import BeamMemory
+from mnemosyne.core.memory import Mnemosyne
+missing = [cls.__name__ for cls in (BeamMemory, Mnemosyne)
+           if "seed_config" not in inspect.signature(cls.__init__).parameters]
+raise SystemExit(1 if missing else 0)
+PYEOF
+then
+  fail "the engine at $ENGINE_FILE imports but does not accept 'seed_config'.
+       A different, unpatched 'mnemosyne' copy is shadowing the audited engine.
+       Check $VENV_PY -m pip list | grep -i mnemosyne, PYTHONPATH and any .pth
+       files under $VENV, then re-run: ./install.sh --python $VENV_PY"
+fi
+note "engine resolved : $ENGINE_FILE (accepts seed_config; audited patches applied)"
 
 # --- 5. config --------------------------------------------------------------
 echo "== Selecting the provider"

@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "vY5cPwdIijB_27xrSygyrP6lli6wyO81AFFpXzJqzW8",
-      "bytes": 271924,
-      "lines": 5669
+      "sha256": "Uas7qgnhrdE4AhmOWjIJ8QwwWFyo0RQd1LFyNPU646k",
+      "bytes": 272912,
+      "lines": 5684
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
@@ -27,9 +27,9 @@
       "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "batYCv_Ysq2Ly3q5Fxy0XIJU3cWDrIlJiRIwfUTPJno",
-      "bytes": 53583,
-      "lines": 1158
+      "sha256": "DGjJotiMg8OYvZxQdV3wnb6ThX2xt9-Xh-v4jUdJxX4",
+      "bytes": 56906,
+      "lines": 1232
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -105,7 +105,9 @@
       "P30 remove the Hermes version check at init; no Hermes version requirement",
       "P31 selected-profile read-only config and shared store resolution; reset settings on reinitialization, skip engine config seeding, and read-only active-profile doctor",
       "P33 include engine recall score floor in the exact-query prefetch cache key",
-      "P40 source-grounded memory guidance and bounded read-only manual evidence review"
+      "P40 source-grounded memory guidance and bounded read-only manual evidence review",
+      "P44 unavailable-session banner names `hermes mnemosyne doctor --no-fix` as the diagnosis command",
+      "P45 absolute self-imports (hermes_memory_provider.*) bind to the deployed package; alias the loaded package under its canonical name so copied installs never run the engine wheel's bundled upstream provider"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",
@@ -122,7 +124,8 @@
       "P40 source-grounded memory guidance and bounded read-only manual evidence review",
       "P41 one-memory source checking with exact-quote citations and proposal-only output",
       "P42 explicit user-correction trigger records a content-free review event and exposes verified review-outcome/review-pending/review-stats",
-      "P43 expose verifiable review queue and preserve provenance references in inspection output"
+      "P43 expose verifiable review queue and preserve provenance references in inspection output",
+      "P44 doctor prints the resolved engine path and audits the resolved engine's source files against integrations/engine-patches/manifest.json (informational skip when no manifest is beside a copied provider)"
     ],
     "hermes_memory_provider/pyproject.toml": [
       "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"

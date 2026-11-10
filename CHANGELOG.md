@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A desktop session that loaded the provider while resolving an engine without
+  the audited patches failed every turn with `BeamMemory.__init__() got an
+  unexpected keyword argument 'seed_config'`. `doctor` now prints the resolved
+  engine file and hashes the engine sources this interpreter imports against
+  `integrations/engine-patches/manifest.json` (`engine matches audited
+  patches`, skipped informationally for copied providers), `install.sh` and
+  `install.ps1` refuse to report a successful install when the resolved engine
+  imports but rejects `seed_config`, and the unavailable-session banner names
+  `hermes mnemosyne doctor --no-fix` as the diagnosis command.
+- Copied provider installs (`--copy`, Windows without Developer Mode) resolved
+  the provider's lazy absolute imports against the unpatched
+  `hermes_memory_provider` the engine wheel bundles into site-packages; every
+  absolute self-import now binds to the deployed package.
 - Engine recall supports an opt-in relative score cutoff across linear,
   polyphonic and enhanced returns, including fact supplements. Rejected rows
   do not accrue linear recall counts. Engine and provider caches distinguish

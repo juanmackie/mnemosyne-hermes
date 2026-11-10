@@ -19,6 +19,7 @@ when the engine is not importable, so this file is safe in a bare CI venv.
 import contextlib
 import importlib.util
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -230,11 +231,76 @@ def test_patched_hook_signatures_and_accept_and_store():
     assert stored[0]["metadata"] == {"role": "tool", "name": "bash"}
 
 
+def test_copied_install_absolute_imports_bind_to_deployed_package():
+    """P45: a copied install must not run the engine wheel's bundled provider.
+
+    The mnemosyne-memory distribution ships a top-level `hermes_memory_provider`
+    package into site-packages (unpatched upstream). Copied installs
+    (--copy / install.ps1 with no symlink support) used to resolve the lazy
+    absolute imports inside the deployed provider against that upstream copy —
+    silently running unpatched provider code and ImportError-ing on the
+    local-only modules (evidence, review_ledger, source_check, configuration).
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        upstream = tmp_path / "upstream_site" / "hermes_memory_provider"
+        upstream.mkdir(parents=True)
+        (upstream / "__init__.py").write_text(
+            "def register_memory_provider(ctx):\n"
+            "    ctx.register_memory_provider('UPSTREAM-SENTINEL')\n",
+            encoding="utf-8",
+        )
+        (upstream / "evidence.py").write_text(
+            "def read_snapshot(*a, **k): return 'upstream'\n",
+            encoding="utf-8",
+        )
+        copied = tmp_path / "plugins" / "mnemosyne"
+        copied.mkdir(parents=True)
+        for child in PROVIDER_DIR.glob("*.py"):
+            shutil.copy(child, copied / child.name)
+        code = f'''
+import sys, importlib.util
+sys.path.insert(0, {str(tmp_path / "upstream_site")!r})
+provider_dir = {str(copied)!r}
+spec = importlib.util.spec_from_file_location(
+    "_hermes_user_memory.mnemosyne", provider_dir + "/__init__.py",
+    submodule_search_locations=[provider_dir])
+assert spec is not None and spec.loader is not None
+mod = importlib.util.module_from_spec(spec)
+sys.modules["_hermes_user_memory.mnemosyne"] = mod
+spec.loader.exec_module(mod)  # must not raise
+
+import hermes_memory_provider.evidence as ev
+print("evidence file:", ev.__file__)
+import hermes_memory_provider as hp
+print("package file:", hp.__file__)
+
+from hermes_memory_provider import register_memory_provider
+box = []
+class Ctx:
+    def register_memory_provider(self, p): box.append(p)
+    def register_cli_command(self, **kw): pass
+    def register_tool(self, *a, **k): pass
+    def register_hook(self, *a, **k): pass
+register_memory_provider(Ctx())
+assert len(box) == 1
+print("registered:", getattr(box[0], "name", box[0]))
+'''
+        proc = subprocess.run([sys.executable, "-c", code],
+                              capture_output=True, text=True, timeout=180)
+        assert proc.returncode == 0, f"copied-install binding failed:\n{proc.stdout}\n{proc.stderr}"
+        assert str(copied / "evidence.py") in proc.stdout, proc.stdout
+        assert "registered: mnemosyne" in proc.stdout, proc.stdout
+
+
 if __name__ == "__main__":
     tests = [
         test_module_imports_and_reports_unavailable_without_engine,
         test_engine_present_registers_one_available_provider,
         test_patched_hook_signatures_and_accept_and_store,
+        test_copied_install_absolute_imports_bind_to_deployed_package,
     ]
     for fn in tests:
         fn()

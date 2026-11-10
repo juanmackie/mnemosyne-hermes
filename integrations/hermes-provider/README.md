@@ -205,7 +205,13 @@ the engine is missing, the provider must say so instead of reporting
 `available ✓` and then silently no-op-ing every prefetch/sync/tool call:
 
 - `is_available()` returns False **and** exposes the reason.
-- `hermes mnemosyne doctor --no-fix` exits non-zero when the engine is missing.
+- `hermes mnemosyne doctor --no-fix` exits non-zero when the engine is missing,
+  and prints the resolved engine file for the interpreter running it; a
+  critical `engine matches audited patches` check hashes the resolved engine
+  sources against `integrations/engine-patches/manifest.json`, so an engine
+  that was reinstalled or shadowed after patching fails doctor with the
+  differing file names instead of surfacing as a `seed_config` TypeError in
+  the session banner.
 - `tests/test_provider_loader.py` covers both the bare (no engine) and the
   installed case.
 
