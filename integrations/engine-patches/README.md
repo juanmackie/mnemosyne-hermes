@@ -100,6 +100,15 @@ The updated full diff applies to that original; unknown local revisions remain
 refused before any source write. Re-run the installer to upgrade an existing
 audited installation, then restart the gateway and engine MCP processes.
 
+**Regenerating the diff must not drop a hunk.** The `core-beam.py` revision in
+`114bd8f` was rebuilt from a regenerated diff and silently lost the
+`_minimum_recall_relevance` hunk that `ec8e8da` had added, which re-broke the
+multi-term recall regression and left `main` red for two weeks. The digest
+checks cannot catch this on their own: a dropped hunk still produces a
+self-consistent source/patch pair. `tests/test_engine_recall_scope.py` is the
+behavioural gate that would have caught it; `./test-all.sh` runs it on the same
+lane as the patch audit.
+
 To restore the audited originals:
 
 ```bash

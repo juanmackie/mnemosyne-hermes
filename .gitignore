@@ -25,12 +25,18 @@ build/
 /.pi/
 /mnemosyne-hermes/
 
+# Secrets: never committed. `.env` carried a Kaggle API token on main.
+.env
+.env.*
+!.env.example
+
 # Test artifacts
 test_output*.log
 
 # Local evaluation suites and run data
 .evals/
 # Scorer output written into the workspace by task/score.py (derived only)
+/eval/
 src/eval/
 
 # System files

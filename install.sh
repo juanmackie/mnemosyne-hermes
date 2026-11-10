@@ -127,6 +127,20 @@ fail() {
 }
 note() { printf '  %s\n' "$*"; }
 
+# True when a process holding a lock is still running. MSYS/MinGW `kill` only
+# knows emulated PIDs, and a separately launched bash is a different MSYS
+# instance, so fall back to the process table: column 1 is the emulated PID and
+# column 4 is the native Windows PID. A recycled PID fails closed (the installer
+# refuses and names the lock) rather than overwriting a live owner.
+pid_is_alive() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  if kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  ps -W 2>/dev/null | awk -v p="$pid" '$1 == p || $4 == p { found = 1 } END { exit !found }'
+}
+
 release_installer_lock() {
   if [[ -n "${INSTALL_LOCK:-}" && "$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
     rm -f "$INSTALL_LOCK/pid"
@@ -137,7 +151,7 @@ release_installer_lock() {
 acquire_installer_lock() {
   INSTALL_LOCK="$HERMES_HOME/.mnemosyne-installer.lock"
   mkdir -p "$HERMES_HOME"
-  for attempt in 1 2 3; do
+  for _ in 1 2 3; do
     if mkdir "$INSTALL_LOCK" 2>/dev/null; then
       printf '%s\n' "$$" >"$INSTALL_LOCK/pid" 2>/dev/null || true
       if [[ "$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
@@ -147,7 +161,7 @@ acquire_installer_lock() {
       continue
     fi
     INSTALL_OWNER="$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)"
-    if [[ "$INSTALL_OWNER" =~ ^[0-9]+$ ]] && kill -0 "$INSTALL_OWNER" 2>/dev/null; then
+    if pid_is_alive "$INSTALL_OWNER"; then
       fail "another Mnemosyne installer is running (pid $INSTALL_OWNER, lock: $INSTALL_LOCK)"
     fi
     rm -f "$INSTALL_LOCK/pid" 2>/dev/null || true
@@ -213,10 +227,20 @@ import pathlib
 import sys
 
 module_path, plugin_path, expected_source = map(pathlib.Path, sys.argv[1:])
-spec = importlib.util.spec_from_file_location("_mnemosyne_copy_verifier", module_path)
+package_dir = module_path.parent
+# cli.py imports its siblings relatively (`from .configuration import ...`), so
+# it has to be loaded as part of a package. Loading it as a standalone module
+# raises "attempted relative import with no known parent package" and made every
+# uninstall of a copied install refuse. Bind the package first, then the module.
+spec = importlib.util.spec_from_file_location(
+    "_mnemosyne_copy_verifier",
+    module_path,
+    submodule_search_locations=[str(package_dir)],
+)
 if spec is None or spec.loader is None:
     raise SystemExit("cannot load the provider copy verifier")
 module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 ok, detail = module._verified_copy(plugin_path, expected_source=expected_source)
 if not ok:
@@ -616,15 +640,22 @@ cleanup_deploy() {
 }
 trap cleanup_deploy EXIT
 
-PLUGIN_REAL="$("$VENV_PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PLUGIN_LINK" 2>/dev/null || true)"
-PROVIDER_REAL="$("$VENV_PY" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PROVIDER_PKG" 2>/dev/null || true)"
-if [[ "$COPY_MODE" != true && -n "$PLUGIN_REAL" && "$PLUGIN_REAL" == "$PROVIDER_REAL" ]]; then
-  ln -s "$PROVIDER_PKG" "$DEPLOY_STAGE"
-  note "prepared a link to $PROVIDER_PKG"
-else
+# A directory symlink is the default; a verified copy is the fallback. Decide
+# from the staged artifact, not from `ln`'s exit status: MSYS `ln -s` reports
+# success while creating a real directory, and an existing PLUGIN_LINK cannot
+# be compared by realpath before it has been deployed.
+DEPLOY_LINKED=false
+if [[ "$COPY_MODE" != true ]]; then
+  ln -s "$PROVIDER_PKG" "$DEPLOY_STAGE" 2>/dev/null || true
+  [[ -L "$DEPLOY_STAGE" ]] && DEPLOY_LINKED=true
+fi
+if [[ "$DEPLOY_LINKED" != true ]]; then
+  rm -rf "$DEPLOY_STAGE"
   cp -R "$PROVIDER_PKG" "$DEPLOY_STAGE"
   write_provenance "$DEPLOY_STAGE" "$PROVIDER_PKG"
   note "prepared a verified COPY at $PLUGIN_LINK"
+else
+  note "prepared a link to $PROVIDER_PKG"
 fi
 [[ -f "$DEPLOY_STAGE/__init__.py" ]] || fail "staged provider has no __init__.py; refusing deployment"
 
@@ -642,11 +673,11 @@ if ! mv "$DEPLOY_STAGE" "$PLUGIN_LINK"; then
   fail "could not promote staged provider into $PLUGIN_LINK"
 fi
 DEPLOY_PROMOTED=true
-if [[ "$COPY_MODE" == true ]] || [[ -z "$PLUGIN_REAL" || "$PLUGIN_REAL" != "$PROVIDER_REAL" ]]; then
+if [[ "$DEPLOY_LINKED" != true ]]; then
   note "installed a COPY at $PLUGIN_LINK (no symlink support here)"
   note "  re-run this script after changing provider code: a copy does not track it"
 else
-  note "linked $PLUGIN_LINK -> $PROVIDER_REAL"
+  note "linked $PLUGIN_LINK -> $(realpath "$PLUGIN_LINK" 2>/dev/null || printf '%s' "$PROVIDER_PKG")"
 fi
 
 # Patch the engine itself: the standalone `mnemosyne mcp` process bypasses

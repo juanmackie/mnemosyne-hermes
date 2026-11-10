@@ -74,8 +74,20 @@ git rev-parse --git-dir >/dev/null 2>&1 || {
 
 # One run at a time: a scheduler can fire again before a slow install finishes.
 LOCK="$(git rev-parse --git-dir)/mnemosyne-update.lock"
+
+# MSYS/MinGW `kill` only knows emulated PIDs, so consult the process table too
+# (column 1 emulated PID, column 4 native Windows PID). Same rule as install.sh.
+pid_is_alive() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  if kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  ps -W 2>/dev/null | awk -v p="$pid" '$1 == p || $4 == p { found = 1 } END { exit !found }'
+}
+
 LOCK_ACQUIRED=false
-for attempt in 1 2 3; do
+for _ in 1 2 3; do
   if mkdir "$LOCK" 2>/dev/null; then
     # A contender may have removed an empty stale directory between mkdir and
     # this write. Verify ownership before any fetch or checkout mutation.
@@ -88,7 +100,7 @@ for attempt in 1 2 3; do
   fi
 
   OWNER="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  if [[ "$OWNER" =~ ^[0-9]+$ ]] && kill -0 "$OWNER" 2>/dev/null; then
+  if pid_is_alive "$OWNER"; then
     echo "ERROR: another update is running (pid $OWNER, lock: $LOCK)" >&2
     exit 1
   fi

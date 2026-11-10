@@ -34,7 +34,6 @@ history keep it; do not restore it.
 | `bench/` | The recall-latency harness (`measure.sh`) and its record (`README.md`) |
 | `bench/mnemobench/` | Power planning records and MnemoBench-specific standalone evaluation tools |
 | `foundry/` | Declarative compute jobs and the policy-enforcing local/offload runner; never use private data on Kaggle |
-| `models/` | Shipped model artifacts and their compatibility/hash manifest; no artifact is enabled without verified provenance |
 | `docs/` | `AGENT_SETUP.md`, `HERMES_INTEGRATION.md`, `MCP_CLIENT_CONFIGS.md`; `docs/archive/` is historical |
 | `bench/sim/` | Deterministic synthetic MnemoSim event and probe generator; simulator labels are ground truth |
 | `examples/` | Runnable usage examples |
@@ -98,7 +97,12 @@ history keep it; do not restore it.
   LLM lane must prefer `hermes proxy start` before the legacy
   `ANTHROPIC_API_KEY` fallback.
 - **Secrets never live in the repo.** This repo needs none; do not introduce
-  one. Never commit `.env*`, connection configs, keys or tokens.
+  one. Never commit `.env*`, connection configs, keys or tokens. A tracked
+  `.env` carrying a Kaggle API token was published on `main` from commit
+  `7847316` (2026-10-28) until 2026-11-09. It is untracked, ignored, and
+  push-protected now; `scripts/check_no_secrets.sh` (in `scripts/checks.sh`)
+  is the regression gate. Revoking such a token is always a separate manual
+  action: removing the file does not un-publish it.
 - **The engine owns the `mnemosyne` name.** Distribution, import package and
   console script. That is why the lite distribution is `mnemosyne-lite` /
   `mnemosyne_lite`. Do not put `src/` ahead of the engine in a Hermes venv.
@@ -108,7 +112,7 @@ history keep it; do not restore it.
 ```bash
 ./test-all.sh --skip-llm          # provider contract gates + local unit tests
 ./test-all.sh --require-engine    # same, with the engine-backed lane strict (needs ./integrations/hermes-provider installed)
-bash scripts/checks.sh            # repo gates (version drift, engine-contract presence)
+bash scripts/checks.sh            # repo gates pytest does not run (version drift, secrets, engine-contract wrapper)
 pre-commit run --all-files        # ruff, ruff format, mypy, shellcheck
 bash scripts/smoke-hermes-onboarding.sh   # clean-user acceptance (Linux/macOS)
 ```
@@ -126,8 +130,9 @@ MNEMOSYNE_REQUIRE_ENGINE=1 python tests/test_provider_engine_contract.py  # stri
 Health checks after an install: `hermes mnemosyne doctor --no-fix` (must exit 0)
 and `hermes memory status`.
 
-`scripts/checks.sh` is the registry of repo gates: a gate that is not listed
-there is invisible. Add new gates to it.
+`scripts/checks.sh` is the registry of repo gates that `pytest tests` does not
+run: a gate that is in neither place is invisible. Do not list a plain pytest
+test there; `./test-all.sh` already runs it. Add new non-pytest gates to it.
 
 ## Working rules
 

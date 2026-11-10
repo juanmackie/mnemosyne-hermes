@@ -58,6 +58,10 @@ def installer(tmp_path):
         encoding="utf-8",
     )
     (provider / "cli.py").write_text(
+        # A relative sibling import mirrors the real cli.py (P31 added one).
+        # Loading this module as a bare file raises "attempted relative import
+        # with no known parent package", which is how uninstall silently broke.
+        "from . import sibling\n"
         "def register_cli(): pass\ndef mnemosyne_command(): pass\n"
         "def _verified_copy(destination, expected_source=None):\n"
         "    import base64, hashlib, json\n"
@@ -71,6 +75,7 @@ def installer(tmp_path):
         "    except Exception as exc: return (False, str(exc))\n",
         encoding="utf-8",
     )
+    (provider / "sibling.py").write_text("VALUE = 1\n", encoding="utf-8")
     patches = repo / "scripts/apply_engine_patches.py"
     patches.parent.mkdir()
     patches.write_text("# Engine patching is a fixture; no installed source is touched.\n")
@@ -150,9 +155,19 @@ def installer(tmp_path):
     shell_path = ":".join(p for p in shell_path.split(":") if "hermes" not in p.lower())
     env["TEST_SHELL_PATH"] = shell_path
 
-    def run(*args):
+    def run(*args, fail_commands=()):
+        # Break a coreutils command with an exported shell function instead of a
+        # PATH stub: MSYS bash re-prepends /usr/bin when it is re-entered through
+        # its Windows path, so a stub script in TEST_COMMANDS is shadowed there.
+        # An exported function is inherited by the exec'd installer on every
+        # platform, including MSYS.
+        prelude = "".join(
+            f"function {name} {{ return 73; }}\nexport -f {name}\n" for name in fail_commands
+        )
         script = (
-            'export PATH="$(cd "$TEST_COMMANDS" && pwd):$TEST_SHELL_PATH"\nexec "$TEST_BASH" "$@"'
+            'export PATH="$(cd "$TEST_COMMANDS" && pwd):$TEST_SHELL_PATH"\n'
+            + prelude
+            + 'exec "$TEST_BASH" "$@"'
         )
         return subprocess.run(
             [
@@ -317,7 +332,7 @@ def test_package_manager_owns_provider_dependencies_without_uv_injection(install
 
 
 def test_failed_copy_preserves_existing_verified_provider(installer):
-    run, hermes, venv, commands, home, _installs, _calls = installer
+    run, hermes, venv, _commands, home, _installs, _calls = installer
     hermes(venv / "bin/hermes")
     first = run("--copy")
     assert first.returncode == 0, first.stdout + first.stderr
@@ -325,8 +340,7 @@ def test_failed_copy_preserves_existing_verified_provider(installer):
     old_init = (installed / "__init__.py").read_bytes()
     old_provenance = (installed / "PROVENANCE.json").read_bytes()
 
-    _script(commands / "cp", "exit 73\n")
-    second = run("--copy")
+    second = run("--copy", fail_commands=("cp",))
     assert second.returncode != 0
     assert (installed / "__init__.py").read_bytes() == old_init
     assert (installed / "PROVENANCE.json").read_bytes() == old_provenance
@@ -357,6 +371,28 @@ def test_failed_post_promotion_verification_restores_previous_provider_and_confi
     assert (installed / "PROVENANCE.json").read_bytes() == previous_provenance
     assert "provider: local" in (home / "config.yaml").read_text(encoding="utf-8")
     assert not list((home / "plugins").glob(".mnemosyne-install.*"))
+
+
+def test_copied_install_uninstalls_cleanly(installer):
+    """A copied install must be removable.
+
+    verify_installed_copy loads the provider's cli.py to call _verified_copy.
+    cli.py imports its siblings relatively, so loading it as a bare file raised
+    "attempted relative import with no known parent package" and the uninstall
+    refused every copied install ("not an intact copy created by this
+    installer"). The relative import in the fixture reproduces that.
+    """
+    run, hermes, venv, _commands, home, _installs, _calls = installer
+    hermes(venv / "bin/hermes")
+    installed = run("--copy")
+    assert installed.returncode == 0, installed.stdout + installed.stderr
+    plugin = home / "plugins" / "mnemosyne"
+    assert (plugin / "PROVENANCE.json").is_file()
+
+    result = run("--uninstall")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not plugin.exists()
+    assert "removed verified plugin copy" in result.stdout
 
 
 def test_live_installer_lock_refuses_without_mutating_home(installer):
@@ -392,8 +428,10 @@ def test_concurrent_installs_serialize_the_shared_hermes_home(installer):
     hermes(venv / "bin/hermes")
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _n: run("--copy"), range(2)))
-    assert all(result.returncode == 0 or "another Mnemosyne installer is running" in result.stderr
-               for result in results)
+    assert all(
+        result.returncode == 0 or "another Mnemosyne installer is running" in result.stderr
+        for result in results
+    )
     installed = home / "plugins" / "mnemosyne"
     assert (installed / "__init__.py").is_file()
     assert (installed / "PROVENANCE.json").is_file()

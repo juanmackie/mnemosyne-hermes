@@ -1,9 +1,19 @@
 # Live verification checklist (post-swap)
 
-Status: **NOT RUN on the live gateway.** Everything below that touches the live
-symlink, the Hermes venv or the gateway is a separately authorised action
-(plan decision D4). This file is the checklist to execute when that authorisation
-is given, plus the evidence already gathered without touching live state.
+Status: **NOT RUN on the live gateway in this repository's history.**
+Everything below that touches the live symlink, the Hermes venv or the gateway
+is a separately authorised action (plan decision D4). This file is the checklist
+to execute when that authorisation is given, plus the evidence already gathered
+without touching live state.
+
+**Reconcile with `docs/levelup/`.** `docs/levelup/README.md` and
+`D_offline_smoke.md` §6 describe a live gateway (Hermes 0.22.1) running the
+provider active/ready with a real `zephyr-quokka-42` round-trip on two
+transports. That was a **different host and deployment**, run outside this
+repository's CI, and it is not evidence for this checklist: none of the ten
+steps below were executed at that time and no output from them is recorded.
+The two documents are consistent once that host boundary is stated. Do not cite
+the levelup run as this checklist passing.
 
 ## Already proven (no live state touched)
 

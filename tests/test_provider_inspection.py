@@ -434,7 +434,10 @@ def test_review_is_bounded_readonly_and_does_not_initialize_engine():
         _make_store(db)
         before = db.read_bytes()
         args = Namespace(
-            mnemosyne_cmd="review", session_id="session-a", all_sessions=False, limit=1,
+            mnemosyne_cmd="review",
+            session_id="session-a",
+            all_sessions=False,
+            limit=1,
             all_candidates=True,
         )
         with (
@@ -497,7 +500,9 @@ def test_review_flags_duplicates_and_missing_originals_without_claiming_verifica
         assert rows["global"]["reasons"] == ["source_unavailable", "metadata_unreadable"]
         assert "foreign" not in json.dumps(report)
         assert "deleted" not in json.dumps(report)
-        all_rows = review_snapshot(db, session_id="session-a", all_sessions=True, verifiable_only=False)
+        all_rows = review_snapshot(
+            db, session_id="session-a", all_sessions=True, verifiable_only=False
+        )
         assert all_rows["selection"] == "all_sessions"
         assert all_rows["scanned"] == 4
 

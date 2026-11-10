@@ -108,6 +108,19 @@ tool for both noticing and applying them:
 a diverged history or another branch, and never touches the memory database.
 Pass the same `--venv` / `--hermes-home` you gave the installer after `--`.
 
+**Following a tag instead of `main`.** `--branch` accepts any ref, so an
+installation that must not track a red `main` can pin to a tag:
+
+```bash
+scripts/update.sh --check --branch stable   # exit 10 when the tag moved
+scripts/update.sh --apply --branch stable
+```
+
+The checkout must be on that ref for `--apply` (`git checkout stable`), and you
+own moving the tag once the run you trust is green. Nothing here creates tags
+for you; `main` remains the default and the only channel this repository
+publishes.
+
 **Notify only (default).** Hermes can run a script on a schedule and deliver its
 output; empty output is silent. Check `hermes cron create --help` on your
 version, then:

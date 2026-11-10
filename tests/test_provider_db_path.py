@@ -66,6 +66,8 @@ def _engine_transaction_modules():
     beam = types.ModuleType("mnemosyne.core.beam")
     beam._deferred_commits = _deferred_commits
     return {"mnemosyne": mnemosyne, "mnemosyne.core": core, "mnemosyne.core.beam": beam}
+
+
 from hermes_memory_provider import cli as cli_mod  # noqa: E402
 
 

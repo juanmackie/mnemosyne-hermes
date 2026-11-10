@@ -402,6 +402,14 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 
 ## Sync procedure (run on every upstream release)
 
+**Outstanding: `mnemosyne-memory 4.0.0` is un-triaged.** `scripts/upstream-drift-check.py`
+reports `vendored 3.15.1, latest 4.0.0`. The engine pin is
+`>=3.15.1,<3.16`, so a 4.0.0 host cannot install the provider at all until this
+is resolved. Triage it before adding another patch: every week of new 3.15.1
+patches raises the rebase cost. The decision is either re-vendor + re-audit
+(`CONTRACT_AUDIT.md`, `./test-all.sh --require-engine`), or state the pin as a
+deliberate ceiling and stop calling the drift a pending task.
+
 ```bash
 # 1. Get the new artifact, then diff vendored vs upstream
 scripts/vendor-provider-sync.sh /path/to/site-packages/hermes_memory_provider
@@ -428,6 +436,30 @@ Promote this snapshot to a formal, separately-versioned fork if either holds:
   package is ~5.2k lines), or
 - upstream diverges from or abandons the Hermes provider path (e.g. no working
   provider in a new release, or the Hermes integration is removed upstream).
+
+**The first trigger is already met.** Measured 2026-11-09 against the
+`mnemosyne-memory 3.15.1` sdist (`pip download --no-binary :all:`, so this is
+the real upstream tree, not a copy of ours):
+
+| | Lines |
+| --- | --- |
+| Upstream `hermes_memory_provider` | 5,217 |
+| This snapshot | 9,326 |
+| Net added | 4,109 (**78.8%**) |
+| Of which new local-only modules | 1,208 (`configuration.py`, `evidence.py`, `review_ledger.py`, `source_check.py`) |
+
+The threshold was 783 lines. Four of the seven upstream files are untouched
+(`hermes_llm_adapter.py`, `persona_adapter.py`, `persona_tools.py`,
+`sync_adapter.py`); the growth is concentrated in `__init__.py` (+1,874),
+`cli.py` (+775) and `audit.py` (+252).
+
+The consequence is concrete and already visible: the hash ledger mostly records
+our own edits, a patch-regeneration commit silently dropped a hunk and left
+`main` red for two weeks (see `../engine-patches/README.md`), and none of the
+43 patches has been offered upstream. Forking is a product decision, not a
+mechanical edit, so this file records the measurement instead of pretending the
+trigger has not fired. Until the decision is taken, the digest gate and the
+behavioural recall tests are what keep a silent divergence from shipping.
 
 Until then, vendoring keeps the fix/pin/hotfix ability that a bare dependency
 does not, without the rename and dual-versioning cost of a fork.

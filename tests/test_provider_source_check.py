@@ -67,10 +67,16 @@ def test_contradiction_is_a_cited_proposal_and_inputs_stay_unchanged():
 
 
 def test_source_check_accepts_snapshot_provenance_reference():
-    memory = {**_memory(), "source_reference": {
-        "session_id": "own", "message_id": "7", "message_id_namespace": "internal",
-        "origin": "provenance", "origin_authenticated": False,
-    }}
+    memory = {
+        **_memory(),
+        "source_reference": {
+            "session_id": "own",
+            "message_id": "7",
+            "message_id_namespace": "internal",
+            "origin": "provenance",
+            "origin_authenticated": False,
+        },
+    }
     report = check_memory(memory, _bundle(), complete=_complete(_judgment()))
     assert report["source_association"] == "stored_reference_match"
 

@@ -120,7 +120,6 @@ def test_check_reports_update_without_changing_the_checkout(repos):
     assert not (user / "install.log").exists()
 
 
-
 def test_check_recovers_lock_left_by_dead_process(repos):
     _seed, user = repos
     lock = user / ".git" / "mnemosyne-update.lock"

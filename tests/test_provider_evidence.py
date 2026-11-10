@@ -85,9 +85,13 @@ def test_host_reference_requires_unique_exact_message_and_stable_identifiers():
 def test_snapshot_uses_memory_provenance_when_metadata_has_no_reference(tmp_path):
     db = tmp_path / "engine.db"
     connection = _database(db)
-    connection.execute("CREATE TABLE memory_provenance (memory_id TEXT, source_kind TEXT, session_id TEXT, turn_id TEXT, evidence_quote TEXT)")
+    connection.execute(
+        "CREATE TABLE memory_provenance (memory_id TEXT, source_kind TEXT, session_id TEXT, turn_id TEXT, evidence_quote TEXT)"
+    )
     _remember(connection, "from-prov")
-    connection.execute("INSERT INTO memory_provenance VALUES ('from-prov','raw_turn','own','7','durable synthetic fact')")
+    connection.execute(
+        "INSERT INTO memory_provenance VALUES ('from-prov','raw_turn','own','7','durable synthetic fact')"
+    )
     connection.commit()
     connection.close()
     row = read_snapshot(db, session_id="own", memory_id="from-prov")[0]
@@ -96,6 +100,7 @@ def test_snapshot_uses_memory_provenance_when_metadata_has_no_reference(tmp_path
     assert row["source_origin"] == "provenance"
     assert row["original_ids"] == ["7"]
     from hermes_memory_provider.evidence import review_snapshot
+
     report = review_snapshot(db, session_id="own", limit=20)
     assert all(candidate["source_reference"] for candidate in report["candidates"])
     assert report["verifiable_only"] is True

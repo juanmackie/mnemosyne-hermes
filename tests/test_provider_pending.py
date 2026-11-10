@@ -1,19 +1,20 @@
 """Pending approvals must be claimed before a concurrent apply can write."""
+
 import json
 import sqlite3
-import tempfile
-import unittest
 import sys
+import tempfile
 import threading
-from contextlib import contextmanager
-from types import SimpleNamespace
 import types
+import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "integrations" / "hermes-provider"))
-import hermes_memory_provider as provider_module
+import hermes_memory_provider as provider_module  # noqa: E402
 
 
 class _TransactionalConnection(sqlite3.Connection):
@@ -86,10 +87,13 @@ class PendingApplyTests(unittest.TestCase):
             provider._default_scope = "default"
             provider._asserted_caller_metadata = lambda value: value
             results = []
-            with patch.dict(sys.modules, {
-                "hermes_constants": constants,
-                "mnemosyne.core.veracity_consolidation": veracity,
-            }):
+            with patch.dict(
+                sys.modules,
+                {
+                    "hermes_constants": constants,
+                    "mnemosyne.core.veracity_consolidation": veracity,
+                },
+            ):
                 worker = threading.Thread(
                     target=lambda: results.append(
                         provider._handle_apply_pending({"pending_ids": [pending_id]})
@@ -97,9 +101,7 @@ class PendingApplyTests(unittest.TestCase):
                 )
                 worker.start()
                 self.assertTrue(started.wait(2))
-                second = json.loads(
-                    provider._handle_apply_pending({"pending_ids": [pending_id]})
-                )
+                second = json.loads(provider._handle_apply_pending({"pending_ids": [pending_id]}))
                 self.assertEqual(second["applied_count"], 0)
                 self.assertIn("claimed", second["failed"][0]["error"])
                 release.set()
@@ -142,7 +144,9 @@ class PendingApplyTests(unittest.TestCase):
         results = {}
         with patch.object(provider_module, "_resolve_profile", return_value=profile):
             first = threading.Thread(target=lambda: results.setdefault("a", provider.prefetch("a")))
-            second = threading.Thread(target=lambda: results.setdefault("b", provider.prefetch("b")))
+            second = threading.Thread(
+                target=lambda: results.setdefault("b", provider.prefetch("b"))
+            )
             first.start()
             self.assertTrue(first_recalled.wait(2))
             second.start()
@@ -157,7 +161,9 @@ class PendingApplyTests(unittest.TestCase):
     def test_sync_turn_failure_rolls_back_prior_role_write_and_retry_completes(self):
         class FailingBeam:
             def __init__(self):
-                self.conn = sqlite3.connect(":memory:", factory=_TransactionalConnection, check_same_thread=False)
+                self.conn = sqlite3.connect(
+                    ":memory:", factory=_TransactionalConnection, check_same_thread=False
+                )
                 self.conn.execute("CREATE TABLE writes (content TEXT NOT NULL)")
                 self.conn.commit()
                 self.fail_on_call = 2
@@ -192,8 +198,10 @@ class PendingApplyTests(unittest.TestCase):
             provider.sync_turn("a sufficiently long user request", "a sufficiently long answer")
         self.assertEqual(
             beam.conn.execute("SELECT content FROM writes ORDER BY rowid").fetchall(),
-            [("[USER] a sufficiently long user request",),
-             ("[ASSISTANT] a sufficiently long answer",)],
+            [
+                ("[USER] a sufficiently long user request",),
+                ("[ASSISTANT] a sufficiently long answer",),
+            ],
         )
         diagnostics = provider._sync_turn_diagnostics()
         self.assertEqual(diagnostics["failed"], 1)
@@ -205,7 +213,9 @@ class PendingApplyTests(unittest.TestCase):
 
         class BlockingBeam:
             def __init__(self):
-                self.conn = sqlite3.connect(":memory:", factory=_TransactionalConnection, check_same_thread=False)
+                self.conn = sqlite3.connect(
+                    ":memory:", factory=_TransactionalConnection, check_same_thread=False
+                )
                 self.conn.execute("CREATE TABLE writes (content TEXT NOT NULL)")
                 self.conn.commit()
 
@@ -233,7 +243,9 @@ class PendingApplyTests(unittest.TestCase):
                 errors.append(exc)
 
         first = threading.Thread(target=sync, args=("first question", "first answer long enough"))
-        second = threading.Thread(target=sync, args=("second question", "second answer long enough"))
+        second = threading.Thread(
+            target=sync, args=("second question", "second answer long enough")
+        )
         with patch.dict(sys.modules, _engine_transaction_modules()):
             first.start()
             self.assertTrue(first_entered.wait(2))
@@ -249,12 +261,15 @@ class PendingApplyTests(unittest.TestCase):
         diagnostics = provider._sync_turn_diagnostics()
         self.assertEqual(diagnostics["completed"], 2, diagnostics)
         self.assertEqual(diagnostics["failed"], 0, diagnostics)
-        self.assertEqual(rows, {
-            "[USER] first question",
-            "[ASSISTANT] first answer long enough",
-            "[USER] second question",
-            "[ASSISTANT] second answer long enough",
-        })
+        self.assertEqual(
+            rows,
+            {
+                "[USER] first question",
+                "[ASSISTANT] first answer long enough",
+                "[USER] second question",
+                "[ASSISTANT] second answer long enough",
+            },
+        )
 
 
 if __name__ == "__main__":

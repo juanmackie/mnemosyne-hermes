@@ -1,10 +1,14 @@
 #!/bin/bash
-# checks.sh — registry of all repo gates. Every gate must be listed here
-# (mirrors ripwire's regression.sh contract: a gate not in the runner is invisible).
+# checks.sh — registry of repo gates that `pytest tests` does not run.
+#
+# The rule: if a check is a pytest test under tests/, `./test-all.sh` already
+# runs it, and listing it here too would run it twice in CI. Only non-pytest
+# gates (shell/version/secret checks, a test module pytest cannot collect, and
+# the engine-contract wrapper that must honour MNEMOSYNE_REQUIRE_ENGINE) belong
+# in this file. A gate that is in neither place is invisible.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-# Python-only repo; no cargo path needed
 
 failed=0
 run() {
@@ -18,24 +22,10 @@ run() {
 }
 
 run bash scripts/check_version_drift.sh
-run "${PYTHON_BIN:-python3}" tests/test_vendored_provider.py
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_upstream_drift_workflow.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_install.py tests/test_update.py -q
-run "${PYTHON_BIN:-python3}" tests/test_engine_patches.py
-run "${PYTHON_BIN:-python3}" tests/test_engine_recall_perf.py
-run "${PYTHON_BIN:-python3}" tests/test_engine_recall_precision.py
-run "${PYTHON_BIN:-python3}" tests/test_engine_recall_scope.py
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_precision_recall_eval.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_mnemobench_phase0.py -q
-run "${PYTHON_BIN:-python3}" tests/test_memory_writer_eval.py
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_consolidation.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_pending.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_prefetch.py tests/test_provider_lifecycle.py tests/test_provider_eval.py tests/test_install_powershell.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_source_check.py tests/test_provider_review_ledger.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_audit.py tests/test_provider_inspection.py tests/test_provider_evidence.py tests/test_lite_mcp.py tests/test_lite_describe_cards.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_maintenance.py tests/test_test_runner.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_maintenance_script.py -q
-run "${PYTHON_BIN:-python3}" -m pytest tests/test_provider_profiles.py -q
+run bash scripts/check_no_secrets.sh
+# Strict when MNEMOSYNE_REQUIRE_ENGINE=1: a missing engine fails instead of
+# skipping. The plain test file is also collected by `pytest tests`; this
+# wrapper is what the engine-contract CI job depends on.
 run "${PYTHON_BIN:-python3}" scripts/check_engine_contract.py
 
 if [ "$failed" -gt 0 ]; then
