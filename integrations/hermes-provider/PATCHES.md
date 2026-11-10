@@ -402,13 +402,16 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 
 ## Sync procedure (run on every upstream release)
 
-**Outstanding: `mnemosyne-memory 4.0.0` is un-triaged.** `scripts/upstream-drift-check.py`
-reports `vendored 3.15.1, latest 4.0.0`. The engine pin is
-`>=3.15.1,<3.16`, so a 4.0.0 host cannot install the provider at all until this
-is resolved. Triage it before adding another patch: every week of new 3.15.1
-patches raises the rebase cost. The decision is either re-vendor + re-audit
-(`CONTRACT_AUDIT.md`, `./test-all.sh --require-engine`), or state the pin as a
-deliberate ceiling and stop calling the drift a pending task.
+**Triage decision (2026-11-10): keep `mnemosyne-memory 4.0.0` outside the
+supported range for now.** `scripts/upstream-drift-check.py` reports `vendored
+3.15.1, latest 4.0.0`. The 4.0.0 provider tree has substantial module and API
+drift, and the newest-engine contract fails on `core/beam.py` before provider
+contract tests. Keep the pin at `>=3.15.1,<3.16`; do not widen it or re-vendor
+4.0.0 as part of unrelated work. Issue [#42](https://github.com/juanmackie/mnemosyne-hermes/issues/42)
+records the decision. Revisit through a separate compatibility port that maps
+the changed and removed modules, preserves local patch behavior, and passes
+`CONTRACT_AUDIT.md` plus `./test-all.sh --require-engine` against 4.0.0. Keep
+issue #42 open until that evidence is green.
 
 ```bash
 # 1. Get the new artifact, then diff vendored vs upstream
