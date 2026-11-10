@@ -124,7 +124,11 @@ def installer(tmp_path):
     _script(
         venv / "bin/python",
         'if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then exit 99; fi\n'
-        'export PYTHONPATH="$TEST_MODULES"\nexec "$TEST_PYTHON" "$@"\n',
+        # -S keeps the host interpreter's site-packages out of the fixture venv.
+        # The engine-contract lane really installs mnemosyne-hermes-provider, so
+        # without isolation distribution_status finds it and the stubbed uv
+        # cannot remove it, making uninstall report "still appears installed".
+        'export PYTHONPATH="$TEST_MODULES"\nexec "$TEST_PYTHON" -S "$@"\n',
     )
     commands = tmp_path / "commands"
     _script(commands / "uv", 'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n')

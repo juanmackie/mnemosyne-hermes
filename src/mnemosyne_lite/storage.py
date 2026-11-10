@@ -15,9 +15,9 @@ import logging
 import os
 import pathlib
 import re
+import secrets
 import sqlite3
 import threading
-import secrets
 import time
 from typing import Any
 
