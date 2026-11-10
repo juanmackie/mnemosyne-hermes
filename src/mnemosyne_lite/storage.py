@@ -11,13 +11,13 @@ For concurrent access, use WAL mode and external locking.
 """
 
 import contextlib
-import hashlib
 import logging
 import os
 import pathlib
 import re
 import sqlite3
 import threading
+import secrets
 import time
 from typing import Any
 
@@ -1035,29 +1035,10 @@ class PythonMemoryStorage:
         if not (0 <= importance <= 10):
             raise ValueError(f"importance must be 0-10, got {importance}")
 
-        mem_id = hashlib.sha256(f"{content}:{namespace}:{time.time()}".encode()).hexdigest()[:16]
+        mem_id = secrets.token_hex(8)
 
         conn = self._conn()
         try:
-            conn.execute(
-                """INSERT INTO memories
-                   (id, content, namespace, importance, context, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    mem_id,
-                    content,
-                    namespace,
-                    importance,
-                    context,
-                    time.time(),
-                ),
-            )
-            conn.commit()
-        except sqlite3.IntegrityError:
-            # Collision — regenerate ID and retry once
-            mem_id = hashlib.sha256(
-                f"{content}:{namespace}:{time.time()}:retry".encode()
-            ).hexdigest()[:16]
             conn.execute(
                 """INSERT INTO memories
                    (id, content, namespace, importance, context, created_at)
