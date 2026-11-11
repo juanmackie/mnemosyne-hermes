@@ -84,7 +84,14 @@ def installer(tmp_path):
     engine.mkdir(parents=True)
     (engine.parent / "__init__.py").touch()
     (engine / "__init__.py").touch()
-    (engine / "beam.py").write_text("def _default_db_path(): return 'unused-fixture.db'\n")
+    (engine / "beam.py").write_text(
+        "def _default_db_path(): return 'unused-fixture.db'\n"
+        "class BeamMemory:\n"
+        "    def __init__(self, seed_config=True, **kwargs): pass\n"
+    )
+    (engine / "memory.py").write_text(
+        "class Mnemosyne:\n    def __init__(self, seed_config=True, **kwargs): pass\n"
+    )
     # Keep the test stdlib-only, including the installer's YAML verification.
     # The fixture accepts just the simple YAML that the fake Hermes writes.
     (modules / "yaml.py").write_text(

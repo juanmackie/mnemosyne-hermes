@@ -92,7 +92,14 @@ def fake_windows_install(tmp_path):
     (modules / "mnemosyne/__init__.py").write_text("__version__ = 'fixture'\n", encoding="utf-8")
     (modules / "mnemosyne/core/__init__.py").write_text("", encoding="utf-8")
     (modules / "mnemosyne/core/beam.py").write_text(
-        "def _default_db_path(): return 'unused-fixture.db'\n", encoding="utf-8"
+        "def _default_db_path(): return 'unused-fixture.db'\n"
+        "class BeamMemory:\n"
+        "    def __init__(self, seed_config=True, **kwargs): pass\n",
+        encoding="utf-8",
+    )
+    (modules / "mnemosyne/core/memory.py").write_text(
+        "class Mnemosyne:\n    def __init__(self, seed_config=True, **kwargs): pass\n",
+        encoding="utf-8",
     )
     (modules / "yaml.py").write_text(
         "def safe_load(text):\n"
