@@ -91,6 +91,52 @@ inside it.
 The engine import failed after startup. The response carries the reason; the
 fixes are the same as for a non-zero `doctor`.
 
+### `BeamMemory.__init__() got an unexpected keyword argument 'seed_config'`
+
+The session banner names this exact error. It means the interpreter that loads
+the provider resolved a `mnemosyne` engine that does not have the audited
+patches — the provider and the engine it talks to belong to different
+site-packages. Typical causes:
+
+- the engine was installed (or `patch`-applied by hand, leaving `.rej` debris
+  beside the targets) in a **different venv** than the one Hermes runs — e.g. a
+  dedicated engine venv while the desktop profile runs another;
+- the engine was reinstalled (upgrade/re-`uv pip install`) without re-running
+  `./install.sh`, silently reverting the audited patches;
+- a second `mnemosyne` copy ahead of the engine on the import path (`.pth`
+  file, `PYTHONPATH`, or this repo's `src/`).
+
+**Supported binding:** the engine and the provider must live in the same
+interpreter Hermes executes — the Hermes venv (or the Hermes PM-selected
+generation), patched by `./install.sh` / `./install.ps1`. An engine in a
+separate venv is not a supported binding for the plugin; cron jobs using that
+venv can keep it, but the plugin cannot.
+
+**Repair, without touching the memory database** (the installer never opens or
+creates it):
+
+```bash
+./install.sh --python /path/to/the/hermes/python --hermes-home /path/to/hermes-home
+# e.g. HERMES_PYTHON from the desktop environment:
+./install.sh --python /opt/hermes/.venv/bin/python --hermes-home /opt/data
+```
+
+Then restart the gateway and check:
+
+```bash
+hermes mnemosyne doctor --no-fix
+```
+
+`doctor` reports the resolved engine file on the `engine importable` line, and
+an `engine matches audited patches` critical check that hashes the engine
+files this interpreter actually resolves against
+`integrations/engine-patches/manifest.json`. That check fails the doctor with
+the differing file names if the engine is not the audited source — for
+example after an engine reinstall, or when a hand-applied patch left a
+`.rej` reject next to a partially patched file. The installer also refuses to
+report a successful install when the resolved engine rejects `seed_config`.
+`.rej` debris itself is informational — the digest check is the gate.
+
 ## Lite surface
 
 ### `no Mnemosyne database at <path> (nothing was created)`

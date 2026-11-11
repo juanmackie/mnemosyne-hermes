@@ -304,6 +304,66 @@ def _engine_accepts_seed_config():
     return True, "BeamMemory and Mnemosyne accept seed_config"
 
 
+def _engine_package_file():
+    # LOCAL PATCH: P44 name the file this interpreter actually resolved, so a
+    # shadowing copy (another venv, a .pth, a hand-installed engine) can be
+    # located instead of guessed at.
+    try:
+        import mnemosyne
+        path = getattr(mnemosyne, "__file__", None)
+        return str(Path(path).resolve()) if path else None
+    except Exception:
+        return None
+
+
+def _engine_patch_audit(pkg_root=None, manifest_path=None):
+    """Verify the resolved engine is the audited patched source.
+
+    LOCAL PATCH: P44 install.sh audits these digests when it applies the
+    patches, but nothing re-checked them afterwards; an engine reinstall or a
+    shadowing copy reverts that silently. doctor audits the files the running
+    interpreter actually imports. Returns (ok, detail); ok is None when the
+    audit cannot run (no manifest beside the provider, or the engine package
+    has no filesystem path), which doctor reports informationally instead of
+    gating on.
+    """
+    if pkg_root is None:
+        try:
+            import mnemosyne
+            package = getattr(mnemosyne, "__file__", None)
+            if not package:
+                return None, "engine package has no __file__; patch audit skipped"
+            pkg_root = Path(package).resolve().parent
+        except Exception as exc:
+            return None, f"engine not importable ({exc}); patch audit skipped"
+    if manifest_path is None:
+        # Repo layout: <repo>/integrations/hermes-provider/hermes_memory_provider/cli.py
+        manifest_path = Path(__file__).resolve().parents[2] / "engine-patches" / "manifest.json"
+    try:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except Exception:
+        return None, f"audited patch manifest not found at {manifest_path}; patch audit skipped"
+    import hashlib
+    stale = []
+    for relative, entry in sorted((manifest.get("files") or {}).items()):
+        target = Path(pkg_root) / relative
+        try:
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        except OSError as exc:
+            stale.append(f"{relative} (unreadable: {exc})")
+            continue
+        if digest != entry.get("patched_sha256"):
+            stale.append(relative)
+    if stale:
+        return False, (
+            f"engine at {pkg_root} is not the audited {manifest.get('version')} source; "
+            f"differs: {', '.join(stale)}. A reinstall without re-applying the audited "
+            "patches (or a manual patch attempt, e.g. .rej debris) causes this. "
+            "Re-run ./install.sh --python <this interpreter> and restart."
+        )
+    return True, f"audited {manifest.get('version')} source at {pkg_root}"
+
+
 def register_cli(subparser):
     """Register CLI subcommands for ``hermes mnemosyne``."""
     mn_cmds = subparser.add_subparsers(dest="mnemosyne_cmd")
@@ -822,11 +882,23 @@ def mnemosyne_command(args):
         # diagnostics stay informational so a partial report can never be read
         # as a pass ("Checks passed: 16/43" used to exit 0).
         critical = []  # (label, ok, detail)
+        # LOCAL PATCH: P44 notes that must be printed but never gate the exit code.
+        notes = []
         try:
             import mnemosyne.core.beam  # noqa: F401
-            critical.append(("engine importable", True, f"v{engine_version()}"))
+            engine_file = _engine_package_file()
+            critical.append((
+                "engine importable", True,
+                f"v{engine_version()}" + (f" at {engine_file}" if engine_file else ""),
+            ))
             # LOCAL PATCH: P39
             critical.append(("engine patches applied", *_engine_accepts_seed_config()))
+            # LOCAL PATCH: P44
+            audit_ok, audit_detail = _engine_patch_audit()
+            if audit_ok is None:
+                notes.append(audit_detail)
+            else:
+                critical.append(("engine matches audited patches", audit_ok, audit_detail))
         except Exception as e:
             critical.append(("engine importable", False, str(e)))
         count, detail = _provider_registration_count()
@@ -862,6 +934,8 @@ def mnemosyne_command(args):
             mark = "PASS" if ok else "FAIL"
             suffix = f" — {item_detail}" if item_detail else ""
             print(f"    [{mark}] {label}{suffix}")
+        for note in notes:
+            print(f"    [note] {note}")
 
         if not critical_ok:
             # T4: the Hermes CLI ignores a handler's return value; only a raised

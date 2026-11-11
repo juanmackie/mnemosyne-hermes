@@ -750,6 +750,85 @@ def test_engine_accepts_seed_config_check():
         assert "apply_engine_patches" in msg, msg
 
 
+def _audited_fixture(tmp_root):
+    contents = {
+        "core/beam.py": b"patched beam",
+        "core/memory.py": b"patched memory",
+        "core/entities.py": b"patched entities",
+    }
+    for relative, data in contents.items():
+        target = pathlib.Path(tmp_root) / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    manifest = {
+        "version": "3.15.1-test",
+        "files": {
+            relative: {"patched_sha256": hashlib.sha256(data).hexdigest()}
+            for relative, data in contents.items()
+        },
+    }
+    manifest_path = pathlib.Path(tmp_root) / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest_path
+
+
+def test_engine_patch_audit_accepts_audited_source():
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path = _audited_fixture(tmp)
+        audit = _module_attr(cli_mod, "_engine_patch_audit")
+        ok, detail = audit(pkg_root=tmp, manifest_path=manifest_path)
+        assert ok is True and "3.15.1-test" in detail, detail
+
+
+def test_engine_patch_audit_names_the_stale_file():
+    # The desktop failure class: beam.py kept the seed_config hunk but lost
+    # everything else. The audit must name the file, not just fail.
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path = _audited_fixture(tmp)
+        (pathlib.Path(tmp) / "core" / "beam.py").write_bytes(b"original beam")
+        audit = _module_attr(cli_mod, "_engine_patch_audit")
+        ok, detail = audit(pkg_root=tmp, manifest_path=manifest_path)
+        assert ok is False
+        assert "core/beam.py" in detail and "./install.sh" in detail, detail
+
+
+def test_engine_patch_audit_flags_a_missing_engine_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path = _audited_fixture(tmp)
+        (pathlib.Path(tmp) / "core" / "memory.py").unlink()
+        audit = _module_attr(cli_mod, "_engine_patch_audit")
+        ok, detail = audit(pkg_root=tmp, manifest_path=manifest_path)
+        assert ok is False and "core/memory.py" in detail, detail
+
+
+def test_engine_patch_audit_without_manifest_is_informational():
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path = _audited_fixture(tmp)
+        manifest_path.unlink()
+        audit = _module_attr(cli_mod, "_engine_patch_audit")
+        ok, detail = audit(pkg_root=tmp, manifest_path=manifest_path)
+        assert ok is None and "skipped" in detail, detail
+
+
+def test_engine_patch_audit_without_engine_file_is_informational():
+    fake = types.ModuleType("mnemosyne")  # namespace-style module without __file__
+    with patch.dict(sys.modules, {"mnemosyne": fake}):
+        audit = _module_attr(cli_mod, "_engine_patch_audit")
+        ok, detail = audit()
+        assert ok is None and "skipped" in detail, detail
+
+
+def test_unavailable_banner_names_the_doctor_fix():
+    instance = provider_mod.MnemosyneMemoryProvider()
+    instance._init_error = TypeError(
+        "BeamMemory.__init__() got an unexpected keyword argument 'seed_config'"
+    )
+    block = instance.system_prompt_block()
+    assert "UNAVAILABLE" in block
+    assert "doctor --no-fix" in block
+    assert "install.sh" in block
+
+
 if __name__ == "__main__":
     tests = [
         test_db_path_from_env,
@@ -780,6 +859,12 @@ if __name__ == "__main__":
         test_db_writable_existing_file_and_parent,
         test_db_writable_unresolved_path_is_failure,
         test_engine_accepts_seed_config_check,
+        test_engine_patch_audit_accepts_audited_source,
+        test_engine_patch_audit_names_the_stale_file,
+        test_engine_patch_audit_flags_a_missing_engine_file,
+        test_engine_patch_audit_without_manifest_is_informational,
+        test_engine_patch_audit_without_engine_file_is_informational,
+        test_unavailable_banner_names_the_doctor_fix,
     ]
     for fn in tests:
         fn()

@@ -175,6 +175,18 @@ _mnemosyne_root = Path(__file__).resolve().parent.parent
 if (_mnemosyne_root / "hermes_memory_provider").is_dir() and str(_mnemosyne_root) not in sys.path:
     sys.path.insert(0, str(_mnemosyne_root))
 
+# LOCAL PATCH: P45 an absolute import of `hermes_memory_provider` from inside the
+# deployed package must resolve to the DEPLOYED package, not to the copy the
+# mnemosyne-memory wheel bundles into site-packages (unpatched upstream
+# __init__/cli/audit; the local-only modules such as evidence.py,
+# review_ledger.py and source_check.py are absent there). Symlinked installs
+# survive via the T7 path insertion; copied installs (--copy, Windows without
+# Developer Mode) silently ran upstream provider code on the lazy absolute-
+# import path. Alias the already-imported package under its canonical name.
+_pkg = sys.modules.get(__name__)
+if getattr(_pkg, "__path__", None) is not None:
+    sys.modules.setdefault("hermes_memory_provider", _pkg)
+
 # LOCAL PATCH: the engine is imported TOLERANTLY. Upstream imported it
 # unconditionally, so in a venv without mnemosyne-memory this module raised
 # ImportError, the Hermes loader returned None, and the provider could not even
@@ -2564,11 +2576,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # still returns "" because that is the documented contract for
         # cron/subagent/skill_loop sessions.
         if self._init_error is not None:
+            # LOCAL PATCH: P44 name the diagnosis command in the banner; the
+            # previous text sent operators to the log without the one command
+            # that explains this failure and names its fix.
             return (
                 "# Mnemosyne Memory\n"
                 f"⚠️ UNAVAILABLE: {self._init_error_reason()}\n"
-                "Memory operations will fail this session. Resolve the underlying issue "
-                "(check ~/.hermes/logs/agent.log for the WARNING) and restart Hermes to retry."
+                "Memory operations will fail this session. Run `hermes mnemosyne doctor --no-fix` "
+                "and fix the FAIL line (re-running ./install.sh is the usual fix), then restart Hermes to retry."
             )
         return ""
 

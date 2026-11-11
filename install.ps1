@@ -262,7 +262,26 @@ function Test-EngineImport {
     $engineFile = Invoke-PythonCode 'import mnemosyne,os; print(os.path.realpath(mnemosyne.__file__))' @()
     if ($script:PythonExitCode -ne 0 -or -not $engineFile) { return $false }
     $repoSource = [IO.Path]::GetFullPath((Join-Path $Root 'src')).TrimEnd('\\') + '\'
-    return -not ([IO.Path]::GetFullPath(([string]$engineFile).Trim()).StartsWith($repoSource, [StringComparison]::OrdinalIgnoreCase))
+    if ([IO.Path]::GetFullPath(([string]$engineFile).Trim()).StartsWith($repoSource, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    # An importable engine is not necessarily the patched one: a different
+    # 'mnemosyne' copy earlier on the path imports cleanly and breaks session
+    # startup with 'BeamMemory.__init__() got an unexpected keyword argument
+    # seed_config' — the reported desktop failure. Refuse to report success.
+    $seedCheck = @'
+import inspect
+from mnemosyne.core.beam import BeamMemory
+from mnemosyne.core.memory import Mnemosyne
+missing = [cls.__name__ for cls in (BeamMemory, Mnemosyne)
+           if "seed_config" not in inspect.signature(cls.__init__).parameters]
+raise SystemExit(1 if missing else 0)
+'@
+    Invoke-PythonCode $seedCheck @() | Out-Null
+    if ($script:PythonExitCode -ne 0) {
+        Write-Warning "engine at $(([string]$engineFile).Trim()) imports but does not accept 'seed_config'; a different, unpatched 'mnemosyne' copy is shadowing the audited engine"
+        return $false
+    }
+    Write-Host "  engine resolved : $(([string]$engineFile).Trim()) (accepts seed_config; audited patches applied)"
+    return $true
 }
 
 function Test-PackageInstalled([string]$PackageName) {

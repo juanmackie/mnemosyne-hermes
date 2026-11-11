@@ -121,6 +121,14 @@ An engine reinstall can replace the patched files; rerun the applier or installe
 afterwards. Uninstalling only the provider retains these engine fixes; restore
 explicitly if the retained engine should return to upstream behavior.
 
+`hermes mnemosyne doctor` re-verifies the runtime side of this contract: it
+prints the resolved engine file and hashes the engine sources this interpreter
+imports against `manifest.json` (skipped, informationally, when no manifest sits
+beside a copied provider). A `.rej` file beside an engine target means a manual
+`patch(1)` attempt left rejects; the digest comparison in doctor — not the
+debris' presence — is what gates the check. If doctor reports a mismatch,
+re-run `./install.sh --python <this interpreter>` and restart.
+
 The strict CI lane applies the patches and exercises real BEAM, MCP, and provider
 handlers against temporary stores. The weekly newest-engine lane also applies
 the audited patches before testing the provider contract. It reports setup,
