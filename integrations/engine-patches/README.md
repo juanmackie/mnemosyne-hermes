@@ -128,8 +128,15 @@ prints the resolved engine file and hashes the engine sources this interpreter
 imports against `manifest.json` (skipped, informationally, when no manifest sits
 beside a copied provider). A `.rej` file beside an engine target means a manual
 `patch(1)` attempt left rejects; the digest comparison in doctor — not the
-debris' presence — is what gates the check. If doctor reports a mismatch,
-re-run `./install.sh --python <this interpreter>` and restart.
+debris' presence — is what gates the check. If doctor reports a mismatch, run
+`hermes mnemosyne doctor` without `--no-fix`: when the engine still matches the
+installed distribution, it re-applies the audited patches in place through
+`scripts/apply_engine_patches.py` (keeping the `.mnemosyne-hermes-original`
+backups), re-checks the files before exit, and prints the restart step. When
+the resolved engine is not the installed distribution — a separate venv, a
+shadowing copy — the repair refuses to write, and the fix is
+`./install.sh --python <this interpreter>` instead. Restart the gateway after
+either path.
 
 The strict CI lane applies the patches and exercises real BEAM, MCP, and provider
 handlers against temporary stores. The weekly newest-engine lane also applies

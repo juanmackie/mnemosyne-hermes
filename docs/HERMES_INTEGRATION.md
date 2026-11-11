@@ -221,7 +221,7 @@ Restart the gateway afterwards, and point `memory.provider` elsewhere if
 
 | Symptom | Fix |
 | --- | --- |
-| Doctor exits non-zero | Read the first `FAIL` line; `--dry-run` lists the fixes |
+| Doctor exits non-zero | Read the first `FAIL` line; `--dry-run` lists the fixes; a failed patch check is repaired in-band by `hermes mnemosyne doctor` (without `--no-fix`) when the engine matches the installed distribution |
 | No provider in `hermes memory status` | Check the plugin symlink, re-run `./install.sh` |
 | Unexpected store path | `hermes mnemosyne doctor --no-fix` prints the resolved path |
 | Fix works in CLI only | Restart the gateway; the old module stays cached |

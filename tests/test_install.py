@@ -224,6 +224,7 @@ def installer(tmp_path):
     run.provider_source = provider / "__init__.py"
     run.engine = engine
     run.modules = modules
+    run.repo = repo
     run.env = env
     return run, hermes, venv, commands, home, install_log, hermes_log
 
@@ -371,6 +372,102 @@ def test_package_manager_owns_provider_dependencies_without_uv_injection(install
     collision = run()
     assert collision.returncode != 0, collision.stdout + collision.stderr
     assert "loader does not resolve mnemosyne" in collision.stdout + collision.stderr
+
+
+def test_pm_rebuild_reapplies_audited_patches_to_selected_generation(installer):
+    """Issue #55 regression: a Hermes PM dependency rebuild selects a fresh
+    generation whose engine wheel does not contain the audited patches; the
+    supported workflow (re-running ./install.sh) must re-apply the audited
+    patch set to the newly selected generation before reporting ready."""
+    import difflib
+    import hashlib
+    import json
+
+    run, hermes, venv, _, home, installs, hermes_calls = installer
+    repo = run.repo
+
+    # Give the fixture the real audited applier and a fixture patch set: the
+    # upstream fixture engine lacks seed_config, the audited patch adds it —
+    # the same role the shipped manifest plays for the engine's P31.
+    shutil.copyfile(
+        ROOT / "scripts/apply_engine_patches.py",
+        repo / "scripts/apply_engine_patches.py",
+    )
+    patches = repo / "integrations/engine-patches"
+    patches.mkdir()
+    engine_memory = run.engine / "memory.py"
+    original = b"class Mnemosyne:\n    def __init__(self):\n        pass\n"
+    patched = engine_memory.read_bytes()
+
+    def digest(data):
+        return hashlib.sha256(data).hexdigest()
+
+    delta = "".join(
+        difflib.unified_diff(
+            original.decode().splitlines(True),
+            patched.decode().splitlines(True),
+            fromfile="a/core/memory.py",
+            tofile="b/core/memory.py",
+        )
+    ).encode()
+    (patches / "core-memory.py.patch").write_bytes(delta)
+    manifest = {
+        "distribution": "mnemosyne-memory",
+        "version": "3.15.1",
+        "files": {
+            "core/memory.py": {
+                "original_sha256": digest(original),
+                "patched_sha256": digest(patched),
+                "patch": "core-memory.py.patch",
+                "patch_sha256": digest(delta),
+            }
+        },
+    }
+    (patches / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    # Fake Hermes PM: status succeeds, install admits the union, config set works.
+    hermes_path = venv / "bin/hermes"
+    _script(
+        hermes_path,
+        'printf "%s\\n" "$0 $*" >> "$TEST_HERMES_LOG"\n'
+        'if [[ "${1:-}" == "pm" && "${2:-}" == "status" ]]; then exit 0; fi\n'
+        'if [[ "${1:-}" == "pm" && "${2:-}" == "install" ]]; then exit 0; fi\n'
+        'if [[ "${1:-}" == "config" && "${2:-}" == "set" ]]; then '
+        'printf "memory:\\n  provider: %s\\n" "$4" > "$HERMES_HOME/config.yaml"; exit 0; fi\n',
+    )
+    (venv.parent / "pm").mkdir()
+    (venv.parent / "pm/environments.py").write_text(
+        "# fake Hermes PM install root\n", encoding="utf-8"
+    )
+    install_key = hashlib.sha256(str(venv.parent.resolve()).encode()).hexdigest()[:16]
+    state = home / "installs" / install_key
+    environment = state / "environments" / "gen-fixture"
+    selected_python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    selected_python.parent.mkdir(parents=True)
+    shutil.copy(venv / "bin/python", selected_python)
+    (environment / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+    (state / "facts.json").write_text(
+        json.dumps({"packages": {"venv": {"environment": str(environment)}}}),
+        encoding="utf-8",
+    )
+
+    first = run()
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert not installs.exists(), "Hermes PM owns dependency installation"
+    assert "already patched: core/memory.py" in first.stdout
+
+    # The rebuild: PM admits a fresh generation shipping the upstream wheel.
+    engine_memory.write_bytes(original)
+    assert "seed_config" not in engine_memory.read_text(encoding="utf-8")
+
+    rebuilt = run()
+    assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
+    assert "Installed." in rebuilt.stdout
+    # The newly selected generation is patched before the installer reports ready.
+    assert "patch: core/memory.py" in rebuilt.stdout
+    assert "seed_config" in engine_memory.read_text(encoding="utf-8")
+    backup = engine_memory.with_name("memory.py.mnemosyne-hermes-original")
+    assert backup.read_bytes() == original
 
 
 def test_failed_copy_preserves_existing_verified_provider(installer):

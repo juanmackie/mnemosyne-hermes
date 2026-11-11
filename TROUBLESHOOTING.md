@@ -103,6 +103,8 @@ site-packages. Typical causes:
   dedicated engine venv while the desktop profile runs another;
 - the engine was reinstalled (upgrade/re-`uv pip install`) without re-running
   `./install.sh`, silently reverting the audited patches;
+- a Hermes PM dependency rebuild installed a fresh engine wheel into the
+  selected generation, which reverts the audited patches the same way;
 - a second `mnemosyne` copy ahead of the engine on the import path (`.pth`
   file, `PYTHONPATH`, or this repo's `src/`).
 
@@ -112,8 +114,24 @@ generation), patched by `./install.sh` / `./install.ps1`. An engine in a
 separate venv is not a supported binding for the plugin; cron jobs using that
 venv can keep it, but the plugin cannot.
 
-**Repair, without touching the memory database** (the installer never opens or
-creates it):
+**In-band repair** — after a PM rebuild (or any engine reinstall) in the
+supported binding, `doctor` itself can re-apply the audited patches:
+
+```bash
+hermes mnemosyne doctor
+```
+
+Without `--no-fix`, when a patch check fails and the engine still matches the
+installed distribution, doctor re-applies the audited patches through the
+hash-verified applier (`scripts/apply_engine_patches.py`), keeping verified
+originals beside each target, then re-checks the files and reports PASS with a
+restart note. It never writes an engine file whose source hash it does not
+recognize, and it refuses to patch an engine that is not the installed
+distribution — that path needs the installer below. `--dry-run` prints the
+plan without writing; `--no-fix` never repairs.
+
+**Repair via the installer, without touching the memory database** (the
+installer never opens or creates it):
 
 ```bash
 ./install.sh --python /path/to/the/hermes/python --hermes-home /path/to/hermes-home
