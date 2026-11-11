@@ -215,6 +215,17 @@ the engine is missing, the provider must say so instead of reporting
 - `tests/test_provider_loader.py` covers both the bare (no engine) and the
   installed case.
 
+The dependency pin allows `mnemosyne-memory>=3.15.1,<3.16`. The patch overlay
+is audited against the 3.15.1 source hashes, and the installer refuses engine
+source it does not recognize. It checks that imports resolve to the distribution
+it patched. Both constructors must
+accept `seed_config`; the provider checks this before opening the session
+store. Run doctor with the same interpreter and environment as the gateway:
+a separate CLI or MCP environment cannot verify what the gateway has loaded.
+On failure, the gateway diagnostic names its interpreter and package path (or
+namespace paths). Re-run `./install.sh --python /path/to/gateway/python` and
+restart the gateway after correcting any import shadowing.
+
 ## Gateway restart rule
 
 Hermes caches a loaded provider module in `sys.modules` by name for the life of

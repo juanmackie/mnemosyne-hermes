@@ -83,6 +83,9 @@ def installer(tmp_path):
     engine = modules / "mnemosyne/core"
     engine.mkdir(parents=True)
     (engine.parent / "__init__.py").touch()
+    metadata = modules / "mnemosyne_memory-3.15.1.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Name: mnemosyne-memory\nVersion: 3.15.1\n")
     (engine / "__init__.py").touch()
     (engine / "beam.py").write_text(
         "def _default_db_path(): return 'unused-fixture.db'\n"
@@ -219,7 +222,34 @@ def installer(tmp_path):
         )
 
     run.provider_source = provider / "__init__.py"
+    run.engine = engine
+    run.modules = modules
+    run.env = env
     return run, hermes, venv, commands, home, install_log, hermes_log
+
+
+def test_install_rejects_unpatched_engine_and_restores_provider(installer):
+    run, hermes, venv, _, home, _, _ = installer
+    hermes(venv / "bin/hermes")
+    (run.engine / "memory.py").write_text("class Mnemosyne:\n    def __init__(self): pass\n")
+    result = run()
+    assert result.returncode != 0
+    assert "seed_config" in result.stderr
+    assert not (home / "plugins/mnemosyne").exists()
+    assert "provider: local" in (home / "config.yaml").read_text()
+
+
+def test_install_rejects_shadow_engine(installer, tmp_path):
+    run, hermes, venv, _, home, _, _ = installer
+    hermes(venv / "bin/hermes")
+    # The package on sys.path is valid, but resolves outside the distribution.
+    shadow = tmp_path / "shadow"
+    shutil.copytree(run.modules / "mnemosyne", shadow / "mnemosyne")
+    run.env["TEST_MODULES"] = os.pathsep.join((str(shadow), str(run.modules)))
+    result = run()
+    assert result.returncode != 0
+    assert "differs from installed package" in result.stderr
+    assert not (home / "plugins/mnemosyne").exists()
 
 
 def test_selected_venv_cli_activates_provider_without_path_cli(installer):

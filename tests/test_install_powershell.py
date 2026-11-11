@@ -90,6 +90,11 @@ def fake_windows_install(tmp_path):
     modules = tmp_path / "python-modules"
     (modules / "mnemosyne/core").mkdir(parents=True)
     (modules / "mnemosyne/__init__.py").write_text("__version__ = 'fixture'\n", encoding="utf-8")
+    metadata = modules / "mnemosyne_memory-3.15.1.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        "Name: mnemosyne-memory\nVersion: 3.15.1\n", encoding="utf-8"
+    )
     (modules / "mnemosyne/core/__init__.py").write_text("", encoding="utf-8")
     (modules / "mnemosyne/core/beam.py").write_text(
         "def _default_db_path(): return 'unused-fixture.db'\n"
@@ -256,6 +261,17 @@ def test_uninstall_dry_run_keeps_memory(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert memory.read_bytes() == b"memory"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="install.ps1 is a Windows-native entrypoint")
+def test_install_rejects_engine_without_seed_config(fake_windows_install):
+    run, home, _, _, _ = fake_windows_install
+    memory = home.parent / "python-modules/mnemosyne/core/memory.py"
+    memory.write_text("class Mnemosyne:\n    def __init__(self): pass\n", encoding="utf-8")
+    result = run("-Copy")
+    assert result.returncode != 0
+    assert "seed_config" in result.stdout + result.stderr
+    assert not (home / "plugins/mnemosyne").exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="install.ps1 is a Windows-native entrypoint")

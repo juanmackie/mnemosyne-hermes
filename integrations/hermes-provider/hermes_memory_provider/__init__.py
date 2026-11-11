@@ -270,6 +270,29 @@ def _get_beam_class():
     return BeamMemory
 
 
+# LOCAL PATCH: P46 identify the engine actually seen by a failed gateway.
+def _engine_failure_context():
+    try:
+        import mnemosyne
+        location = getattr(mnemosyne, "__file__", None)
+        if not location:
+            location = f"namespace paths: {list(getattr(mnemosyne, '__path__', []))}"
+    except Exception as exc:
+        location = f"import failed: {exc}"
+    return f"interpreter={sys.executable}; mnemosyne={location}"
+
+
+# LOCAL PATCH: P46 check both constructors before opening the session store.
+def _check_engine_contract():
+    import mnemosyne
+    from .cli import _engine_accepts_seed_config
+    if not getattr(mnemosyne, "__file__", None):
+        raise RuntimeError("mnemosyne resolved to a namespace package, not the installed engine")
+    ok, detail = _engine_accepts_seed_config()
+    if not ok:
+        raise RuntimeError(detail)
+
+
 def _get_triple_module():
     from mnemosyne.core.triples import add_triple, query_triples
     return add_triple, query_triples
@@ -1906,17 +1929,17 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         """
         if _ENGINE_IMPORT_ERROR is not None:
             self._unavailable_reason = (
-                f"mnemosyne-memory engine not importable: {_ENGINE_IMPORT_ERROR}. "
-                "Install the pinned engine into this venv, e.g. "
-                "uv pip install 'mnemosyne-memory[embeddings]>=3.15.1,<3.16'"
+                f"mnemosyne-memory engine not importable: {_ENGINE_IMPORT_ERROR} ({_engine_failure_context()}). "
+                "Run ./install.sh --python <gateway-python> to install and patch the pinned 3.15.x engine."
             )
             return False
         try:
             _get_beam_class()
+            _check_engine_contract()  # LOCAL PATCH: P46
             self._unavailable_reason = ""
             return True
         except Exception as e:
-            self._unavailable_reason = f"{type(e).__name__}: {e}"
+            self._unavailable_reason = f"{type(e).__name__}: {e} ({_engine_failure_context()})"
             return False
 
     def unavailable_reason(self) -> str:
@@ -1927,9 +1950,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         """
         if _ENGINE_IMPORT_ERROR is not None:
             return (
-                f"mnemosyne-memory engine not importable: {_ENGINE_IMPORT_ERROR}. "
-                "Install the pinned engine into this venv, e.g. "
-                "uv pip install 'mnemosyne-memory[embeddings]>=3.15.1,<3.16'"
+                f"mnemosyne-memory engine not importable: {_ENGINE_IMPORT_ERROR} ({_engine_failure_context()}). "
+                "Run ./install.sh --python <gateway-python> to install and patch the pinned 3.15.x engine."
             )
         return getattr(self, "_unavailable_reason", "")
 
@@ -2482,6 +2504,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         try:
             # LOCAL PATCH: P31 open the explicit resolved store directly.
             # Mnemosyne's wrapper import used to initialize a default DB first.
+            _check_engine_contract()  # LOCAL PATCH: P46
             BeamMemory = _get_beam_class()
             self._beam = BeamMemory(session_id=self._session_id, db_path=self._db_path,
                                     seed_config=False, channel_id=kwargs.get("channel_id", ""))
@@ -2499,9 +2522,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # this, an operator misconfiguration (corrupt DB, missing extras,
             # permissions, schema mismatch) silently masquerades as "the agent
             # doesn't remember anything" with no signal to the user.
-            logger.warning("Mnemosyne init failed: %s", e)
+            # LOCAL PATCH: P46 include the gateway's interpreter and import path.
+            context = _engine_failure_context()
+            logger.warning("Mnemosyne init failed: %s (%s)", e, context)
             self._beam = None
-            self._init_error = e
+            self._init_error = RuntimeError(f"{e} ({context}); run hermes mnemosyne doctor --no-fix")
 
         # C13: activate AFTER the BeamMemory init result is known. If
         # init succeeded (_beam is set) the provider is the live memory
