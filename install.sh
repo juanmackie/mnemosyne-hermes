@@ -701,7 +701,10 @@ if [[ "$HERMES_PM" == true ]]; then
 fi
 
 echo "== Applying the audited engine visibility fixes"
-"$VENV_PY" "$ROOT/scripts/apply_engine_patches.py"
+if ! "$VENV_PY" "$ROOT/scripts/apply_engine_patches.py"; then
+  "$VENV_PY" -c 'import mnemosyne; print("mnemosyne package:", getattr(mnemosyne, "__file__", None) or list(getattr(mnemosyne, "__path__", [])))' 2>&1 || true
+  fail "could not patch the engine for $VENV_PY; check the installed distribution and any namespace/data-directory shadowing"
+fi
 
 # --- 3b. engine must stay the engine ----------------------------------------
 # The engine owns the `mnemosyne` package. Two things can still break it here:
@@ -709,12 +712,13 @@ echo "== Applying the audited engine visibility fixes"
 # `mnemosyne-lite`/`mnemosyne_lite` now, so a fresh install cannot collide), and
 # any other `mnemosyne` distribution would shadow the engine's package. Check
 # rather than assume.
-if ! "$VENV_PY" -c 'import mnemosyne.core.beam' >/dev/null 2>&1; then
-  fail "the engine is not importable in $VENV after install (need $ENGINE_PIN).
+if ! "$VENV_PY" -c 'import mnemosyne.core.beam'; then
+  "$VENV_PY" -c 'import mnemosyne; print("mnemosyne package:", getattr(mnemosyne, "__file__", None) or list(getattr(mnemosyne, "__path__", [])))' 2>&1 || true
+  fail "the engine is not importable by $VENV_PY after install (need $ENGINE_PIN).
        Check for a shadowing 'mnemosyne' package in this venv:
          $VENV_PY -m pip list | grep -i mnemosyne"
 fi
-ENGINE_FILE="$("$VENV_PY" -c 'import mnemosyne, os; print(os.path.realpath(mnemosyne.__file__))')"
+ENGINE_FILE="$("$VENV_PY" -c 'import mnemosyne; print(getattr(mnemosyne, "__file__", None) or list(getattr(mnemosyne, "__path__", [])))')"
 case "$ENGINE_FILE" in
 "$ROOT"/src/*) fail "the engine import resolved to this repo ($ENGINE_FILE) instead of the
        installed engine; uninstall whatever put src/ ahead of site-packages in $VENV" ;;
@@ -725,15 +729,20 @@ esac
 # 'BeamMemory.__init__() got an unexpected keyword argument seed_config' —
 # the reported desktop failure. The installer must not report success against it.
 if ! "$VENV_PY" - <<'PYEOF'
-import inspect
+import importlib.metadata, inspect, pathlib, sys
+import mnemosyne
 from mnemosyne.core.beam import BeamMemory
 from mnemosyne.core.memory import Mnemosyne
+expected = pathlib.Path(importlib.metadata.distribution("mnemosyne-memory").locate_file("mnemosyne")).resolve()
+actual = getattr(mnemosyne, "__file__", None)
+if not actual or pathlib.Path(actual).resolve().parent != expected:
+    sys.exit(f"engine import {actual or list(mnemosyne.__path__)} differs from installed package {expected} in {sys.executable}")
 missing = [cls.__name__ for cls in (BeamMemory, Mnemosyne)
            if "seed_config" not in inspect.signature(cls.__init__).parameters]
 raise SystemExit(1 if missing else 0)
 PYEOF
 then
-  fail "the engine at $ENGINE_FILE imports but does not accept 'seed_config'.
+  fail "the engine at $ENGINE_FILE is not the installed engine or does not accept 'seed_config'.
        A different, unpatched 'mnemosyne' copy is shadowing the audited engine.
        Check $VENV_PY -m pip list | grep -i mnemosyne, PYTHONPATH and any .pth
        files under $VENV, then re-run: ./install.sh --python $VENV_PY"

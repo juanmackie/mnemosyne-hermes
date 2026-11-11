@@ -5,7 +5,7 @@
 # ./install.sh --yes, then the four acceptance assertions:
 #   1. hermes mnemosyne doctor --no-fix exits 0
 #   2. hermes memory status shows mnemosyne installed/available/active
-#   3. a sync_turn round-trip writes and reads back a fact
+#   3. a sync_turn round-trip writes a fact and recall reads it in a new process
 #   4. exactly one provider is registered
 #
 # Needs real symlinks (install.sh links the plugin). On Windows it SKIPS with
@@ -269,6 +269,28 @@ then
   :
 else
   echo "FAIL: round-trip / registration assertion"
+  fail=1
+fi
+
+echo "== [6.5/6] recall after process restart"
+if ! "$VENV_PY" - <<'PY'
+import json
+import os
+from plugins.memory import load_memory_provider
+
+provider = load_memory_provider("mnemosyne")
+assert provider is not None
+provider.initialize(session_id="smoke", hermes_home=os.environ["HERMES_HOME"], agent_context="primary")
+try:
+    result = json.loads(provider.handle_tool_call("mnemosyne_recall", {"query": "kraken-01", "limit": 10}))
+    assert result.get("status") != "memory_unavailable", result
+    assert any("kraken-01" in str(row.get("content", "")) for row in result.get("results", [])), result
+    print("PASS: mnemosyne_recall read the fact in a fresh process")
+finally:
+    provider.shutdown()
+PY
+then
+  echo "FAIL: recall after process restart"
   fail=1
 fi
 

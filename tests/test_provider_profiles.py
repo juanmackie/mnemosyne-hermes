@@ -272,6 +272,7 @@ def test_successful_doctor_no_fix_leaves_store_and_file_inventory_unchanged(tmp_
     host.get_hermes_home = lambda: home
     engine = types.ModuleType("mnemosyne")
     engine.__path__ = []
+    engine.__file__ = str(tmp_path / "installed/mnemosyne/__init__.py")
     engine_core = types.ModuleType("mnemosyne.core")
     engine_core.__path__ = []
     engine_beam = types.ModuleType("mnemosyne.core.beam")
@@ -300,10 +301,18 @@ def test_successful_doctor_no_fix_leaves_store_and_file_inventory_unchanged(tmp_
         ),
         patch.object(cli, "_provider_registration_count", return_value=(1, "synthetic discovery")),
         patch.object(cli, "check_provider_provenance", return_value=(True, "synthetic provenance")),
+        patch.object(cli, "_engine_patch_audit", return_value=(True, "synthetic engine")),
+        patch.object(cli, "_engine_distribution_matches", return_value=(True, "synthetic engine")),
     ):
         assert (
             cli.mnemosyne_command(types.SimpleNamespace(mnemosyne_cmd="doctor", no_fix=True)) == 0
         )
+        with (
+            patch.object(cli, "_engine_distribution_matches", return_value=(False, "shadowed")),
+            pytest.raises(SystemExit) as failure,
+        ):
+            cli.mnemosyne_command(types.SimpleNamespace(mnemosyne_cmd="doctor", no_fix=True))
+        assert failure.value.code == 1
     assert {
         str(path.relative_to(tmp_path)): path.read_bytes()
         for path in tmp_path.rglob("*")

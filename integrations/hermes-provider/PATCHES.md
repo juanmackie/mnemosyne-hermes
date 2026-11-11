@@ -583,3 +583,15 @@ separately; the fork decision does not replace that review.
 | Behaviour | At module import, the deployed package aliases itself into `sys.modules["hermes_memory_provider"]` when it is a proper package (`__path__` set), via `setdefault`. Symlinked installs behave as before (same files, now one instance instead of two). Copied installs now bind every absolute self-import to the deployed package. No import is made earlier or later than before; no name is removed from `sys.modules`. |
 | Verification | `tests/test_provider_loader.py::test_copied_install_absolute_imports_bind_to_deployed_package` builds a copied install beside a synthetic unpatched `hermes_memory_provider` on `sys.path` and asserts the evidence module and the registered provider resolve to the deployed copy. Manual check: the banner/doctor path is unaffected when no shadow exists. |
 | Upstream | Not sent. Upstream's own deployment mode is the bundled package; this alias only affects processes that load the deployed snapshot, which is this repository's install path. |
+
+### P46 — identify the engine in gateway initialization failures
+
+Initialization failures include the running Python executable and the resolved
+`mnemosyne` package file or namespace paths, plus the doctor command. This makes
+interpreter drift visible in the existing unavailable response and gateway log.
+Availability and session initialization check both engine constructor signatures
+and reject namespace packages before opening the store. Doctor reports the same
+interpreter and package details on import failure. Doctor and the installers
+require the imported package to match the installed distribution, even if the
+doctor hash audit is unavailable. Regression coverage is in
+`tests/test_provider_db_path.py` and `tests/test_install.py`.

@@ -258,9 +258,16 @@ print(f"Hermes loader selected deployed provider class: {provider_file}")
 
 function Test-EngineImport {
     Invoke-PythonCode 'import mnemosyne.core.beam' @() | Out-Null
-    if ($script:PythonExitCode -ne 0) { return $false }
-    $engineFile = Invoke-PythonCode 'import mnemosyne,os; print(os.path.realpath(mnemosyne.__file__))' @()
+    if ($script:PythonExitCode -ne 0) {
+        Invoke-PythonCode 'import mnemosyne; print("mnemosyne package:", getattr(mnemosyne, "__file__", None) or list(getattr(mnemosyne, "__path__", [])))' @() | Write-Host
+        return $false
+    }
+    $engineFile = Invoke-PythonCode 'import mnemosyne; print(getattr(mnemosyne, "__file__", None) or list(getattr(mnemosyne, "__path__", [])))' @()
     if ($script:PythonExitCode -ne 0 -or -not $engineFile) { return $false }
+    if (([string]$engineFile).Trim().StartsWith('[')) {
+        Write-Warning "mnemosyne resolved to a namespace package: $engineFile; interpreter: $VenvPython"
+        return $false
+    }
     $repoSource = [IO.Path]::GetFullPath((Join-Path $Root 'src')).TrimEnd('\\') + '\'
     if ([IO.Path]::GetFullPath(([string]$engineFile).Trim()).StartsWith($repoSource, [StringComparison]::OrdinalIgnoreCase)) { return $false }
     # An importable engine is not necessarily the patched one: a different
@@ -268,16 +275,21 @@ function Test-EngineImport {
     # startup with 'BeamMemory.__init__() got an unexpected keyword argument
     # seed_config' — the reported desktop failure. Refuse to report success.
     $seedCheck = @'
-import inspect
+import importlib.metadata, inspect, pathlib, sys
+import mnemosyne
 from mnemosyne.core.beam import BeamMemory
 from mnemosyne.core.memory import Mnemosyne
+expected = pathlib.Path(importlib.metadata.distribution("mnemosyne-memory").locate_file("mnemosyne")).resolve()
+actual = getattr(mnemosyne, "__file__", None)
+if not actual or pathlib.Path(actual).resolve().parent != expected:
+    sys.exit(f"engine import {actual or list(mnemosyne.__path__)} differs from installed package {expected} in {sys.executable}")
 missing = [cls.__name__ for cls in (BeamMemory, Mnemosyne)
            if "seed_config" not in inspect.signature(cls.__init__).parameters]
 raise SystemExit(1 if missing else 0)
 '@
     Invoke-PythonCode $seedCheck @() | Out-Null
     if ($script:PythonExitCode -ne 0) {
-        Write-Warning "engine at $(([string]$engineFile).Trim()) imports but does not accept 'seed_config'; a different, unpatched 'mnemosyne' copy is shadowing the audited engine"
+        Write-Warning "engine at $(([string]$engineFile).Trim()) differs from the installed engine or does not accept 'seed_config'"
         return $false
     }
     Write-Host "  engine resolved : $(([string]$engineFile).Trim()) (accepts seed_config; audited patches applied)"
@@ -298,13 +310,20 @@ function Uninstall-Package([string]$PackageName) {
     if (Test-PackageInstalled $PackageName) { Fail "$PackageName still appears installed after uninstall" }
 }
 
+function Invoke-EnginePatches {
+    & $VenvPython (Join-Path $Root 'scripts/apply_engine_patches.py')
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-PythonCode 'import mnemosyne; print("mnemosyne package:", getattr(mnemosyne, "__file__", None) or list(getattr(mnemosyne, "__path__", [])))' @() | Write-Host
+        Fail "audited engine patches could not be applied for $VenvPython; check the installed distribution and namespace/data-directory shadowing"
+    }
+}
+
 function Install-LegacyPackages {
     $uv = Get-Command uv -ErrorAction SilentlyContinue
     if ($uv) { & $uv.Source pip install --python $VenvPython $ProviderSource $EnginePin }
     else { & $VenvPython -m pip install $ProviderSource $EnginePin }
     if ($LASTEXITCODE -ne 0) { Fail 'provider/engine installation failed' }
-    & $VenvPython (Join-Path $Root 'scripts/apply_engine_patches.py')
-    if ($LASTEXITCODE -ne 0) { Fail 'audited engine patches could not be applied' }
+    Invoke-EnginePatches
 }
 
 function Invoke-Hermes([string[]]$Arguments) {
@@ -471,8 +490,7 @@ try {
         Invoke-Hermes @('config', 'set', 'memory.provider', 'mnemosyne')
         Invoke-Hermes @('pm', 'install')
         $VenvPython = Resolve-PmPython
-        & $VenvPython (Join-Path $Root 'scripts/apply_engine_patches.py')
-        if ($LASTEXITCODE -ne 0) { Fail 'audited engine patches could not be applied to the admitted Hermes PM environment' }
+        Invoke-EnginePatches
     } else {
         Install-LegacyPackages
     }

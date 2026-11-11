@@ -2,9 +2,11 @@
 
 These diffs patch `mnemosyne-memory` 3.15.1 itself. The engine's standalone
 `mnemosyne mcp` process does not use the Hermes provider's P20 fallback.
-`install.sh` applies the diffs after installing the engine and before changing
-plugin discovery or Hermes configuration. The engine dependency range remains
-`mnemosyne-memory[embeddings]>=3.15.1,<3.16`.
+The installers apply the diffs to the selected Hermes runtime after its engine
+dependencies are installed. The dependency range remains
+`mnemosyne-memory[embeddings]>=3.15.1,<3.16`; the overlay accepts only the
+source hashes declared in its manifest, so an unreviewed version in that range
+is refused until its patches have been audited.
 
 | Patch | Behavior |
 | --- | --- |

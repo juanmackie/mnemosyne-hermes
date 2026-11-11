@@ -117,7 +117,10 @@ def _init(tmp, **kwargs):
     # Instance override and scoped module patch avoid leaking shared state.
     provider.__dict__["_init_audit_log"] = lambda: None
     try:
-        with patch.object(provider_mod, "_get_beam_class", return_value=FakeBeam):
+        with (
+            patch.object(provider_mod, "_get_beam_class", return_value=FakeBeam),
+            patch.object(provider_mod, "_check_engine_contract"),
+        ):
             provider.initialize(session_id="t3", hermes_home=str(tmp), **kwargs)
     finally:
         provider.__dict__.pop("_init_audit_log", None)
@@ -750,6 +753,80 @@ def test_engine_accepts_seed_config_check():
         assert "apply_engine_patches" in msg, msg
 
 
+def test_initialization_rejects_engine_before_opening_store():
+    with tempfile.TemporaryDirectory() as tmp:
+        provider = provider_mod.MnemosyneMemoryProvider()
+        engine = types.ModuleType("mnemosyne")
+        engine.__file__ = "/engine/mnemosyne/__init__.py"
+        beam = types.ModuleType("mnemosyne.core.beam")
+        memory = types.ModuleType("mnemosyne.core.memory")
+
+        class BeamMemory:
+            def __init__(self, seed_config=True):
+                raise AssertionError("store opened")
+
+        class Mnemosyne:
+            def __init__(self):
+                pass
+
+        beam.BeamMemory = BeamMemory
+        memory.Mnemosyne = Mnemosyne
+        with (
+            patch.dict(
+                sys.modules,
+                {"mnemosyne": engine, "mnemosyne.core.beam": beam, "mnemosyne.core.memory": memory},
+            ),
+            patch.object(
+                provider_mod, "_get_beam_class", side_effect=AssertionError("store opened")
+            ),
+        ):
+            provider.initialize("session", hermes_home=tmp)
+        assert provider._beam is None
+        assert "Mnemosyne reject seed_config" in str(provider._init_error)
+        assert sys.executable in str(provider._init_error)
+        assert "doctor --no-fix" in str(provider._init_error)
+        response = json.loads(provider.handle_tool_call("mnemosyne_recall", {"query": "test"}))
+        assert response["status"] == "memory_unavailable"
+        assert "Mnemosyne reject seed_config" in response["reason"]
+
+
+def test_namespace_engine_is_rejected_with_its_paths():
+    engine = types.ModuleType("mnemosyne")
+    engine.__path__ = ["/data/mnemosyne"]
+    with patch.dict(sys.modules, {"mnemosyne": engine}):
+        try:
+            provider_mod._check_engine_contract()
+        except RuntimeError as exc:
+            assert "namespace package" in str(exc)
+        else:
+            raise AssertionError("namespace engine accepted")
+        assert "/data/mnemosyne" in provider_mod._engine_failure_context()
+
+
+def test_doctor_engine_distribution_detects_shadow(tmp_path):
+    import importlib.metadata
+
+    installed = tmp_path / "site-packages" / "mnemosyne"
+    shadow = tmp_path / "shadow" / "mnemosyne"
+
+    class Distribution:
+        def locate_file(self, _name):
+            return installed
+
+    with patch.object(importlib.metadata, "distribution", return_value=Distribution()):
+        check = _module_attr(cli_mod, "_engine_distribution_matches")
+        assert check(installed / "__init__.py")[0]
+        ok, detail = check(shadow / "__init__.py")
+        assert not ok and str(installed) in detail and str(shadow) in detail
+    with patch.object(
+        importlib.metadata,
+        "distribution",
+        side_effect=importlib.metadata.PackageNotFoundError("mnemosyne-memory"),
+    ):
+        ok, detail = check(shadow / "__init__.py")
+        assert not ok and "cannot identify" in detail
+
+
 def _audited_fixture(tmp_root):
     contents = {
         "core/beam.py": b"patched beam",
@@ -859,6 +936,9 @@ if __name__ == "__main__":
         test_db_writable_existing_file_and_parent,
         test_db_writable_unresolved_path_is_failure,
         test_engine_accepts_seed_config_check,
+        test_initialization_rejects_engine_before_opening_store,
+        test_namespace_engine_is_rejected_with_its_paths,
+        test_doctor_engine_distribution_detects_shadow,
         test_engine_patch_audit_accepts_audited_source,
         test_engine_patch_audit_names_the_stale_file,
         test_engine_patch_audit_flags_a_missing_engine_file,

@@ -316,6 +316,20 @@ def _engine_package_file():
         return None
 
 
+# LOCAL PATCH: P46 the import must be the distribution the installer patches.
+def _engine_distribution_matches(engine_file):
+    import importlib.metadata
+    try:
+        dist = importlib.metadata.distribution("mnemosyne-memory")
+        expected = Path(dist.locate_file("mnemosyne")).resolve()
+        actual = Path(engine_file).resolve().parent
+        if actual != expected:
+            return False, f"imported {actual}; installed distribution is {expected}"
+        return True, str(actual)
+    except Exception as exc:
+        return False, f"cannot identify installed mnemosyne-memory distribution: {exc}"
+
+
 def _engine_patch_audit(pkg_root=None, manifest_path=None):
     """Verify the resolved engine is the audited patched source.
 
@@ -887,10 +901,14 @@ def mnemosyne_command(args):
         try:
             import mnemosyne.core.beam  # noqa: F401
             engine_file = _engine_package_file()
+            if not engine_file:
+                raise RuntimeError("mnemosyne resolved to a namespace package, not the installed engine")
             critical.append((
                 "engine importable", True,
                 f"v{engine_version()}" + (f" at {engine_file}" if engine_file else ""),
             ))
+            # LOCAL PATCH: P46 enforce this even if the source audit is unavailable.
+            critical.append(("engine matches installed distribution", *_engine_distribution_matches(engine_file)))
             # LOCAL PATCH: P39
             critical.append(("engine patches applied", *_engine_accepts_seed_config()))
             # LOCAL PATCH: P44
@@ -900,7 +918,9 @@ def mnemosyne_command(args):
             else:
                 critical.append(("engine matches audited patches", audit_ok, audit_detail))
         except Exception as e:
-            critical.append(("engine importable", False, str(e)))
+            # LOCAL PATCH: P46 show the interpreter and namespace path on import failure.
+            from . import _engine_failure_context
+            critical.append(("engine importable", False, f"{e} ({_engine_failure_context()})"))
         count, detail = _provider_registration_count()
         if count is None:
             critical.append(("provider registered exactly once", False, detail))
