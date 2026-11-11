@@ -260,7 +260,7 @@ def test_copied_install_absolute_imports_bind_to_deployed_package():
         copied.mkdir(parents=True)
         for child in PROVIDER_DIR.glob("*.py"):
             shutil.copy(child, copied / child.name)
-        code = f'''
+        code = f"""
 import sys, importlib.util
 sys.path.insert(0, {str(tmp_path / "upstream_site")!r})
 provider_dir = {str(copied)!r}
@@ -287,9 +287,10 @@ class Ctx:
 register_memory_provider(Ctx())
 assert len(box) == 1
 print("registered:", getattr(box[0], "name", box[0]))
-'''
-        proc = subprocess.run([sys.executable, "-c", code],
-                              capture_output=True, text=True, timeout=180)
+"""
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=180
+        )
         assert proc.returncode == 0, f"copied-install binding failed:\n{proc.stdout}\n{proc.stderr}"
         assert str(copied / "evidence.py") in proc.stdout, proc.stdout
         assert "registered: mnemosyne" in proc.stdout, proc.stdout
