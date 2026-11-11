@@ -803,11 +803,11 @@ def test_namespace_engine_is_rejected_with_its_paths():
         assert "/data/mnemosyne" in provider_mod._engine_failure_context()
 
 
-def test_doctor_engine_distribution_detects_shadow(tmp_path):
+def test_doctor_engine_distribution_detects_shadow():
     import importlib.metadata
 
-    installed = tmp_path / "site-packages" / "mnemosyne"
-    shadow = tmp_path / "shadow" / "mnemosyne"
+    installed = pathlib.Path("/site-packages/mnemosyne")
+    shadow = pathlib.Path("/shadow/mnemosyne")
 
     class Distribution:
         def locate_file(self, _name):
