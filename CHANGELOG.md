@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Hermes PM dependency rebuild installs a fresh engine wheel into the selected
+  generation, silently reverting the audited patches until the provider fails
+  every turn. The supported repair is now in-band: `hermes mnemosyne doctor`
+  (without `--no-fix`) re-applies the audited patches through the
+  hash-verified applier when the engine still matches the installed
+  distribution, re-checks the files before exit, and reports the restart step.
+  `--no-fix` and `scripts/update.sh` never write; `--dry-run` prints the plan
+  only. Fresh PM-generation cycles are covered by regression
+  (`tests/test_doctor_patch_repair.py`, `tests/test_install.py`).
 - A desktop session that loaded the provider while resolving an engine without
   the audited patches failed every turn with `BeamMemory.__init__() got an
   unexpected keyword argument 'seed_config'`. `doctor` now prints the resolved

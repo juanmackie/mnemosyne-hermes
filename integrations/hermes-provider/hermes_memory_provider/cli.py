@@ -298,8 +298,9 @@ def _engine_accepts_seed_config():
     ]
     if missing:
         return False, (
-            f"{', '.join(missing)} reject seed_config; run "
-            "scripts/apply_engine_patches.py (or ./install.sh) and restart"
+            f"{', '.join(missing)} reject seed_config; run `hermes mnemosyne doctor` "
+            "(without --no-fix), scripts/apply_engine_patches.py or ./install.sh, "
+            "and restart"
         )
     return True, "BeamMemory and Mnemosyne accept seed_config"
 
@@ -373,9 +374,73 @@ def _engine_patch_audit(pkg_root=None, manifest_path=None):
             f"engine at {pkg_root} is not the audited {manifest.get('version')} source; "
             f"differs: {', '.join(stale)}. A reinstall without re-applying the audited "
             "patches (or a manual patch attempt, e.g. .rej debris) causes this. "
-            "Re-run ./install.sh --python <this interpreter> and restart."
+            "Run `hermes mnemosyne doctor` (without --no-fix) to re-apply the audited "
+            "patches, or re-run ./install.sh --python <this interpreter>, and restart."
         )
     return True, f"audited {manifest.get('version')} source at {pkg_root}"
+
+
+def _repair_engine_patches(dry_run=False, *, engine_root=None, manifest_path=None):
+    """Re-apply the audited engine patches to the engine this interpreter imports.
+
+    LOCAL PATCH: P47 a Hermes PM dependency rebuild selects a fresh engine
+    generation whose wheel does not contain the audited patches, and doctor
+    runs under the selected generation's interpreter — its fix path is the
+    post-rebuild repair that targets the active generation. The audited
+    applier (scripts/apply_engine_patches.py, located beside the manifest this
+    provider audits against) refuses any engine source that is not the audited
+    upstream revision, so this can never invent or force a patch; verified
+    originals are retained for rollback. Diagnose-only runs (--no-fix, and
+    scripts/update.sh, which calls --no-fix) never reach this. Returns
+    (ok, detail); detail is the applier's report lines on success.
+    """
+    if manifest_path is None:
+        # Repo layout: <repo>/integrations/hermes-provider/hermes_memory_provider/cli.py
+        manifest_path = Path(__file__).resolve().parents[2] / "engine-patches" / "manifest.json"
+    manifest_path = Path(manifest_path)
+    if not manifest_path.is_file():
+        return False, (
+            "no audited patch manifest beside this provider; re-run "
+            "./install.sh --python <this interpreter> to repair"
+        )
+    if engine_root is None:
+        try:
+            import mnemosyne
+            package = getattr(mnemosyne, "__file__", None)
+            if not package:
+                return False, "engine package has no __file__; cannot locate the engine to repair"
+            engine_root = Path(package).resolve().parent
+        except Exception as exc:
+            return False, f"engine not importable ({exc}); cannot locate the engine to repair"
+        # P46 guard: never patch a shadowing engine copy; the audited patches
+        # belong to the installed distribution only.
+        dist_ok, dist_detail = _engine_distribution_matches(str(Path(engine_root) / "__init__.py"))
+        if not dist_ok:
+            return False, f"refusing to patch a shadowing engine: {dist_detail}"
+    applier_path = manifest_path.parents[2] / "scripts" / "apply_engine_patches.py"
+    if not applier_path.is_file():
+        return False, (
+            f"audited patch applier missing at {applier_path}; re-run "
+            "./install.sh --python <this interpreter> to repair"
+        )
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_mnemosyne_engine_patch_applier", applier_path
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("no import spec")
+        applier = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = applier
+        spec.loader.exec_module(applier)
+    except Exception as exc:
+        return False, f"cannot load the audited patch applier: {exc}"
+    try:
+        report = applier.apply_patches(Path(engine_root).resolve(strict=True), dry_run=dry_run)
+    except Exception as exc:
+        return False, f"the audited patch applier refused: {exc}"
+    return True, report
 
 
 def register_cli(subparser):
@@ -942,6 +1007,42 @@ def mnemosyne_command(args):
                 "canonical provider deployed", False,
                 f"{plugin_link} does not exist; run ./install.sh",
             ))
+        # LOCAL PATCH: P47 a Hermes PM dependency rebuild selects a fresh engine
+        # generation whose wheel does not contain the audited patches. Doctor's
+        # fix path runs under the selected generation's interpreter, so it is
+        # the post-rebuild repair that targets the active generation. Diagnose
+        # only when --no-fix was given (scripts/update.sh relies on that).
+        patched_source = False
+        if not no_fix:
+            failed_patch_checks = [
+                label for label, ok, _ in critical
+                if not ok and label in ("engine patches applied", "engine matches audited patches")
+            ]
+            distribution_ok = next(
+                (ok for label, ok, _ in critical
+                 if label == "engine matches installed distribution"),
+                False,
+            )
+            if failed_patch_checks and distribution_ok:
+                ok, detail = _repair_engine_patches(dry_run=dry_run)
+                if ok and dry_run:
+                    notes.extend(f"dry-run patch plan: {line}" for line in detail)
+                elif ok:
+                    audit_ok, audit_detail = _engine_patch_audit()
+                    if audit_ok:
+                        for index, (label, _, _) in enumerate(critical):
+                            if label in failed_patch_checks:
+                                critical[index] = (
+                                    label, True,
+                                    f"{audit_detail}; restart the gateway so running "
+                                    "processes load the re-applied patches",
+                                )
+                        patched_source = True
+                    else:
+                        notes.append(f"patch re-apply incomplete: {audit_detail}")
+                else:
+                    notes.append(f"automatic patch re-apply refused: {detail}")
+
         critical_ok = all(ok for _, ok, _ in critical)
 
         print("\nMnemosyne Diagnostics")
@@ -965,6 +1066,14 @@ def mnemosyne_command(args):
         # LOCAL PATCH: P31 acceptance reads only the selected store. The full
         # engine scan constructs a memory instance and writes a diagnostic log.
         if no_fix:
+            return 0
+        # LOCAL PATCH: P47 a repair rewrote engine sources on disk; the modules
+        # this process already imported are the pre-repair code, so the engine
+        # diagnostics below would describe stale behavior. The re-applied
+        # patches verified against manifest.json; point at the restart.
+        if patched_source:
+            print("\n  Restart the gateway and any `mnemosyne mcp` process, then")
+            print("  re-run `hermes mnemosyne doctor --no-fix` from a fresh process.")
             return 0
         try:
             from mnemosyne.diagnose import auto_fix

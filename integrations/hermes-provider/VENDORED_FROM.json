@@ -27,9 +27,9 @@
       "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "eQn_XzyS7hM7NdWfKGbTdC6Yqox35NUzXjcyo6Xj_6U",
-      "bytes": 58030,
-      "lines": 1252
+      "sha256": "CG_mnAloYMqQjjS5ua8hcIwSm2zKBJcZ4e6pVnQ1uV8",
+      "bytes": 63788,
+      "lines": 1361
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "W7yXq_MoLHkBY7oAHsDbKu3JcTswhXZKgPuw4G3_2fA",
@@ -127,7 +127,8 @@
       "P42 explicit user-correction trigger records a content-free review event and exposes verified review-outcome/review-pending/review-stats",
       "P43 expose verifiable review queue and preserve provenance references in inspection output",
       "P44 doctor prints the resolved engine path and audits the resolved engine's source files against integrations/engine-patches/manifest.json (informational skip when no manifest is beside a copied provider)",
-      "P46 doctor identifies the interpreter and package on engine import failure"
+      "P46 doctor identifies the interpreter and package on engine import failure",
+      "P47 doctor's fix path re-applies the audited engine patches to the generation it runs under (post-PM-rebuild repair); --no-fix and scripts/update.sh never write"
     ],
     "hermes_memory_provider/pyproject.toml": [
       "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"
