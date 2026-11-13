@@ -21,6 +21,7 @@ class ThreadState:
     pending_hits: int = 0
     ignored_changes: int = 0
     checkpoint_counter: int = 0
+    merge_counter: int = 0
 
 
 @dataclass(frozen=True, slots=True)

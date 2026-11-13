@@ -16,6 +16,7 @@ import random
 import sqlite3
 import sys
 import tempfile
+import time
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
@@ -632,6 +633,75 @@ def test_wal_stays_bounded_under_sustained_writes():
             assert s2.count() == 400
         finally:
             s2.close()
+
+
+def test_write_path_keeps_the_full_text_index_compact():
+    """One memory per commit must not leave the FTS index in many b-trees.
+
+    FTS5 writes one b-tree per committed transaction and every query opens,
+    scans and merges each of them, so an index left at its automerge steady
+    state (12-19 segments after a few thousand single-row commits, measured)
+    charges every selective recall a fixed per-segment cost. The merge pass on
+    the write path is what keeps that count from growing; recall() is correct
+    either way, which is why this needs its own assertion.
+    """
+
+    def segments(store):
+        return (
+            store._conn()
+            .execute("SELECT COUNT(DISTINCT segid) FROM memories_fts_idx")
+            .fetchone()[0]
+        )
+
+    interval = PythonMemoryStorage.FTS_MERGE_INTERVAL
+    with tempfile.TemporaryDirectory() as d:
+        store = PythonMemoryStorage(os.path.join(d, "compact.db"))
+        try:
+            assert segments(store) == 0
+            for i in range(interval * 2):
+                store.remember(f"Segment probe {i} xylophone", "ns", 5)
+            # The second pass lands on the last write, so the index is one
+            # b-tree: the rows are small enough for one pass's page budget.
+            assert segments(store) == 1
+            assert store.count() == interval * 2
+            assert store.count_matching("xylophone") == interval * 2
+            assert len(store.recall("xylophone", max_results=100)) == 100
+            conn = store._conn()
+            # rank=1: the index must still agree with its external content.
+            conn.execute(
+                "INSERT INTO memories_fts(memories_fts, rank) VALUES('integrity-check', 1)"
+            )
+            conn.commit()
+            # A merge rewrites the index, never a row, so a memo entry that
+            # survived it must still be served.
+            before = store.recall("xylophone", max_results=3)
+            assert [row["id"] for row in store.recall("xylophone", max_results=3)] == [
+                row["id"] for row in before
+            ]
+        finally:
+            store.close()
+
+
+def test_idle_store_does_not_burn_cpu():
+    """The WAL drain must sleep, not poll.
+
+    A store that has been written to keeps a background drain thread alive for
+    as long as it is open. A fixed short poll in that thread was measured
+    burning 27-31ms of CPU per idle second -- about 3% of a core, forever, per
+    open store -- so it waits on the write signal instead.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        store = PythonMemoryStorage(os.path.join(d, "idle.db"))
+        try:
+            for i in range(40):
+                store.remember(f"Idle probe {i} with enough text to take a page", "ns", 5)
+            time.sleep(0.2)  # let any in-flight drain pass finish
+            before = time.process_time()
+            time.sleep(1.0)
+            idle_ms = (time.process_time() - before) * 1000
+            assert idle_ms < 15, f"idle store burned {idle_ms:.1f}ms of CPU in one second"
+        finally:
+            store.close()
 
 
 def test_concurrent_cold_opens_succeed():

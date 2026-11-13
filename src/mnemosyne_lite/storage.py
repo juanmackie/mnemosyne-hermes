@@ -193,6 +193,7 @@ class PythonMemoryStorage:
         self._drain_guard = threading.Lock()
         self._drain_thread: threading.Thread | None = None
         self._drain_stop: threading.Event | None = None
+        self._write_signal = threading.Event()
         self._fold_now = threading.Event()
         self._committed_writes = 0
         self._init_schema_resilient()
@@ -527,9 +528,21 @@ class PythonMemoryStorage:
     # ...but only once there is at least this much log on disk, or the drain
     # would churn the database file for a handful of frames.
     WAL_DRAIN_BYTES = 4 * 1024 * 1024
-    # Idle poll. Reached when the store is not writing, or when the drain is
-    # standing down for the writer's reset. Only ever a stat.
-    WAL_DRAIN_POLL = 0.002
+    # Idle poll. Reached only when nothing has been written, or when the drain
+    # is standing down for the writer's reset. A write wakes the drain through
+    # `_write_signal` instead, because a fixed short poll is not free: a store
+    # that was written to once keeps its drain thread alive, and a 2ms poll was
+    # measured burning 27-31ms of CPU per idle second (about 3% of a core,
+    # forever, per open store -- an embedded store must cost nothing between
+    # turns). This long timeout only exists so the drain still re-checks a log
+    # another process may have written to.
+    WAL_DRAIN_POLL = 1.0
+    # How often the writer wakes the drain. Coarser than the drain's own gate on
+    # purpose: every wakeup hands the GIL back and forth, and a wakeup the gate
+    # then turns away is pure loss -- one per WAL_DRAIN_WRITES writes was
+    # measured costing 5% of a 5000-row ingest. Batching the wakeup only delays
+    # a copy by a few writes, and the writer's own fold is the hard bound.
+    WAL_DRAIN_SIGNAL_WRITES = 64
     # The writer's fold blocks until the reset lands or this long has passed.
     # Generous, because the alternative is a log that is not bounded by
     # anything but luck; it is bounded because a `remember()` must never hang.
@@ -563,6 +576,9 @@ class PythonMemoryStorage:
         if thread is None or stop is None:
             return
         stop.set()
+        # The drain waits on the write signal, not on `stop`, so close() must
+        # wake it for the join below to be prompt.
+        self._write_signal.set()
         # Daemon thread: a store that is never closed cannot wedge the process.
         # A join that runs out of patience only means the copy outlived its
         # grace period -- SQLite still checkpoints when the last connection to
@@ -578,6 +594,14 @@ class PythonMemoryStorage:
         """
         self._committed_writes += 1
         self._ensure_drain()
+        # Wake the drain once per WAL_DRAIN_WRITES writes, which is exactly the
+        # cadence it acts on. Signalling every write instead cost 23% of the
+        # 5000-row ingest: each wakeup takes the GIL away from the writer for
+        # nothing, because the drain's own gate would turn the pass away. The
+        # drain clears the signal before it reads the counter, so a write can
+        # never be slept through.
+        if self._committed_writes % self.WAL_DRAIN_SIGNAL_WRITES == 0:
+            self._write_signal.set()
 
     def _drain_wal(self, stop: threading.Event) -> None:
         """Copy the log back into the database, off the write path.
@@ -600,6 +624,10 @@ class PythonMemoryStorage:
         poll = self.WAL_DRAIN_POLL
         try:
             while not stop.is_set():
+                # Clear before reading the counter, so a write that lands while
+                # this pass runs leaves the signal set and the next wait returns
+                # at once. Clearing after the wait would drop that write.
+                self._write_signal.clear()
                 try:
                     committed = self._committed_writes
                     # Two ways to stand down: the writer has signalled that it
@@ -635,7 +663,10 @@ class PythonMemoryStorage:
                     # A locked, closing or unreadable file is not fatal: the next
                     # pass reopens. The writer's own bound is the backstop.
                     pass
-                stop.wait(poll)
+                # Sleep until a write lands (or the idle safety poll expires).
+                # `stop` is a second Event, so it only wakes this loop indirectly
+                # -- _stop_drain sets this signal as well.
+                self._write_signal.wait(poll)
         except Exception:  # pragma: no cover - a drain must never escape
             logger.debug("WAL drain stopped", exc_info=True)
 
@@ -707,6 +738,70 @@ class PythonMemoryStorage:
                 self._fold()
         except (OSError, sqlite3.Error):
             logger.warning("WAL checkpoint skipped", exc_info=True)
+
+    # FTS5 writes one b-tree ("segment") per committed transaction, and every
+    # query must open, scan and merge each of them before it can rank a row
+    # (sqlite.org/fts5.html section 6.1). A store written one memory at a time
+    # therefore holds as many segments as its automerge ratio allows -- 19
+    # after 3000 single-row commits, measured -- and query cost grows with that
+    # count: the fixed per-segment term-index probes dominate a *selective*
+    # query. Measured on the benchmark corpus, one phrase matching 7 rows:
+    # 147us at 19 segments, 54us at 1; a 3-phrase query: 307us -> 54us.
+    #
+    # 'optimize' collapses the index to one b-tree, but it rewrites the whole
+    # index in one transaction (7ms on 3000 rows, seconds on a large store),
+    # which a remember() must not pay. Its documented incremental form is a
+    # bounded number of pages per call ('merge', -N; sections 6.8/6.9), so this
+    # bounds the segment count the way the constants below bound the log: a
+    # small, frequent, amortised pass on the write path, never on a read.
+    #
+    # Measured at 64 pages every 250 writes over a 3000-row ingest: 1 segment,
+    # ingest 450 -> 432ms (fewer segments also makes each INSERT cheaper),
+    # selective recall 73 -> 19us, index 74 -> 58 pages of 1KiB. A 256-page
+    # budget every 1000 writes also ends at one segment but cost 14% more
+    # ingest, and the default 4-automerge/16-crisismerge left 18-19 segments.
+    FTS_MERGE_PAGES = 64
+    FTS_MERGE_INTERVAL = 250
+
+    def _maybe_merge_fts(self) -> None:
+        """Merge FTS segments incrementally: remember() and consolidate() only.
+
+        Deliberately not called from _flush_accesses: that runs from recall()
+        when the access buffer fills, and a merge there would put a bounded but
+        real write (tens of milliseconds) on a read's p99. Access-count updates
+        do not add segments anyway -- they touch no indexed column.
+
+        Bounded by construction: FTS_MERGE_PAGES caps the pages one pass may
+        write, and a pass runs once every FTS_MERGE_INTERVAL calls, so the merge
+        work stays proportional to the rows being written. A pass that finds
+        nothing to merge is a no-op; the index is still correct when it never
+        runs, only slower to query.
+        """
+        try:
+            counter = self._state().merge_counter + 1
+            self._state().merge_counter = counter
+            if counter % self.FTS_MERGE_INTERVAL != 0:
+                return
+            conn = self._conn()
+            before = conn.total_changes
+            # Negative: assign every b-tree to one level first and ignore
+            # usermerge, so as few as two merge and the budget is spent on the
+            # oldest/smallest structures. total_changes then reports whether
+            # any work was done (>=2) or the pass was a no-op (<2).
+            conn.execute(
+                "INSERT INTO memories_fts(memories_fts, rank) VALUES('merge', ?)",
+                (-self.FTS_MERGE_PAGES,),
+            )
+            conn.commit()
+            # A merge rewrites the index, never a row: which memories match and
+            # in what order is unchanged, so the memo entries stay exactly
+            # right and must not be invalidated by it.
+            self._state().ignored_changes += conn.total_changes - before
+            # Committed frames count towards the drain's fold cadence like any
+            # other write.
+            self._note_write()
+        except (OSError, sqlite3.Error):
+            logger.warning("FTS index merge skipped", exc_info=True)
 
     # Apply buffered access counts once this many id-tuple batches are
     # pending, or once this many hits are pending (a workload that recalls
@@ -1060,6 +1155,7 @@ class PythonMemoryStorage:
         self._note_write()
         self._flush_accesses()
         self._maybe_checkpoint()
+        self._maybe_merge_fts()
 
         return {
             "id": mem_id,
@@ -1087,19 +1183,37 @@ class PythonMemoryStorage:
         BM25 alone leaves equally-scoring rows in an arbitrary order, so a
         `LIMIT` could drop a different row between two identical queries. The
         tie-break is the store's own importance/recency order.
+
+        Both plans rank a NARROW row (rowid, rank, importance, created_at, id)
+        and fetch `memories` only for the rows the LIMIT keeps. That is not a
+        micro-optimisation: a LIMIT disables SQLite's sorter-reference
+        optimisation (select.c only defers columns when the query has no
+        LIMIT), so ranking `m.*` directly makes the ORDER BY b-tree carry every
+        row's full content. Measured at a paragraph per memory, ranking full
+        rows costs 7.6ms against 5.4ms for the narrow plan; at the benchmark's
+        ~200-char rows the two are within noise, which is why the corpus size
+        alone does not show it.
         """
         if namespace or min_importance is not None:
-            where, params = predicate(Query(match, "", namespace, min_importance, max_results))
+            # Narrow ranking row built from the filtered rows themselves, so a
+            # namespace/importance filter does not need a second copy of the
+            # sort key on disk (see RECALL_KEYS_SCHEMA for the unfiltered one).
+            where, params = predicate(
+                Query(match, "", namespace, min_importance, max_results), alias="k"
+            )
             sql = (
-                "SELECT m.* FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid "
-                f"WHERE {where}"
+                "SELECT m.* FROM ("
+                "SELECT memories_fts.rowid AS rid, bm25(memories_fts) AS r, "
+                "k.importance AS imp, k.created_at AS ts, k.id AS mid "
+                "FROM memories_fts JOIN memories k ON k.rowid = memories_fts.rowid "
+                f"WHERE {where} "
+                "ORDER BY r, imp DESC, ts DESC, mid LIMIT ?) t "
+                "JOIN memories m ON m.rowid = t.rid "
+                "ORDER BY t.r, t.imp DESC, t.ts DESC, t.mid"
             )
-            # `m.id` last: BM25 ties are common (identical text, identical scores),
-            # and without a unique final key `LIMIT` can drop a different row
-            # between two identical queries.
-            sql += (
-                " ORDER BY bm25(memories_fts), m.importance DESC, m.created_at DESC, m.id LIMIT ?"
-            )
+            # `mid` last for the same reason as the unfiltered plan: without a
+            # unique final key `LIMIT` can drop a different row between two
+            # identical queries.
             return conn.execute(sql, (*params, max_results)).fetchall()
         # Unfiltered (the wide, common case): rank against the narrow
         # recall_keys mirror instead of probing full memory rows, so sorter
@@ -1362,6 +1476,7 @@ class PythonMemoryStorage:
                 raise StorageError(f"consolidate delete failed on {self.db_path}: {e}") from e
             self._flush_accesses()
             self._maybe_checkpoint()
+            self._maybe_merge_fts()
 
         return {
             "total": total,

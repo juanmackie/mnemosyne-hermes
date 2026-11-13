@@ -14,6 +14,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Lite recall no longer pays for the full-text index's history. FTS5 writes one
+  b-tree per committed transaction and every query must scan and merge each of
+  them, so a store written one memory at a time had accumulated 12-19 of them;
+  the write path now runs a bounded incremental merge (64 pages, every 250
+  writes, never on a read). Measured on the benchmark corpus: a selective
+  recall 0.31 -> 0.15ms for one phrase, 0.66 -> 0.11ms for three, 0.11 ->
+  0.04ms for no match, and 8.3 -> 6.4ms for the wide 50-result query, with
+  ingest unchanged inside noise. The merge works in the file's free pages, so
+  a freshly written store carries up to ~180 pages of reusable slack
+  (`bench/README.md` records the numbers).
+- The namespace/importance-filtered recall plan now ranks a narrow row and
+  fetches memory rows only for the results the limit keeps. Ranking `m.*`
+  made the ORDER BY b-tree carry each matching row's content: measured at
+  paragraph-length memories, 5.77 -> 4.85ms for a common term and 6.09 ->
+  5.05ms for a phrase.
+- The background WAL drain waits on a write signal instead of a 2ms polling
+  timeout, so an open store no longer burns ~3% of a core while idle (30.9 ->
+  0.12ms of CPU per idle second). The signal is batched every 64 writes: at
+  the drain's own 16-write cadence the wakeups cost 5% of a 5000-row ingest.
 - The lite surface now keeps query predicates, access folding, schema transition
   metadata and MCP tool definitions in small data-oriented modules. Consolidation
   groups and ranks duplicates in SQLite, and tool dispatch uses focused handlers.

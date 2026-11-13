@@ -89,6 +89,39 @@ recall memo, which only holds rows a thread actually asked for. The old
 Ranking is no longer `importance DESC, created_at DESC`: it is `bm25`, then
 that chain as the tie-break, then `id` so a `LIMIT` is deterministic.
 
+### The index's segment count is a recall cost, so the write path bounds it
+
+FTS5 writes one b-tree per committed transaction, and a query has to open,
+scan and merge every one of them before it can rank a row. The corpus is built
+one `remember()` at a time, so it used to end at the automerge steady state —
+12-19 segments, measured — and every *selective* query paid a fixed
+per-segment cost that dwarfed the rows it returned. Measured on this corpus
+(median of 3 interleaved runs against the same corpus built without it):
+
+| path | 12-19 segments | 1 segment |
+| --- | --- | --- |
+| one phrase, 7 hits | 0.31 ms | 0.15 ms |
+| three phrases, 2 hits | 0.66 ms | 0.11 ms |
+| no match, full scan | 0.11 ms | 0.04 ms |
+| common term + namespace, limit 10 | 7.29 ms | 5.89 ms |
+| common term, no filter, limit 50 | 8.33 ms | 6.38 ms |
+
+`optimize` is what collapses an index to one b-tree, but it rewrites the whole
+index in one transaction, which a `remember()` must not pay. The store issues
+the documented incremental form instead — a bounded number of pages per call,
+on the write paths only (`PythonMemoryStorage.FTS_MERGE_*`). Ingest and data
+pages are unchanged inside the run-to-run noise; because a merge allocates new
+pages before it frees the old ones, a freshly written store ends with up to
+~180 pages (180 KiB here) of free space inside the file, which later writes
+reuse and any `VACUUM` returns. Do not read that slack as lost data: `SELECT
+COUNT(*)` and the page counts per table are identical with and without it.
+
+The segment count is also why a single post-build sample of this corpus can
+look better than a live store: a merge lands every 250 writes, so the count
+oscillates between one and ~15 while a store keeps being written. Sampling
+recall during an ingest instead of after it, the same policy measured 16%
+faster on the wide 50-result query and 24-35% on the selective ones.
+
 ## `memory_writer_eval.py` — memory-writer quality
 
 This is a separate evaluation seam. `hermes_prefetch_eval.py` seeds memories and
