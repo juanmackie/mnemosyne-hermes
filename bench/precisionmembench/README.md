@@ -43,7 +43,7 @@ reader interface (`baseAdapter.ts`) and calls the provider directly:
   `mustExclude`, `shouldInclude`, `shouldOnlyInclude`, `maxCount`/`minCount`,
   `orderedBefore`, pinned/open-question expectations and the persona prelude.
 
-Two transcription choices are recorded in every report rather than hidden:
+Three replay adaptations are recorded in every report rather than hidden:
 
 - **Scope.** The upstream adapter forwards `scope` to `/search` and the provider
   is meant to filter. Mnemosyne's engine `scope` is session/global *visibility*,
@@ -54,6 +54,10 @@ Two transcription choices are recorded in every report rather than hidden:
 - **Multi-scope fan-out** issues one provider recall per active scope when the
   provider does not advertise native multi-scope support. The ranked results
   are interleaved and deduplicated (`multiScopeFanout: true`).
+- **Structured labels.** The upstream seed path supplies `canonical_name` and
+  `aliases` separately. This replay also stores them in engine metadata so P48
+  can test exact label filtering. Reports set `structuredLabelMetadata: true`;
+  results from runs without that field used different seed metadata.
 
 ## Run
 
@@ -71,5 +75,7 @@ python -m bench.precisionmembench.run_eval \
 The engine is seeded with one concatenated text per belief, unscoped recall is
 used for candidate generation, and no LLM, embedding server or HTTP hop is
 involved. Structural cases pass on synthesized data and are not evidence of
-engine capability. This is a replay of a public suite against this provider, not
-the benchmark's published deployment numbers.
+engine capability. P48 narrows only private engine results, before shared-surface
+results are merged; it does not filter shared-surface rows. This is a replay of a
+public suite against this provider, not the benchmark's published deployment
+numbers.

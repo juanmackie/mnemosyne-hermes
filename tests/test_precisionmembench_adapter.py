@@ -135,6 +135,8 @@ def test_run_seeds_upstream_metadata(monkeypatch):
         "pinned": False,
         "superseded_by": None,
         "content": "Use explicit error returns.",
+        "canonical_name": "error_handling",
+        "aliases": ["error handling"],
     }
     captured = []
 
@@ -159,6 +161,7 @@ def test_run_seeds_upstream_metadata(monkeypatch):
     monkeypatch.setattr(runner, "LifeStore", FakeLifeStore)
     monkeypatch.setattr(runner, "clean_environment", lambda _root: {})
 
-    run_eval.run()
+    report = run_eval.run()
 
     assert captured[0]["metadata"] == run_eval.seed_metadata(belief)
+    assert report["structuredLabelMetadata"] is True

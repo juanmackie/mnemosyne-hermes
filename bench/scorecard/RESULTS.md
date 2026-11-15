@@ -332,3 +332,32 @@ prefetch stale presences show the correction fix is not complete. This
 synthetic result does not satisfy the outstanding PrecisionMemBench threshold.
 Raw arm, paired comparison, and per-day summaries are retained locally under
 `.scorecard/synthetic-30day/` and are ignored by Git.
+
+### Structured-label recall follow-up (2026-11-15)
+
+The provider reads stored metadata for private recall result IDs. It narrows
+those candidates only when every row has at least one valid canonical name or
+alias and at least one label appears as an exact token phrase in the query. It
+keeps the engine's semantic results when labels are absent, invalid, mixed, or
+do not match. Metadata JSON reads and label counts and sizes are bounded. Shared
+surface results are merged after this step and are not filtered by P48.
+
+The synthetic PrecisionMemBench replay now carries the fixture's separate
+`canonical_name` and `aliases` fields into stored metadata. Its report marks
+this difference with `structuredLabelMetadata: true`. On that suite the
+provider measured **39/43 active passes** with **1 missing expected belief**,
+passing the 35-pass / 8-missing floor. This result is tuned against the public
+suite and is not independent holdout evidence.
+
+A fresh full held-out run used the same three opt-in engine flags listed above
+and the 12,559-probe synthetic corpus. The simulator's seeds have no structured
+label metadata, so this is evidence for fallback compatibility and for the
+three engine flags, not for P48's label-narrowing path. It measured **1.000
+tool answerable recall**, **0/2,851 fabricated queries returning rows**, **0
+expired facts served**, **0/628 planted secrets stored**, **0 probe errors**,
+and **0.9823 prefetch answerable recall**. Stale values outranked current
+values on 753 of 5,930 current probes. Wall time was 913.19 seconds. The prior
+recorded run took 908.7 seconds, but these unlabeled records do not measure
+positive-path per-ID metadata lookup latency. No real memory or live gateway
+was used. The existing accelerated 30-day simulation remains 600 synthetic
+probes, not 30 elapsed days.

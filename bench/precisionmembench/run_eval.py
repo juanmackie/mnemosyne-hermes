@@ -7,6 +7,11 @@ same adapter semantics in Python — ``seedMetadata``, ``beliefToText``,
 ``excludeIds`` filter and the ``maxBeliefs`` cap — and grades with the same
 assertion set. Fixtures are the pinned upstream files, byte-hashed here.
 
+For this provider replay, `canonical_name` and `aliases` are also copied into
+engine metadata so P48 can use the structured fields sent separately by the
+upstream seed path. Reports set `structuredLabelMetadata: true`; do not compare
+them with older runs that omitted these fields as if ingestion were identical.
+
 Why re-implement rather than shell out to node: the provider is a Python object,
 and the interesting failure mode (an engine recall that returns the wrong rows)
 only appears when ``/search`` is answered by the real engine. The adapter
@@ -104,13 +109,15 @@ def belief_to_text(belief: dict[str, Any]) -> str:
 
 
 def seed_metadata(belief: dict[str, Any]) -> dict[str, Any]:
-    """`UniversalSessionAdapter.seedMetadata`."""
+    """Map upstream fields and preserve structured query labels in metadata."""
     return {
         "beliefId": belief["_id"],
         "scope": (belief.get("scope") or [None])[0],
         "type": belief.get("type"),
         "pinned": belief.get("pinned"),
         "superseded_by": belief.get("superseded_by"),
+        "canonical_name": belief.get("canonical_name"),
+        "aliases": belief.get("aliases") or [],
     }
 
 
@@ -562,6 +569,7 @@ def run(*, limit: int | None = None) -> dict[str, Any]:
         "fixtureSha256": verify_fixtures(),
         "seededBeliefs": ingested,
         "multiScopeFanout": True,
+        "structuredLabelMetadata": True,
         "summary": summarize(rows),
         "cases": rows,
     }
