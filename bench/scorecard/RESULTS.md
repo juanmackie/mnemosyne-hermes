@@ -189,6 +189,14 @@ Answerable recall and expired facts are flat across every historical state: this
 patch set never moved those, so the differences above are attributable to the
 floor change rather than to a shifting corpus.
 
+**Fresh backtest (2026-11-15):** the newest eight patch states, through commit
+`0361a18d`, were rebuilt from verified originals and replayed on the same 400
+synthetic probes per state. Default tool recall was 1.000 in every state;
+fabricated rows were 95/95, expired rows were 41 on 37 expired probes, and
+stale-above-current was 162 in every state. All paired differences against
+`0361a18d` were exactly zero (4,000 bootstrap resamples). This verifies that
+these recent changes add no retrieval behavior when their opt-in flags are off.
+
 
 ## 6. Why the fix comparison uses 2,511 held-out probes
 
