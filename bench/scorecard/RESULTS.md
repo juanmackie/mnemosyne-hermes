@@ -142,6 +142,15 @@ text produced 18/43 passes with 1 missing at zero required matches, 17/43 with
 3 missing at one match, 15/43 with 34 missing at two matches, and 4/43 with 53
 missing at three matches; it was rejected as a useful global filter.
 
+An additional offline diagnostic scored the provider's already-retrieved
+synthetic candidates with FastEmbed `BAAI/bge-reranker-base`, then swept a
+reranker-score cutoff. The best cutoff with no more than 8 missing beliefs
+produced **29/43 passes, 7 missing, and 19 over-return failures**. It was
+selected on the same public suite, is not a held-out result, and still misses
+the 35-pass target. The model download was about 1.1 GB and the CPU run took
+about 3 minutes. This is not an implemented provider path; no cross-encoder
+dependency or behavior was retained.
+
 The retained per-case replay groups the remaining 25 failed cases as follows:
 alias resolution 10/22 pass; scope disambiguation 0/4; ranking stability 0/2;
 fuzzy matching and prefix guards 1/5 (including the one missing belief);
