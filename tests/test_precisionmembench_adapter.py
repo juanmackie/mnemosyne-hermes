@@ -121,3 +121,44 @@ def test_search_and_relation_expansion_exclude_resolved_or_superseded_beliefs():
     context = adapter.build_context("test-user", ["domain:code"], "query")
 
     assert {belief["_id"] for belief in context["relevantBeliefs"]} == {"relation-1"}
+
+
+def test_run_seeds_upstream_metadata(monkeypatch):
+    from bench.precisionmembench import run_eval
+    from bench.scorecard import runner
+
+    belief = {
+        "_id": "belief-1",
+        "user_id": "test-user",
+        "scope": ["domain:code"],
+        "type": "preference",
+        "pinned": False,
+        "superseded_by": None,
+        "content": "Use explicit error returns.",
+    }
+    captured = []
+
+    class FakeStore:
+        class Provider:
+            @staticmethod
+            def handle_tool_call(_tool, args):
+                captured.append(args)
+                return '{"status":"stored","memory_id":"engine-1"}'
+
+        provider = Provider()
+
+        def close(self):
+            pass
+
+    class FakeLifeStore:
+        @staticmethod
+        def create(_root, _name):
+            return FakeStore()
+
+    monkeypatch.setattr(run_eval, "load_fixtures", lambda: ([], [belief]))
+    monkeypatch.setattr(runner, "LifeStore", FakeLifeStore)
+    monkeypatch.setattr(runner, "clean_environment", lambda _root: {})
+
+    run_eval.run()
+
+    assert captured[0]["metadata"] == run_eval.seed_metadata(belief)

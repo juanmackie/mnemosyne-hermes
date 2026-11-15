@@ -524,6 +524,7 @@ def run(*, limit: int | None = None) -> dict[str, Any]:
                     "content": belief_to_text(belief),
                     "importance": float(belief.get("confidence") or 0.5),
                     "source": "precisionmembench",
+                    "metadata": seed_metadata(belief),
                 }
                 raw = store.provider.handle_tool_call("mnemosyne_remember", payload)
                 result = json.loads(raw)
