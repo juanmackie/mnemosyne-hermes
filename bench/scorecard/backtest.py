@@ -152,7 +152,16 @@ results = parallel.run_lives(lives, by_life, arm=payload["arm"],
                              workers=payload["workers"])
 merged = parallel.merge(results, arm=payload["arm"], wall_seconds=0.0)
 summary = summarize_surface(probes, merged["records"], "tool")
-print(json.dumps({"errors": len(merged["errors"]), "summary": summary}))
+by_id = {row["probe_id"]: row for row in merged["records"]}
+vectors = {
+    "fabricated": {p["probe_id"]: float(by_id[p["probe_id"]].get("answered_fabricated") or 0)
+                   for p in probes if p["kind"] == "fabricated" and p["probe_id"] in by_id},
+    "expired": {p["probe_id"]: float(by_id[p["probe_id"]].get("expired_served") or 0)
+                for p in probes if p["kind"] == "expired" and p["probe_id"] in by_id},
+    "recall": {p["probe_id"]: float(by_id[p["probe_id"]].get("answer_hit") or 0)
+               for p in probes if p["kind"].startswith("answerable") and p["probe_id"] in by_id},
+}
+print(json.dumps({"errors": len(merged["errors"]), "summary": summary, "vectors": vectors}))
 """
     completed = subprocess.run(
         [sys.executable, "-c", script, str(ROOT), json.dumps(payload)],
@@ -167,6 +176,55 @@ print(json.dumps({"errors": len(merged["errors"]), "summary": summary}))
     return {"arm": arm, **json.loads(completed.stdout.strip().splitlines()[-1])}
 
 
+def _paired_vs_reference(
+    rows: list[dict[str, Any]],
+    vectors: dict[str, dict[str, dict[str, float]]],
+    *,
+    resamples: int,
+) -> list[dict[str, Any]]:
+    """Paired bootstrap of every state against the newest measured state.
+
+    A point-estimate table cannot say whether a historical difference is real:
+    the per-state samples are the same probes, so the honest comparison is paired
+    per probe. The newest state is the reference because it is the one the current
+    tree claims to be.
+    """
+    from bench.scorecard.stats import paired_bootstrap_ci, paired_differences
+
+    measured = [row["commit"][:8] for row in rows if row["commit"][:8] in vectors]
+    if len(measured) < 2:
+        return []
+    reference = measured[-1]
+    labels = (
+        ("fabricated", "fabricated queries returning rows"),
+        ("expired", "expired versions served"),
+        ("recall", "answerable recall"),
+    )
+    out = []
+    for state in measured[:-1]:
+        for key, label in labels:
+            left = vectors[state].get(key) or {}
+            right = vectors[reference].get(key) or {}
+            shared = [pid for pid in left if pid in right]
+            if not shared:
+                continue
+            diff = paired_differences([left[p] for p in shared], [right[p] for p in shared])
+            ci = paired_bootstrap_ci(diff, resamples=resamples)
+            out.append(
+                {
+                    "commit": state,
+                    "reference": reference,
+                    "metric": label,
+                    "n": ci["n"],
+                    "mean": ci["mean"],
+                    "ci_low": ci["ci_low"],
+                    "ci_high": ci["ci_high"],
+                    "excludes_zero": ci["excludes_zero"],
+                }
+            )
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probes", type=int, default=400, help="held-out probes per state")
@@ -175,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--revs", nargs="*", help="explicit commits instead of all history")
     parser.add_argument("--limit", type=int, default=8)
     parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument("--resamples", type=int, default=4000)
     args = parser.parse_args(argv)
 
     if args.revs:
@@ -186,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         revisions = patch_revisions(limit=args.limit)
 
     rows = []
+    vectors: dict[str, dict[str, dict[str, float]]] = {}
     with tempfile.TemporaryDirectory(prefix="scorecard-backtest-") as folder:
         for index, revision in enumerate(revisions):
             destination = Path(folder) / f"state-{index}"
@@ -210,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
             )
             summary = result.get("summary") or {}
+            vectors[revision["commit"][:8]] = result.get("vectors") or {}
             rows.append(
                 {
                     **revision,
@@ -244,11 +305,28 @@ def main(argv: list[str] | None = None) -> int:
             f"{row['stale_outranking_current']}"
         )
 
+    comparisons = _paired_vs_reference(rows, vectors, resamples=args.resamples)
+    if comparisons:
+        print()
+        print("paired difference vs the newest measured state (bootstrap CI over probes)")
+        print(f"{'commit':10} {'metric':34} {'mean':>8} 95% CI")
+        print("-" * 78)
+        for row in comparisons:
+            print(
+                f"{row['commit']:10} {row['metric']:34} {row['mean']:+8.4f} "
+                f"[{row['ci_low']:+.4f}, {row['ci_high']:+.4f}]"
+            )
+
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(
             json.dumps(
-                {"probes_per_state": args.probes, "seed": args.seed, "states": rows},
+                {
+                    "probes_per_state": args.probes,
+                    "seed": args.seed,
+                    "states": rows,
+                    "paired_vs_newest_state": comparisons,
+                },
                 sort_keys=True,
                 indent=1,
             ),

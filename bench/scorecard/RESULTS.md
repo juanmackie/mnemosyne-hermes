@@ -139,32 +139,32 @@ revision of `integrations/engine-patches/` describes it (from the verified
 `.mnemosyne-hermes-original` backups, never from a newer patched file) and replays
 the same fixed probe sample through the real provider path.
 
-| commit | date | admission floor | answerable recall | fabricated queries w/ rows | expired served | stale above current |
-| --- | --- | --- | ---: | ---: | ---: | ---: |
-| `0296881c` | 2026-10-13 | stepped (0.3 / 0.5) | 1.000 | 45 / 58 | 25 / 25 | 96 |
-| `16294c7a` | 2026-10-13 | stepped (0.3 / 0.5) | 1.000 | 45 / 58 | 25 / 25 | 96 |
-| `ec8e8da1` | 2026-10-22 | 0.15 | 1.000 | **58 / 58** | 25 / 25 | 96 |
-| `114bd8fa` | 2026-10-26 | **stepped (0.3 / 0.5)** | 1.000 | **45 / 58** | 25 / 25 | 96 |
-| `661f2176` | 2026-11-10 | 0.15 | 1.000 | 58 / 58 | 25 / 25 | 96 |
-| `a0062e41` | 2026-11-11 | 0.15 | 1.000 | 58 / 58 | 25 / 25 | 96 |
-| `444936cd` | 2026-11-11 | 0.15 | 1.000 | 58 / 58 | 25 / 25 | 96 |
-| `525d5806` | 2026-11-11 | 0.15 | 1.000 | 58 / 58 | 25 / 25 | 96 |
+| commit | date | admission floor | answerable recall | fabricated queries w/ rows | expired served |
+| --- | --- | --- | ---: | ---: | ---: |
+| `0296881c` | 2026-10-13 | stepped return 0.3 | 1.000 | 45 / 58 | 25 / 25 |
+| `16294c7a` | 2026-10-13 | stepped return 0.3 | 1.000 | 45 / 58 | 25 / 25 |
+| `ec8e8da1` | 2026-10-22 | return 0.15 | 1.000 | 58 / 58 | 25 / 25 |
+| `114bd8fa` | 2026-10-26 | stepped return 0.3 | 1.000 | 45 / 58 | 25 / 25 |
+| `661f2176` | 2026-11-10 | return 0.15 | 1.000 | 58 / 58 | 25 / 25 |
+| `a0062e41` | 2026-11-11 | return 0.15 | 1.000 | 58 / 58 | 25 / 25 |
+| `444936cd` | 2026-11-11 | return 0.15 | 1.000 | 58 / 58 | 25 / 25 |
+| `525d5806` | 2026-11-11 | return 0.15 | 1.000 | 58 / 58 | 25 / 25 |
+| `2506fff2` | 2026-11-15 | return 0.15 | 1.000 | 58 / 58 | 25 / 25 |
 
-240 held-out probes per state (58 fabricated, 25 expired), identical probe set
-for every state, paired by construction.
+Paired against the newest measured state (`2506fff2`), bootstrap CI over the same
+probes (4,000 resamples). Only the fabricated metric moves; the other two are
+exactly flat, so the difference is attributable to the admission floor alone:
 
-Two things are visible and neither is visible from the patch diffs alone:
-
-- **`ec8e8da1` ("admit partial lexical coverage") is exactly where abstention
-  regressed**, 45/58 → 58/58 fabricated queries returning rows. That commit is
-  the 0.15 admission floor: the fix it was making (answer multi-term questions
-  from a one-term match) is real, and it also made fabricated entities
-  indistinguishable from real ones.
-- **`114bd8fa` reverted it by accident.** It is the diff-regeneration commit that
-  `integrations/engine-patches/README.md` describes as having silently dropped
-  the `_minimum_recall_relevance` hunk; the backtest reads its floor as the
-  stepped gate and its abstention as 45/58 — the instrument sees the regression
-  the digest checks could not.
+| commit | metric | n | mean | 95% CI | detected |
+| --- | --- | ---: | ---: | --- | --- |
+| `0296881c` | fabricated queries returning rows | 58 | -0.2241 | [-0.3276, -0.1207] | **yes** |
+| `16294c7a` | fabricated queries returning rows | 58 | -0.2241 | [-0.3276, -0.1207] | **yes** |
+| `ec8e8da1` | fabricated queries returning rows | 58 | +0.0000 | [+0.0000, +0.0000] | no |
+| `114bd8fa` | fabricated queries returning rows | 58 | -0.2241 | [-0.3276, -0.1207] | **yes** |
+| `661f2176` | fabricated queries returning rows | 58 | +0.0000 | [+0.0000, +0.0000] | no |
+| `a0062e41` | fabricated queries returning rows | 58 | +0.0000 | [+0.0000, +0.0000] | no |
+| `444936cd` | fabricated queries returning rows | 58 | +0.0000 | [+0.0000, +0.0000] | no |
+| `525d5806` | fabricated queries returning rows | 58 | +0.0000 | [+0.0000, +0.0000] | no |
 
 Answerable recall and expired facts are flat across every historical state: this
 patch set never moved those, so the differences above are attributable to the
