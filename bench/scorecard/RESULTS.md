@@ -277,3 +277,34 @@ current values on 818/1,215 current probes. Prefetch missed the current answer
 on 13/1,215 current probes and served expired facts on 242/242 expired probes.
 The capture audit stored 0/127 planted secrets. This dev run is descriptive;
 no thresholds were selected from it.
+
+### Accelerated synthetic 30-day paired run (2026-11-15)
+
+The user chose synthetic-only data. To exercise 30 daily batches without
+connecting to a live store, the scorecard generated 30 independent synthetic
+lives (one per simulated day, 20 probes per day) and ran the default arm and the
+current opt-in fixes on the same 600 probes. Each life used its own temporary
+SQLite store. The candidate enabled
+`MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS`, `MNEMOSYNE_CAPTURE_TEMPORAL`, and
+`MNEMOSYNE_RECALL_CORRECTION_PRIORITY`. This is an accelerated simulation, not
+30 elapsed days or a live-gateway shadow run.
+
+| Metric | Default arm | Candidate arm |
+| --- | ---: | ---: |
+| Tool answerable recall | 397 / 397 | 397 / 397 |
+| Prefetch answerable recall | 381 / 397 | 381 / 397 |
+| Fabricated probes returning rows | 138 / 138 | 0 / 138 |
+| Expired result rows served | 71 (on 65 probes) | 0 |
+| Current probes with stale value above current | 220 / 397 | 38 / 397 |
+| Synthetic secrets stored | 0 / 30 | 0 / 30 |
+| Probe errors | 0 | 0 |
+
+Paired bootstrap comparisons used 10,000 resamples. The candidate improved
+fabricated-query abstention by 1.000 (95% CI [1.000, 1.000]), reduced expired
+serving by 1.092 rows per expired probe (CI [1.031, 1.169]), and reduced stale
+above-current risk by 0.636 (CI [0.580, 0.692]). Tool and prefetch answerable
+recall were unchanged. The remaining 38 stale-ranked tool probes and 16
+prefetch stale presences show the correction fix is not complete. This
+synthetic result does not satisfy the outstanding PrecisionMemBench threshold.
+Raw arm, paired comparison, and per-day summaries are retained locally under
+`.scorecard/synthetic-30day/` and are ignored by Git.
