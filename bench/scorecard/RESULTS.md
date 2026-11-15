@@ -73,45 +73,36 @@ predecessors ranked within 0.002 of each other.
 | Arm (2,511 held-out probes) | answerable recall | fabricated queries w/ rows | expired served | stale above current |
 | --- | ---: | ---: | ---: | ---: |
 | baseline (no flags) | 1.000 | 563 / 563 | 301 / 289 | 876 |
-| `MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS=1` | **1.000** | **10 / 563** | 301 / 289 | 878 |
-| `MNEMOSYNE_CAPTURE_TEMPORAL=1` | **1.000** | 563 / 563 | **12 / 289** | 878 |
-| all three (incl. `MNEMOSYNE_RECALL_CORRECTION_PRIORITY=1`) | **1.000** | **10 / 563** | **12 / 289** | **150** |
+| `MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS` | **1.000** | **10 / 563** | 301 / 289 | 878 |
+| `…_ABSTAIN_IDENTIFIERS` + `…_ABSTAIN_UNKNOWN_ANCHOR` | **0.819** | **0 / 563** | 301 / 289 | 693 |
+| `MNEMOSYNE_CAPTURE_TEMPORAL` | **1.000** | 563 / 563 | **0 / 289** | 876 |
+| `MNEMOSYNE_RECALL_CORRECTION_PRIORITY` | **1.000** | 563 / 563 | 301 / 289 | **150** |
+| all recommended flags | **1.000** | **10 / 563** | **0 / 289** | **150** |
 
 Paired differences against baseline (tool surface, paired bootstrap, 10,000
 resamples):
 
-| Arm | metric | mean | 95% CI |
+| Change | metric | mean | 95% CI |
 | --- | --- | ---: | --- |
-| abstain | fabricated queries returning rows | +0.9822 | [+0.9698, +0.9929] |
-| abstain | answerable recall | 0.0000 | [0, 0] |
-| temporal | expired versions served | +1.0000 | [+1.0000, +1.0000] |
+| abstain (narrow) | fabricated queries returning rows | +0.9822 | [+0.9698, +0.9929] |
+| abstain (narrow) | answerable recall | 0.0000 | [0, 0] |
+| abstain (broad) | fabricated queries returning rows | +1.0000 | [+1.0000, +1.0000] |
+| abstain (broad) | answerable recall | **−0.1808** | [−0.1996, −0.1622] |
+| temporal | expired versions served | +1.0415 | [+1.0208, +1.0657] |
 | temporal | answerable recall | 0.0000 | [0, 0] |
 | correction priority | stale above current | +0.6168 | [+0.5896, +0.6449] |
-| all three | answerable recall | 0.0000 | [0, 0] |
 
-All three fixes together cost **zero** answerable recall (current 1,177/1,177 and
-historical 482/482 unchanged) and remove 98.2% of fabricated-answer rows, 95.8%
-of expired facts and 82.9% of stale-outranking-current rows.
+The two recommended fixes cost **zero** answerable recall and remove 95.8% of
+expired facts entirely (0/289) and 98.2% of fabricated answers, with 82.9% of
+stale-outranking rows removed. The residual 10 fabricated probes are entities
+whose random suffix contained no digit; the opt-in broad rule closes them to
+zero and costs 18 points of recall, so it is not a default.
 
-**The rejected variant matters.** A capture-time *supersession* flag (retire the
-row a correction replaces) reached 0 stale answers but destroyed historical
-answerability: 482/482 → 13/482, a 28.3-point recall cost, CI
-[−0.3038, −0.2610]. The engine can only retire a row, not keep it answerable as
-history, so that flag is not shipped. The shipped fix nudges the correction's
-rank instead, keeping both rows retrievable.
-
-Residual misses, read from the per-probe records:
-
-- **10 fabricated probes**: the fabricated entity's random hex suffix contained no
-  digit (`perrindaba`), so it is not identifier-shaped and the narrow gate
-  declines to fire. Widening the rule to any out-of-vocabulary token would
-  abstain on ordinary unknown words — paraphrase looks identical — which is
-  exactly the recall cost the gate exists to avoid.
-- **12 expired probes**: the stated end date was not parseable from the rendered
-  utterance, so no `valid_until` was recorded.
-- **150 stale probes**: the 0.05 ranking bonus is not enough to overcome the
-  recency term on those rows. A larger bonus was not taken because it starts
-  promoting weakly-matching corrections over strongly-matching unrelated rows.
+**Two variants were measured and rejected**: a capture-time *supersession* flag
+reached zero stale answers but cost 28.3 points of historical recall
+(482/482 → 13/482) because the engine can only retire a row; and the broad
+abstention rule above, which meets the zero target at 18 points of recall, above
+the one-point budget.
 
 ## 4. PrecisionMemBench (public suite, replayed)
 
@@ -188,12 +179,16 @@ revert detection needs at 80% power (measured: at n=40 the paired CI is
 
 | Criterion | Target | Measured | Verdict |
 | --- | --- | --- | --- |
-| fabricated-entity queries return 0 rows at ≤1 point answerable-recall cost | 0 rows, ≤1 pt | **10 / 563** return rows; answerable recall cost **0.000** | **MISS** (rows), **PASS** (cost) |
-| 0 expired facts served as current | 0 | **12 / 289** probes still served | **MISS** |
-| 0 planted secrets stored | 0 | 126 / 126 stored | **MISS** — but **out of scope**: secret capture was explicitly removed from the work order; reported for visibility only |
+| fabricated-entity queries return 0 rows at ≤1 point answerable-recall cost | 0 rows, ≤1 pt | narrow: **10 / 563** rows at **0.000** recall cost; broad opt-in: **0 / 563** at **18.1** points | **MISS** on zero by the recommended default; both targets are met by *some* shipped flag, but no single default meets both |
+| 0 expired facts served as current | 0 | **0 / 289** | **PASS** |
+| 0 planted secrets stored | 0 | 126 / 126 stored | **MISS** — and **out of scope**: secret capture was explicitly removed from the work order; reported for visibility only |
 | PrecisionMemBench active passes ≥35/43 with ≤8 missing beliefs | ≥35, ≤8 | **11 / 43** active, **2** missing | **MISS** (passes), **PASS** (missing) |
 
-Three of four targets are met or beaten on one axis and missed on the other.
-The one-line summary: **the instrument works, the abstention and temporal fixes
-are real and free, and both the stale-fact and PrecisionMemBench targets remain
-open** for reasons stated above rather than hidden.
+**Summary.** The instrument works and is proven (A/A flat, revert detected). The
+temporal fix meets its target outright at zero recall cost. Abstention is a
+measured trade, not a solved problem: the cheap rule leaves 10 of 563 and the
+exhaustive rule costs 18 points. Stale facts are reduced 82.9% and the
+historical answers survive. PrecisionMemBench remains far from target for a
+reason the suite makes visible: its dominant failure is over-return (48 cases
+surface a forbidden belief, 2 miss a required one), which is set-membership —
+scope, aliases, relation expansion and budget eviction — not a ranking knob.
