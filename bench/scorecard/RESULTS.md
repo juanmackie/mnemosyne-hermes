@@ -151,6 +151,13 @@ the 35-pass target. The model download was about 1.1 GB and the CPU run took
 about 3 minutes. This is not an implemented provider path; no cross-encoder
 dependency or behavior was retained.
 
+A follow-up offline diagnostic split longer queries into overlapping windows of
+4, 6, or 8 informative tokens, scored each candidate against each window, and
+kept its maximum score before sweeping the cutoff. The best result was **30/43
+passes, 1 missing, and 22 over-returns**. This still misses the target by five
+passes; the cutoff was selected on the same public suite. Query segmentation
+also required multiple cross-encoder calls per query, so it was rejected.
+
 The retained per-case replay groups the remaining 25 failed cases as follows:
 alias resolution 10/22 pass; scope disambiguation 0/4; ranking stability 0/2;
 fuzzy matching and prefix guards 1/5 (including the one missing belief);
