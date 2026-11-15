@@ -881,6 +881,54 @@ def test_concurrent_sync_turns_are_serialized_as_complete_transactions():
         assert diagnostics["failed"] == 0
 
 
+def test_concurrent_canonical_writers_preserve_slot_history():
+    if _require_engine() is None:
+        return
+    from mnemosyne.core.canonical import CanonicalStore
+
+    with tempfile.TemporaryDirectory(prefix="canonical-writer-concurrency-") as tmp:
+        db_path = pathlib.Path(tmp) / "canonical.db"
+        start = threading.Barrier(2)
+        failures = []
+
+        def write(label):
+            store = CanonicalStore(db_path=db_path)
+            try:
+                for version in range(100):
+                    start.wait(timeout=5)
+                    store.remember(
+                        "contract-owner",
+                        "preference",
+                        "response-style",
+                        f"{label}-{version}",
+                    )
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                store.conn.close()
+
+        writers = [threading.Thread(target=write, args=(label,)) for label in ("first", "second")]
+        for writer in writers:
+            writer.start()
+        for writer in writers:
+            writer.join(timeout=20)
+
+        assert all(not writer.is_alive() for writer in writers)
+        assert failures == []
+        with sqlite3.connect(db_path) as conn:
+            total, current = conn.execute(
+                "SELECT COUNT(*), SUM(valid_until IS NULL) FROM canonical_facts"
+            ).fetchone()
+            versions = [
+                row[0]
+                for row in conn.execute("SELECT version FROM canonical_facts ORDER BY version")
+            ]
+
+        assert total == 200
+        assert current == 1
+        assert versions == list(range(1, 201))
+
+
 def test_engine_global_update_and_bind_order():
     """Exercise BEAM itself: P20 cannot hide an engine update failure."""
     BeamMemory = _require_engine()
@@ -1178,7 +1226,9 @@ def test_remember_redacts_credentials_before_persistence():
         planted = (
             "The webhook token "
             + "aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1zA3bC5"
-            + " must never persist. api_key=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"
+            + " must never persist. The run id is "
+            + "run_20261115_mnemosyne_report_12345678"
+            + ". api_key=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"
         )
         memory_id = beam.remember(planted)
         stored = beam.conn.execute(
@@ -1187,6 +1237,7 @@ def test_remember_redacts_credentials_before_persistence():
         assert "[REDACTED]" in stored
         assert "ghp_" not in stored
         assert "aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1zA3bC5" not in stored
+        assert "run_20261115_mnemosyne_report_12345678" in stored
 
 
 def test_real_audit_and_pinned_engine_lineage_baseline():

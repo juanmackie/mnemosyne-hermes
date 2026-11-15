@@ -127,6 +127,30 @@ passing setting: floor `0.70` produced 21/43 active passes with 3 missing;
 missing. A context limit of 8 at floor `0.85` had the same 29 passes and 16
 missing. None meets both target bounds.
 
+Additional retrieval diagnostics (2026-11-15) did not produce a valid engine
+fix. Extreme vector/FTS weight settings returned the same belief sets as the
+default because the 20-row recall budget already covered each case's candidate
+set. Raw provider-score cutoffs of `0.30`, `0.35`, and `0.40` produced 19/43
+passes with 4 missing, 23/43 with 16 missing, and 26/43 with 29 missing.
+Polyphonic recall produced 1/43 passes with no missing beliefs. A diagnostic
+filter using the fixture's structured canonical names and aliases reached
+39/43 with 1 missing, but it is not part of the pinned upstream adapter and
+uses metadata that the engine was not given; it does not count as a provider
+improvement and was rejected.
+An offline whole-token-overlap gate using only each query and returned belief
+text produced 18/43 passes with 1 missing at zero required matches, 17/43 with
+3 missing at one match, 15/43 with 34 missing at two matches, and 4/43 with 53
+missing at three matches; it was rejected as a useful global filter.
+
+The retained per-case replay groups the remaining 25 failed cases as follows:
+alias resolution 10/22 pass; scope disambiguation 0/4; ranking stability 0/2;
+fuzzy matching and prefix guards 1/5 (including the one missing belief);
+budget/capacity 0/2; and design boundaries 0/1. Counter-signal retrieval
+(2/2), relation expansion (4/4), and type routing (1/1) pass. The 24
+over-return cases contain 36 extra-belief assertions. This points to precise
+candidate selection across aliases and scope as the dominant gap, not missed
+answerable retrieval in general.
+
 ## 5. Backtest over past patch states
 
 `python -m bench.scorecard.backtest` rebuilds the engine as each historical
@@ -216,3 +240,40 @@ belief; its 35-pass target remains unmet. Stale facts are reduced 82.9% and the
 historical answers survive. The remaining benchmark problem is over-return
 (32 cases), and measured score-floor changes trade that error for missing
 beliefs without meeting both targets.
+
+### Default-path risk and score-threshold audit (2026-11-15)
+
+A fresh full held-out run of the pinned engine's default settings measured all
+12,559 probes through the tool and prefetch paths with embeddings on, 628 planted
+secrets, and zero probe errors. This is the untreated baseline used to quantify
+the failure modes; it does not contradict the opt-in-fix results above.
+
+| Failure type | Tool risk / denominator | Prefetch risk / denominator | Tool answerable coverage |
+| --- | ---: | ---: | ---: |
+| Fabricated entity returned | 2,851 / 2,851 (100%) | 2,851 / 2,851 (100%) | N/A |
+| Expired fact served | 1,289 / 1,289 (100%) | 1,289 / 1,289 (100%) | N/A |
+| Stale value ranked above current | 4,354 / 5,930 (73.4%) | 157 / 5,930 (2.6% lack current answer) | 5,930 / 5,930 (100%) |
+| Historical answer present | — | 2,489 / 2,489 (100%) | 2,489 / 2,489 (100%) |
+| Planted secrets persisted | 0 / 628 (0%) | — | — |
+
+An offline score-floor sweep on captured tool candidates tests whether the
+engine's composite score separates the failure types. At floors `0.30` and
+`0.35`, answerable coverage stayed at 100%, but fabricated and expired risks
+stayed at 100%, and stale-above-current stayed at 73.4%. At `0.40`, fabricated
+risk fell only to 2,266 / 2,851 (79.5%); expired and stale risks did not move,
+while answerable coverage stayed at 100%. The floor reduced returned rows per
+probe (fabricated: 4.15 → 2.90, about 30% fewer rows; expired: 4.01 → 3.16,
+about 21% fewer; current: 5.17 → 4.32, about 16% fewer), but did not make
+those answers safe. Row count is only a context-size proxy; token or monetary
+cost was not measured. This is diagnostic filtering of captured tool
+candidates, not an implemented provider behavior. It gives no basis for
+shipping a global score cutoff.
+
+The independent 2,511-probe dev split was also run through the same default
+provider with embeddings on (198.5 seconds, zero errors): tool recall was
+100% for 1,690 answerable probes, while 579/579 fabricated probes returned
+rows, 242/242 expired probes served expired facts, and stale values outranked
+current values on 818/1,215 current probes. Prefetch missed the current answer
+on 13/1,215 current probes and served expired facts on 242/242 expired probes.
+The capture audit stored 0/127 planted secrets. This dev run is descriptive;
+no thresholds were selected from it.

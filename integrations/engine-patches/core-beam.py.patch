@@ -209,7 +209,7 @@
 +    r"\b(?:gh[pous]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
 +    r"sk-[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16,})\b"
 +)
-+_HIGH_ENTROPY_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9_+/=-]{32,}(?![A-Za-z0-9])")
++_HIGH_ENTROPY_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9+/=]{32,}(?![A-Za-z0-9])")
 +_SECRET_LABEL_RE = re.compile(
 +    r"\b(?:api[_ -]?key|secret|token|credential|password)\s*[:=]\s*['\"]?"
 +    r"([A-Za-z0-9_./+=-]{16,})", re.IGNORECASE
