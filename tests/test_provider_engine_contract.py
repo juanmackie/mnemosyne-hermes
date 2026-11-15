@@ -678,9 +678,9 @@ def test_agent_acceptance_across_sessions_abstention_and_provenance():
 
     These acceptance checks use an isolated store and the public provider
     handlers. They cover durable retrieval, explicit unknown-ID abstention,
-    expiry, and preservation of the caller's provenance labels. Graph
-    multi-hop remains a separate stretch check because the engine's graph is
-    optional and this fixture does not invent graph edges from prose.
+    temporal expiry and supersession, provenance separation, and two-hop graph
+    traversal over explicitly linked synthetic memories. They do not test
+    automatic graph extraction from prose or LLM-generated answers.
     """
     if _require_engine() is None:
         return
@@ -738,6 +738,11 @@ def test_agent_acceptance_across_sessions_abstention_and_provenance():
                 "The legacy build runner is OldRunner until 2020-01-01.",
                 scope="global",
             )
+            current_id = _remember_id(
+                first,
+                "The current legacy build runner is NewRunner.",
+                scope="global",
+            )
             expired = _call(
                 second,
                 "mnemosyne_recall",
@@ -751,13 +756,55 @@ def test_agent_acceptance_across_sessions_abstention_and_provenance():
                 },
             )
         _assert_answered("mnemosyne_recall(expiry)", expired)
-        assert expired_id not in {row.get("id") for row in expired.get("results", [])}, (
-            f"expired memory was returned as current: {expired}"
-        )
+        current_rows = {row.get("id"): row for row in expired.get("results", [])}
+        assert expired_id not in current_rows, f"expired memory was returned as current: {expired}"
+        assert current_id in current_rows, f"current memory was not returned: {expired}"
+        assert "NewRunner" in current_rows[current_id].get("content", ""), current_rows[current_id]
         expiry = first._beam.conn.execute(
             "SELECT valid_until FROM working_memory WHERE id = ?", (expired_id,)
         ).fetchone()
         assert expiry and expiry["valid_until"], "explicit end date was not captured"
+
+        old_fact = _call(
+            first,
+            "mnemosyne_triple_add",
+            {
+                "subject": "synthetic build runner",
+                "predicate": "name",
+                "object": "OldRunner",
+                "valid_from": "2020-01-01",
+                "source": "stated",
+            },
+        )
+        _assert_answered("mnemosyne_triple_add(old)", old_fact)
+        assert old_fact.get("status") == "stored", old_fact
+        new_fact = _call(
+            first,
+            "mnemosyne_triple_add",
+            {
+                "subject": "synthetic build runner",
+                "predicate": "name",
+                "object": "NewRunner",
+                "valid_from": "2025-01-01",
+                "source": "tool",
+            },
+        )
+        _assert_answered("mnemosyne_triple_add(new)", new_fact)
+        assert new_fact.get("status") == "stored", new_fact
+        current_fact = _call(
+            second,
+            "mnemosyne_triple_query",
+            {"subject": "synthetic build runner", "predicate": "name", "as_of": "2026-11-15"},
+        )
+        historical_fact = _call(
+            second,
+            "mnemosyne_triple_query",
+            {"subject": "synthetic build runner", "predicate": "name", "as_of": "2022-01-01"},
+        )
+        current_objects = {row.get("object") for row in current_fact.get("results", [])}
+        historical_objects = {row.get("object") for row in historical_fact.get("results", [])}
+        assert current_objects == {"NewRunner"}, current_fact
+        assert historical_objects == {"OldRunner"}, historical_fact
 
         # A tool-observed conflicting value keeps its own provenance rather
         # than overwriting the user's stated row or inheriting its label.
@@ -772,6 +819,53 @@ def test_agent_acceptance_across_sessions_abstention_and_provenance():
         tool_row = first._beam.get(tool_id)
         assert stated_row.get("veracity") == "stated", stated_row
         assert tool_row.get("veracity") == "tool", tool_row
+
+        provenance_recall = _call(
+            second,
+            "mnemosyne_recall",
+            {
+                "query": "deployment rollback phrase",
+                "limit": 10,
+                "vec_weight": 0,
+                "fts_weight": 1,
+                "importance_weight": 0,
+            },
+        )
+        provenance_by_id = {
+            row.get("id"): row.get("veracity") for row in provenance_recall.get("results", [])
+        }
+        assert provenance_by_id.get(memory_id) == "stated", provenance_recall
+        assert provenance_by_id.get(tool_id) == "tool", provenance_recall
+
+        # Graph edges are explicit inputs. This tests two-hop traversal, not
+        # automatic extraction of relationships from prose.
+        alice_id = _remember_id(first, "Alice manages Bob.", scope="global")
+        bob_id = _remember_id(first, "Bob manages Project Orion.", scope="global")
+        owner_id = _remember_id(first, "Project Orion is owned by Lin.", scope="global")
+        for source_id, target_id, relationship in (
+            (alice_id, bob_id, "manages"),
+            (bob_id, owner_id, "owns"),
+        ):
+            linked = _call(
+                first,
+                "mnemosyne_graph_link",
+                {
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "relationship": relationship,
+                },
+            )
+            _assert_answered("mnemosyne_graph_link", linked)
+            assert linked.get("status") == "linked", linked
+
+        related = _call(
+            second,
+            "mnemosyne_graph_query",
+            {"seed_memory_id": alice_id, "max_hops": 2},
+        )
+        _assert_answered("mnemosyne_graph_query", related)
+        reached = {row.get("memory_id") for row in related.get("results", [])}
+        assert bob_id in reached and owner_id in reached, related
         first.shutdown()
         second.shutdown()
 
