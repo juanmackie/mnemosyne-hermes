@@ -673,6 +673,203 @@ def test_write_read_coherence():
         assert memory_id not in ids, f"recall still returns a forgotten row: {recalled}"
 
 
+def test_agent_acceptance_across_sessions_abstention_and_provenance():
+    """Exercise user-visible memory guarantees through fresh provider sessions.
+
+    These acceptance checks use an isolated store and the public provider
+    handlers. They cover durable retrieval, explicit unknown-ID abstention,
+    temporal expiry and supersession, provenance separation, and two-hop graph
+    traversal over explicitly linked synthetic memories. They do not test
+    automatic graph extraction from prose or LLM-generated answers.
+    """
+    if _require_engine() is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp), _stub_hermes_constants():
+        first = _init_contract_provider(tmp, session_id="acceptance_capture")
+        token = "acceptance probe cedar-731"
+        memory_id = _remember_id(
+            first,
+            f"The deployment rollback phrase is {token}.",
+            scope="global",
+            veracity="stated",
+        )
+
+        # A different session must retrieve the exact durable value.
+        second = _init_contract_provider(tmp, session_id="acceptance_fresh_session")
+        recalled = _call(
+            second,
+            "mnemosyne_recall",
+            {"query": token, "limit": 10, "vec_weight": 0, "fts_weight": 1, "importance_weight": 0},
+        )
+        _assert_answered("mnemosyne_recall(fresh-session)", recalled)
+        match = next(
+            (row for row in recalled.get("results", []) if row.get("id") == memory_id), None
+        )
+        assert match is not None, f"fresh session missed globally stored memory: {recalled}"
+        assert token in match.get("content", ""), (
+            f"fresh session did not return stored value: {match}"
+        )
+        assert match.get("veracity") == "stated", f"stored provenance label was lost: {match}"
+
+        # The opt-in identifier guard must refuse a topical neighbour whose
+        # subject identifier has never appeared in any candidate.
+        with patch.dict(os.environ, {"MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS": "1"}):
+            fabricated = _call(
+                second,
+                "mnemosyne_recall",
+                {
+                    "query": "deployment rollback Neverheardasset7",
+                    "limit": 10,
+                    "vec_weight": 0,
+                    "fts_weight": 1,
+                    "importance_weight": 0,
+                },
+            )
+        _assert_answered("mnemosyne_recall(unknown-identifier)", fabricated)
+        assert fabricated.get("results") == [], (
+            f"unknown identifier recall returned topical neighbors as an answer: {fabricated}"
+        )
+
+        # Expiry is evaluated as of a fixed future query time, so this stays
+        # deterministic even if the suite runs years later.
+        with patch.dict(os.environ, {"MNEMOSYNE_CAPTURE_TEMPORAL": "1"}):
+            expired_id = _remember_id(
+                first,
+                "The legacy build runner is OldRunner until 2020-01-01.",
+                scope="global",
+            )
+            current_id = _remember_id(
+                first,
+                "The current legacy build runner is NewRunner.",
+                scope="global",
+            )
+            expired = _call(
+                second,
+                "mnemosyne_recall",
+                {
+                    "query": "current legacy build runner",
+                    "query_time": "2026-11-15T00:00:00",
+                    "limit": 10,
+                    "vec_weight": 0,
+                    "fts_weight": 1,
+                    "importance_weight": 0,
+                },
+            )
+        _assert_answered("mnemosyne_recall(expiry)", expired)
+        current_rows = {row.get("id"): row for row in expired.get("results", [])}
+        assert expired_id not in current_rows, f"expired memory was returned as current: {expired}"
+        assert current_id in current_rows, f"current memory was not returned: {expired}"
+        assert "NewRunner" in current_rows[current_id].get("content", ""), current_rows[current_id]
+        expiry = first._beam.conn.execute(
+            "SELECT valid_until FROM working_memory WHERE id = ?", (expired_id,)
+        ).fetchone()
+        assert expiry and expiry["valid_until"], "explicit end date was not captured"
+
+        old_fact = _call(
+            first,
+            "mnemosyne_triple_add",
+            {
+                "subject": "synthetic build runner",
+                "predicate": "name",
+                "object": "OldRunner",
+                "valid_from": "2020-01-01",
+                "source": "stated",
+            },
+        )
+        _assert_answered("mnemosyne_triple_add(old)", old_fact)
+        assert old_fact.get("status") == "stored", old_fact
+        new_fact = _call(
+            first,
+            "mnemosyne_triple_add",
+            {
+                "subject": "synthetic build runner",
+                "predicate": "name",
+                "object": "NewRunner",
+                "valid_from": "2025-01-01",
+                "source": "tool",
+            },
+        )
+        _assert_answered("mnemosyne_triple_add(new)", new_fact)
+        assert new_fact.get("status") == "stored", new_fact
+        current_fact = _call(
+            second,
+            "mnemosyne_triple_query",
+            {"subject": "synthetic build runner", "predicate": "name", "as_of": "2026-11-15"},
+        )
+        historical_fact = _call(
+            second,
+            "mnemosyne_triple_query",
+            {"subject": "synthetic build runner", "predicate": "name", "as_of": "2022-01-01"},
+        )
+        current_objects = {row.get("object") for row in current_fact.get("results", [])}
+        historical_objects = {row.get("object") for row in historical_fact.get("results", [])}
+        assert current_objects == {"NewRunner"}, current_fact
+        assert historical_objects == {"OldRunner"}, historical_fact
+
+        # A tool-observed conflicting value keeps its own provenance rather
+        # than overwriting the user's stated row or inheriting its label.
+        tool_id = _remember_id(
+            first,
+            "The deployment rollback phrase was tool-observed as spruce-842.",
+            scope="global",
+            source="deployment-inspection",
+            veracity="tool",
+        )
+        stated_row = first._beam.get(memory_id)
+        tool_row = first._beam.get(tool_id)
+        assert stated_row.get("veracity") == "stated", stated_row
+        assert tool_row.get("veracity") == "tool", tool_row
+
+        provenance_recall = _call(
+            second,
+            "mnemosyne_recall",
+            {
+                "query": "deployment rollback phrase",
+                "limit": 10,
+                "vec_weight": 0,
+                "fts_weight": 1,
+                "importance_weight": 0,
+            },
+        )
+        provenance_by_id = {
+            row.get("id"): row.get("veracity") for row in provenance_recall.get("results", [])
+        }
+        assert provenance_by_id.get(memory_id) == "stated", provenance_recall
+        assert provenance_by_id.get(tool_id) == "tool", provenance_recall
+
+        # Graph edges are explicit inputs. This tests two-hop traversal, not
+        # automatic extraction of relationships from prose.
+        alice_id = _remember_id(first, "Alice manages Bob.", scope="global")
+        bob_id = _remember_id(first, "Bob manages Project Orion.", scope="global")
+        owner_id = _remember_id(first, "Project Orion is owned by Lin.", scope="global")
+        for source_id, target_id, relationship in (
+            (alice_id, bob_id, "manages"),
+            (bob_id, owner_id, "owns"),
+        ):
+            linked = _call(
+                first,
+                "mnemosyne_graph_link",
+                {
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "relationship": relationship,
+                },
+            )
+            _assert_answered("mnemosyne_graph_link", linked)
+            assert linked.get("status") == "linked", linked
+
+        related = _call(
+            second,
+            "mnemosyne_graph_query",
+            {"seed_memory_id": alice_id, "max_hops": 2},
+        )
+        _assert_answered("mnemosyne_graph_query", related)
+        reached = {row.get("memory_id") for row in related.get("results", [])}
+        assert bob_id in reached and owner_id in reached, related
+        first.shutdown()
+        second.shutdown()
+
+
 def test_sync_turn_failure_rolls_back_and_retry_commits_all_roles():
     if _require_engine() is None:
         return
@@ -776,6 +973,54 @@ def test_concurrent_sync_turns_are_serialized_as_complete_transactions():
         diagnostics = provider._sync_turn_diagnostics()
         assert diagnostics["completed"] == 2
         assert diagnostics["failed"] == 0
+
+
+def test_concurrent_canonical_writers_preserve_slot_history():
+    if _require_engine() is None:
+        return
+    from mnemosyne.core.canonical import CanonicalStore
+
+    with tempfile.TemporaryDirectory(prefix="canonical-writer-concurrency-") as tmp:
+        db_path = pathlib.Path(tmp) / "canonical.db"
+        start = threading.Barrier(2)
+        failures = []
+
+        def write(label):
+            store = CanonicalStore(db_path=db_path)
+            try:
+                for version in range(100):
+                    start.wait(timeout=5)
+                    store.remember(
+                        "contract-owner",
+                        "preference",
+                        "response-style",
+                        f"{label}-{version}",
+                    )
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                store.conn.close()
+
+        writers = [threading.Thread(target=write, args=(label,)) for label in ("first", "second")]
+        for writer in writers:
+            writer.start()
+        for writer in writers:
+            writer.join(timeout=20)
+
+        assert all(not writer.is_alive() for writer in writers)
+        assert failures == []
+        with sqlite3.connect(db_path) as conn:
+            total, current = conn.execute(
+                "SELECT COUNT(*), SUM(valid_until IS NULL) FROM canonical_facts"
+            ).fetchone()
+            versions = [
+                row[0]
+                for row in conn.execute("SELECT version FROM canonical_facts ORDER BY version")
+            ]
+
+        assert total == 200
+        assert current == 1
+        assert versions == list(range(1, 201))
 
 
 def test_engine_global_update_and_bind_order():
@@ -1066,6 +1311,29 @@ def test_remember_dedup_stays_session_local():
             assert second.get(other)["importance"] == 0.7
 
 
+def test_remember_redacts_credentials_before_persistence():
+    BeamMemory = _require_engine()
+    if BeamMemory is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp):
+        beam = BeamMemory(session_id="secret_capture", db_path=os.path.join(tmp, "secret.db"))
+        planted = (
+            "The webhook token "
+            + "aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1zA3bC5"
+            + " must never persist. The run id is "
+            + "run_20261115_mnemosyne_report_12345678"
+            + ". api_key=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"
+        )
+        memory_id = beam.remember(planted)
+        stored = beam.conn.execute(
+            "SELECT content FROM working_memory WHERE id = ?", (memory_id,)
+        ).fetchone()[0]
+        assert "[REDACTED]" in stored
+        assert "ghp_" not in stored
+        assert "aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1zA3bC5" not in stored
+        assert "run_20261115_mnemosyne_report_12345678" in stored
+
+
 def test_real_audit_and_pinned_engine_lineage_baseline():
     """Characterize field survival without invoking any LLM-backed path."""
     BeamMemory = _require_engine()
@@ -1208,6 +1476,7 @@ if __name__ == "__main__":
         test_every_tool_answers,
         test_id_visibility_matrix,
         test_write_read_coherence,
+        test_agent_acceptance_across_sessions_abstention_and_provenance,
         test_engine_global_update_and_bind_order,
         test_engine_mcp_update_reports_beam_success,
         test_cross_session_id_tools_share_runtime_scope,
@@ -1216,6 +1485,7 @@ if __name__ == "__main__":
         test_engine_mcp_batch_update_preserves_outer_transaction,
         test_engine_update_refreshes_vectors_and_cached_recall,
         test_remember_dedup_stays_session_local,
+        test_remember_redacts_credentials_before_persistence,
         test_real_audit_and_pinned_engine_lineage_baseline,
     ]
     for fn in tests:

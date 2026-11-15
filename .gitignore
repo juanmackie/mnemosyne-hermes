@@ -95,3 +95,6 @@ scratch_probe5.py
 scratch_probe6.py
 scratch_probe7.py
 scratch_probe8.py
+
+# Scorecard run scratch (corpora, per-life checkpoints, reports)
+.scorecard/

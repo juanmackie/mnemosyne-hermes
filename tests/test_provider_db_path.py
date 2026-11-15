@@ -906,6 +906,80 @@ def test_unavailable_banner_names_the_doctor_fix():
     assert "install.sh" in block
 
 
+def test_recall_uses_exact_structured_labels_when_all_results_are_labeled():
+    instance = object.__new__(provider_mod.MnemosyneMemoryProvider)
+    rows = [{"id": "wanted"}, {"id": "noise"}]
+    metadata = {
+        "wanted": {"canonical_name": "quiet hours", "aliases": ["do not disturb"]},
+        "noise": {"canonical_name": "noisy alerts", "aliases": []},
+    }
+    instance._beam = types.SimpleNamespace(
+        recall=lambda *_args, **_kwargs: rows,
+        get=lambda memory_id: {"metadata": json.dumps(metadata[memory_id])},
+    )
+    instance._shared_surface_read = False
+    response = json.loads(instance._handle_recall({"query": "do not disturb"}))
+    assert [row["id"] for row in response["results"]] == ["wanted"]
+
+
+def test_recall_preserves_semantic_results_when_metadata_is_missing():
+    instance = object.__new__(provider_mod.MnemosyneMemoryProvider)
+    instance._beam = types.SimpleNamespace(
+        recall=lambda *_args, **_kwargs: [
+            {"id": "semantic", "content": "quiet time preference"},
+        ],
+        get=lambda _memory_id: None,
+    )
+    instance._shared_surface_read = False
+    response = json.loads(instance._handle_recall({"query": "quiet hours"}))
+    assert [row["id"] for row in response["results"]] == ["semantic"]
+
+
+def test_recall_keeps_mixed_labeled_and_legacy_results():
+    instance = object.__new__(provider_mod.MnemosyneMemoryProvider)
+    instance._beam = types.SimpleNamespace(
+        recall=lambda *_args, **_kwargs: [
+            {"id": "labeled"},
+            {"id": "legacy"},
+        ],
+        get=lambda memory_id: (
+            {"metadata": json.dumps({"canonical_name": "quiet hours"})}
+            if memory_id == "labeled"
+            else None
+        ),
+    )
+    instance._shared_surface_read = False
+    response = json.loads(instance._handle_recall({"query": "quiet hours"}))
+    assert [row["id"] for row in response["results"]] == ["labeled", "legacy"]
+
+
+def test_recall_keeps_results_when_one_label_has_no_matchable_tokens():
+    instance = object.__new__(provider_mod.MnemosyneMemoryProvider)
+    metadata = {
+        "labeled": {"canonical_name": "quiet hours"},
+        "invalid": {"canonical_name": "   !!!   "},
+    }
+    instance._beam = types.SimpleNamespace(
+        recall=lambda *_args, **_kwargs: [{"id": "labeled"}, {"id": "invalid"}],
+        get=lambda memory_id: {"metadata": json.dumps(metadata[memory_id])},
+    )
+    instance._shared_surface_read = False
+    response = json.loads(instance._handle_recall({"query": "quiet hours"}))
+    assert [row["id"] for row in response["results"]] == ["labeled", "invalid"]
+
+
+def test_recall_falls_back_when_metadata_json_is_deeply_nested():
+    instance = object.__new__(provider_mod.MnemosyneMemoryProvider)
+    deeply_nested = "[" * 10000 + "0" + "]" * 10000
+    instance._beam = types.SimpleNamespace(
+        recall=lambda *_args, **_kwargs: [{"id": "legacy"}],
+        get=lambda _memory_id: {"metadata": deeply_nested},
+    )
+    instance._shared_surface_read = False
+    response = json.loads(instance._handle_recall({"query": "quiet hours"}))
+    assert [row["id"] for row in response["results"]] == ["legacy"]
+
+
 if __name__ == "__main__":
     tests = [
         test_db_path_from_env,
@@ -945,6 +1019,11 @@ if __name__ == "__main__":
         test_engine_patch_audit_without_manifest_is_informational,
         test_engine_patch_audit_without_engine_file_is_informational,
         test_unavailable_banner_names_the_doctor_fix,
+        test_recall_uses_exact_structured_labels_when_all_results_are_labeled,
+        test_recall_preserves_semantic_results_when_metadata_is_missing,
+        test_recall_keeps_mixed_labeled_and_legacy_results,
+        test_recall_keeps_results_when_one_label_has_no_matchable_tokens,
+        test_recall_falls_back_when_metadata_json_is_deeply_nested,
     ]
     for fn in tests:
         fn()

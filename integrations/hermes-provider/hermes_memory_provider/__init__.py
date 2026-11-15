@@ -3923,6 +3923,38 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         else:
             results = recall_payload
 
+        # LOCAL PATCH: P48 exact structured-name/alias evidence narrows only
+        # fully labeled private recall sets; legacy rows keep semantic order.
+        labeled_results = []
+        all_labeled = bool(results)
+        for result in results:
+            metadata = result.get("metadata")
+            if not isinstance(metadata, dict):
+                memory_id = result.get("id")
+                get_memory = getattr(self._beam, "get", None)
+                stored = (
+                    get_memory(memory_id)
+                    if isinstance(memory_id, str) and callable(get_memory)
+                    else None
+                )
+                metadata = stored.get("metadata") if isinstance(stored, dict) else None
+                if isinstance(metadata, str) and len(metadata) <= 32768:
+                    try:
+                        metadata = json.loads(metadata)
+                    except (TypeError, ValueError, RecursionError):
+                        metadata = None
+            labels = self._metadata_search_labels(metadata)
+            if not labels:
+                all_labeled = False
+            labeled_results.append((result, labels))
+        if all_labeled:
+            matched = [
+                result for result, labels in labeled_results
+                if any(self._query_contains_label(query, label) for label in labels)
+            ]
+            if matched:
+                results = matched
+
         # Tag private results with their bank so callers can distinguish from
         # shared-surface entries when surface read is enabled.
         for r in results:
@@ -3961,6 +3993,40 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if explain_payload is not None:
             response["explain"] = explain_payload
         return json.dumps(response)
+
+    @staticmethod
+    def _metadata_search_labels(metadata: Any) -> List[str]:
+        if not isinstance(metadata, dict):
+            return []
+        canonical_name = metadata.get("canonical_name")
+        aliases = metadata.get("aliases")
+        labels = []
+        if (
+            isinstance(canonical_name, str)
+            and 0 < len(canonical_name) <= 512
+            and 0 < len(re.findall(r"[^\W_]+", canonical_name)) <= 16
+        ):
+            labels.append(canonical_name)
+        if isinstance(aliases, list) and len(aliases) <= 64:
+            labels.extend(
+                alias for alias in aliases
+                if isinstance(alias, str)
+                and 0 < len(alias) <= 512
+                and 0 < len(re.findall(r"[^\W_]+", alias)) <= 16
+            )
+        return labels
+
+    @staticmethod
+    def _query_contains_label(query: str, label: str) -> bool:
+        query_tokens = re.findall(r"[^\W_]+", query.casefold())
+        label_tokens = re.findall(r"[^\W_]+", label.casefold())
+        if not label_tokens or len(label_tokens) > 16 or len(label_tokens) > len(query_tokens):
+            return False
+        width = len(label_tokens)
+        return any(
+            query_tokens[index:index + width] == label_tokens
+            for index in range(len(query_tokens) - width + 1)
+        )
 
     @staticmethod
     def _surface_hash(content: str) -> str:

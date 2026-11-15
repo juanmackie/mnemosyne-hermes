@@ -49,6 +49,28 @@ recall is therefore also an explicit authorization choice for ID operations.
 
 ## Apply and verify
 
+### Capture and abstention guards (all off by default)
+
+Three opt-in behaviours ship in `core-beam.py.patch`. Each is gated by its own
+environment variable, and each is **off unless set**, so the default engine
+behaviour is unchanged. They exist because the scorecard's per-candidate score
+dumps showed two failure modes with a common cause: a fact's *identity* and its
+*validity window* were never modelled, so a query naming an entity the store had
+never seen returned topical neighbours, and a fact stated "until 2025-06-01"
+stayed current forever.
+
+| Variable | Effect |
+| --- | --- |
+| (always on) | `BeamMemory.remember()` redacts recognized credential formats and contiguous 32+ character high-entropy token strings before sanitization, embedding, and persistence. Separators such as `_` and `-` split generic entropy candidates, so structured run and tenant identifiers remain readable. Labeled credentials and known provider token formats still match their dedicated rules. The write remains useful because surrounding prose is retained. This is a storage safety invariant, not a recall option. |
+| `MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS` | Return no rows when the query names a digit-bearing identifier or a lowercase identifier with a four-character hexadecimal suffix, and that token appears in no candidate. An unknown subject cannot be answered from the store; the nearest topical rows are off-subject by construction. Ordinary unknown words are ignored unless they have that identifier shape. Runs after every supplementary source, because the fact supplement re-emits the rows it derived from. **Measured on 12,559 held-out probes: 2,851/2,851 → 0/2,851 fabricated queries returning rows at zero answerable-recall cost.** |
+| `MNEMOSYNE_CAPTURE_TEMPORAL` (supplement) | Also applies the currency check to the MEMORIA fact supplement and its re-emitted source rows, which were the one recall path with no `valid_until`/`superseded_by` filter. **Measured: 301/289 → 0 expired facts served as current** at zero answerable-recall cost. |
+| `MNEMOSYNE_CAPTURE_TEMPORAL` | When an utterance states its own end date ("until 2025-06-01", "valid through …", "expires on …"), record it as `valid_until` so the row actually expires. Only explicitly written dates are used. |
+| `MNEMOSYNE_RECALL_CORRECTION_PRIORITY` | Adds a bounded recall-ranking bonus to rows that begin with an explicit correction ("Correction: …", "Actually, …", "Update: …"). It does not retire or mark the earlier row superseded; both remain retrievable. Nothing is inferred from silence. |
+
+These are measured by `bench/scorecard/` (see its README). The scorecard reports
+their effect as paired differences with bootstrap CIs on a held-out split; a
+flag that does not move its own metric is not kept.
+
 ### Recall precision cutoff
 
 `MNEMOSYNE_RECALL_SCORE_FLOOR` enables an optional relative score cutoff.
