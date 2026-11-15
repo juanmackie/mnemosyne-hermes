@@ -27,6 +27,12 @@ run bash scripts/check_no_secrets.sh
 # skipping. The plain test file is also collected by `pytest tests`; this
 # wrapper is what the engine-contract CI job depends on.
 run "${PYTHON_BIN:-python3}" scripts/check_engine_contract.py
+# Memory-quality scorecard: proves the instrument (deterministic corpus, A/A
+# control, admission-floor revert detection) on a small held-out split. It is a
+# gate on the *instrument*, not on product quality; quality is reported weekly
+# by the upstream-drift workflow. Skips (loudly) without the engine, like the
+# other engine-backed lanes.
+run bash scripts/check_scorecard.sh
 
 if [ "$failed" -gt 0 ]; then
     echo "FAILED: $failed gate(s)"

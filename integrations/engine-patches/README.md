@@ -49,6 +49,26 @@ recall is therefore also an explicit authorization choice for ID operations.
 
 ## Apply and verify
 
+### Capture and abstention guards (all off by default)
+
+Three opt-in behaviours ship in `core-beam.py.patch`. Each is gated by its own
+environment variable, and each is **off unless set**, so the default engine
+behaviour is unchanged. They exist because the scorecard's per-candidate score
+dumps showed two failure modes with a common cause: a fact's *identity* and its
+*validity window* were never modelled, so a query naming an entity the store had
+never seen returned topical neighbours, and a fact stated "until 2025-06-01"
+stayed current forever.
+
+| Variable | Effect |
+| --- | --- |
+| `MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS` | Return no rows when the query names an *identifier-shaped* token (one containing a digit) that appears in no candidate. An unknown subject cannot be answered from the store; the nearest topical rows are off-subject by construction. Ordinary unknown words are ignored — that is what paraphrase looks like. |
+| `MNEMOSYNE_CAPTURE_TEMPORAL` | When an utterance states its own end date ("until 2025-06-01", "valid through …", "expires on …"), record it as `valid_until` so the row actually expires. Only explicitly written dates are used. |
+| `MNEMOSYNE_RECALL_CORRECTION_PRIORITY` | When an utterance is an explicit correction ("Correction: …", "Actually, …", "Update: …"), retire the earlier rows it replaces (same subject tokens, different value) by setting `valid_until` and `superseded_by`. Nothing is inferred from silence. |
+
+These are measured by `bench/scorecard/` (see its README). The scorecard reports
+their effect as paired differences with bootstrap CIs on a held-out split; a
+flag that does not move its own metric is not kept.
+
 ### Recall precision cutoff
 
 `MNEMOSYNE_RECALL_SCORE_FLOOR` enables an optional relative score cutoff.
