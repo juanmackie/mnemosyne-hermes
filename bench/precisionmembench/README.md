@@ -51,8 +51,9 @@ Two transcription choices are recorded in every report rather than hidden:
   `scope` list — the same predicate the expectations are written against. An
   earlier revision of this harness omitted it and understated the provider
   (11 active passes instead of 9; the fix moved precision 0.52 → 0.60).
-- **Multi-scope fan-out** is not attempted (`multiScopeFanout: false`), matching
-  a provider that does not advertise it.
+- **Multi-scope fan-out** issues one provider recall per active scope when the
+  provider does not advertise native multi-scope support. The ranked results
+  are interleaved and deduplicated (`multiScopeFanout: true`).
 
 ## Run
 

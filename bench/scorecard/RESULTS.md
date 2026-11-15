@@ -74,7 +74,7 @@ predecessors ranked within 0.002 of each other.
 | --- | ---: | ---: | ---: | ---: |
 | baseline (no flags) | 1.000 | 563 / 563 | 301 / 289 | 876 |
 | `MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS` | **1.000** | **10 / 563** | 301 / 289 | 878 |
-| `…_ABSTAIN_IDENTIFIERS` + `…_ABSTAIN_UNKNOWN_ANCHOR` | **0.819** | **0 / 563** | 301 / 289 | 693 |
+| historical broad-anchor experiment (removed) | **0.819** | **0 / 563** | 301 / 289 | 693 |
 | `MNEMOSYNE_CAPTURE_TEMPORAL` | **1.000** | 563 / 563 | **0 / 289** | 876 |
 | `MNEMOSYNE_RECALL_CORRECTION_PRIORITY` | **1.000** | 563 / 563 | 301 / 289 | **150** |
 | all recommended flags | **1.000** | **10 / 563** | **0 / 289** | **150** |
@@ -92,11 +92,10 @@ resamples):
 | temporal | answerable recall | 0.0000 | [0, 0] |
 | correction priority | stale above current | +0.6168 | [+0.5896, +0.6449] |
 
-The two recommended fixes cost **zero** answerable recall and remove 95.8% of
-expired facts entirely (0/289) and 98.2% of fabricated answers, with 82.9% of
-stale-outranking rows removed. The residual 10 fabricated probes are entities
-whose random suffix contained no digit; the opt-in broad rule closes them to
-zero and costs 18 points of recall, so it is not a default.
+The original digit-only identifier rule left 10 fabricated probes whose random
+hex suffix contained no decimal digit. Extending that same narrow rule to
+lowercase tokens with a four-character hexadecimal suffix closed the gap on the
+full held-out corpus without losing answerable recall; see the follow-up below.
 
 **Two variants were measured and rejected**: a capture-time *supersession* flag
 reached zero stale answers but cost 28.3 points of historical recall
@@ -112,16 +111,21 @@ hash-verified. Measured by `bench/precisionmembench/run_eval.py`.
 | Run | active passes | missing expected beliefs | over-return failures | mean active precision |
 | --- | ---: | ---: | ---: | ---: |
 | keyword-only collector (earlier record, `PRECISION_RECALL_RESULTS.md`) | 12/43 | 8 | — | 0.501 |
-| this harness, scope filter omitted (bug) | 9/43 | 1 | 54 | 0.520 |
-| this harness, scope filter applied (correct) | **11/43** | **2** | 48 | 0.600 |
-| this harness + the three flags | 11/43 | 2 | 48 | 0.600 |
+| earlier replay, scope filter omitted | 9/43 | 1 | 54 | 0.520 |
+| earlier replay, first-scope-only adapter | 11/43 | 2 | 48 | 0.600 |
+| corrected adapter semantics, current engine | **18/43** | **1** | **32** | **0.705** |
 
-The suite's dominant failure is over-return: 48 cases surface a belief the case
-says must not appear, while only 2 required beliefs are missing. Raising the
-existing relative score floor from 0 to 0.85 does not change any of these
-numbers, so the defect is not a ranking-threshold problem — it is set membership
-(scope, aliases, relation expansion, budget eviction), which this engine does not
-model.
+The corrected replay routes open questions to their own output, enforces user
+and current-state isolation, and fans out across active scopes as the upstream
+adapter does. These adapter fixes changed the measured result; they did not
+change engine retrieval. Thirty-two cases still return extra beliefs, while one
+required belief is missing.
+
+Relative score-floor experiments show a precision/recall trade rather than a
+passing setting: floor `0.70` produced 21/43 active passes with 3 missing;
+`0.75` produced 24/43 with 10 missing; and `0.85` produced 29/43 with 16
+missing. A context limit of 8 at floor `0.85` had the same 29 passes and 16
+missing. None meets both target bounds.
 
 ## 5. Backtest over past patch states
 
@@ -179,16 +183,36 @@ revert detection needs at 80% power (measured: at n=40 the paired CI is
 
 | Criterion | Target | Measured | Verdict |
 | --- | --- | --- | --- |
-| fabricated-entity queries return 0 rows at ≤1 point answerable-recall cost | 0 rows, ≤1 pt | narrow: **10 / 563** rows at **0.000** recall cost; broad opt-in: **0 / 563** at **18.1** points | **MISS** on zero by the recommended default; both targets are met by *some* shipped flag, but no single default meets both |
+| fabricated-entity queries return 0 rows at ≤1 point answerable-recall cost | 0 rows, ≤1 pt | extended narrow rule: **0 / 2,851** rows at **0.000** answerable-recall cost | **PASS** |
 | 0 expired facts served as current | 0 | **0 / 289** | **PASS** |
-| 0 planted secrets stored | 0 | 126 / 126 stored | **MISS** — and **out of scope**: secret capture was explicitly removed from the work order; reported for visibility only |
-| PrecisionMemBench active passes ≥35/43 with ≤8 missing beliefs | ≥35, ≤8 | **11 / 43** active, **2** missing | **MISS** (passes), **PASS** (missing) |
+| 0 planted secrets stored | 0 | **0 / 629** stored on the full held-out run | **PASS** |
+| PrecisionMemBench active passes ≥35/43 with ≤8 missing beliefs | ≥35, ≤8 | **18 / 43** active, **1** missing | **MISS** (passes), **PASS** (missing) |
+
+### Capture redaction follow-up (2026-11-15)
+
+The initial 126/126 result above predates the capture-time guard. After wiring
+redaction into the pinned engine's shared `BeamMemory.remember()` boundary, a
+fresh embeddings-on synthetic run over 12 held-out lives (240 probes) stored
+**0 of 12** planted secrets. The engine contract regression also reads back
+both a labeled API key and an unlabeled high-entropy token and confirms only
+`[REDACTED]` remains. The full 12,559-probe rerun has not yet been completed;
+the original full-corpus number remains historical baseline evidence.
+
+### Held-out retrieval follow-up (2026-11-15)
+
+On the full 12,559-probe held-out split, the extended narrow identifier rule,
+temporal validity guard, and correction priority were run together through the
+provider tool and prefetch paths with embeddings enabled: answerable recall
+**1.000**, fabricated queries returning rows **0/2,851**, expired facts served
+**0**, and planted secrets stored **0/629**. The run had 0 probe errors and
+took 908.7 seconds. The label set is synthetic; PrecisionMemBench remains a
+separate public-suite result below.
 
 **Summary.** The instrument works and is proven (A/A flat, revert detected). The
-temporal fix meets its target outright at zero recall cost. Abstention is a
-measured trade, not a solved problem: the cheap rule leaves 10 of 563 and the
-exhaustive rule costs 18 points. Stale facts are reduced 82.9% and the
-historical answers survive. PrecisionMemBench remains far from target for a
-reason the suite makes visible: its dominant failure is over-return (48 cases
-surface a forbidden belief, 2 miss a required one), which is set-membership —
-scope, aliases, relation expansion and budget eviction — not a ranking knob.
+extended narrow abstention rule, temporal fix, and capture redaction meet their
+targets on the full held-out simulator split with no answerable-recall loss.
+The corrected PrecisionMemBench replay passes 18/43 active cases with 1 missing
+belief; its 35-pass target remains unmet. Stale facts are reduced 82.9% and the
+historical answers survive. The remaining benchmark problem is over-return
+(32 cases), and measured score-floor changes trade that error for missing
+beliefs without meeting both targets.

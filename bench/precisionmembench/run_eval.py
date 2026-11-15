@@ -136,6 +136,7 @@ class Adapter:
         self,
         query: str,
         *,
+        user_id: str,
         limit: int,
         exclude_ids: set[str] | None = None,
         scope: str | list[str] | None = None,
@@ -172,6 +173,15 @@ class Adapter:
             belief = self.seed_index.get(belief_id)
             if belief is None:
                 continue
+            if belief.get("user_id") != user_id:
+                continue
+            if not _is_current(belief):
+                continue
+            # Open questions have their own context channel. Letting recall
+            # copy one into relevantBeliefs violates the adapter contract and
+            # duplicates it beside the pinned/open-question result.
+            if belief.get("type") == "open_question":
+                continue
             if scope_values is not None and not _scope_overlaps(belief, scope_values):
                 continue
             out.append(belief)
@@ -184,8 +194,7 @@ class Adapter:
             if belief.get("user_id") == user_id
             and belief.get("pinned") is True
             and belief.get("type") != "open_question"
-            and not belief.get("superseded_by")
-            and not belief.get("resolved_at")
+            and _is_current(belief)
             and _scope_overlaps(belief, scope)
         ]
 
@@ -196,7 +205,7 @@ class Adapter:
             if belief.get("user_id") == user_id
             and belief.get("type") == "open_question"
             and belief.get("pinned") is True
-            and not belief.get("resolved_at")
+            and _is_current(belief)
             and _scope_overlaps(belief, scope)
         ]
 
@@ -221,6 +230,8 @@ class Adapter:
                     continue
                 if belief.get("user_id") != user_id:
                     continue
+                if not _is_current(belief):
+                    continue
                 if scope and not _scope_overlaps(belief, scope):
                     continue
                 results.append(belief)
@@ -235,11 +246,10 @@ class Adapter:
     ) -> dict[str, Any]:
         """`BaseAdapter.buildContext`, without the HTTP hop.
 
-        The upstream adapter declares `supportsMultiScope: false` for providers
-        that do not advertise it; Mnemosyne recall is unscoped here (the engine's
-        `scope` is session/global visibility, not benchmark domain tags), so the
-        multi-scope fan-out is not attempted and the first scope is used. That
-        choice is recorded in the report as `multi_scope_fanout: false`.
+        Mnemosyne recall is unscoped here (the engine's `scope` is
+        session/global visibility, not benchmark domain tags). The external
+        adapter therefore runs one recall per active scope and interleaves the
+        ranked results, matching its unsupported-multi-scope path.
         """
         merged = {**DEFAULT_BUDGET, **(budget or {})}
         pinned_facts = self.list_pinned_facts(user_id, scope)
@@ -248,14 +258,41 @@ class Adapter:
 
         raw_results: list[dict[str, Any]] = []
         if raw_query.strip() and merged["maxBeliefs"] > 0:
-            # `supportsMultiScope` is false, so the upstream adapter passes the
-            # first scope; see search_text for why that filter lives here.
-            raw_results = self.search_text(
-                raw_query,
-                limit=merged["maxBeliefs"],
-                exclude_ids=pinned_ids,
-                scope=scope[0] if scope else None,
-            )
+            if len(scope) > 1:
+                scoped_results = [
+                    self.search_text(
+                        raw_query,
+                        user_id=user_id,
+                        limit=merged["maxBeliefs"],
+                        exclude_ids=pinned_ids,
+                        scope=scope_value,
+                    )
+                    for scope_value in scope
+                ]
+                seen: set[str] = set()
+                max_length = max((len(results) for results in scoped_results), default=0)
+                for rank in range(max_length):
+                    for results in scoped_results:
+                        if rank >= len(results):
+                            continue
+                        belief = results[rank]
+                        belief_id = belief["_id"]
+                        if belief_id in seen:
+                            continue
+                        seen.add(belief_id)
+                        raw_results.append(belief)
+                        if len(raw_results) >= merged["maxBeliefs"]:
+                            break
+                    if len(raw_results) >= merged["maxBeliefs"]:
+                        break
+            else:
+                raw_results = self.search_text(
+                    raw_query,
+                    user_id=user_id,
+                    limit=merged["maxBeliefs"],
+                    exclude_ids=pinned_ids,
+                    scope=scope[0] if scope else None,
+                )
 
         expansions: list[dict[str, Any]] = []
         if raw_results:
@@ -281,6 +318,10 @@ class Adapter:
 def _scope_overlaps(belief: dict[str, Any], scope: list[str]) -> bool:
     belief_scopes = belief.get("scope") or []
     return any(value in belief_scopes for value in scope)
+
+
+def _is_current(belief: dict[str, Any]) -> bool:
+    return not belief.get("superseded_by") and not belief.get("resolved_at")
 
 
 def _belief_id_from_row(
@@ -519,7 +560,7 @@ def run(*, limit: int | None = None) -> dict[str, Any]:
         "upstreamCommit": UPSTREAM_COMMIT,
         "fixtureSha256": verify_fixtures(),
         "seededBeliefs": ingested,
-        "multiScopeFanout": False,
+        "multiScopeFanout": True,
         "summary": summarize(rows),
         "cases": rows,
     }

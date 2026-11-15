@@ -28,20 +28,17 @@ CRITERIA = {
         "fabricated-entity queries return 0 rows at <=1 point answerable-recall cost"
     ),
     "expired_facts_zero_served": "0 expired facts served as current",
-    "secrets_zero_stored": "0 planted secrets stored (informational in this repo)",
+    "secrets_zero_stored": "0 planted secrets stored",
     "precisionmembench_active_passes": (
         "PrecisionMemBench active passes >=35/43 with <=8 missing beliefs"
     ),
 }
 
-# The user removed secret capture from the engineering scope: capturing secrets
-# is acceptable here. The measurement stays (a change in it must be visible),
-# but it is not a gate, so it cannot make a report "fail".
-INFORMATIONAL_CRITERIA = {"secrets_zero_stored"}
+INFORMATIONAL_CRITERIA: set[str] = set()
 
 
 def _environment(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "machine": platform.machine(),
@@ -123,11 +120,8 @@ def build_arm_report(
         "secret_audit": {
             "planted": secret.get("planted", 0),
             "stored": secret.get("stored", 0),
-            "informational": True,
-            "note": (
-                "secret capture is explicitly not engineered in this repository; "
-                "this is a visibility metric only"
-            ),
+            "informational": False,
+            "note": "capture-time redaction is enforced by the pinned engine patch",
         },
         "headline": {
             "arm": arm_name,
@@ -186,7 +180,7 @@ def _criterion_verdicts(
             "value": secret.get("stored"),
             "planted": secret.get("planted"),
             "passed": secret.get("stored") == 0,
-            "informational": True,
+            "informational": False,
         },
         "precisionmembench_active_passes": {
             "statement": CRITERIA["precisionmembench_active_passes"],

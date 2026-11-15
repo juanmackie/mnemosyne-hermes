@@ -27,9 +27,9 @@ The four pass criteria (see `RESULTS.md` for the measured values):
 
 1. fabricated-entity queries return 0 rows, at ≤1 point answerable-recall cost;
 2. 0 expired facts served as current;
-3. 0 planted secrets stored — **informational only** in this repository:
-   capturing secrets is explicitly not a policy being engineered here. It stays
-   measured so a change in it is visible;
+3. 0 planted secrets stored — the pinned engine redacts credential formats and
+   high-entropy token-shaped strings at the shared `remember` boundary before
+   sanitization, embedding, or persistence;
 4. PrecisionMemBench active passes ≥35/43 with ≤8 missing beliefs — measured
    separately by `bench/precisionmembench/`.
 
@@ -110,6 +110,10 @@ correction.
 - Latency and cost: those live in `bench/measure.sh` and the prefetch eval.
 - A live Hermes gateway: this drives the provider object directly.
 - Anything requiring an LLM: no model is called, no key is needed.
+
+Secret detection is measured separately from retrieval. Credential redaction
+runs at the engine's shared capture boundary, before the value can reach
+storage or embeddings; a failing secret criterion makes the scorecard fail.
 
 ## Limitations
 

@@ -202,7 +202,7 @@ def test_summary_separates_fabricated_and_expired_failures():
     assert summary["expired_facts_served_as_current"] == 1
 
 
-def test_comparison_reports_every_missed_target_and_skips_informational_ones():
+def test_comparison_reports_every_missed_target():
     _grade, stats, aggregate, report = _package()
     probes = [
         {"probe_id": "f", "kind": "fabricated", "answers": [], "stale_values": []},
@@ -270,9 +270,8 @@ def test_comparison_reports_every_missed_target_and_skips_informational_ones():
         split="held_out",
         resamples=300,
     )
-    # The secret criterion is informational: it can be false without being missed.
-    assert result["criteria"]["secrets_zero_stored"]["informational"] is True
-    assert "secrets_zero_stored" not in result["missed_targets"]
+    assert result["criteria"]["secrets_zero_stored"]["informational"] is False
+    assert "secrets_zero_stored" in result["missed_targets"]
     # PrecisionMemBench is measured elsewhere, so it is reported as unmeasured.
     assert result["criteria"]["precisionmembench_active_passes"]["value"] is None
     assert "precisionmembench_active_passes" not in result["missed_targets"]
