@@ -1,0 +1,9 @@
+iteration	timestamp	change	score	active_passes	overreturn_failures	missing_beliefs	verdict
+0	2026-11-16	baseline (P48 exact labels)	3882	39	8	1	baseline
+1	2026-11-16	P49 1-edit fuzzy label evidence	4185	42	5	1	kept
+2	2026-11-16	P50 zero-result label query expansion	4294	43	6	0	kept
+3	2026-11-16	prefix guard in shared one-edit check	4295	43	5	0	kept-target-met
+7	2026-11-17	P51 abstain when no labeled row matches the query	4300	43	0	0	kept-target-max
+8	2026-11-17	P52 two-char floor on one-edit fuzzy evidence	4300	43	0	0	kept
+9	2026-11-17	P53 restore-then-abstain retry + _label_matched_rows refactor	4300	43	0	0	kept
+10	2026-11-17	Measurement: P51 paraphrase-cost probe (no code change)	4300	43	0	0	measured-tradeoff

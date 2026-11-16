@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "7SNOBl1kcVRX47Z6Uz79AypmHArb6e_B06Nru4MvjD0",
-      "bytes": 276886,
-      "lines": 5775
+      "sha256": "mtIhYXkqggsYGuTx9s79K848oSi4o3d0TKBo10GG07E",
+      "bytes": 283256,
+      "lines": 5912
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
@@ -108,7 +108,12 @@
       "P40 source-grounded memory guidance and bounded read-only manual evidence review",
       "P44 unavailable-session banner names `hermes mnemosyne doctor --no-fix` as the diagnosis command",
       "P45 absolute self-imports (hermes_memory_provider.*) bind to the deployed package; alias the loaded package under its canonical name so copied installs never run the engine wheel's bundled upstream provider",
-      "P46 initialization failure identifies the interpreter and resolved engine package"
+      "P46 initialization failure identifies the interpreter and resolved engine package",
+      "P49 bounded fuzzy structured-label evidence",
+      "P50 zero-result fuzzy query expansion from structured labels",
+      "P51 abstain when no labeled row matches the query",
+      "P52 one-edit fuzzy evidence needs two characters on the shorter side",
+      "P53 restore the query once more before abstaining"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",

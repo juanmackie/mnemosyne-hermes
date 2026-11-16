@@ -617,3 +617,59 @@ doctor hash audit is unavailable. Regression coverage is in
 | Behaviour | After private engine recall, the provider reads metadata for each returned ID. It narrows private candidates only when every row has a valid `canonical_name` or `aliases` label and at least one label appears as an exact token phrase in the query. Missing, malformed, invalid, mixed or non-matching labels preserve engine results. Label sizes and counts are bounded. Shared-surface results are merged later and are not filtered by P48. |
 | Verification | `tests/test_provider_db_path.py` covers exact label narrowing, missing and mixed metadata, unmatchable labels, and deeply nested invalid JSON. `bench/precisionmembench/run_eval.py` maps structured names and aliases into metadata and marks reports `structuredLabelMetadata: true`; the synthetic PMB replay measured 39/43 active passes with 1 missing belief. The full 12,559-probe synthetic scorecard seeds no structured labels, so it verifies fallback compatibility and the three recorded opt-in engine flags, not P48's narrowing path. It measured 1.000 tool answerable recall, 0/2,851 fabricated returns, 0 expired facts, 0/628 planted secrets stored, 0 probe errors and 0.982 prefetch answerable recall. No live store was read. |
 | Upstream | Not sent. |
+
+### P49 — bounded fuzzy structured-label evidence
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_handle_recall`, `_query_contains_label`, `_within_one_edit`) |
+| Date | 2026-11-16 |
+| Reason | P48 accepted only exact label token phrases. A misspelled query token ("typscript", "mongod", "eror") therefore left the engine's fuzzy lexical candidates unfiltered, and semantically adjacent but unrelated beliefs entered the context. |
+| Behaviour | Under the same "all private rows fully labeled" guard, a query window whose token sequence differs from a label by at most one token, and that token by at most one Damerau edit (insert, delete, substitute, transpose), counts as label evidence. Exact phrases still match first. Unlabeled, malformed, mixed, or non-matching rows keep engine order; shared-surface rows are still merged after this step. Token length/count bounds are unchanged. |
+| Verification | `tests/test_provider_label_recall.py` covers the one-edit matcher and the all-labeled guard; `tests/test_provider_db_path.py` retains the P48 metadata gating coverage. `research/autoresearch-results.tsv` records the autoresearch iterations on the pinned public suite. The full synthetic 12,559-probe corpus seeds no structured labels, so P49 is inert there by construction. |
+| Upstream | Not sent. |
+
+### P50 — zero-result fuzzy query expansion from structured labels
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`__init__`, `_handle_remember`, `_handle_recall`, `_index_search_labels`, `_expand_query_with_labels`) |
+| Date | 2026-11-16 |
+| Reason | A two-edit transposition ("typsecript") produced zero engine candidates, so no result-side filter could recover the expected memory. The engine's lexical path does not do Damerau transpositions. |
+| Behaviour | On remember, single-token structured labels from metadata are collected into a bounded (<=2048 entry) per-provider index. On recall that returns no rows, the query is retried once with any token within one Damerau edit of an indexed label replaced by that label. The original query still drives P48/P49 evidence checks. Stores without structured labels keep an empty index and never retry. |
+| Verification | `tests/test_provider_label_recall.py` covers the bounded index, the one-shot retry, the no-retry path and unlabeled stores; `research/autoresearch-results.tsv` records the autoresearch iteration on the pinned public suite. The synthetic corpus seeds no structured labels, so this path is inert there. |
+| Amendment (2026-11-16) | The shared one-edit check used by P49/P50 also requires the leading two characters to agree (a swap of the first two is still allowed). This preserves the benchmark's prefix guard: "mango" is one edit from "mongo" but must not expand to it. |
+| Upstream | Not sent. |
+
+### P51 — abstain when no labeled row matches the query
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_handle_recall`) |
+| Date | 2026-11-17 |
+| Reason | The pinned public PrecisionMemBench replay measured five over-return failures, all of them fully labeled rows with zero label evidence for the query (e.g. "what's our stack?" -> b-react-entity). P48 kept engine order in the no-match case, so the semantic guess was served with no structured support. |
+| Behaviour | Under the same "all private rows fully labeled" guard, when no row's label is an exact or one-edit match for a query window, recall returns zero rows instead of the engine's guess. Rows with any label evidence still narrow as in P48/P49. Unlabeled, malformed or mixed rows keep engine results. Relation expansions resolve in the adapter after recall and are unaffected; shared-surface rows still merge after this step. |
+| Verification | `tests/test_provider_label_recall.py::test_abstains_when_no_labeled_row_matches_the_query` and `test_abstains_only_when_every_row_is_labeled` pin the path engine-free. PrecisionMemBench replay: 43/43 active passes, 0 over-returns, 0 missing beliefs (score 4300). The 800-probe held-out synthetic sweep stayed green (tool answerable recall 1.0, 0 fabricated rows from 183 fabricated probes, 0 expired served, 0 errors) — the path is inert on unlabeled stores. |
+| Upstream | Not sent. |
+
+### P52 — one-edit fuzzy evidence needs two characters on the shorter side
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_within_one_edit`) |
+| Date | 2026-11-17 |
+| Reason | A one-edit delete between a one-character query token and a two-character label token ("s" vs "TS") counted as evidence under P49. That match cannot be a typo; it only attaches label narrowing to noise. |
+| Behaviour | The shared one-edit check returns false when the shorter side is a single character, after the exact-match short-circuit. Insertion of one character into a two-plus-character token is unchanged. Applies to P49 narrowing and the P50 expansion index. |
+| Verification | Evaluator 2026-11-17: 43/43 active passes, 0 over-returns, 0 missing (score 4300, unchanged). 800-probe held-out sweep green (recall 1.0, 0 fabricated rows, 0 expired, 0 errors). No fixture relies on single-character fuzzy pairs. |
+| Upstream | Not sent. |
+
+### P53 — restore the query once more before abstaining
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_handle_recall`, `_label_matched_rows`) |
+| Date | 2026-11-17 |
+| Reason | P51 abstains on fully labeled rows with zero label evidence. For two-edit-typo queries, the engine can return rows that all lack evidence — the restored query (P50) ranks the right row, but it was never issued because the first call was non-empty. |
+| Behaviour | When P48/P49 narrowing finds no match in a fully labeled set and the P50 expansion rewrites the query, recall retries once with the restored query before abstaining. Evidence is checked against the original query (as in P50). A mixed-metadata retry keeps engine order (P48 contract); a fully labeled retry with no match abstains (P51). Extracted the metadata-read and evidence pass into `_label_matched_rows`. |
+| Verification | Evaluator 2026-11-17: 43/43, 0 over-returns, 0 missing (score 4300). 800-probe held-out sweep green. Engine-free coverage: `test_abstaining_recall_retries_with_restored_query`, `test_abstaining_recall_without_expandable_tokens_returns_zero`, all prior label-recall tests (23 pass). |
+| Upstream | Not sent. |

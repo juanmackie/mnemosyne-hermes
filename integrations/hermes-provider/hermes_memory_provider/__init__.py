@@ -1633,6 +1633,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # wrapper to be garbage-collected would close the provider's beam.
         self._memory: Optional[Any] = None
         self._beam: Optional[Any] = None
+        # LOCAL PATCH: P50 bounded label index for zero-result query expansion.
+        # Populated only from remember() metadata that carries structured
+        # canonical names/aliases; empty for every legacy/unlabeled store.
+        self._search_label_index: Dict[str, str] = {}
         self._surface_beam: Optional[Any] = None
         self._shared_surface_bank = "surface"
         self._shared_surface_path: Optional[Path] = None
@@ -3819,6 +3823,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             metadata=metadata,
             veracity=veracity,
         )
+        # LOCAL PATCH: P50 index single-token structured labels for the
+        # zero-result fuzzy-query fallback. Fail-open and bounded.
+        self._index_search_labels(metadata)
         _source_ref = source_reference(metadata)
         self._audit_event(
             "remember", memory_id=memory_id,
@@ -3916,44 +3923,56 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 recall_kwargs[weight_key] = args[weight_key]
 
         recall_payload = self._beam.recall(query, **recall_kwargs)
+        # LOCAL PATCH: P50 if the engine found nothing and structured labels are
+        # available, retry once with near-label tokens restored. Post-filtering
+        # cannot recover a row the engine never returned.
+        first_rows = recall_payload.get("results") if explain else recall_payload
+        expanded = None
+        if getattr(self, "_search_label_index", None):
+            candidate = self._expand_query_with_labels(query)
+            if candidate != query:
+                expanded = candidate
+        if not first_rows and expanded is not None:
+            recall_payload = self._beam.recall(expanded, **recall_kwargs)
         explain_payload = None
+        used_query = expanded if (not first_rows and expanded is not None) else query
         if explain:
             explain_payload = recall_payload.get("explain", {})
             results = recall_payload.get("results", [])
         else:
             results = recall_payload
 
-        # LOCAL PATCH: P48 exact structured-name/alias evidence narrows only
-        # fully labeled private recall sets; legacy rows keep semantic order.
-        labeled_results = []
-        all_labeled = bool(results)
-        for result in results:
-            metadata = result.get("metadata")
-            if not isinstance(metadata, dict):
-                memory_id = result.get("id")
-                get_memory = getattr(self._beam, "get", None)
-                stored = (
-                    get_memory(memory_id)
-                    if isinstance(memory_id, str) and callable(get_memory)
-                    else None
-                )
-                metadata = stored.get("metadata") if isinstance(stored, dict) else None
-                if isinstance(metadata, str) and len(metadata) <= 32768:
-                    try:
-                        metadata = json.loads(metadata)
-                    except (TypeError, ValueError, RecursionError):
-                        metadata = None
-            labels = self._metadata_search_labels(metadata)
-            if not labels:
-                all_labeled = False
-            labeled_results.append((result, labels))
+        # LOCAL PATCH: P48/P49 structured-label evidence. Narrowing applies
+        # only to fully labeled private recall sets; legacy rows keep
+        # semantic order. P51 abstains when no row matches.
+        matched, all_labeled = self._label_matched_rows(results, query)
         if all_labeled:
-            matched = [
-                result for result, labels in labeled_results
-                if any(self._query_contains_label(query, label) for label in labels)
-            ]
             if matched:
                 results = matched
+            elif results:
+                # LOCAL PATCH: P53 restore, then abstain. The engine returned
+                # rows with no label evidence; a two-edit typo can rank the
+                # right row last or not at all, so retry once with the
+                # P50-restored query before abstaining. Evidence is checked
+                # against the original query, as in P50.
+                if expanded is not None and used_query == query:
+                    retry_payload = self._beam.recall(expanded, **recall_kwargs)
+                    retry_results = (
+                        retry_payload.get("results", [])
+                        if explain
+                        else retry_payload
+                    )
+                    retry_matched, retry_all = self._label_matched_rows(retry_results, query)
+                    if retry_matched:
+                        results = retry_matched
+                        if explain:
+                            explain_payload = retry_payload.get("explain", {})
+                    elif retry_results and not retry_all:
+                        results = retry_results
+                    else:
+                        results = []
+                else:
+                    results = []
 
         # Tag private results with their bank so callers can distinguish from
         # shared-surface entries when surface read is enabled.
@@ -3994,6 +4013,47 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             response["explain"] = explain_payload
         return json.dumps(response)
 
+    def _label_matched_rows(
+        self, results: List[Dict[str, Any]], query: str
+    ) -> "tuple[List[Dict[str, Any]], bool]":
+        """P48/P49 evidence pass: return (matching rows, all-labeled).
+
+        matched is empty when any row is unlabeled (P48 keeps engine order)
+        or when no label touches the query (P51 abstains).
+        """
+        labeled_results = []
+        all_labeled = bool(results)
+        for result in results:
+            metadata = result.get("metadata")
+            if not isinstance(metadata, dict):
+                memory_id = result.get("id")
+                get_memory = getattr(self._beam, "get", None)
+                stored = (
+                    get_memory(memory_id)
+                    if isinstance(memory_id, str) and callable(get_memory)
+                    else None
+                )
+                metadata = stored.get("metadata") if isinstance(stored, dict) else None
+                if isinstance(metadata, str) and len(metadata) <= 32768:
+                    try:
+                        metadata = json.loads(metadata)
+                    except (TypeError, ValueError, RecursionError):
+                        metadata = None
+            labels = self._metadata_search_labels(metadata)
+            if not labels:
+                all_labeled = False
+            labeled_results.append((result, labels))
+        if not all_labeled:
+            return [], False
+        matched = [
+            result for result, labels in labeled_results
+            if any(
+                self._query_contains_label(query, label, fuzzy=True)
+                for label in labels
+            )
+        ]
+        return matched, True
+
     @staticmethod
     def _metadata_search_labels(metadata: Any) -> List[str]:
         if not isinstance(metadata, dict):
@@ -4016,17 +4076,94 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             )
         return labels
 
+    # LOCAL PATCH: P50 bounded query-expansion label index.
+    def _index_search_labels(self, metadata: Any) -> None:
+        if len(self._search_label_index) >= 2048:
+            return
+        for label in self._metadata_search_labels(metadata):
+            tokens = re.findall(r"[^\W_]+", label.casefold())
+            if len(tokens) == 1 and len(tokens[0]) >= 4:
+                self._search_label_index.setdefault(tokens[0], label)
+
+    def _expand_query_with_labels(self, query: str) -> str:
+        out: List[str] = []
+        replaced = False
+        for token in re.findall(r"[^\W_]+", query):
+            key = token.casefold()
+            if key in self._search_label_index:
+                out.append(token)
+                continue
+            match = next(
+                (
+                    label
+                    for indexed, label in self._search_label_index.items()
+                    if abs(len(indexed) - len(key)) <= 1
+                    and self._within_one_edit(key, indexed)
+                ),
+                None,
+            )
+            if match is None:
+                out.append(token)
+            else:
+                out.append(match)
+                replaced = True
+        return " ".join(out) if replaced else query
+
+    # LOCAL PATCH: P49 bounded fuzzy label matching helpers.
     @staticmethod
-    def _query_contains_label(query: str, label: str) -> bool:
+    def _within_one_edit(left: str, right: str) -> bool:
+        """True when two short tokens differ by at most one Damerau edit."""
+        if left == right:
+            return True
+        # LOCAL PATCH: P52 a one-edit neighbor needs two characters on the
+        # shorter side: "s" vs "ts" (delete) is noise, not evidence.
+        if min(len(left), len(right)) < 2:
+            return False
+        if abs(len(left) - len(right)) > 1 or max(len(left), len(right)) > 512:
+            return False
+        # A leading two-character prefix must agree: a one-edit neighbor that
+        # starts differently (mango -> mongo) is not the same label. A swap of
+        # the first two characters is still a valid transposition.
+        if len(left) >= 2 and len(right) >= 2 and left[:2] != right[:2]:
+            if not (len(left) == len(right) and left[0] == right[1] and left[1] == right[0]):
+                return False
+        if len(left) == len(right):
+            diffs = [i for i, (a, b) in enumerate(zip(left, right)) if a != b]
+            if len(diffs) == 1:
+                return True
+            if len(diffs) == 2 and diffs[1] == diffs[0] + 1:
+                return left[diffs[0]] == right[diffs[1]] and left[diffs[1]] == right[diffs[0]]
+            return False
+        longer, shorter = (left, right) if len(left) > len(right) else (right, left)
+        i = j = 0
+        skipped = False
+        while i < len(longer) and j < len(shorter):
+            if longer[i] == shorter[j]:
+                i += 1
+                j += 1
+            elif skipped:
+                return False
+            else:
+                skipped = True
+                i += 1
+        return True
+
+    @staticmethod
+    def _query_contains_label(query: str, label: str, *, fuzzy: bool = False) -> bool:
         query_tokens = re.findall(r"[^\W_]+", query.casefold())
         label_tokens = re.findall(r"[^\W_]+", label.casefold())
         if not label_tokens or len(label_tokens) > 16 or len(label_tokens) > len(query_tokens):
             return False
         width = len(label_tokens)
-        return any(
-            query_tokens[index:index + width] == label_tokens
-            for index in range(len(query_tokens) - width + 1)
-        )
+        for index in range(len(query_tokens) - width + 1):
+            window = query_tokens[index:index + width]
+            if window == label_tokens:
+                return True
+            if fuzzy:
+                diffs = [(a, b) for a, b in zip(window, label_tokens) if a != b]
+                if len(diffs) == 1 and MnemosyneMemoryProvider._within_one_edit(*diffs[0]):
+                    return True
+        return False
 
     @staticmethod
     def _surface_hash(content: str) -> str:
