@@ -321,7 +321,7 @@ The broader project suite also passed:
 
 ```text
 PYTHONPATH=/tmp/mnemosyne-pytest-site:src \
-PYTEST_ADDOPTS=--basetemp=/mnt/tank/t3code/.mnemosyne-pytest \
+PYTEST_ADDOPTS="--basetemp=$(mktemp -d "./mnemosyne-pytest.XXXXXX")" \
 bash test-all.sh --skip-llm
 341 passed, 14 skipped
 ```
@@ -345,7 +345,7 @@ confirms that post-promotion verification restores the former copy and config.
 The complete `bash scripts/checks.sh` registry also reports `ALL PASS` when
 run with pytest's temporary directory placed under the workspace
 (`PYTHONPATH=/tmp/mnemosyne-pytest-site:src` and
-`PYTEST_ADDOPTS=--basetemp=/mnt/tank/t3code/.mnemosyne-pytest`). Engine-backed
+`PYTEST_ADDOPTS="--basetemp=$(mktemp -d "./mnemosyne-pytest.XXXXXX")"`). Engine-backed
 checks that require an installed engine were skipped, as expected in this
 environment.
 

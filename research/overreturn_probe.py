@@ -5,7 +5,7 @@ their composite scores, to test whether an evidence-free score floor could
 separate 'irrelevant query junk' from 'paraphrase hit'.
 
 Run: PYTHONPATH=.:integrations/hermes-provider \
-  /mnt/tank/t3code/.research/pmb-venv/bin/python research/overreturn_probe.py
+  python research/overreturn_probe.py
 """
 
 from __future__ import annotations

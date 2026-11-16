@@ -28,8 +28,7 @@ score **3882**.
 `research/evaluate.py` — runs `bench.precisionmembench.run_eval.run()` against
 the real provider + pinned patched engine, returns `{"pass": bool, "score": number}`.
 
-Environment (kept outside the repo): venv
-`/mnt/tank/t3code/.research/pmb-venv` with
+Environment: an activated virtual environment outside the repo with
 `mnemosyne-memory[embeddings]==3.15.1` + `scripts/apply_engine_patches.py`.
 `PYTHONPATH` must include the repo root and `integrations/hermes-provider`.
 

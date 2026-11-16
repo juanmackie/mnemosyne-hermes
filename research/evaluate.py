@@ -3,7 +3,7 @@
 
 Usage (from repo root):
     PYTHONPATH="$PWD:$PWD/integrations/hermes-provider" \
-      /mnt/tank/t3code/.research/pmb-venv/bin/python research/evaluate.py \
+      python research/evaluate.py \
       --output research/runs/iter-N.json
 """
 

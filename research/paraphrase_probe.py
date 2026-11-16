@@ -9,7 +9,7 @@ No fixtures are read or written; this measures the abstention's residual
 recall cost on labeled stores with zero-lexical-overlap queries.
 
 Run: PYTHONPATH=.:integrations/hermes-provider \
-  /mnt/tank/t3code/.research/pmb-venv/bin/python research/paraphrase_probe.py
+  python research/paraphrase_probe.py
 """
 
 from __future__ import annotations

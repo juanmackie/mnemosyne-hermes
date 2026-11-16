@@ -7,8 +7,8 @@
   core loop is used.
 - Synced the repo (`3a4b883..718b7c0`); scorecard / PrecisionMemBench system
   arrived. No stranded work.
-- Established the evaluator environment: venv at
-  `/mnt/tank/t3code/.research/pmb-venv`, engine `3.15.1` + audited patches,
+- Established the evaluator environment: a virtual environment outside the repo,
+  engine `3.15.1` + audited patches,
   `sqlite-vec` loadable (the first venv was on `noexec` `/tmp`, which silently
   disabled dense retrieval and produced an invalid 39/43 reading; rebuilt on
   ZFS and confirmed 39/43 with embeddings genuinely on).
