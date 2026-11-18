@@ -1159,16 +1159,18 @@
          """
          Consolidate old working_memory for this session into episodic summaries.
          Uses a local lightweight LLM when available; falls back to aaak
-@@ -8369,6 +8899,8 @@
+@@ -8369,6 +8899,10 @@
          conflicts_resolved = 0
          model_refresh_proposals = 0
          model_refresh_applied = 0
 +        coverage_failures = 0
 +        coverage_enabled = _env_truthy("MNEMOSYNE_SLEEP_VERIFY")
++        demote_sources = _env_truthy("MNEMOSYNE_SLEEP_DEMOTE_SOURCES")
++        demoted_rows = 0
          for source, items in grouped.items():
              lines = [item["content"] for item in items]
              ids = [item["id"] for item in items]
-@@ -8383,6 +8915,10 @@
+@@ -8383,6 +8917,10 @@
                      if aggregated_valid_until is None or item["valid_until"] < aggregated_valid_until:
                          aggregated_valid_until = item["valid_until"]
  
@@ -1179,7 +1181,7 @@
              # E4.a.1: aggregate per-row veracity into the summary's
              # veracity label. Mode of sources with conservative tie-break.
              # Pre-fix the episodic INSERT omitted veracity and the row
-@@ -8409,8 +8945,21 @@
+@@ -8409,8 +8947,21 @@
                              newer_content,
                              session_id=self.session_id,
                              db_path=self.db_path,
@@ -1201,7 +1203,7 @@
                              if not dry_run:
                                  self.invalidate(older_id, replacement_id=newer_id)
                              conflicts_resolved += 1
-@@ -8428,20 +8977,32 @@
+@@ -8428,20 +8979,32 @@
                  # Uses CompressionPlugin (registered in plugins.py). The env
                  # var MNEMOSYNE_USE_CAVEMAN still works as a deprecated
                  # fallback — see CompressionPlugin for deprecation warning.
@@ -1241,7 +1243,7 @@
                              if chunk_summary:
                                  chunk_summaries.append(chunk_summary)
                          if chunk_summaries:
-@@ -8449,9 +9010,9 @@
+@@ -8449,9 +9012,9 @@
                              if len(chunk_summaries) == 1:
                                  summary = chunk_summaries[0]
                              else:
@@ -1254,7 +1256,7 @@
                                  )
                                  # If second-pass also overflows, concatenate
                                  if not summary:
-@@ -8471,6 +9032,29 @@
+@@ -8471,6 +9034,29 @@
                  compressed = aaak_encode(combined)
                  summary = f"[{source}] {compressed}"
  
@@ -1284,7 +1286,7 @@
              # --- Phase 2: model-refresh inference for canonical model slots ---
              # This follows sleep by default. It asks the same configured LLM path
              # for structured candidate updates, then stores pending proposal rows
-@@ -8478,10 +9062,11 @@
+@@ -8478,10 +9064,11 @@
              proposals = []
              agent_context = str(getattr(self, "agent_context", "") or "").strip().lower()
              model_refresh_owner_id = str(getattr(self, "canonical_owner_id", "") or "").strip() or "default"
@@ -1298,7 +1300,7 @@
                  except Exception:
                      proposals = []
              model_refresh_proposals += len(proposals)
-@@ -8492,7 +9077,7 @@
+@@ -8492,7 +9079,7 @@
                  # the claim survives -- the rows show as consolidated but
                  # without a summary. That's preferable to a phantom-summary-
                  # without-claim race the previous ordering allowed.
@@ -1307,7 +1309,7 @@
                      summary=summary,
                      source_wm_ids=ids,
                      source="sleep_consolidation",
-@@ -8503,9 +9088,26 @@
+@@ -8503,9 +9090,38 @@
                      metadata={
                          "original_count": len(items),
                          "source": source,
@@ -1333,10 +1335,22 @@
 +                    )
 +                    self.conn.commit()
 +                    continue
++                # LOCAL PATCH: a summary that passed the coverage check may
++                # demote its source rows' recall weight. Rows are never deleted
++                # and rows already at or below the cap are untouched. Without
++                # the coverage check a summary is not trusted enough to demote.
++                if demote_sources and coverage_enabled and coverage_ok:
++                    demote_placeholders = ",".join("?" * len(ids))
++                    cursor.execute(
++                        f"UPDATE working_memory SET importance = ? "
++                        f"WHERE id IN ({demote_placeholders}) AND importance > ?",
++                        (0.25, *ids, 0.25),
++                    )
++                    demoted_rows += cursor.rowcount
                  if proposals:
                      from mnemosyne.core import model_refresh
                      proposal_ts = datetime.now().isoformat()
-@@ -8519,6 +9121,7 @@
+@@ -8519,6 +9135,7 @@
                              scope="session",
                              veracity="inferred",
                              trust_tier="DERIVED",
@@ -1344,12 +1358,12 @@
                          )
                          # Proposal rows are review artifacts from this sleep pass,
                          # not fresh raw memories that should recursively trigger
-@@ -8556,13 +9159,13 @@
+@@ -8556,13 +9173,13 @@
              """, (
                  self.session_id,
                  len(consolidated_ids),
 -                f"{summaries_created} summaries ({method}) from {len(consolidated_ids)} items",
-+                f"{summaries_created} summaries ({method}) from {len(consolidated_ids)} items" + (f"; coverage_failures={coverage_failures}" if coverage_enabled else ""),
++                f"{summaries_created} summaries ({method}) from {len(consolidated_ids)} items" + (f"; coverage_failures={coverage_failures}" if coverage_enabled else "") + (f"; demoted={demoted_rows}" if demote_sources else ""),
                  datetime.now().isoformat(),
              ))
              self.conn.commit()
@@ -1360,3 +1374,13 @@
  
          logger.info(
              "sleep: consolidated=%d summaries=%d conflicts=%d llm=%s method=%s",
+@@ -8582,7 +9199,8 @@
+             "model_refresh": {
+                 "proposals": model_refresh_proposals,
+                 "applied": model_refresh_applied,
+-            }
++            },
++            "demoted_rows": demoted_rows,
+         }
+ 
+     def sleep_all_sessions(self, dry_run: bool = False, force: bool = False) -> Dict:

@@ -1566,3 +1566,123 @@ def test_sleep_coverage_ignores_deep_legacy_metadata(monkeypatch, tmp_path):
         assert memory._dedup_cross_tier_summary_links(rows) == rows
     finally:
         memory.conn.close()
+
+
+def _sleep_demote_memory(monkeypatch, tmp_path, name, *, verify="1", demote="1"):
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    if verify is None:
+        monkeypatch.delenv("MNEMOSYNE_SLEEP_VERIFY", raising=False)
+    else:
+        monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", verify)
+    if demote is None:
+        monkeypatch.delenv("MNEMOSYNE_SLEEP_DEMOTE_SOURCES", raising=False)
+    else:
+        monkeypatch.setenv("MNEMOSYNE_SLEEP_DEMOTE_SOURCES", demote)
+    monkeypatch.setattr(local_llm, "llm_available", lambda: False)
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    memory = BeamMemory(session_id=name, db_path=str(tmp_path / f"{name}.db"), seed_config=False)
+    return memory
+
+
+def test_sleep_demote_sources_lowers_verified_source_weight(monkeypatch, tmp_path):
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote")
+    try:
+        source_id = memory.remember(
+            "The Orion storage limit is 40 terabytes.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        result = memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT importance FROM working_memory WHERE id = ?", (source_id,)
+        ).fetchone()
+        assert result["demoted_rows"] == 1
+        assert row["importance"] == 0.25
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_demote_sources_leaves_unverified_sources_alone(monkeypatch, tmp_path):
+    import mnemosyne.core.aaak as aaak
+
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-long")
+    try:
+        monkeypatch.setattr(aaak, "encode", lambda text: "unrelated content")
+        source_id = memory.remember(
+            "The Orion storage limit is 40 terabytes.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        result = memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT importance FROM working_memory WHERE id = ?", (source_id,)
+        ).fetchone()
+        assert result["demoted_rows"] == 0
+        assert row["importance"] == 0.8
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_demote_sources_requires_coverage_gate(monkeypatch, tmp_path):
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-no-verify", verify=None)
+    try:
+        source_id = memory.remember(
+            "The Orion storage limit is 40 terabytes.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        result = memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT importance FROM working_memory WHERE id = ?", (source_id,)
+        ).fetchone()
+        assert result["demoted_rows"] == 0
+        assert row["importance"] == 0.8
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_demote_sources_off_leaves_weight_unchanged(monkeypatch, tmp_path):
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-off", demote=None)
+    try:
+        source_id = memory.remember(
+            "The Orion storage limit is 40 terabytes.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        result = memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT importance FROM working_memory WHERE id = ?", (source_id,)
+        ).fetchone()
+        assert result["demoted_rows"] == 0
+        assert row["importance"] == 0.8
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_demote_sources_dry_run_leaves_weight_unchanged(monkeypatch, tmp_path):
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-dry")
+    try:
+        source_id = memory.remember(
+            "The Orion storage limit is 40 terabytes.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        result = memory.sleep(force=True, dry_run=True)
+        row = memory.conn.execute(
+            "SELECT importance FROM working_memory WHERE id = ?", (source_id,)
+        ).fetchone()
+        assert result["demoted_rows"] == 0
+        assert row["importance"] == 0.8
+    finally:
+        memory.conn.close()

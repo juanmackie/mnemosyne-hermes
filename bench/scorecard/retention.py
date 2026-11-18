@@ -135,7 +135,12 @@ def summarize(records: list[dict[str, Any]], *, resamples: int = 2000) -> dict[s
 
 
 def measure_life(
-    life: dict[str, Any], probes: list[dict[str, Any]], arm: str, *, verify_sleep: bool = False
+    life: dict[str, Any],
+    probes: list[dict[str, Any]],
+    arm: str,
+    *,
+    verify_sleep: bool = False,
+    demote_sources: bool = False,
 ) -> dict[str, Any]:
     """Run one arm with the real provider on a new temporary database."""
     import importlib.util
@@ -172,6 +177,7 @@ def measure_life(
                     "MNEMOSYNE_LLM_ENABLED": "false",
                     "MNEMOSYNE_HOST_LLM_ENABLED": "false",
                     **({"MNEMOSYNE_SLEEP_VERIFY": "1"} if verify_sleep else {}),
+                    **({"MNEMOSYNE_SLEEP_DEMOTE_SOURCES": "1"} if demote_sources else {}),
                 },
             )
         )
@@ -427,7 +433,13 @@ def compare_bwt(
 
 def _job(args: tuple[Any, ...]) -> dict[str, Any]:
     life, probes, arm, *options = args
-    return measure_life(life, probes, arm, verify_sleep=options[0] if options else False)
+    return measure_life(
+        life,
+        probes,
+        arm,
+        verify_sleep=options[0] if len(options) > 0 else False,
+        demote_sources=options[1] if len(options) > 1 else False,
+    )
 
 
 def main() -> int:
@@ -450,6 +462,11 @@ def main() -> int:
     parser.add_argument("--max-lives", type=int, default=None)
     parser.add_argument(
         "--sleep-verify", action="store_true", help="enable experimental sleep coverage guard"
+    )
+    parser.add_argument(
+        "--sleep-demote",
+        action="store_true",
+        help="enable experimental source demotion after verified consolidation",
     )
     args = parser.parse_args()
     if (
@@ -482,7 +499,10 @@ def main() -> int:
         ("sleep-delete-originals", "sleep-delete-originals"),
         ("sleep-loss-control", "sleep-loss-control"),
     ):
-        jobs = [(life, by_life[life["life_id"]], arm, args.sleep_verify) for life in lives]
+        jobs = [
+            (life, by_life[life["life_id"]], arm, args.sleep_verify, args.sleep_demote)
+            for life in lives
+        ]
         print(f"Measuring {label}: {len(jobs)} lives", file=sys.stderr, flush=True)
         if args.workers == 1:
             measured = list(map(_job, jobs))
@@ -534,6 +554,7 @@ def main() -> int:
             "ingest": "tool",
             "optional_llm": "disabled",
             "sleep_verify": args.sleep_verify,
+            "sleep_demote": args.sleep_demote,
             "stages": 4,
             "resamples": args.resamples,
         },
