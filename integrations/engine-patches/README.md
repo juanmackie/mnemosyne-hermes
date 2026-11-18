@@ -71,6 +71,20 @@ These are measured by `bench/scorecard/` (see its README). The scorecard reports
 their effect as paired differences with bootstrap CIs on a held-out split; a
 flag that does not move its own metric is not kept.
 
+### Consolidation coverage guard (experimental, off by default)
+
+`MNEMOSYNE_SLEEP_VERIFY=1` checks a sleep summary against its sources before marking it verified. The initial check is deliberately conservative: after whitespace and case normalization, the text must reproduce the complete source texts in order, with the same punctuation. Structured names and aliases must be preserved, validity dates and visibility scopes must agree, and mixed-scope summaries stay session-scoped. This is a text and metadata check, not proof that a model's output is true. It can reject useful paraphrases.
+
+On failure, sleep makes one bounded retry using at most two smaller groups when a model is available. If the retry still fails, sleep records the summary with `verified: false`; it does not feed that row into graph ingestion or model refresh. Recall filters incomplete summaries and the context path retains their source rows. Incomplete rows remain in the database and can be seen through direct inspection or export. Coverage failures are counted in the consolidation log without recording source content. No source demotion is enabled by this flag.
+
+Unset the flag to stop checking new summaries. The current patch continues to honor the metadata on summaries checked earlier. Restoring an older engine patch does not honor that marker and can expose an incomplete summary again; preserve a backup and assess those rows before any downgrade. The guard creates no new table, but it adds metadata to new episodic rows. After a patch upgrade, restart the gateway and MCP processes. Test on a scratch store before changing a live gateway. A summary marked verified only passed this conservative check; it has not received semantic or human review.
+
+### Episodic degradation preservation guard (experimental, off by default)
+
+`MNEMOSYNE_DEGRADE_VERIFY=1` applies the same conservative text check to each tier-1→2 and tier-2→3 degradation step before the engine rewrites an episodic row in place. After the tier's compression (LLM or keyless truncation), the result must reproduce the stored content exactly; a mismatch cancels that row's transition, counts it in the `coverage_rejected` field of the degradation report (or `coverage_guard: not_evaluated` under `dry_run`), and leaves the row at its current tier with its recall weight unchanged. It does not split groups, retry, or write new rows. This is a text check, not proof that compression preserved meaning, and it cannot recover content already lost by earlier transitions.
+
+Unset the flag to keep the existing in-place rewrite behavior. The flag is independent of `MNEMOSYNE_SLEEP_VERIFY`. Restoring an older engine patch silently re-enables unguarded rewrites; preserve a backup before any downgrade. Neither guard enables source demotion.
+
 ### Recall precision cutoff
 
 `MNEMOSYNE_RECALL_SCORE_FLOOR` enables an optional relative score cutoff.

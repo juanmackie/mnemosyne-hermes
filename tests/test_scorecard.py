@@ -9,8 +9,11 @@ which must be right even when no engine is installed.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -296,3 +299,236 @@ def test_engine_state_revert_floor_restores_the_published_gate(tmp_path):
     import mnemosyne.core.beam as real
 
     assert cli._digest(Path(real.__file__)) == cli._digest(Path(real.__file__))
+
+
+def test_sleep_stages_keep_simultaneous_events_together_and_assign_answer_cohorts():
+    from bench.scorecard.retention import assign_cohorts, stage_events
+
+    events = [
+        {
+            "event_id": "a",
+            "transaction_at": "2025-01",
+            "disposition": "store",
+            "entity": "x",
+            "attribute": "editor",
+            "value": "vim",
+        },
+        {
+            "event_id": "b",
+            "transaction_at": "2025-02",
+            "disposition": "store",
+            "entity": "x",
+            "attribute": "editor",
+            "value": "helix",
+        },
+        {
+            "event_id": "c",
+            "transaction_at": "2025-02",
+            "disposition": "store",
+            "entity": "y",
+            "attribute": "shell",
+            "value": "fish",
+        },
+        {
+            "event_id": "d",
+            "transaction_at": "2025-03",
+            "disposition": "never_store",
+            "entity": "z",
+            "attribute": "shell",
+            "value": "secret",
+        },
+    ]
+    stages = stage_events(events, 4)
+    assert len(stages) == 4
+    assert next(i for i, s in enumerate(stages) if events[1] in s) == next(
+        i for i, s in enumerate(stages) if events[2] in s
+    )
+    probes = [
+        {
+            "probe_id": "p",
+            "kind": "answerable_current",
+            "entity": "x",
+            "attribute": "editor",
+            "answers": ["helix"],
+        },
+        {
+            "probe_id": "q",
+            "kind": "answerable_historical",
+            "entity": "x",
+            "attribute": "editor",
+            "answers": ["vim"],
+        },
+        {
+            "probe_id": "r",
+            "kind": "answerable_current",
+            "entity": "z",
+            "attribute": "shell",
+            "answers": ["secret"],
+        },
+    ]
+    assert assign_cohorts(stages, probes) == {"p": 1}
+
+
+def test_retention_summary_pairs_by_life_and_probe_and_rejects_missing_observations():
+    from bench.scorecard.retention import summarize
+
+    rows = []
+    for life, initial, final in [("a", True, False), ("b", True, True)]:
+        for stage, hit in [(0, initial), (3, final)]:
+            rows.append(
+                {
+                    "life_id": life,
+                    "probe_id": "same-id",
+                    "surface": "tool",
+                    "stage": stage,
+                    "cohort": 0,
+                    "answer_hit": hit,
+                    "fabricated_rows": 0,
+                    "expired_served": 0,
+                }
+            )
+    result = summarize(rows, resamples=100)
+    assert result["tool"]["backward_transfer"]["mean"] == -0.5
+    assert result["tool"]["backward_transfer"]["lives"] == 2
+    import pytest
+
+    with pytest.raises(ValueError, match="missing"):
+        summarize(rows[:-1], resamples=100)
+
+
+def test_retention_aa_control_rejects_cancelling_errors():
+    from bench.scorecard.retention import aa_control
+
+    base = [
+        {
+            "life_id": "a",
+            "probe_id": name,
+            "stage": 0,
+            "surface": "tool",
+            "answer_hit": hit,
+            "fabricated_rows": 0,
+            "expired_served": 0,
+        }
+        for name, hit in [("one", True), ("two", False)]
+    ]
+    changed = [{**row, "answer_hit": not row["answer_hit"]} for row in base]
+    assert aa_control(base, base, "tool")["passed"]
+    assert not aa_control(base, changed, "tool")["passed"]
+    assert aa_control(base, [changed[0], base[1]], "tool")["passed"]
+
+
+def test_retention_refuses_database_outside_scratch(tmp_path):
+    import pytest
+
+    from bench.scorecard.retention import assert_scratch_database
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    assert_scratch_database(scratch / "life.db", scratch)
+    with pytest.raises(ValueError, match="outside"):
+        assert_scratch_database(tmp_path / "live.db", scratch)
+
+
+def test_summary_loss_control_pairs_against_source_deletion():
+    from bench.scorecard.retention import compare_control
+
+    common = {
+        "life_id": "life",
+        "probe_id": "p",
+        "surface": "tool",
+        "stage": 3,
+        "control_target": True,
+    }
+    retained = [{**common, "answer_hit": False}]
+    erased = [{**common, "answer_hit": False}]
+    # Losing sources already lost the answer; erasing the summary adds no loss.
+    result = compare_control(retained, erased, "tool", resamples=10)
+    assert result["mean"] == 0
+
+
+def test_retention_entrypoint_reports_unexpected_failure(monkeypatch, capsys):
+    from bench.scorecard import retention
+
+    def broken():
+        raise RuntimeError("measurement failed")
+
+    monkeypatch.setattr(retention, "main", broken)
+    assert retention.entrypoint() == 3
+    assert "measurement failed" in capsys.readouterr().err
+
+
+def test_summary_loss_uses_post_sleep_source_deletion_as_baseline():
+    from bench.scorecard.retention import summary_loss_control
+
+    common = {
+        "life_id": "life",
+        "probe_id": "p",
+        "surface": "tool",
+        "stage": 3,
+        "control_target": True,
+    }
+    arms = {
+        "sleep": [{**common, "answer_hit": True}],
+        "sleep-delete-originals": [{**common, "answer_hit": False}],
+        "sleep-loss-control": [{**common, "answer_hit": False}],
+    }
+    assert summary_loss_control(arms, "tool", resamples=10)["mean"] == 0
+
+
+def test_retention_exit_codes_distinguish_controls_and_quality():
+    from bench.scorecard.retention import result_exit_code
+
+    assert result_exit_code(False, False) == 2
+    assert result_exit_code(True, False) == 1
+    assert result_exit_code(True, True) == 0
+
+
+def test_retention_rejects_shadow_engine_before_creating_store(monkeypatch, tmp_path):
+    import importlib.util
+    from types import SimpleNamespace
+
+    import pytest
+
+    from bench.scorecard import retention, runner
+
+    monkeypatch.setattr(
+        runner, "engine_attestation", lambda: {"package_root": str(tmp_path / "real")}
+    )
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin=str(tmp_path / "shadow" / "__init__.py")),
+    )
+    monkeypatch.setattr(
+        runner.LifeStore, "create", lambda *_args, **_kwargs: pytest.fail("store opened")
+    )
+    with pytest.raises(RuntimeError, match="engine path differs"):
+        retention.measure_life({"life_id": "synthetic", "events": []}, [], "no-sleep")
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_retention_only_enables_sleep_verification_when_requested(monkeypatch, tmp_path, enabled):
+    import importlib.util
+    from types import SimpleNamespace
+
+    from bench.scorecard import retention, runner
+
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "ambient")
+    monkeypatch.setattr(runner, "engine_attestation", lambda: {"package_root": str(tmp_path)})
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin=str(tmp_path / "__init__.py")),
+    )
+    seen = []
+
+    def stop_before_store(*_args, **_kwargs):
+        seen.append(os.environ.get("MNEMOSYNE_SLEEP_VERIFY"))
+        raise RuntimeError("controlled stop")
+
+    monkeypatch.setattr(runner.LifeStore, "create", stop_before_store)
+    with pytest.raises(RuntimeError, match="controlled stop"):
+        retention.measure_life(
+            {"life_id": "synthetic", "events": []}, [], "no-sleep", verify_sleep=enabled
+        )
+    assert seen == ["1" if enabled else None]

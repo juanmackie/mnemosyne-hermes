@@ -4,7 +4,8 @@
 # Runs bench/scorecard/gate.py, which proves the measurement itself is sound:
 # the corpus is deterministic and exactly labelled, the held-out split is
 # disjoint, an A/A control shows no difference, and reverting the audited 0.15
-# admission-floor engine patch is detected.
+# admission-floor engine patch is detected. It also exercises staged A/A,
+# deletion, sleep and degradation controls against scratch stores.
 #
 # Without the pinned engine the gate cannot measure anything, so it skips with
 # exit 0 and a loud message -- unless MNEMOSYNE_REQUIRE_ENGINE=1, in which case a

@@ -8,8 +8,8 @@ so it belongs in CI, and it checks the *instrument*, not the product's quality:
    have a real answer, fabricated/expired probes have none);
 2. the held-out split is disjoint from dev;
 3. A/A — two arms of the same configuration — produces zero paired difference;
-4. reverting the 0.15 admission-floor engine patch is *detected* as a difference
-   (the instrument has the sensitivity to see the regression it exists to catch).
+4. reverting the 0.15 admission-floor engine patch is detected;
+5. staged A/A, deletion, sleep, and degradation controls run on scratch stores.
 
 A quality regression in the product does not fail this gate; a broken instrument
 does. Product quality is reported by `bench/scorecard/`, weekly in the drift
@@ -58,7 +58,15 @@ def main(argv: list[str] | None = None) -> int:
     from bench.scorecard.aggregate import compare_surfaces
     from bench.scorecard.cli import engine_state
     from bench.scorecard.corpus import corpus_digest
-    from bench.scorecard.runner import activate_engine_path
+    from bench.scorecard.retention import (
+        _job,
+        aa_control,
+        assign_cohorts,
+        compare_control,
+        stage_events,
+        summary_loss_control,
+    )
+    from bench.scorecard.runner import PROVIDER_ROOT, activate_engine_path, engine_attestation
     from bench.sim.scale import make_corpus
 
     failures: list[str] = []
@@ -132,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         return merged["records"]
 
+    import mnemosyne
+
+    installed_path = str(Path(mnemosyne.__file__).resolve().parent.parent)
     print("== arms ==")
     t0 = time.perf_counter()
     arm_a = measure("gate-a", "installed")
@@ -179,6 +190,77 @@ def main(argv: list[str] | None = None) -> int:
         failures,
     )
 
+    print("== staged retention controls ==")
+    activate_engine_path(installed_path)
+    sys.path.insert(0, str(PROVIDER_ROOT))
+    control_lives = [
+        life
+        for life in lives
+        if any(
+            cohort < 3
+            for cohort in assign_cohorts(
+                stage_events(life["events"]), probes_by_life[life["life_id"]]
+            ).values()
+        )
+    ][:2]
+    _check(len(control_lives) == 2, "two lives have an early measurable cohort", failures)
+    import multiprocessing
+
+    attestation = engine_attestation()
+    _check(
+        attestation.get("all_patched") is True
+        and attestation.get("version")
+        == attestation.get("manifest_match_expected", {}).get("version"),
+        "staged controls use the manifest-attested engine",
+        failures,
+    )
+    staged: dict[str, list[dict]] = {}
+    results_by_arm = {}
+    with multiprocessing.get_context("spawn").Pool(processes=min(args.workers or 2, 2)) as pool:
+        for arm in (
+            "no-sleep",
+            "aa",
+            "delete-originals",
+            "sleep+degrade",
+            "sleep-delete-originals",
+            "sleep-loss-control",
+        ):
+            treatment = "no-sleep" if arm == "aa" else arm
+            jobs = [(life, probes_by_life[life["life_id"]], treatment) for life in control_lives]
+            results_by_arm[arm] = pool.map(_job, jobs)
+            staged[arm] = [record for run in results_by_arm[arm] for record in run["records"]]
+    tier_counts = [
+        sum(
+            operation["degradation"][tier]["eligible"]
+            for run in results_by_arm["sleep+degrade"]
+            for operation in run["operations"]
+            if "degradation" in operation
+        )
+        for tier in (0, 1)
+    ]
+    _check(
+        all(tier_counts),
+        f"staged sleep and degradation exercised both transitions: {tier_counts}",
+        failures,
+    )
+    retention_controls = {}
+    for surface in ("tool", "prefetch"):
+        aa_control_result = aa_control(staged["no-sleep"], staged["aa"], surface)
+        deletion = compare_control(
+            staged["no-sleep"], staged["delete-originals"], surface, resamples=args.resamples
+        )
+        deletion_detected = deletion["n"] > 0 and deletion["ci_high"] < 0
+        sleep_loss = summary_loss_control(staged, surface, resamples=args.resamples)
+        sleep_loss_detected = sleep_loss["n"] > 0 and sleep_loss["ci_high"] < 0
+        _check(sleep_loss_detected, f"staged summary loss {surface}: {sleep_loss}", failures)
+        _check(aa_control_result["passed"], f"staged A/A {surface}: {aa_control_result}", failures)
+        _check(deletion_detected, f"staged deletion {surface}: {deletion}", failures)
+        retention_controls[surface] = {
+            "aa": aa_control_result,
+            "deletion": deletion,
+            "sleep_loss": sleep_loss,
+        }
+
     elapsed = time.perf_counter() - started
     report = {
         "format": "mnemosyne-scorecard-gate/v1",
@@ -189,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         "wall_seconds": round(elapsed, 2),
         "aa": aa,
         "floor_revert": revert,
+        "retention_controls": retention_controls,
         "detected_metrics": detected,
         "failures": failures,
         "ok": not failures,

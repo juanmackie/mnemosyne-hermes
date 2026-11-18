@@ -42,7 +42,7 @@ The A/A control is flat on every criterion (one diagnostic metric moves by 8 of
 spans zero). Reverting the floor patch is detected with a CI that excludes zero
 by a wide margin. The instrument sees what it is built to see.
 
-`bench/scorecard/gate.py` re-proves this on a 240-probe corpus in ~3.5 minutes
+`bench/scorecard/gate.py` re-proves this on a 240-probe corpus
 and runs in `scripts/checks.sh` and the weekly drift workflow.
 
 ## 2. Baseline quality (the problem, measured)

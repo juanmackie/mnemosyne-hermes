@@ -1270,3 +1270,299 @@ if __name__ == "__main__":
     import pytest
 
     raise SystemExit(pytest.main([__file__]))
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected_verified"),
+    [
+        ("The Orion storage limit is 40 terabytes.", True),
+        ("The Orion storage limit is terabytes.", False),
+        ("The Orion storage limit is not 40 terabytes.", False),
+    ],
+)
+def test_sleep_coverage_preserves_source_authority(
+    monkeypatch, tmp_path, summary, expected_verified
+):
+    """A lossy summary cannot replace its source in recall."""
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "1")
+    monkeypatch.setattr(local_llm, "llm_available", lambda: True)
+    monkeypatch.setattr(local_llm, "summarize_memories", lambda *_args, **_kwargs: summary)
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    memory = BeamMemory(
+        session_id="coverage", db_path=str(tmp_path / "coverage.db"), seed_config=False
+    )
+    try:
+        source = "The Orion storage limit is 40 terabytes."
+        source_id = memory.remember(source, source="user_note", scope="session")
+        graph_calls = []
+        monkeypatch.setattr(
+            memory, "_ingest_graph_and_veracity", lambda *_args, **_kwargs: graph_calls.append(True)
+        )
+        result = memory.sleep(force=True)
+        assert result["status"] == "consolidated"
+        row = memory.conn.execute(
+            "SELECT id, metadata_json FROM episodic_memory WHERE source = ?",
+            ("sleep_consolidation",),
+        ).fetchone()
+        assert row is not None
+        assert json.loads(row["metadata_json"])["verified"] is expected_verified
+        assert bool(graph_calls) is expected_verified
+        if not expected_verified:
+            # Persisted incomplete summaries remain safe after the flag is disabled.
+            monkeypatch.delenv("MNEMOSYNE_SLEEP_VERIFY")
+            assert any(item["id"] == source_id for item in memory.get_context(limit=10))
+            recalled = memory.recall("Orion storage limit", top_k=10)
+            assert any(item["id"] == source_id for item in recalled)
+            first = memory.recall("Orion storage limit", top_k=1)
+            assert any(item["id"] == source_id for item in first)
+            assert not any(
+                item["id"] == row["id"] and item.get("tier") == "episodic" for item in recalled
+            )
+            provider = _provider(memory)
+            provider._session_id = "coverage"
+            provider._read_config_key = lambda _key: None
+            context = provider.prefetch("Orion storage limit", session_id="coverage")
+            assert "40 terabytes" in context
+            # A high-scored unverified summary must not suppress the source.
+            candidates = [
+                {"id": row["id"], "tier": "episodic", "score": 1.0},
+                {"id": source_id, "tier": "working", "score": 0.1},
+            ]
+            kept = memory._dedup_cross_tier_summary_links(candidates)
+            assert any(item["id"] == source_id and item["tier"] == "working" for item in kept)
+            monkeypatch.setenv("MNEMOSYNE_CROSS_TIER_DEDUP", "0")
+            kept = memory._dedup_cross_tier_summary_links(candidates)
+            assert not any(item["id"] == row["id"] and item["tier"] == "episodic" for item in kept)
+            # Corrupted verification metadata must fail closed.
+            memory.conn.execute(
+                "UPDATE episodic_memory SET metadata_json = ? WHERE id = ?",
+                ('{"sleep_coverage_version": 1,', row["id"]),
+            )
+            memory.conn.commit()
+            assert any(item["id"] == source_id for item in memory.get_context(limit=10))
+            kept = memory._dedup_cross_tier_summary_links(candidates)
+            assert not any(item["id"] == row["id"] and item["tier"] == "episodic" for item in kept)
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_coverage_retry_and_default_off(monkeypatch, tmp_path):
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    monkeypatch.setattr(local_llm, "llm_available", lambda: True)
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    source = "The Orion storage limit is 40 terabytes."
+    answers = iter(["Orion has a storage limit.", source])
+    monkeypatch.setattr(local_llm, "summarize_memories", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "1")
+    memory = BeamMemory(session_id="retry", db_path=str(tmp_path / "retry.db"), seed_config=False)
+    try:
+        memory.remember(source, source="user_note", scope="session")
+        memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT content, metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert row["content"] == source
+        assert json.loads(row["metadata_json"])["verified"] is True
+    finally:
+        memory.conn.close()
+
+    monkeypatch.delenv("MNEMOSYNE_SLEEP_VERIFY")
+    monkeypatch.setattr(
+        local_llm, "summarize_memories", lambda *_args, **_kwargs: "Incomplete summary."
+    )
+    memory = BeamMemory(
+        session_id="default", db_path=str(tmp_path / "default.db"), seed_config=False
+    )
+    try:
+        memory.remember(source, source="user_note", scope="session")
+        memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT content, metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert row["content"] == "Incomplete summary."
+        assert "verified" not in json.loads(row["metadata_json"])
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_coverage_rejects_missing_structured_labels():
+    try:
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    item = {
+        "content": "Use SQLite.",
+        "metadata_json": json.dumps({"canonical_name": "Project Alba"}),
+        "valid_until": None,
+    }
+    assert not BeamMemory._sleep_coverage_complete([item], "Use SQLite.")
+
+
+def test_sleep_coverage_accepts_lossless_keyless_fallback(monkeypatch, tmp_path):
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "1")
+    monkeypatch.setattr(local_llm, "llm_available", lambda: False)
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    memory = BeamMemory(
+        session_id="fallback", db_path=str(tmp_path / "fallback.db"), seed_config=False
+    )
+    try:
+        memory.remember(
+            "The Orion storage limit is 40 terabytes.", source="user_note", scope="session"
+        )
+        memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert json.loads(row["metadata_json"])["verified"] is True
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_coverage_falls_back_on_nontext_summary(monkeypatch, tmp_path):
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "1")
+    monkeypatch.setattr(local_llm, "llm_available", lambda: True)
+    monkeypatch.setattr(local_llm, "summarize_memories", lambda *_args, **_kwargs: {"bad": "shape"})
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    memory = BeamMemory(
+        session_id="bad-shape", db_path=str(tmp_path / "bad-shape.db"), seed_config=False
+    )
+    try:
+        memory.remember(
+            "The Orion storage limit is 40 terabytes.", source="user_note", scope="session"
+        )
+        assert memory.sleep(force=True)["status"] == "consolidated"
+        row = memory.conn.execute(
+            "SELECT metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert json.loads(row["metadata_json"])["verified"] is True
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_coverage_retry_is_bounded_for_group(monkeypatch, tmp_path):
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "1")
+    monkeypatch.setattr(local_llm, "llm_available", lambda: True)
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    calls = []
+
+    def summarize(lines, **_kwargs):
+        calls.append(list(lines))
+        return "omitted facts" if len(calls) == 1 else " | ".join(lines)
+
+    monkeypatch.setattr(local_llm, "summarize_memories", summarize)
+    memory = BeamMemory(
+        session_id="bounded", db_path=str(tmp_path / "bounded.db"), seed_config=False
+    )
+    try:
+        for index in range(4):
+            memory.remember(
+                f"The distinct project item {index} is safe.", source="user_note", scope="session"
+            )
+        memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert json.loads(row["metadata_json"])["verified"] is True
+        assert len(calls) == 3
+        assert [len(chunk) for chunk in calls] == [4, 2, 2]
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_coverage_rejects_mixed_visibility():
+    try:
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    items = [
+        {"content": "A global fact.", "scope": "global"},
+        {"content": "A private fact.", "scope": "session"},
+    ]
+    assert not BeamMemory._sleep_coverage_complete(items, "A global fact. | A private fact.")
+
+
+def test_sleep_coverage_never_promotes_mixed_scope_summary(monkeypatch, tmp_path):
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "1")
+    monkeypatch.setattr(local_llm, "llm_available", lambda: True)
+    monkeypatch.setattr(local_llm, "summarize_memories", lambda lines, **_kwargs: " | ".join(lines))
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    memory = BeamMemory(
+        session_id="visibility", db_path=str(tmp_path / "visibility.db"), seed_config=False
+    )
+    try:
+        memory.remember("The global color is blue.", source="user_note", scope="global")
+        memory.remember("The private fruit is quince.", source="user_note", scope="session")
+        memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT scope, metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert row["scope"] == "session"
+        assert json.loads(row["metadata_json"])["verified"] is False
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_coverage_ignores_deep_legacy_metadata(monkeypatch, tmp_path):
+    try:
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    memory = BeamMemory(session_id="legacy", db_path=str(tmp_path / "legacy.db"), seed_config=False)
+    try:
+        memory.conn.execute(
+            "INSERT INTO episodic_memory(id,content,metadata_json) VALUES(?,?,?)",
+            ("legacy", "A legacy episode", "[" * 10000 + "]" * 10000),
+        )
+        memory.conn.commit()
+        rows = [{"id": "legacy", "tier": "episodic", "score": 1.0}]
+        assert memory._dedup_cross_tier_summary_links(rows) == rows
+    finally:
+        memory.conn.close()
