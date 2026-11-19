@@ -168,7 +168,10 @@ def measure_life(
     target = min((cohort for cohort in cohorts.values() if cohort < 3), default=None)
     records: list[dict[str, Any]] = []
     operations: list[dict[str, Any]] = []
-    with tempfile.TemporaryDirectory(prefix="mnemosyne-retention-") as folder:
+    # See parallel._measure_life: leftover handles must not fail the run.
+    with tempfile.TemporaryDirectory(
+        prefix="mnemosyne-retention-", ignore_cleanup_errors=True
+    ) as folder:
         scratch = Path(folder)
         previous = dict(os.environ)
         os.environ.clear()

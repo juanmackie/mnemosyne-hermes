@@ -418,7 +418,10 @@ def run_arm(
         life_probes = probes_by_life.get(life["life_id"], [])
         if probe_limit is not None and measured >= probe_limit:
             break
-        with tempfile.TemporaryDirectory(prefix=f"mnemosyne-scorecard-{arm}-") as folder:
+        # See parallel._measure_life: leftover handles must not fail the run.
+        with tempfile.TemporaryDirectory(
+            prefix=f"mnemosyne-scorecard-{arm}-", ignore_cleanup_errors=True
+        ) as folder:
             scratch = Path(folder)
             resolved = clean_environment(scratch, environment)
             previous = dict(os.environ)
