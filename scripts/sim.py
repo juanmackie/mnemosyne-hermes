@@ -328,6 +328,12 @@ def cmd_open(ledger: dict[str, Any], args: argparse.Namespace) -> int:
     if existing is not None:
         problem_id = existing["id"]
         merged = True
+        opened = existing.get("opened") or {}
+        if opened.get("objective") not in (None, args.objective):
+            raise Refused(
+                f"{problem_id} is already open against objective {opened['objective']}; "
+                f"a root cause belongs to one objective (use a new --name for {args.objective})"
+            )
     else:
         problem_id = next_problem_id(ledger)
         merged = False

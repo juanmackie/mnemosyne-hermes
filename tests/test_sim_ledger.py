@@ -257,6 +257,40 @@ def test_open_merges_an_identical_root_cause(tmp_path: Path) -> None:
     assert ledger["next_id"] == 2
 
 
+def test_open_refuses_to_retarget_a_merged_root_cause(tmp_path: Path) -> None:
+    path = tmp_path / "sim.json"
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "open",
+                "--name",
+                "A root cause",
+                "--objective",
+                "precisionmembench",
+            ]
+        )
+        == 0
+    )
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "open",
+                "--name",
+                "a root cause",
+                "--objective",
+                "task/write-throughput",
+            ]
+        )
+        == 1
+    )
+    ledger = json.loads(path.read_text(encoding="utf-8"))
+    assert ledger["problems"][0]["opened"]["objective"] == "precisionmembench"
+
+
 def test_open_refuses_an_alias_bound_elsewhere(tmp_path: Path) -> None:
     path = tmp_path / "sim.json"
     assert (
