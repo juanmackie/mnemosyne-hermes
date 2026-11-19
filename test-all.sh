@@ -57,6 +57,7 @@ run_contract_tests() {
   "$PYTHON_BIN" tests/test_provider_loader.py
   "$PYTHON_BIN" tests/test_provider_db_path.py
   "$PYTHON_BIN" tests/test_provider_engine_contract.py
+  "$PYTHON_BIN" tests/test_engine_backup_roundtrip.py
 }
 
 run_non_llm_tests() {

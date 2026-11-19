@@ -1,0 +1,120 @@
+--- a/mnemosyne/dr/recovery.py
++++ b/mnemosyne/dr/recovery.py
+@@ -5,7 +5,6 @@
+ """
+ 
+ import gzip
+-import io
+ import os
+ import json
+ import hashlib
+@@ -43,6 +42,21 @@
+     return data_dir, backup_dir, db_path
+ 
+ 
++def _load_sqlite_vec(conn):
++    """Best-effort sqlite-vec load (legacy SQL-dump restore only).
++
++    Raw page-image backup/restore needs no extension: sqlite3.backup()
++    copies vec0 shadow tables verbatim. Legacy SQL dumps still need the
++    module present to replay CREATE VIRTUAL TABLE statements.
++    """
++    try:
++        import sqlite_vec
++        conn.enable_load_extension(True)
++        sqlite_vec.load(conn)
++    except (ImportError, sqlite3.OperationalError):
++        pass  # optional extra; absence just means no vec0 tables
++
++
+ def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
+     """
+     Create a compressed backup of the database.
+@@ -69,34 +83,23 @@
+     # file if a checkpoint runs partway through. The old copyfileobj
+     # approach only copied the .db file, missed .db-wal frames, and
+     # could produce corrupted backups under concurrent write load.
++    # LOCAL PATCH: vec0-safe backup — gzip the raw page image, not SQL text.
++    # iterdump() cannot represent sqlite-vec vec0 shadow tables, so the old
++    # SQL-text serialization silently lost every vector on restore. backup()
++    # copies raw pages (vec0 shadows included) and needs no extension on
++    # either connection.
+     src = sqlite3.connect(str(db_path))
+-    # Load sqlite-vec on BOTH connections involved in the backup.
+-    # Without this, src.backup(dst) fails with "no such module: vec0"
+-    # when copying vec0 virtual tables, AND dst.iterdump() (used to
+-    # serialize the in-memory backup to gzipped SQL) fails the same
+-    # way when introspecting the destination's vec0 schema.
+-    # Mirrors the graceful-fallback pattern in core/beam.py.
+-    def _load_sqlite_vec(conn):
+-        try:
+-            import sqlite_vec
+-            conn.enable_load_extension(True)
+-            sqlite_vec.load(conn)
+-        except (ImportError, sqlite3.OperationalError):
+-            pass  # optional extra; absence just means no vec0 tables
+-    _load_sqlite_vec(src)
+-    dst = sqlite3.connect(":memory:")
+-    _load_sqlite_vec(dst)
++    tmp_path = backup_path.with_name(backup_path.name + ".tmp")
++    dst = sqlite3.connect(str(tmp_path))
+     src.backup(dst)
+     src.close()
+-
+-    # Serialize the in-memory backup → gzip → disk
+-    buf = io.BytesIO()
+-    for line in dst.iterdump():
+-        buf.write((line + "\n").encode("utf-8"))
++    # Flatten WAL so the snapshot is a self-contained single file.
++    dst.execute("PRAGMA journal_mode=DELETE")
+     dst.close()
+ 
+-    with gzip.open(backup_path, "wb") as f_out:
+-        f_out.write(buf.getvalue())
++    with open(tmp_path, "rb") as f_in, gzip.open(backup_path, "wb") as f_out:
++        shutil.copyfileobj(f_in, f_out)
++    tmp_path.unlink()
+     
+     # Calculate checksums
+     db_checksum = hashlib.sha256(db_path.read_bytes()).hexdigest()[:16]
+@@ -150,15 +153,31 @@
+     db_path.parent.mkdir(parents=True, exist_ok=True)
+ 
+     with gzip.open(backup_path, "rb") as f_in:
+-        sql_dump = f_in.read().decode("utf-8")
+-
+-    # Rebuild DB in-memory, then backup to target file
+-    mem_db = sqlite3.connect(":memory:")
+-    mem_db.executescript(sql_dump)
+-    target_db = sqlite3.connect(str(db_path))
+-    mem_db.backup(target_db)
+-    mem_db.close()
+-    target_db.close()
++        payload = f_in.read()
++
++    if payload[:16] == b"SQLite format 3\x00":
++        # LOCAL PATCH: vec0-safe restore — raw page image written by the
++        # patched create_backup; backup() copies vec0 shadows verbatim.
++        tmp_path = db_path.with_name(db_path.name + ".restore-tmp")
++        tmp_path.write_bytes(payload)
++        try:
++            src_db = sqlite3.connect(str(tmp_path))
++            target_db = sqlite3.connect(str(db_path))
++            src_db.backup(target_db)
++            src_db.close()
++            target_db.close()
++        finally:
++            tmp_path.unlink(missing_ok=True)
++    else:
++        # Legacy SQL-text dump (pre-patch backups). vec0 tables cannot
++        # survive that format; everything else restores as before.
++        mem_db = sqlite3.connect(":memory:")
++        _load_sqlite_vec(mem_db)
++        mem_db.executescript(payload.decode("utf-8"))
++        target_db = sqlite3.connect(str(db_path))
++        mem_db.backup(target_db)
++        mem_db.close()
++        target_db.close()
+     
+     # Verify restored database
+     is_valid = verify_integrity(db_path)
