@@ -1,12 +1,15 @@
 """Offline rehearsal for stored labelled memories (Phase 4 of the sleep plan).
 
 Probes come from deterministic templates over structured labels, never from an
-LLM. A probe is `<canonical_name> <attribute>`, where the attribute is the first
-key token of the memory that is not the label. A miss is a probe whose source
-memory is outside the top-k recall results.
+LLM. A probe is `<canonical_name> <attribute>`. The attribute is the item's own
+`attribute` when it has one, otherwise the first key token of its content that
+is not the label. A miss is a probe whose source memory is outside the top-k
+recall results.
 
-A proposed fix is one derived alias row. Fixes are split by a fixed hash of the
-memory id. Fit misses propose fixes; held-out probes decide them. A batch is
+A fit miss proposes an alias rule: the item's alias token maps to its canonical
+label. The rule applies to every item in the same label group whose content
+contains that alias, held-out items included. Each application is a derived
+restated row that carries the item's id. Held-out probes decide the batch: it is
 kept only if held-out hits rise, held-out wrong top-1 results do not rise, and
 fabricated-query rows do not rise. Nothing is written to a live store here: the
 kept batch is written to a JSON file for the owner to review and apply.
@@ -55,14 +58,17 @@ def make_probes(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         label = str(item.get("canonical_name") or "").strip()
         if not label:
             continue
-        attributes = [
-            t for t in key_tokens(item.get("content", "")) if t.casefold() != label.casefold()
-        ]
-        # Digit tokens first: a capitalised word is often just the sentence opener.
-        attributes.sort(key=lambda token: not any(c.isdigit() for c in token))
-        if not attributes:
-            continue
-        attribute = attributes[0]
+        if item.get("attribute"):
+            attribute = str(item["attribute"])
+        else:
+            attributes = [
+                t for t in key_tokens(item.get("content", "")) if t.casefold() != label.casefold()
+            ]
+            # Digit tokens first: a capitalised word is often just the sentence opener.
+            attributes.sort(key=lambda token: not any(c.isdigit() for c in token))
+            if not attributes:
+                continue
+            attribute = attributes[0]
         probes.append(
             {
                 "probe_id": item["id"],
@@ -70,6 +76,7 @@ def make_probes(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                 "target": item["id"],
                 "canonical_name": label,
                 "attribute": attribute,
+                "alias": item.get("alias"),
                 "split": split_of(item["id"]),
             }
         )
@@ -96,36 +103,59 @@ def decide(
     fabricated_after: int,
     fixes: list[dict[str, Any]],
 ) -> bool:
-    """Keep a batch only if held-out hits rise, wrong top-1 does not rise, and
-    fabricated rows do not rise. A batch with no fixes is never kept."""
+    """Keep a batch only if held-out hits rise, held-out over-returns (distractor
+    rows in the top-k) do not rise, and fabricated rows do not rise. A batch
+    with no fixes is never kept. Over-return is the plan's definition."""
     return bool(fixes) and (
         held_after["hits"] > held_before["hits"]
-        and held_after["wrong_top1"] <= held_before["wrong_top1"]
+        and held_after["over_return"] <= held_before["over_return"]
         and fabricated_after <= fabricated_before
     )
 
 
-def propose_fixes(misses: Iterable[dict[str, Any]], batch: str) -> list[dict[str, Any]]:
-    """One alias row per fit miss: the attribute becomes a single-token label."""
-    fixes = []
+def propose_fixes(
+    misses: Iterable[dict[str, Any]], items: list[dict[str, Any]], batch: str
+) -> list[dict[str, Any]]:
+    """Turn fit misses into alias rules, then apply each rule to its label group.
+
+    A rule is (canonical_name, alias). It applies to every item with the same
+    canonical name whose content has the alias as a word, so held-out items
+    benefit too. Each application restates the item under its label and keeps
+    the item's id, so evaluation can count a hit for it.
+    """
+    rules: list[tuple[str, str]] = []
     for miss in misses:
-        attribute = miss["attribute"]
-        if len(WORD.findall(attribute)) != 1 or len(attribute) < 4:
+        alias = miss.get("alias")
+        canonical = miss["canonical_name"]
+        if not alias or len(WORD.findall(alias)) != 1 or len(alias) < 2:
             continue
-        fixes.append(
-            {
-                "fix_id": f"{batch}:{miss['target']}",
-                "target": miss["target"],
-                "content": f"{attribute} is another name for {miss['canonical_name']}.",
-                "metadata": {
-                    "canonical_name": attribute,
-                    "aliases": [miss["canonical_name"]],
-                    "rehearsal_batch": batch,
-                    "trust_tier": "DERIVED",
-                },
-                "source": f"rehearsal:{batch}",
-            }
-        )
+        rule = (canonical, alias.casefold())
+        if rule not in rules:
+            rules.append(rule)
+    fixes = []
+    seen: set[tuple[str, str]] = set()
+    for canonical, alias in rules:
+        for item in items:
+            if item.get("canonical_name") != canonical:
+                continue
+            words = {w.casefold() for w in WORD.findall(item.get("content", ""))}
+            if alias not in words or (canonical, item["id"]) in seen:
+                continue
+            seen.add((canonical, item["id"]))
+            fixes.append(
+                {
+                    "fix_id": f"{batch}:{item['id']}",
+                    "target": item["id"],
+                    "content": f"{canonical}: {item['content']}",
+                    "metadata": {
+                        "canonical_name": canonical,
+                        "beliefId": item["id"],
+                        "rehearsal_batch": batch,
+                        "trust_tier": "DERIVED",
+                    },
+                    "source": f"rehearsal:{batch}",
+                }
+            )
     return fixes
 
 
@@ -176,8 +206,9 @@ def evaluate(
                     },
                 )
             )
-            if result.get("error"):
+            if result.get("error") or not isinstance(result.get("memory_id"), str):
                 raise RuntimeError(f"fix write failed for {fix['fix_id']}: {result}")
+            alias_to_item[result["memory_id"]] = fix["target"]
 
         def top(query: str) -> list[str | None]:
             payload = store.recall(query, limit=TOP_K)
@@ -196,6 +227,7 @@ def evaluate(
                     "control": bool(probe.get("control")),
                     "hit": probe["target"] in ranked,
                     "wrong_top1": bool(ranked) and ranked[0] != probe["target"],
+                    "over_return": sum(1 for r in ranked if r != probe["target"]),
                 }
             )
         fabricated_rows = sum(
@@ -215,6 +247,7 @@ def _summary(scored: list[dict[str, Any]], split: str) -> dict[str, Any]:
         "probes": len(rows),
         "hits": sum(s["hit"] for s in rows),
         "wrong_top1": sum(s["wrong_top1"] for s in rows),
+        "over_return": sum(s["over_return"] for s in rows),
     }
 
 
@@ -224,7 +257,7 @@ def rehearse(items: list[dict[str, Any]], *, scratch_root: Path, batch: str) -> 
     base = evaluate(items, probes + controls, [], scratch_root=scratch_root, tag="base")
     hit_by_probe = {s["probe_id"]: s["hit"] for s in base["scored"] if not s["control"]}
     misses = [p for p in probes if p["split"] == "fit" and not hit_by_probe[p["probe_id"]]]
-    fixes = propose_fixes(misses, batch)
+    fixes = propose_fixes(misses, items, batch)
     fixed = None
     if fixes:
         fixed = evaluate(items, probes + controls, fixes, scratch_root=scratch_root, tag="fixed")
@@ -252,7 +285,7 @@ def rehearse(items: list[dict[str, Any]], *, scratch_root: Path, batch: str) -> 
 
 
 def load_population() -> list[dict[str, Any]]:
-    """Labelled beliefs from the PrecisionMemBench fixture, the only labelled population here."""
+    """Labelled beliefs from the PrecisionMemBench fixture (no misses on this one)."""
     from bench.precisionmembench.run_eval import belief_to_text, load_fixtures, seed_metadata
 
     _, beliefs = load_fixtures()
@@ -270,14 +303,55 @@ def load_population() -> list[dict[str, Any]]:
     return items
 
 
+ALIAS_GROUPS = (
+    ("PostgreSQL", "pgdb"),
+    ("Kafka", "kfk"),
+    ("Redis", "rds"),
+    ("Terraform", "tfm"),
+)
+ALIAS_ATTRIBUTES = ("retention", "replica", "quota")
+
+
+def alias_population(per_group: int = 12) -> list[dict[str, Any]]:
+    """Deterministic labelled population where the content uses an alias, not the label.
+
+    Each group's probes share attribute words with other groups, so recall
+    returns other groups' rows and misses some targets. This population is a
+    constructed stress case: it checks the fix path on the real engine. It says
+    nothing about how often such misses occur in real use.
+    """
+    items = []
+    for group, (canonical, alias) in enumerate(ALIAS_GROUPS):
+        for n in range(per_group):
+            attribute = ALIAS_ATTRIBUTES[n % len(ALIAS_ATTRIBUTES)]
+            value = 30 + group * 17 + n * 3
+            items.append(
+                {
+                    "id": f"{canonical}-{n:02d}",
+                    "content": f"{alias} {attribute} is {value} days.",
+                    "importance": 0.5,
+                    "canonical_name": canonical,
+                    "attribute": attribute,
+                    "alias": alias,
+                }
+            )
+    return items
+
+
+POPULATIONS = {"pmb": load_population, "alias": alias_population}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="report JSON path")
     parser.add_argument("--batch-file", type=Path, default=None, help="write kept fixes here")
     parser.add_argument("--batch", default="rehearse-1")
+    parser.add_argument("--population", choices=sorted(POPULATIONS), default="pmb")
     args = parser.parse_args(argv)
+    items = POPULATIONS[args.population]()
     with tempfile.TemporaryDirectory(prefix="rehearsal-") as folder:
-        report = rehearse(load_population(), scratch_root=Path(folder), batch=args.batch)
+        report = rehearse(items, scratch_root=Path(folder), batch=args.batch)
+    report["population"] = args.population
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, sort_keys=True, indent=2), encoding="utf-8")
     if args.batch_file and report["accepted"]:
