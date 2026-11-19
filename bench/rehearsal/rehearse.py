@@ -177,8 +177,12 @@ def evaluate(
     scratch = scratch_root / tag
     scratch.mkdir(parents=True, exist_ok=True)
     previous = dict(os.environ)
+    # Build the environment before clearing: clean_environment reads
+    # os.environ, so calling it after the clear keeps nothing but its own
+    # defaults and drops HOME/USERPROFILE/PATH for the engine import.
+    resolved = clean_environment(scratch)
     os.environ.clear()
-    os.environ.update(clean_environment(scratch))
+    os.environ.update(resolved)
     store = None
     try:
         store = LifeStore.create(scratch, f"rehearsal-{tag}")

@@ -559,3 +559,35 @@ def test_require_vendored_provider_accepts_snapshot_and_refuses_other_copies(tmp
     (copy / "__init__.py").write_bytes(b"# unpatched wheel copy\n")
     with pytest.raises(RuntimeError, match="not the vendored snapshot"):
         runner.require_vendored_provider(SimpleNamespace(__file__=str(copy / "__init__.py")))
+
+
+def test_staged_arm_keeps_the_inherited_environment(monkeypatch):
+    """The staged arm needs HOME/USERPROFILE/PATH while the engine imports.
+
+    Same invariant as the rehearsal: clean_environment reads os.environ, so it
+    must be called before the clear. This arm is the one that died on Windows
+    with `Path.home()` raising inside the pool worker.
+    """
+    mnemosyne = pytest.importorskip("mnemosyne")
+    from bench.scorecard import retention, runner
+
+    captured: dict[str, str] = {}
+
+    def fake_create(cls, scratch, life_id, **kwargs):
+        captured.update(dict(os.environ))
+        raise RuntimeError("stop before the engine is touched")
+
+    monkeypatch.setenv("SCORECARD_ENV_MARKER", "1")
+    monkeypatch.setattr(runner.LifeStore, "create", classmethod(fake_create))
+    # The arm verifies the engine path before opening a store; stub the
+    # attestation so the test is about the environment, not the engine build.
+    package_root = Path(mnemosyne.__file__).resolve().parent
+    monkeypatch.setattr(runner, "engine_attestation", lambda: {"package_root": str(package_root)})
+
+    with pytest.raises(RuntimeError, match="stop before the engine"):
+        retention.measure_life({"life_id": "env-life", "events": []}, [], "no-sleep")
+
+    assert captured.get("SCORECARD_ENV_MARKER") == "1", (
+        "staged arm dropped the inherited environment"
+    )
+    assert "PATH" in captured

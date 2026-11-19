@@ -174,26 +174,22 @@ def measure_life(
     ) as folder:
         scratch = Path(folder)
         previous = dict(os.environ)
-        os.environ.clear()
-        os.environ.update(
-            clean_environment(
-                scratch,
-                {
-                    "MNEMOSYNE_LLM_ENABLED": "false",
-                    "MNEMOSYNE_HOST_LLM_ENABLED": "false",
-                    **({"MNEMOSYNE_SLEEP_VERIFY": "1"} if verify_sleep else {}),
-                    **({"MNEMOSYNE_SLEEP_DEMOTE_SOURCES": "1"} if demote_sources else {}),
-                    **(
-                        {"MNEMOSYNE_DEGRADE_VERIFY": "1"} if arm == "sleep+degrade-verified" else {}
-                    ),
-                    **(
-                        {"MNEMOSYNE_DEGRADE_ADDITIVE": "1"}
-                        if arm == "sleep+degrade-additive"
-                        else {}
-                    ),
-                },
-            )
+        # Build the environment before clearing: clean_environment reads
+        # os.environ, so calling it after the clear keeps nothing but its own
+        # defaults and drops HOME/USERPROFILE/PATH for the engine import.
+        resolved = clean_environment(
+            scratch,
+            {
+                "MNEMOSYNE_LLM_ENABLED": "false",
+                "MNEMOSYNE_HOST_LLM_ENABLED": "false",
+                **({"MNEMOSYNE_SLEEP_VERIFY": "1"} if verify_sleep else {}),
+                **({"MNEMOSYNE_SLEEP_DEMOTE_SOURCES": "1"} if demote_sources else {}),
+                **({"MNEMOSYNE_DEGRADE_VERIFY": "1"} if arm == "sleep+degrade-verified" else {}),
+                **({"MNEMOSYNE_DEGRADE_ADDITIVE": "1"} if arm == "sleep+degrade-additive" else {}),
+            },
         )
+        os.environ.clear()
+        os.environ.update(resolved)
         store = None
         try:
             attestation = engine_attestation()

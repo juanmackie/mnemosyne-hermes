@@ -97,3 +97,41 @@ def test_decide_keeps_only_when_all_three_conditions_hold():
     assert rh.decide(before, more_distractors, 3, 3, fixes) is False  # over-return rose
     assert rh.decide(before, better, 3, 4, fixes) is False  # fabricated rose
     assert rh.decide(before, better, 3, 3, []) is False  # no fixes, never kept
+
+
+def test_armed_evaluation_keeps_the_inherited_environment():
+    """`clean_environment` reads os.environ, so it has to run before the clear.
+
+    Evaluating it after `os.environ.clear()` kept only its own defaults and
+    dropped HOME/USERPROFILE/PATH, which the engine needs the moment it imports
+    (`Path.home()` raises on Windows without USERPROFILE).
+    """
+    import contextlib
+    import os
+    import tempfile
+
+    from bench.scorecard import runner
+
+    marker = "REHEARSAL_ENV_MARKER"
+    captured: dict[str, str] = {}
+
+    def fake_create(cls, scratch, life_id, **kwargs):
+        captured.update(dict(os.environ))
+        raise RuntimeError("stop before the engine is touched")
+
+    original_create = runner.LifeStore.create
+    previous = os.environ.get(marker)
+    os.environ[marker] = "1"
+    runner.LifeStore.create = classmethod(fake_create)
+    try:
+        with tempfile.TemporaryDirectory() as tmp, contextlib.suppress(RuntimeError):
+            rh.evaluate([], [], [], scratch_root=Path(tmp) / "scratch", tag="env")
+    finally:
+        runner.LifeStore.create = original_create
+        if previous is None:
+            os.environ.pop(marker, None)
+        else:
+            os.environ[marker] = previous
+
+    assert captured.get(marker) == "1", "rehearsal dropped the inherited environment"
+    assert "PATH" in captured
