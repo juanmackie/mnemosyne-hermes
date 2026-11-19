@@ -43,7 +43,12 @@ def _measure_life(job: dict[str, Any]) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
     secrets: dict[str, Any] = {"planted": len(life.get("secrets") or []), "stored": 0}
 
-    with tempfile.TemporaryDirectory(prefix=f"mnemosyne-scorecard-{arm}-") as folder:
+    # A store that is closed can still leave a handle that Windows will not let
+    # us delete (sqlite/vec teardown races); a leftover temp dir must not turn a
+    # measured life into an instrument error.
+    with tempfile.TemporaryDirectory(
+        prefix=f"mnemosyne-scorecard-{arm}-", ignore_cleanup_errors=True
+    ) as folder:
         scratch = Path(folder)
         resolved = runner_module.clean_environment(scratch, environment)
         previous = dict(os.environ)

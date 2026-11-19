@@ -11,6 +11,7 @@ is refused until its patches have been audited.
 | Patch | Behavior |
 | --- | --- |
 | `core-beam.py.patch` | Update, get, invalidate, and forget use the existing scope helpers with one runtime snapshot and matching binds. Global working rows are editable across sessions. Successful updates clear recall caches; FTS/vector refresh stays intact. Remember dedup remains session-local, with a comment explaining that boundary. Entity recall extracts capped candidate phrases instead of fuzzy-matching the raw query string, then unions per-candidate matches (raw query kept as the fallback when extraction yields nothing). |
+| `core-config.py.patch` | `config.yaml` is written and read as UTF-8 on every platform. The seed header contains an em dash; written through the locale encoding on Windows it landed as a cp1252 byte that the UTF-8 readers (this module and the Hermes provider) then refused to decode. A file an older release wrote in the locale encoding is still read once through that encoding, so an upgrade keeps its values. |
 | `core-entities.py.patch` | Entity fuzzy-match keeps its exact match set with a content-aware pre-filter and a threshold-bounded banded Levenshtein: substring containment selects the loose prefix bound, other pairs are capped at length-ratio (disjoint alphabets score 0), and the surviving matrix aborts outside a Ukkonen band of ±max_dist. Long queries no longer fan out to hundreds of full Python matrices per recall. |
 | `core-memory.py.patch` | The wrapper reports BEAM update success. BEAM authorizes the mutation; an existing legacy mirror is updated through the same connection and deferred transaction. Missing legacy rows do not turn a successful BEAM edit into `not_found`; denied IDs and rolled-back edits emit no wrapper update event. |
 | `mcp_tools.py.patch` | An update with no fields returns a validation error before constructing a memory instance. |
@@ -47,6 +48,15 @@ rows remain inaccessible. With it enabled, private rows across sessions become
 readable and mutable. Bank/database isolation remains intact. Cross-session
 recall is therefore also an explicit authorization choice for ID operations.
 
+P35 makes `config.yaml` UTF-8 at the write sites in `core/config.py`. The file
+was always read as UTF-8 (`_warn_legacy_provider_defaults`, and the Hermes
+provider's `configuration._mapping`), but the seed comment and `config set`
+went through the locale encoding. On Windows that is cp1252, so the em dash in
+the seed header became byte `0x97` and every UTF-8 reader failed with
+`UnicodeDecodeError` -- the provider could not read its own profile config.
+`_read_config_text` decodes UTF-8 first and falls back to the locale encoding,
+so a store written by an older release still loads.
+
 ## Apply and verify
 
 ### Capture and abstention guards (all off by default)
@@ -79,9 +89,15 @@ On failure, sleep makes one bounded retry using at most two smaller groups when 
 
 Unset the flag to stop checking new summaries. The current patch continues to honor the metadata on summaries checked earlier. Restoring an older engine patch does not honor that marker and can expose an incomplete summary again; preserve a backup and assess those rows before any downgrade. The guard creates no new table, but it adds metadata to new episodic rows. After a patch upgrade, restart the gateway and MCP processes. Test on a scratch store before changing a live gateway. A summary marked verified only passed this conservative check; it has not received semantic or human review.
 
+### Source demotion after verified consolidation (experimental, off by default)
+
+`MNEMOSYNE_SLEEP_DEMOTE_SOURCES=1` lowers the recall weight of a working row whose content was consolidated into a summary that passed the `MNEMOSYNE_SLEEP_VERIFY` coverage check. The row's `importance` is capped at 0.25 (an idempotent one-way `MIN(importance, 0.25)`; rows already at or below the cap are untouched). Rows are never deleted and stay retrievable, and `mnemosyne_forget` remains the only deletion path. Groups whose summary failed the coverage check, and stores running with `MNEMOSYNE_SLEEP_VERIFY` unset, are never demoted, so the flag alone cannot silently demote an unverified summary. Demotion counts appear in `consolidation_log.summary_preview` as `demoted=N` and in the `demoted_rows` field of the sleep report; no content is recorded. Reversing a demotion requires restoring `importance` by hand; prefer keeping the flag off until a paired measurement supports the default change. Unset the flag to keep the existing behavior.
+
 ### Episodic degradation preservation guard (experimental, off by default)
 
-`MNEMOSYNE_DEGRADE_VERIFY=1` applies the same conservative text check to each tier-1→2 and tier-2→3 degradation step before the engine rewrites an episodic row in place. After the tier's compression (LLM or keyless truncation), the result must reproduce the stored content exactly; a mismatch cancels that row's transition, counts it in the `coverage_rejected` field of the degradation report (or `coverage_guard: not_evaluated` under `dry_run`), and leaves the row at its current tier with its recall weight unchanged. It does not split groups, retry, or write new rows. This is a text check, not proof that compression preserved meaning, and it cannot recover content already lost by earlier transitions.
+`MNEMOSYNE_DEGRADE_VERIFY=1` applies a key-token check to each tier-1→2 and tier-2→3 degradation step before the engine rewrites an episodic row in place. A key token is any run of letters and digits that contains a digit or a capital letter (identifiers, numbers, versions, names). After the tier's compression (LLM or keyless truncation), every key token of the stored content must still appear in the compressed text. A step that drops one is cancelled: it is counted in the `coverage_rejected` field of the degradation report (or `coverage_guard: not_evaluated` under `dry_run`), and the row stays at its current tier with its recall weight unchanged. Lowercase prose is not checked, so truncation that drops only prose is allowed. The check does not split groups, retry, or write new rows. It is a deterministic text check, not proof that compression preserved meaning, and it cannot recover content already lost by earlier transitions. Without the flag, degradation behaves as before.
+
+`MNEMOSYNE_DEGRADE_ADDITIVE=1` (option A, opt-in) changes what a degradation step writes. The original row keeps its content, tier and recall weight. A step with changed content inserts one copy at the next tier. The copy has the compressed text, the original's `created_at`, source, scope and other columns, and `metadata_json` with `degraded_from` (the original's id) and `degradation_tier`. The original gets `degraded_at`, and the copy starts with `degraded_at` NULL, so the copy can degrade again. A step that changes nothing only marks the original. The guard above applies to these steps: a rejected step writes nothing and leaves the parent unmarked. This is a persisted-data change: it adds rows and does not rewrite or remove any. Storage grows by up to one row per tier per original. Recall collapses a copy into its parent when both are returned (`_collapse_degraded_lineage`), so each lineage contributes its topmost surviving row. The plan asked for the original's weight to be lowered. It is not, because an equal-weight copy would tie with it, so the original keeps full weight. Back up the store before enabling the flag. Rows that were degraded in place earlier are not affected.
 
 Unset the flag to keep the existing in-place rewrite behavior. The flag is independent of `MNEMOSYNE_SLEEP_VERIFY`. Restoring an older engine patch silently re-enables unguarded rewrites; preserve a backup before any downgrade. Neither guard enables source demotion.
 

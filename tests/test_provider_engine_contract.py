@@ -1009,7 +1009,11 @@ def test_concurrent_canonical_writers_preserve_slot_history():
 
         assert all(not writer.is_alive() for writer in writers)
         assert failures == []
-        with sqlite3.connect(db_path) as conn:
+        # A `with sqlite3.connect(...)` block commits but does not close, and a
+        # connection still open when TemporaryDirectory exits makes Windows
+        # refuse to delete the file (WinError 32). Close it explicitly.
+        conn = sqlite3.connect(db_path)
+        try:
             total, current = conn.execute(
                 "SELECT COUNT(*), SUM(valid_until IS NULL) FROM canonical_facts"
             ).fetchone()
@@ -1017,6 +1021,8 @@ def test_concurrent_canonical_writers_preserve_slot_history():
                 row[0]
                 for row in conn.execute("SELECT version FROM canonical_facts ORDER BY version")
             ]
+        finally:
+            conn.close()
 
         assert total == 200
         assert current == 1

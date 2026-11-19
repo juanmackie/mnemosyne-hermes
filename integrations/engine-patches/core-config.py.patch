@@ -1,0 +1,92 @@
+--- a/mnemosyne/core/config.py
++++ b/mnemosyne/core/config.py
+@@ -325,6 +325,21 @@
+     return Path.home() / ".hermes" / "mnemosyne" / "config.yaml"
+ 
+ 
++def _read_config_text(path: "Path") -> str:
++    """LOCAL PATCH: P35 read config.yaml as UTF-8.
++
++    Older releases wrote it through the locale encoding, so a Windows file can
++    be cp1252. Decode that only when UTF-8 fails, instead of failing outright.
++    """
++    raw = path.read_bytes()
++    try:
++        return raw.decode("utf-8")
++    except UnicodeDecodeError:
++        import locale
++
++        return raw.decode(locale.getpreferredencoding(False) or "utf-8", errors="replace")
++
++
+ @dataclass(frozen=True)
+ class BeamRuntimeConfig:
+     """Typed runtime settings consumed by Beam on each configuration lookup."""
+@@ -407,7 +422,10 @@
+                     seed_data[key] = default_val
+ 
+             self._config_path.parent.mkdir(parents=True, exist_ok=True)
+-            with open(self._config_path, "w") as f:
++            # LOCAL PATCH: P35 write config.yaml as UTF-8. Through the locale
++            # encoding this comment's em dash landed as a cp1252 byte on Windows,
++            # which the UTF-8 readers here and in the Hermes provider then refused.
++            with open(self._config_path, "w", encoding="utf-8") as f:
+                 f.write("# Mnemosyne config — edit freely, hot-reload with `mnemosyne config reload`\n")
+                 f.write("# Precedence: config.yaml > env vars > hardcoded defaults\n")
+                 f.write("# Values below reflect your current env vars where set, otherwise defaults.\n")
+@@ -429,7 +447,7 @@
+         defaults.
+         """
+         try:
+-            text = self._config_path.read_text(encoding="utf-8")
++            text = _read_config_text(self._config_path)
+             if "# Values below reflect your current env vars" not in text:
+                 return
+ 
+@@ -479,8 +497,7 @@
+                 if mtime == self._yaml_mtime and self._yaml_cache:
+                     return  # unchanged
+                 import yaml
+-                with open(self._config_path, "r") as f:
+-                    data = yaml.safe_load(f) or {}
++                data = yaml.safe_load(_read_config_text(self._config_path)) or {}
+                 # Flatten nested YAML into dot-separated keys, but most
+                 # Mnemosyne config is flat key: value. Support both.
+                 self._yaml_cache = self._flatten_yaml(data)
+@@ -637,8 +654,7 @@
+         existing: Dict[str, Any] = {}
+         if self._config_path.exists():
+             try:
+-                with open(self._config_path, "r") as f:
+-                    existing = yaml.safe_load(f) or {}
++                existing = yaml.safe_load(_read_config_text(self._config_path)) or {}
+             except Exception:
+                 existing = {}
+ 
+@@ -649,7 +665,7 @@
+         self._config_path.parent.mkdir(parents=True, exist_ok=True)
+ 
+         # Write back
+-        with open(self._config_path, "w") as f:
++        with open(self._config_path, "w", encoding="utf-8") as f:
+             yaml.dump(existing, f, default_flow_style=False, sort_keys=True)
+ 
+         # Refresh cache
+@@ -673,15 +689,14 @@
+         existing: Dict[str, Any] = {}
+         if self._config_path.exists():
+             try:
+-                with open(self._config_path, "r") as f:
+-                    existing = yaml.safe_load(f) or {}
++                existing = yaml.safe_load(_read_config_text(self._config_path)) or {}
+             except Exception:
+                 existing = {}
+ 
+         existing.update(items)
+ 
+         self._config_path.parent.mkdir(parents=True, exist_ok=True)
+-        with open(self._config_path, "w") as f:
++        with open(self._config_path, "w", encoding="utf-8") as f:
+             yaml.dump(existing, f, default_flow_style=False, sort_keys=True)
+ 
+         self._yaml_mtime = 0.0

@@ -532,3 +532,62 @@ def test_retention_only_enables_sleep_verification_when_requested(monkeypatch, t
             {"life_id": "synthetic", "events": []}, [], "no-sleep", verify_sleep=enabled
         )
     assert seen == ["1" if enabled else None]
+
+
+def test_require_vendored_provider_accepts_snapshot_and_refuses_other_copies(tmp_path):
+    """The scorecard must measure the vendored provider, not a same-name copy.
+
+    The engine wheel ships its own hermes_memory_provider without the local
+    patches; a plain import can pick it up. The guard compares bytes.
+    """
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(ROOT))
+    from bench.scorecard import runner
+
+    vendored = runner.PROVIDER_ROOT / "hermes_memory_provider" / "__init__.py"
+    accepted = runner.require_vendored_provider(SimpleNamespace(__file__=str(vendored)))
+    assert accepted["matches_vendored"] is True
+    assert accepted["files_checked"] == len(runner.provider_tree_hashes())
+
+    copy = tmp_path / "hermes_memory_provider"
+    copy.mkdir()
+    for name in runner.provider_tree_hashes():
+        source = runner.PROVIDER_ROOT / "hermes_memory_provider" / name
+        (copy / name).parent.mkdir(parents=True, exist_ok=True)
+        (copy / name).write_bytes(source.read_bytes())
+    (copy / "__init__.py").write_bytes(b"# unpatched wheel copy\n")
+    with pytest.raises(RuntimeError, match="not the vendored snapshot"):
+        runner.require_vendored_provider(SimpleNamespace(__file__=str(copy / "__init__.py")))
+
+
+def test_staged_arm_keeps_the_inherited_environment(monkeypatch):
+    """The staged arm needs HOME/USERPROFILE/PATH while the engine imports.
+
+    Same invariant as the rehearsal: clean_environment reads os.environ, so it
+    must be called before the clear. This arm is the one that died on Windows
+    with `Path.home()` raising inside the pool worker.
+    """
+    mnemosyne = pytest.importorskip("mnemosyne")
+    from bench.scorecard import retention, runner
+
+    captured: dict[str, str] = {}
+
+    def fake_create(cls, scratch, life_id, **kwargs):
+        captured.update(dict(os.environ))
+        raise RuntimeError("stop before the engine is touched")
+
+    monkeypatch.setenv("SCORECARD_ENV_MARKER", "1")
+    monkeypatch.setattr(runner.LifeStore, "create", classmethod(fake_create))
+    # The arm verifies the engine path before opening a store; stub the
+    # attestation so the test is about the environment, not the engine build.
+    package_root = Path(mnemosyne.__file__).resolve().parent
+    monkeypatch.setattr(runner, "engine_attestation", lambda: {"package_root": str(package_root)})
+
+    with pytest.raises(RuntimeError, match="stop before the engine"):
+        retention.measure_life({"life_id": "env-life", "events": []}, [], "no-sleep")
+
+    assert captured.get("SCORECARD_ENV_MARKER") == "1", (
+        "staged arm dropped the inherited environment"
+    )
+    assert "PATH" in captured

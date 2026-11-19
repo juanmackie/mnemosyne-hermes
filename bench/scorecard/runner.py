@@ -84,6 +84,33 @@ def provider_tree_hashes() -> dict[str, str]:
     }
 
 
+def require_vendored_provider(module: Any) -> dict[str, Any]:
+    """Refuse any imported provider whose bytes differ from the vendored snapshot.
+
+    A plain import can resolve to the engine wheel's own copy of the provider,
+    which lacks the vendored local patches. Measuring that copy answers a
+    different question, so the run stops before it creates a store.
+    """
+    package = Path(str(module.__file__)).resolve().parent
+    expected = provider_tree_hashes()
+    mismatched = []
+    for relative, digest in expected.items():
+        candidate = package / relative
+        if not candidate.is_file() or _sha256_file(candidate) != digest:
+            mismatched.append(relative)
+    attestation = {
+        "package": str(package),
+        "files_checked": len(expected),
+        "mismatched": sorted(mismatched),
+        "matches_vendored": not mismatched,
+    }
+    if mismatched:
+        raise RuntimeError(
+            f"imported hermes_memory_provider is not the vendored snapshot: {attestation}"
+        )
+    return attestation
+
+
 def engine_attestation() -> dict[str, Any]:
     """Distribution version plus the digest of every manifest-covered file.
 
@@ -145,8 +172,8 @@ def activate_engine_path(sys_path: str | None) -> None:
     resolved_root = Path(sys_path).resolve()
     current = sys.modules.get("mnemosyne")
     current_file = getattr(current, "__file__", None)
-    already_right = bool(current_file) and Path(current_file).resolve().is_relative_to(
-        resolved_root
+    already_right = isinstance(current_file, str) and (
+        Path(current_file).resolve().is_relative_to(resolved_root)
     )
     if not already_right:
         for name in [n for n in sys.modules if n == "mnemosyne" or n.startswith("mnemosyne.")]:
@@ -215,6 +242,7 @@ class LifeStore:
         # Imported lazily: importing the provider is what pulls the engine in.
         import hermes_memory_provider as provider_module
 
+        require_vendored_provider(provider_module)
         provider = provider_module.MnemosyneMemoryProvider()
         provider._init_audit_log = lambda: None
         provider._read_config_key = lambda _key: None
@@ -390,7 +418,10 @@ def run_arm(
         life_probes = probes_by_life.get(life["life_id"], [])
         if probe_limit is not None and measured >= probe_limit:
             break
-        with tempfile.TemporaryDirectory(prefix=f"mnemosyne-scorecard-{arm}-") as folder:
+        # See parallel._measure_life: leftover handles must not fail the run.
+        with tempfile.TemporaryDirectory(
+            prefix=f"mnemosyne-scorecard-{arm}-", ignore_cleanup_errors=True
+        ) as folder:
             scratch = Path(folder)
             resolved = clean_environment(scratch, environment)
             previous = dict(os.environ)

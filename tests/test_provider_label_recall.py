@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from hermes_memory_provider import MnemosyneMemoryProvider as Provider
 
 
@@ -79,7 +78,9 @@ def test_label_index_is_bounded_and_single_token_only() -> None:
 def test_zero_result_recall_retries_with_expanded_query() -> None:
     provider = Provider()
     provider._shared_surface_read = False
-    provider._index_search_labels({"canonical_name": "language_typescript", "aliases": ["TypeScript"]})
+    provider._index_search_labels(
+        {"canonical_name": "language_typescript", "aliases": ["TypeScript"]}
+    )
     beam = FakeBeam([[], [_row()]])
     provider._beam = beam
 
@@ -92,7 +93,9 @@ def test_zero_result_recall_retries_with_expanded_query() -> None:
 def test_nonzero_result_recall_does_not_retry() -> None:
     provider = Provider()
     provider._shared_surface_read = False
-    provider._index_search_labels({"canonical_name": "language_typescript", "aliases": ["TypeScript"]})
+    provider._index_search_labels(
+        {"canonical_name": "language_typescript", "aliases": ["TypeScript"]}
+    )
     beam = FakeBeam([[_row()]])
     provider._beam = beam
 
@@ -108,7 +111,9 @@ def test_abstains_when_no_labeled_row_matches_the_query() -> None:
     beam = FakeBeam([[_row()]])
     provider._beam = beam
 
-    response = json.loads(provider._handle_recall({"query": "Vue component architecture", "limit": 5}))
+    response = json.loads(
+        provider._handle_recall({"query": "Vue component architecture", "limit": 5})
+    )
 
     assert response["count"] == 0
     assert response["results"] == []
@@ -139,10 +144,13 @@ def test_unlabeled_store_never_retries() -> None:
     assert response["count"] == 0
     assert beam.calls == ["anything"]
 
+
 def test_abstaining_recall_retries_with_restored_query() -> None:
     provider = Provider()
     provider._shared_surface_read = False
-    provider._index_search_labels({"canonical_name": "language_typescript", "aliases": ["TypeScript"]})
+    provider._index_search_labels(
+        {"canonical_name": "language_typescript", "aliases": ["TypeScript"]}
+    )
     wrong = {
         "id": "wrong",
         "content": "Redis cache",
@@ -168,7 +176,9 @@ def test_abstaining_recall_without_expandable_tokens_returns_zero() -> None:
     beam = FakeBeam([[wrong]])
     provider._beam = beam
 
-    response = json.loads(provider._handle_recall({"query": "Vue component architecture", "limit": 5}))
+    response = json.loads(
+        provider._handle_recall({"query": "Vue component architecture", "limit": 5})
+    )
 
     assert response["count"] == 0
     assert beam.calls == ["Vue component architecture"]

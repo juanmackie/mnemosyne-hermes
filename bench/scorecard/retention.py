@@ -135,7 +135,12 @@ def summarize(records: list[dict[str, Any]], *, resamples: int = 2000) -> dict[s
 
 
 def measure_life(
-    life: dict[str, Any], probes: list[dict[str, Any]], arm: str, *, verify_sleep: bool = False
+    life: dict[str, Any],
+    probes: list[dict[str, Any]],
+    arm: str,
+    *,
+    verify_sleep: bool = False,
+    demote_sources: bool = False,
 ) -> dict[str, Any]:
     """Run one arm with the real provider on a new temporary database."""
     import importlib.util
@@ -151,6 +156,8 @@ def measure_life(
         "no-sleep",
         "sleep",
         "sleep+degrade",
+        "sleep+degrade-verified",
+        "sleep+degrade-additive",
         "delete-originals",
         "sleep-delete-originals",
         "sleep-loss-control",
@@ -161,20 +168,28 @@ def measure_life(
     target = min((cohort for cohort in cohorts.values() if cohort < 3), default=None)
     records: list[dict[str, Any]] = []
     operations: list[dict[str, Any]] = []
-    with tempfile.TemporaryDirectory(prefix="mnemosyne-retention-") as folder:
+    # See parallel._measure_life: leftover handles must not fail the run.
+    with tempfile.TemporaryDirectory(
+        prefix="mnemosyne-retention-", ignore_cleanup_errors=True
+    ) as folder:
         scratch = Path(folder)
         previous = dict(os.environ)
-        os.environ.clear()
-        os.environ.update(
-            clean_environment(
-                scratch,
-                {
-                    "MNEMOSYNE_LLM_ENABLED": "false",
-                    "MNEMOSYNE_HOST_LLM_ENABLED": "false",
-                    **({"MNEMOSYNE_SLEEP_VERIFY": "1"} if verify_sleep else {}),
-                },
-            )
+        # Build the environment before clearing: clean_environment reads
+        # os.environ, so calling it after the clear keeps nothing but its own
+        # defaults and drops HOME/USERPROFILE/PATH for the engine import.
+        resolved = clean_environment(
+            scratch,
+            {
+                "MNEMOSYNE_LLM_ENABLED": "false",
+                "MNEMOSYNE_HOST_LLM_ENABLED": "false",
+                **({"MNEMOSYNE_SLEEP_VERIFY": "1"} if verify_sleep else {}),
+                **({"MNEMOSYNE_SLEEP_DEMOTE_SOURCES": "1"} if demote_sources else {}),
+                **({"MNEMOSYNE_DEGRADE_VERIFY": "1"} if arm == "sleep+degrade-verified" else {}),
+                **({"MNEMOSYNE_DEGRADE_ADDITIVE": "1"} if arm == "sleep+degrade-additive" else {}),
+            },
         )
+        os.environ.clear()
+        os.environ.update(resolved)
         store = None
         try:
             attestation = engine_attestation()
@@ -209,6 +224,8 @@ def measure_life(
                 if arm in (
                     "sleep",
                     "sleep+degrade",
+                    "sleep+degrade-verified",
+                    "sleep+degrade-additive",
                     "sleep-delete-originals",
                     "sleep-loss-control",
                 ):
@@ -221,7 +238,26 @@ def measure_life(
                     if sleep_result.get("status") not in ("consolidated", "no_op"):
                         raise RuntimeError(f"sleep failed: {sleep_result}")
                     operation: dict[str, Any] = {"stage": stage, "sleep": sleep_result}
-                    if arm == "sleep+degrade":
+                    if arm == "sleep+degrade-additive":
+                        # Additive copies leave originals at their tier, so the in-place
+                        # transition check does not apply. Record eligibility and the row count.
+                        beam.conn.execute(
+                            "UPDATE episodic_memory SET created_at = ?", ("2000-01-01T00:00:00",)
+                        )
+                        beam.conn.commit()
+                        transitions = []
+                        for _tier in (1, 2):
+                            eligible = beam.conn.execute(
+                                "SELECT COUNT(*) FROM episodic_memory WHERE tier = ? AND degraded_at IS NULL",
+                                (_tier,),
+                            ).fetchone()[0]
+                            transitions.append({"eligible": eligible, "result": degrade()})
+                        operation["degradation"] = transitions
+                        operation["episodic_rows"] = beam.conn.execute(
+                            "SELECT COUNT(*) FROM episodic_memory"
+                        ).fetchone()[0]
+                    elif arm in ("sleep+degrade", "sleep+degrade-verified"):
+                        guarded = arm == "sleep+degrade-verified"
                         beam.conn.execute(
                             "UPDATE episodic_memory SET created_at = ?", ("2000-01-01T00:00:00",)
                         )
@@ -243,7 +279,16 @@ def measure_life(
                             transitions.append(
                                 {"eligible": len(before), "failed_ids": failed, "result": result}
                             )
-                            if failed:
+                            if guarded:
+                                # The guard may hold a row at its tier; any other tier is a bug.
+                                moved_wrongly = sorted(
+                                    mid for mid in before if after.get(mid) not in (tier, tier + 1)
+                                )
+                                if moved_wrongly:
+                                    raise RuntimeError(
+                                        f"guarded tier {tier} degradation moved rows wrongly: {moved_wrongly}"
+                                    )
+                            elif failed:
                                 raise RuntimeError(
                                     f"incomplete tier {tier} degradation: {transitions[-1]}"
                                 )
@@ -427,18 +472,30 @@ def compare_bwt(
 
 def _job(args: tuple[Any, ...]) -> dict[str, Any]:
     life, probes, arm, *options = args
-    return measure_life(life, probes, arm, verify_sleep=options[0] if options else False)
+    return measure_life(
+        life,
+        probes,
+        arm,
+        verify_sleep=options[0] if len(options) > 0 else False,
+        demote_sources=options[1] if len(options) > 1 else False,
+    )
 
 
 def main() -> int:
     import argparse
+    import importlib
     import json
     import multiprocessing
     import sys
     from pathlib import Path
 
     from .corpus import load_or_build
-    from .runner import PROVIDER_ROOT, engine_attestation, provider_tree_hashes
+    from .runner import (
+        PROVIDER_ROOT,
+        engine_attestation,
+        provider_tree_hashes,
+        require_vendored_provider,
+    )
 
     parser = argparse.ArgumentParser(
         description="Measure staged retention in synthetic scratch stores"
@@ -450,6 +507,11 @@ def main() -> int:
     parser.add_argument("--max-lives", type=int, default=None)
     parser.add_argument(
         "--sleep-verify", action="store_true", help="enable experimental sleep coverage guard"
+    )
+    parser.add_argument(
+        "--sleep-demote",
+        action="store_true",
+        help="enable experimental source demotion after verified consolidation",
     )
     args = parser.parse_args()
     if (
@@ -478,11 +540,16 @@ def main() -> int:
         ("aa", "no-sleep"),
         ("sleep", "sleep"),
         ("sleep+degrade", "sleep+degrade"),
+        ("sleep+degrade-verified", "sleep+degrade-verified"),
+        ("sleep+degrade-additive", "sleep+degrade-additive"),
         ("delete-originals", "delete-originals"),
         ("sleep-delete-originals", "sleep-delete-originals"),
         ("sleep-loss-control", "sleep-loss-control"),
     ):
-        jobs = [(life, by_life[life["life_id"]], arm, args.sleep_verify) for life in lives]
+        jobs = [
+            (life, by_life[life["life_id"]], arm, args.sleep_verify, args.sleep_demote)
+            for life in lives
+        ]
         print(f"Measuring {label}: {len(jobs)} lives", file=sys.stderr, flush=True)
         if args.workers == 1:
             measured = list(map(_job, jobs))
@@ -530,10 +597,14 @@ def main() -> int:
         "corpus_digest": corpus["digest"],
         "engine": attestation,
         "provider_hashes": provider_tree_hashes(),
+        "provider_import": require_vendored_provider(
+            importlib.import_module("hermes_memory_provider")
+        ),
         "settings": {
             "ingest": "tool",
             "optional_llm": "disabled",
             "sleep_verify": args.sleep_verify,
+            "sleep_demote": args.sleep_demote,
             "stages": 4,
             "resamples": args.resamples,
         },
@@ -550,7 +621,12 @@ def main() -> int:
                 )
                 for surface in ("tool", "prefetch")
             }
-            for arm in ("sleep", "sleep+degrade")
+            for arm in (
+                "sleep",
+                "sleep+degrade",
+                "sleep+degrade-verified",
+                "sleep+degrade-additive",
+            )
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -561,7 +637,13 @@ def main() -> int:
     )
     quality_ok = all(
         results[arm]["summary"].get(surface, {}).get("invariants_pass", False)
-        for arm in ("no-sleep", "sleep", "sleep+degrade")
+        for arm in (
+            "no-sleep",
+            "sleep",
+            "sleep+degrade",
+            "sleep+degrade-verified",
+            "sleep+degrade-additive",
+        )
         for surface in ("tool", "prefetch")
     )
     print(f"invariants: {'PASS' if quality_ok else 'FAIL'}")

@@ -19,6 +19,7 @@ subprocess so imports reflect the on-disk sources, exactly like
 """
 
 import difflib
+import importlib
 import json
 import os
 import pathlib
@@ -95,7 +96,23 @@ sys.exit(code)
 
 @pytest.fixture
 def pm_generation(tmp_path):
+    # The provider reads <home>/config.yaml through its safe YAML reader, which
+    # resolves PyYAML, hermes_yaml or ruamel. A bare venv ships none of them, so
+    # the lane skips there instead of reporting a missing loader as a
+    # patch-repair regression. The CI test lane installs PyYAML.
+    if not _yaml_loader_available():
+        pytest.skip("no YAML loader available (bare venv)")
     return _build_pm_generation(tmp_path)
+
+
+def _yaml_loader_available() -> bool:
+    for module in ("yaml", "hermes_yaml", "ruamel.yaml"):
+        try:
+            importlib.import_module(module)
+        except ImportError:
+            continue
+        return True
+    return False
 
 
 def _build_pm_generation(tmp_path):
@@ -112,7 +129,9 @@ def _build_pm_generation(tmp_path):
     (engine / "__init__.py").write_text('__version__ = "3.15.1"\n', encoding="utf-8")
     (engine / "core" / "__init__.py").touch()
     for name, source in _ORIGINAL_SOURCES.items():
-        (engine / name).write_text(source, encoding="utf-8")
+        # Force LF: Path.write_text translates "\n" to os.linesep on Windows, and
+        # both the byte comparison and the manifest hashes below are LF-exact.
+        (engine / name).write_text(source, encoding="utf-8", newline="\n")
     dist_info = tmp_path / "modules/mnemosyne_memory-3.15.1.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
@@ -133,7 +152,8 @@ def _build_pm_generation(tmp_path):
             )
         )
         patch_file = name.replace("/", "-").replace(".py", ".py.patch")
-        (patches / patch_file).write_text(delta, encoding="utf-8")
+        # LF-exact too: the applier hashes the on-disk bytes against patch_sha256.
+        (patches / patch_file).write_text(delta, encoding="utf-8", newline="\n")
         manifest["files"][name] = {
             "original_sha256": _sha256(source.encode()),
             "patched_sha256": _sha256(updated.encode()),
@@ -220,7 +240,7 @@ def test_pm_rebuild_cycle_is_repaired_by_doctor_again(pm_generation):
 
     # Hermes PM selects another fresh generation: the wheel replaces the sources.
     for name, source in gen.originals.items():
-        (gen.engine / name).write_text(source, encoding="utf-8")
+        (gen.engine / name).write_text(source, encoding="utf-8", newline="\n")
     failed = _doctor(gen, "--no-fix")
     assert failed.returncode == 1, failed.stdout + failed.stderr
 

@@ -10,6 +10,9 @@ __pycache__/
 .venv/
 *.so
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
 # setuptools artifacts from `uv pip install ./integrations/hermes-provider`
 build/
 *.egg-info/

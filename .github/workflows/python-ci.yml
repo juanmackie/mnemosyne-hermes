@@ -40,7 +40,7 @@ jobs:
             py="$PWD/.venv/Scripts/python.exe"
           fi
           echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
-          uv pip install --python "$py" pytest pytest-cov
+          uv pip install --python "$py" pytest pytest-cov pyyaml
 
       - name: Provider contract gates + Python unit tests
         shell: bash
@@ -69,9 +69,9 @@ jobs:
         run: uv build --wheel --out-dir /tmp/wheel && ls /tmp/wheel
 
       - name: Ruff lint
-        run: ruff check src tests bench/mnemobench bench/sim foundry bench/hermes_prefetch_eval.py scripts/maintenance/mnemosyne-maintain.py
+        run: ruff check src tests bench/mnemobench bench/sim bench/scorecard bench/rehearsal bench/precisionmembench foundry bench/hermes_prefetch_eval.py scripts/maintenance/mnemosyne-maintain.py
       - name: Ruff format
-        run: ruff format --check src tests bench/mnemobench bench/sim foundry bench/hermes_prefetch_eval.py scripts/maintenance/mnemosyne-maintain.py
+        run: ruff format --check src tests bench/mnemobench bench/sim bench/scorecard bench/rehearsal bench/precisionmembench foundry bench/hermes_prefetch_eval.py scripts/maintenance/mnemosyne-maintain.py
       - name: Types (mypy)
         run: mypy
       - name: Shell (shellcheck)
@@ -115,6 +115,12 @@ jobs:
           # The pin comes from integrations/hermes-provider/pyproject.toml
           # (single source); installing the provider pulls the pinned engine.
           uv pip install --python "$py" ./integrations/hermes-provider pytest
+          # The engine wheel also ships a `hermes_memory_provider` copy, so one
+          # combined install races the two sets of the same 11 files and lands a
+          # mixture (the scorecard's provider attestation caught it). Rewrite the
+          # vendored snapshot last, with no dependency resolution, so its files win.
+          uv pip install --python "$py" --no-deps \
+            --reinstall-package mnemosyne-hermes-provider ./integrations/hermes-provider
           "$py" scripts/apply_engine_patches.py
 
       - name: Engine-backed provider contract (strict, never skips)
