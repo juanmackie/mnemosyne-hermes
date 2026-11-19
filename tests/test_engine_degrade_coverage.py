@@ -197,12 +197,16 @@ def test_additive_short_unchanged_row_only_marks_parent(monkeypatch, tmp_path):
     local_llm, BeamMemory, _ = _engine_or_skip()
     monkeypatch.setattr(local_llm, "llm_available", lambda: False)
     monkeypatch.setenv("MNEMOSYNE_DEGRADE_ADDITIVE", "1")
-    memory = BeamMemory(session_id="additive", db_path=str(tmp_path / "short.db"), seed_config=False)
+    memory = BeamMemory(
+        session_id="additive", db_path=str(tmp_path / "short.db"), seed_config=False
+    )
     try:
         short = "The storage limit is 40 terabytes."
         original = _aged_episodic(memory, short, 1)
         memory.degrade_episodic()
-        rows = memory.conn.execute("SELECT id, content, tier, degraded_at FROM episodic_memory").fetchall()
+        rows = memory.conn.execute(
+            "SELECT id, content, tier, degraded_at FROM episodic_memory"
+        ).fetchall()
         assert len(rows) == 1
         assert (rows[0]["id"], rows[0]["content"], rows[0]["tier"]) == (original, short, 1)
         assert rows[0]["degraded_at"]
@@ -216,7 +220,9 @@ def test_additive_chain_reaches_tier3_and_is_idempotent(monkeypatch, tmp_path):
     local_llm, BeamMemory, _ = _engine_or_skip()
     monkeypatch.setattr(local_llm, "llm_available", lambda: False)
     monkeypatch.setenv("MNEMOSYNE_DEGRADE_ADDITIVE", "1")
-    memory = BeamMemory(session_id="additive", db_path=str(tmp_path / "chain.db"), seed_config=False)
+    memory = BeamMemory(
+        session_id="additive", db_path=str(tmp_path / "chain.db"), seed_config=False
+    )
     try:
         content = "The limit is 987654321 and the owner is Alice. " + "filler words " * 120
         original = _aged_episodic(memory, content, 1)
@@ -224,9 +230,9 @@ def test_additive_chain_reaches_tier3_and_is_idempotent(monkeypatch, tmp_path):
             "SELECT content FROM episodic_memory WHERE id = ?", (original,)
         ).fetchone()[0]
         memory.degrade_episodic()
-        tier2 = memory.conn.execute(
-            "SELECT id FROM episodic_memory WHERE tier = 2"
-        ).fetchone()["id"]
+        tier2 = memory.conn.execute("SELECT id FROM episodic_memory WHERE tier = 2").fetchone()[
+            "id"
+        ]
         memory.degrade_episodic()
         tier3 = memory.conn.execute(
             "SELECT id, metadata_json FROM episodic_memory WHERE tier = 3"
@@ -235,9 +241,12 @@ def test_additive_chain_reaches_tier3_and_is_idempotent(monkeypatch, tmp_path):
         assert memory.conn.execute("SELECT COUNT(*) FROM episodic_memory").fetchone()[0] == 3
         memory.degrade_episodic()
         assert memory.conn.execute("SELECT COUNT(*) FROM episodic_memory").fetchone()[0] == 3
-        assert memory.conn.execute(
-            "SELECT content FROM episodic_memory WHERE id = ?", (original,)
-        ).fetchone()[0] == stored
+        assert (
+            memory.conn.execute(
+                "SELECT content FROM episodic_memory WHERE id = ?", (original,)
+            ).fetchone()[0]
+            == stored
+        )
     finally:
         memory.conn.close()
 
@@ -247,7 +256,9 @@ def test_additive_guard_rejects_step_without_writing_anything(monkeypatch, tmp_p
     monkeypatch.setattr(local_llm, "llm_available", lambda: False)
     monkeypatch.setenv("MNEMOSYNE_DEGRADE_ADDITIVE", "1")
     monkeypatch.setenv("MNEMOSYNE_DEGRADE_VERIFY", "1")
-    memory = BeamMemory(session_id="additive", db_path=str(tmp_path / "guard.db"), seed_config=False)
+    memory = BeamMemory(
+        session_id="additive", db_path=str(tmp_path / "guard.db"), seed_config=False
+    )
     try:
         content = "filler words " * 40 + "The vault code is QX-7741."
         original = _aged_episodic(memory, content, 2)
@@ -263,7 +274,9 @@ def test_additive_lineage_collapses_to_the_original_at_recall(monkeypatch, tmp_p
     local_llm, BeamMemory, _ = _engine_or_skip()
     monkeypatch.setattr(local_llm, "llm_available", lambda: False)
     monkeypatch.setenv("MNEMOSYNE_DEGRADE_ADDITIVE", "1")
-    memory = BeamMemory(session_id="additive", db_path=str(tmp_path / "recall.db"), seed_config=False)
+    memory = BeamMemory(
+        session_id="additive", db_path=str(tmp_path / "recall.db"), seed_config=False
+    )
     try:
         content = "The limit is 987654321 and the owner is Alice. " + "filler words " * 120
         original = _aged_episodic(memory, content, 1)

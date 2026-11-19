@@ -40,7 +40,7 @@ jobs:
             py="$PWD/.venv/Scripts/python.exe"
           fi
           echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
-          uv pip install --python "$py" pytest pytest-cov
+          uv pip install --python "$py" pytest pytest-cov pyyaml
 
       - name: Provider contract gates + Python unit tests
         shell: bash

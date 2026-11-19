@@ -185,7 +185,7 @@ def make_life(
     life_id = f"sim-{seed:08d}-{life_index:05d}"
     events: list[dict[str, Any]] = []
     sessions: list[dict[str, Any]] = []
-    secrets: list[dict[str, str]] = []
+    secrets: list[dict[str, Any]] = []
     slot_truth: list[dict[str, Any]] = []
 
     chosen = rng.sample(range(len(SLOTS)), slots)

@@ -85,7 +85,7 @@ def make_probes(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def make_controls(probes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Known-positive controls: each probe aimed at a different item. They must miss."""
-    controls = []
+    controls: list[dict[str, Any]] = []
     if len(probes) < 2:
         return controls
     for index, probe in enumerate(probes):

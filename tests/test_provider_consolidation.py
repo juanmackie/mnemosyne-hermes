@@ -1610,9 +1610,9 @@ def test_sleep_demote_sources_lowers_verified_source_weight(monkeypatch, tmp_pat
 
 
 def test_sleep_demote_sources_leaves_unverified_sources_alone(monkeypatch, tmp_path):
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-long")
     import mnemosyne.core.aaak as aaak
 
-    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-long")
     try:
         monkeypatch.setattr(aaak, "encode", lambda text: "unrelated content")
         source_id = memory.remember(

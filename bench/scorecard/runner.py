@@ -172,8 +172,8 @@ def activate_engine_path(sys_path: str | None) -> None:
     resolved_root = Path(sys_path).resolve()
     current = sys.modules.get("mnemosyne")
     current_file = getattr(current, "__file__", None)
-    already_right = bool(current_file) and Path(current_file).resolve().is_relative_to(
-        resolved_root
+    already_right = isinstance(current_file, str) and (
+        Path(current_file).resolve().is_relative_to(resolved_root)
     )
     if not already_right:
         for name in [n for n in sys.modules if n == "mnemosyne" or n.startswith("mnemosyne.")]:
