@@ -131,9 +131,7 @@ def test_degradation_guard_explicit_opt_out_restores_legacy_rewrite(monkeypatch,
         pytest.skip("requires audited engine")
     monkeypatch.setenv("MNEMOSYNE_DEGRADE_VERIFY", "0")
     monkeypatch.setattr(local_llm, "llm_available", lambda: False)
-    memory = BeamMemory(
-        session_id="guard-off", db_path=str(tmp_path / "off.db"), seed_config=False
-    )
+    memory = BeamMemory(session_id="guard-off", db_path=str(tmp_path / "off.db"), seed_config=False)
     try:
         content = "filler words " * 120 + "The vault code is QX-7741."
         memory_id = memory.consolidate_to_episodic(

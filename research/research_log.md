@@ -1,5 +1,10 @@
 # Research log
 
+The machine-checked record of these iterations is `research/sim.json`
+(`python scripts/sim.py render`): one entry per root-cause hypothesis, with each
+attempt's prediction, outcome, collateral and provenance. This file stays the
+narrative; the ledger is what the next loop reads first.
+
 ## 2026-11-16 — setup
 
 - Fetched and read the autoresearch skill. Only `SKILL.md` exists upstream;

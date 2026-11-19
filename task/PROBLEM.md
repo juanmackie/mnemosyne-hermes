@@ -52,6 +52,18 @@ change.
 **This objective is close to exhausted.** Any honest win left is small, so a new
 cycle needs a reason to exist beyond "make writes faster".
 
+## Recorded attempts
+
+This objective's history lives in the Self-Improvement Memory ledger,
+`research/sim.json` (`python scripts/sim.py render`): problem P07 for the
+checkpoint policy (the 4 -> 16 MiB win, the rejected disable-checkpointing
+cheat, and the tighter 4 MiB reference), P08 for the page geometry and retired
+index, P09 for the per-row commit and the rejected `synchronous=OFF` cheat.
+Read that block before proposing: it holds what was tried, what it cost, and
+which way the gate refused. Record a new attempt the same way the research loop
+does — `predict` the cases (the three correctness gates) before the run,
+`record` the scorer's outcome after, and keep the rejected ones.
+
 ## Correctness is non-negotiable — three gates
 
 A candidate gets `fail_class != "ok"` and **no score** if any gate fails:

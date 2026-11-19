@@ -31,6 +31,7 @@ history keep it; do not restore it.
 | `skills/mnemosyne-lite/` | Agent runbook (`SKILL.md`): describe-first search, card reading, no-store fabrication |
 | `tests/` | Contract and regression suites (see Verification) |
 | `scripts/` | Repo gates and helpers: `checks.sh` (registry), `check_version_drift.sh`, `smoke-hermes-onboarding.sh`, `engine-parity-check.sh`, `vendor-provider-sync.sh`, `upstream-drift-check.py`, `update.sh` / `update.ps1` (check/apply updates) |
+| `research/` | The PrecisionMemBench autoresearch loop: `research.md` (objective, evaluator, keep rules), `research_log.md` (narrative), `evaluate.py`, the probe scripts, `runs/` reports, and `sim.json` — the Self-Improvement Memory ledger written by `scripts/sim.py` (`open`/`predict`/`record`/`render`/`validate`) |
 | `bench/` | The recall-latency harness (`measure.sh`) and its record (`README.md`) |
 | `bench/mnemobench/` | Power planning records and MnemoBench-specific standalone evaluation tools |
 | `foundry/` | Declarative compute jobs and the policy-enforcing local/offload runner; never use private data on Kaggle |
