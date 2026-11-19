@@ -1574,6 +1574,7 @@ if __name__ == "__main__":
         test_engine_update_refreshes_vectors_and_cached_recall,
         test_remember_dedup_stays_session_local,
         test_remember_redacts_credentials_before_persistence,
+        test_lessons_carry_the_model_and_engine_they_were_learned_under,
         test_real_audit_and_pinned_engine_lineage_baseline,
     ]
     for fn in tests:
