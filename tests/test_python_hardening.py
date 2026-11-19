@@ -696,10 +696,19 @@ def test_idle_store_does_not_burn_cpu():
             for i in range(40):
                 store.remember(f"Idle probe {i} with enough text to take a page", "ns", 5)
             time.sleep(0.2)  # let any in-flight drain pass finish
-            before = time.process_time()
-            time.sleep(1.0)
-            idle_ms = (time.process_time() - before) * 1000
-            assert idle_ms < 15, f"idle store burned {idle_ms:.1f}ms of CPU in one second"
+            # Minimum of three one-second windows: process_time covers every
+            # thread, so a noisy runner adds unrelated CPU to any single sample.
+            # A real busy-wait polls in every window, so the minimum still sees it.
+            samples = []
+            for _ in range(3):
+                start = time.process_time()
+                time.sleep(1.0)
+                samples.append((time.process_time() - start) * 1000)
+            idle_ms = min(samples)
+            assert idle_ms < 15, (
+                f"idle store burned {idle_ms:.1f}ms of CPU in one idle second "
+                f"(samples ms: {[round(s, 1) for s in samples]})"
+            )
         finally:
             store.close()
 
