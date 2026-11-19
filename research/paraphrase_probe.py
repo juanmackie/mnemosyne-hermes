@@ -26,7 +26,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "integrations" / "hermes-provider"))
 
 from bench.precisionmembench.run_eval import (  # noqa: E402
-    USER_ID,
     belief_to_text,
     load_fixtures,
     seed_metadata,
@@ -73,18 +72,19 @@ def within_one_edit(left: str, right: str) -> bool:
         return False
     if abs(len(left) - len(right)) > 1:
         return False
-    if len(left) >= 2 and len(right) >= 2 and left[:2] != right[:2]:
-        if not (len(left) == len(right) and left[0] == right[1] and left[1] == right[0]):
-            return False
+    if (
+        len(left) >= 2
+        and len(right) >= 2
+        and left[:2] != right[:2]
+        and not (len(left) == len(right) and left[0] == right[1] and left[1] == right[0])
+    ):
+        return False
     if len(left) == len(right):
-        diffs = [i for i, (a, b) in enumerate(zip(left, right)) if a != b]
+        diffs = [i for i, (a, b) in enumerate(zip(left, right, strict=True)) if a != b]
         if len(diffs) == 1:
             return True
         if len(diffs) == 2 and diffs[1] == diffs[0] + 1:
-            return (
-                left[diffs[0]] == right[diffs[1]]
-                and left[diffs[1]] == right[diffs[0]]
-            )
+            return left[diffs[0]] == right[diffs[1]] and left[diffs[1]] == right[diffs[0]]
         return False
     longer, shorter = (left, right) if len(left) > len(right) else (right, left)
     i = j = 0
@@ -101,9 +101,13 @@ def within_one_edit(left: str, right: str) -> bool:
     return True
 
 
+def _mark(value: str | None, target: str) -> str:
+    return "*" if value == target else " "
+
+
 def label_tokens(belief: dict) -> list[list[str]]:
     out = []
-    for label in ([belief.get("canonical_name") or ""] + list(belief.get("aliases") or [])):
+    for label in [belief.get("canonical_name") or ""] + list(belief.get("aliases") or []):
         if label:
             out.append(tokens(label))
     return out
@@ -113,7 +117,6 @@ def main() -> int:
     cases, beliefs = load_fixtures()
     # Validation: zero exact or one-edit token overlap between paraphrase and
     # any seed label. Paraphrases failing this are reported and skipped.
-    all_label_token_sets = [label_tokens(b) for b in beliefs]
     usable = []
     for target, query in PARAPHRASES:
         qtokens = tokens(query)
@@ -127,11 +130,11 @@ def main() -> int:
                     if window == lt:
                         collisions.append((b["_id"], " ".join(lt)))
                         continue
-                    diffs = [(w, t) for w, t in zip(window, lt) if w != t]
+                    diffs = [(w, t) for w, t in zip(window, lt, strict=True) if w != t]
                     if len(diffs) == 1 and within_one_edit(*diffs[0]):
                         collisions.append((b["_id"], " ".join(lt)))
         usable.append((target, query, sorted(set(collisions))))
-    for target, query, collisions in usable:
+    for target, _query, collisions in usable:
         if collisions:
             print(f"SKIP {target}: collides with {collisions}")
     probes = [(t, q) for t, q, c in usable if not c]
@@ -162,8 +165,12 @@ def main() -> int:
             hits_raw = hits_provider = abstained = 0
             for target, query in probes:
                 raw_reply = provider._beam.recall(
-                    query, top_k=20, temporal_weight=0.0, query_time=None,
-                    temporal_halflife=24, explain=False,
+                    query,
+                    top_k=20,
+                    temporal_weight=0.0,
+                    query_time=None,
+                    temporal_halflife=24,
+                    explain=False,
                 )
                 raw_ids = [alias_index.get(row.get("id")) for row in raw_reply]
                 raw_target = target in raw_ids
@@ -175,17 +182,14 @@ def main() -> int:
                         f"score={row.get('score')} keys={sorted(row)}"
                     )
                 reply = json.loads(
-                    provider.handle_tool_call(
-                        "mnemosyne_recall", {"query": query, "limit": 20}
-                    )
+                    provider.handle_tool_call("mnemosyne_recall", {"query": query, "limit": 20})
                 )
                 served = [alias_index.get(row.get("id")) for row in reply.get("results", [])]
                 served_target = target in served
                 abstained += 1 if reply.get("count", 0) == 0 else 0
                 hits_raw += 1 if raw_target else 0
                 hits_provider += 1 if served_target else 0
-                mark = lambda b: "*" if b == target else " "
-                top = ",".join(f"{mark(b)}{(b or '?')[:18]}" for b in served[:5])
+                top = ",".join(f"{_mark(b, target)}{(b or '?')[:18]}" for b in served[:5])
                 print(
                     f"{target:28s} raw={'T' if raw_target else '-'} "
                     f"served={reply.get('count', 0):2d} {top}"

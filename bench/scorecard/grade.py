@@ -19,6 +19,12 @@ from typing import Any
 _NORMALIZE = re.compile(r"\s+")
 
 
+PROVENANCE_PREFIX = "learned under "
+# Non-greedy up to the next labelled segment, so a model id containing a
+# comma is read whole instead of truncated.
+_MODEL_IN_LINE = re.compile(r"learned under model (.+?)(?:, (?:engine|hermes) |, \d{4}-)")
+
+
 def normalize(text: str) -> str:
     return _NORMALIZE.sub(" ", str(text or "")).strip().lower()
 
@@ -191,3 +197,59 @@ def grade_prefetch(probe: dict[str, Any], context: str) -> dict[str, Any]:
         out["stale_present"] = stale_injected and not out["answer_present"]
         out["stale_ranked_above_current"] = int(stale_injected and not out["answer_present"])
     return out
+
+
+def prefetch_entries(context: str) -> list[tuple[str, str]]:
+    """Pair each injected row with the provenance line that follows it.
+
+    The injected format puts a row line (`  [timestamp] …`) and, when the row
+    carries provenance, one indented `learned under …` line directly after it.
+    Pairing is what lets the lesson probe check *its own* row's provenance
+    instead of any line in the block. The prefix match is case-sensitive and
+    indented, so a lesson whose body begins "learned under …" is not mistaken
+    for a provenance line; on the scored corpus no row text starts that way.
+    """
+    entries: list[tuple[str, str]] = []
+    pending: tuple[str, str] | None = None
+    for line in (context or "").splitlines():
+        if line.startswith("  ["):
+            if pending is not None:
+                entries.append(pending)
+            pending = (line, "")
+        elif line.strip().startswith(PROVENANCE_PREFIX) and pending is not None:
+            entries.append((pending[0], line.strip()))
+            pending = None
+        elif pending is not None:
+            entries.append(pending)
+            pending = None
+    if pending is not None:
+        entries.append(pending)
+    return entries
+
+
+def grade_provenance(probe: dict[str, Any], entries: list[tuple[str, str]]) -> dict[str, Any]:
+    """Provenance fields for one carried-lesson probe.
+
+    `entries` are (row text, provenance line or "") pairs. A lesson is
+    `provenance_present` when the row that answers the probe carries a line, and
+    `wrong_model` counts lines that name a model other than the one the lesson
+    was written under. The scored corpus writes conversational events through
+    `sync_turn` (unstamped) and one lesson through `mnemosyne_remember`
+    (stamped), so the only line naming a model is that lesson's. A tool-path
+    ingest arm stamps every row, and those lines carry no model, which the
+    parser ignores.
+    """
+    answer = (probe.get("answers") or [""])[0]
+    model_a = str(probe.get("model_a") or "")
+    lines = [line for _, line in entries if line]
+    lesson_lines = [line for text, line in entries if line and _contains(text, answer)]
+    wrong_model = 0
+    for line in lines:
+        match = _MODEL_IN_LINE.search(line)
+        if match and model_a and match.group(1).strip() != model_a:
+            wrong_model += 1
+    return {
+        "provenance_present": bool(lesson_lines),
+        "provenance_lines": len(lines),
+        "wrong_model": wrong_model,
+    }

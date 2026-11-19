@@ -1,0 +1,603 @@
+{
+  "format": "mnemosyne-sim/v1",
+  "next_id": 10,
+  "carried_from": {
+    "date": "2026-11-19",
+    "sources": [
+      "research/research_log.md",
+      "research/research.md",
+      "research/autoresearch-results.tsv",
+      "task/PROBLEM.md",
+      "integrations/hermes-provider/PATCHES.md"
+    ],
+    "note": "Backfilled from the prose logs and the run reports under research/runs/. Every attempt here is marked backfilled: predictions were reconstructed from each change's stated intent, so their hit rate is a lower-confidence number, not evidence. `fixed` keeps its strict meaning (failed in the baseline report, passes now): the two guard-style attempts (rounds 8 and 9) changed no fixture verdict, so they record no fix. Research iterations 4-6 have no attempt: they hardened tests, re-ran the evaluator A/A for determinism and ran the held-out guard, and changed no hypothesis or code path (research/research_log.md); iteration 5's re-run report is research/runs/iter-3-aa.json."
+  },
+  "aliases": {
+    "p48": "P01",
+    "label-narrowing": "P01",
+    "p49": "P02",
+    "fuzzy-label-evidence": "P02",
+    "p50": "P03",
+    "typo-transposition": "P03",
+    "prefix-guard": "P04",
+    "p51": "P05",
+    "p53": "P05",
+    "paraphrase-cost": "P05",
+    "p52": "P06",
+    "single-character-noise": "P06",
+    "checkpoint": "P07",
+    "write-throughput": "P07",
+    "page-geometry": "P08",
+    "per-row-commit": "P09"
+  },
+  "problems": [
+    {
+      "id": "P01",
+      "name": "Structured metadata labels do not narrow recall candidates",
+      "opened": {
+        "date": "2026-11-15",
+        "objective": "precisionmembench"
+      },
+      "attempts": [
+        {
+          "round": 0,
+          "accepted": true,
+          "backfilled": true,
+          "what": "P48: narrow private recall candidates to rows whose structured labels (canonical_name/aliases) appear as an exact token phrase in the query, under the all-labeled guard. Public replay moved active passes 18 -> 39 (score 3882).",
+          "files": [
+            "integrations/hermes-provider/hermes_memory_provider/__init__.py"
+          ],
+          "patch": "P48",
+          "predicted": [],
+          "fixed": [],
+          "missed": [],
+          "collateral": [],
+          "passed": 68,
+          "total": 77,
+          "predicted_at": "2026-11-15",
+          "evaluated_at": "2026-11-16",
+          "provenance": {
+            "objective": "precisionmembench",
+            "fixture_sha256": {
+              "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
+            },
+            "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
+            "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
+            "hermes_version": null,
+            "git_commit": "9eb0320",
+            "model": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "P02",
+      "name": "Exact-only label matching leaves misspelled query tokens unfiltered",
+      "opened": {
+        "date": "2026-11-16",
+        "objective": "precisionmembench"
+      },
+      "attempts": [
+        {
+          "round": 1,
+          "accepted": true,
+          "backfilled": true,
+          "what": "P49: accept a query window whose token sequence differs from a label by at most one token, and that token by at most one Damerau edit, under the same all-labeled guard. Predicted to drop the three false positives; the fourth active failure was a missing belief, not an over-return.",
+          "files": [
+            "integrations/hermes-provider/hermes_memory_provider/__init__.py"
+          ],
+          "patch": "P49",
+          "predicted": [
+            "messy-typo-blind-spot",
+            "fuzzy-single-edit-fires-non-pinned",
+            "fuzzy-single-term-only-signal"
+          ],
+          "fixed": [
+            "messy-typo-blind-spot",
+            "fuzzy-single-edit-fires-non-pinned",
+            "fuzzy-single-term-only-signal"
+          ],
+          "missed": [],
+          "collateral": [],
+          "passed": 71,
+          "total": 77,
+          "predicted_at": "2026-11-16",
+          "evaluated_at": "2026-11-16",
+          "provenance": {
+            "objective": "precisionmembench",
+            "fixture_sha256": {
+              "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
+            },
+            "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
+            "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
+            "hermes_version": null,
+            "git_commit": "718b7c0",
+            "model": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "P03",
+      "name": "Zero-result recall cannot recover a Damerau transposition typo",
+      "opened": {
+        "date": "2026-11-16",
+        "objective": "precisionmembench"
+      },
+      "attempts": [
+        {
+          "round": 2,
+          "accepted": true,
+          "backfilled": true,
+          "what": "P50: index single-token structured labels on remember (bounded 2048) and, on a zero-result recall, retry once with near-label tokens restored. The engine returned zero rows for the transposition query, so no result-side filter could recover it. Collateral recorded at round 3: the expansion rewrote 'mango' to 'Mongo', which the benchmark's prefix guard forbids.",
+          "files": [
+            "integrations/hermes-provider/hermes_memory_provider/__init__.py"
+          ],
+          "patch": "P50",
+          "predicted": [
+            "fuzzy-two-edit-transposition-blocked"
+          ],
+          "fixed": [
+            "fuzzy-two-edit-transposition-blocked"
+          ],
+          "missed": [],
+          "collateral": [
+            "fuzzy-prefix-blocks-transitive-match"
+          ],
+          "passed": 71,
+          "total": 77,
+          "predicted_at": "2026-11-16",
+          "evaluated_at": "2026-11-16",
+          "provenance": {
+            "objective": "precisionmembench",
+            "fixture_sha256": {
+              "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
+            },
+            "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
+            "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
+            "hermes_version": null,
+            "git_commit": "718b7c0",
+            "model": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "P04",
+      "name": "The shared one-edit check ignores the leading prefix",
+      "opened": {
+        "date": "2026-11-16",
+        "objective": "precisionmembench"
+      },
+      "attempts": [
+        {
+          "round": 3,
+          "accepted": true,
+          "backfilled": true,
+          "what": "P50 amendment: the shared one-edit check requires the leading two characters to agree (a swap of the first two is still allowed), so a real word is not expanded into a different one.",
+          "files": [
+            "integrations/hermes-provider/hermes_memory_provider/__init__.py"
+          ],
+          "patch": "P50",
+          "predicted": [
+            "fuzzy-prefix-blocks-transitive-match"
+          ],
+          "fixed": [
+            "fuzzy-prefix-blocks-transitive-match"
+          ],
+          "missed": [],
+          "collateral": [],
+          "passed": 72,
+          "total": 77,
+          "predicted_at": "2026-11-16",
+          "evaluated_at": "2026-11-16",
+          "provenance": {
+            "objective": "precisionmembench",
+            "fixture_sha256": {
+              "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
+            },
+            "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
+            "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
+            "hermes_version": null,
+            "git_commit": "718b7c0",
+            "model": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "P05",
+      "name": "Fully labeled rows with no label evidence are served from the engine's semantic guess",
+      "opened": {
+        "date": "2026-11-17",
+        "objective": "precisionmembench"
+      },
+      "attempts": [
+        {
+          "round": 7,
+          "accepted": true,
+          "backfilled": true,
+          "what": "P51: under the all-labeled guard, abstain when no row's label is an exact or one-edit match for the query, instead of serving the engine's semantic guess. The five active over-return failures at the time were all fully labeled rows with zero label evidence. Collateral measured at round 10 by research/paraphrase_probe.py: the provider serves zero rows for all 21 label-disjoint paraphrase queries, including the 16 where raw engine recall had the target in its top 20.",
+          "files": [
+            "integrations/hermes-provider/hermes_memory_provider/__init__.py"
+          ],
+          "patch": "P51",
+          "predicted": [
+            "questions-pinned-active-only",
+            "scope-bleed-questions-code-excludes-writing",
+            "persona-prelude-content-present",
+            "why-it-matters-not-indexed-blind-spot",
+            "empty-alias-belief-content-path-only"
+          ],
+          "fixed": [
+            "questions-pinned-active-only",
+            "scope-bleed-questions-code-excludes-writing",
+            "persona-prelude-content-present",
+            "why-it-matters-not-indexed-blind-spot",
+            "empty-alias-belief-content-path-only"
+          ],
+          "missed": [],
+          "collateral": [
+            "paraphrase/b-redis-code",
+            "paraphrase/b-ts-pref",
+            "paraphrase/b-react-entity",
+            "paraphrase/b-dead-letter-queue",
+            "paraphrase/b-ci-gha-entity",
+            "paraphrase/b-kubernetes-entity",
+            "paraphrase/b-linting-current",
+            "paraphrase/b-vitest-pref",
+            "paraphrase/b-db-decision",
+            "paraphrase/b-error-handling",
+            "paraphrase/b-composition-inheritance",
+            "paraphrase/b-comm-pushback",
+            "paraphrase/b-comm-response-length",
+            "paraphrase/b-comm-recommendation",
+            "paraphrase/b-authorship-mode",
+            "paraphrase/b-narrator-voice",
+            "paraphrase/b-protagonist-entity",
+            "paraphrase/b-prose-style-user-edited",
+            "paraphrase/b-functional-pipeline",
+            "paraphrase/b-fastify-pref",
+            "paraphrase/b-zero-reinforcement-fresh"
+          ],
+          "passed": 77,
+          "total": 77,
+          "predicted_at": "2026-11-17",
+          "evaluated_at": "2026-11-17",
+          "provenance": {
+            "objective": "precisionmembench",
+            "fixture_sha256": {
+              "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
+            },
+            "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
+            "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
+            "hermes_version": null,
+            "git_commit": "8630c68",
+            "model": null
+          }
+        },
+        {
+          "round": 9,
+          "accepted": true,
+          "backfilled": true,
+          "what": "P53: when narrowing finds no match in a fully labeled set and the P50 expansion rewrites the query, retry once with the restored query before abstaining; evidence is still checked against the original query. Predicted that the transposition case stays passing, which the report confirms; no fixture verdict flipped, so this attempt is not counted as newly fixing it.",
+          "files": [
+            "integrations/hermes-provider/hermes_memory_provider/__init__.py"
+          ],
+          "patch": "P53",
+          "predicted": [
+            "fuzzy-two-edit-transposition-blocked"
+          ],
+          "fixed": [],
+          "missed": [],
+          "collateral": [],
+          "passed": 77,
+          "total": 77,
+          "predicted_at": "2026-11-17",
+          "evaluated_at": "2026-11-17",
+          "provenance": {
+            "objective": "precisionmembench",
+            "fixture_sha256": {
+              "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
+            },
+            "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
+            "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
+            "hermes_version": null,
+            "git_commit": "8630c68",
+            "model": null
+          }
+        },
+        {
+          "round": 10,
+          "accepted": false,
+          "backfilled": true,
+          "what": "Measurement: built research/paraphrase_probe.py to price the P51 trade before claiming it. 21 label-disjoint paraphrases over the 35 pinned beliefs; prediction written as the query set, i.e. the provider should still serve each target. No code change: raw engine top-20 held 16/21 targets, the provider served 0/21. Row-score and content-overlap analysis found no floor that separates these queries from the over-return rows, so the trade stands and is surfaced instead of tuned away.",
+          "files": [
+            "research/paraphrase_probe.py",
+            "research/overreturn_probe.py"
+          ],
+          "patch": null,
+          "predicted": [
+            "paraphrase/b-redis-code",
+            "paraphrase/b-ts-pref",
+            "paraphrase/b-react-entity",
+            "paraphrase/b-dead-letter-queue",
+            "paraphrase/b-ci-gha-entity",
+            "paraphrase/b-kubernetes-entity",
+            "paraphrase/b-linting-current",
+            "paraphrase/b-vitest-pref",
+            "paraphrase/b-db-decision",
+            "paraphrase/b-error-handling",
+            "paraphrase/b-composition-inheritance",
+            "paraphrase/b-comm-pushback",
+            "paraphrase/b-comm-response-length",
+            "paraphrase/b-comm-recommendation",
+            "paraphrase/b-authorship-mode",
+            "paraphrase/b-narrator-voice",
+            "paraphrase/b-protagonist-entity",
+            "paraphrase/b-prose-style-user-edited",
+            "paraphrase/b-functional-pipeline",
+            "paraphrase/b-fastify-pref",
+            "paraphrase/b-zero-reinforcement-fresh"
+          ],
+          "fixed": [],
+          "missed": [
+            "paraphrase/b-redis-code",
+            "paraphrase/b-ts-pref",
+            "paraphrase/b-react-entity",
+            "paraphrase/b-dead-letter-queue",
+            "paraphrase/b-ci-gha-entity",
+            "paraphrase/b-kubernetes-entity",
+            "paraphrase/b-linting-current",
+            "paraphrase/b-vitest-pref",
+            "paraphrase/b-db-decision",
+            "paraphrase/b-error-handling",
+            "paraphrase/b-composition-inheritance",
+            "paraphrase/b-comm-pushback",
+            "paraphrase/b-comm-response-length",
+            "paraphrase/b-comm-recommendation",
+            "paraphrase/b-authorship-mode",
+            "paraphrase/b-narrator-voice",
+            "paraphrase/b-protagonist-entity",
+            "paraphrase/b-prose-style-user-edited",
+            "paraphrase/b-functional-pipeline",
+            "paraphrase/b-fastify-pref",
+            "paraphrase/b-zero-reinforcement-fresh"
+          ],
+          "collateral": [],
+          "passed": 0,
+          "total": 21,
+          "predicted_at": "2026-11-17",
+          "evaluated_at": "2026-11-17",
+          "provenance": {
+            "objective": "precisionmembench",
+            "fixture_sha256": {
+              "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
+            },
+            "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
+            "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
+            "hermes_version": null,
+            "git_commit": "8630c68",
+            "model": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "P06",
+      "name": "One-edit evidence admits single-character noise",
+      "opened": {
+        "date": "2026-11-17",
+        "objective": "precisionmembench"
+      },
+      "attempts": [
+        {
+          "round": 8,
+          "accepted": true,
+          "backfilled": true,
+          "what": "P52: a one-edit match between a single-character side and a longer token cannot be a typo, so the shared one-edit check returns false when the shorter side is one character; applies to narrowing and to the expansion index. Predicted that the three fuzzy-evidence cases stay passing, which the report confirms; no fixture verdict flipped, so this attempt is not counted as newly fixing them.",
+          "files": [
+            "integrations/hermes-provider/hermes_memory_provider/__init__.py"
+          ],
+          "patch": "P52",
+          "predicted": [
+            "messy-typo-blind-spot",
+            "fuzzy-single-edit-fires-non-pinned",
+            "fuzzy-single-term-only-signal"
+          ],
+          "fixed": [],
+          "missed": [],
+          "collateral": [],
+          "passed": 77,
+          "total": 77,
+          "predicted_at": "2026-11-17",
+          "evaluated_at": "2026-11-17",
+          "provenance": {
+            "objective": "precisionmembench",
+            "fixture_sha256": {
+              "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
+            },
+            "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
+            "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
+            "hermes_version": null,
+            "git_commit": "8630c68",
+            "model": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "P07",
+      "name": "Checkpoint policy bounds bulk ingest throughput",
+      "opened": {
+        "date": "2026-10-03",
+        "objective": "task/write-throughput"
+      },
+      "attempts": [
+        {
+          "round": 1,
+          "accepted": true,
+          "backfilled": true,
+          "what": "Raise the WAL checkpoint bound 4 -> 16 MiB and the interval 10 -> 100 writes, so bulk ingest is not checkpointed every few rows. Measured 6717 -> ~4900 ms for 5000 rows; the scorer's three gates passed. The seed now holds 20 MiB, raised later by d01920e.",
+          "files": [
+            "src/mnemosyne_lite/storage.py"
+          ],
+          "patch": null,
+          "predicted": [],
+          "fixed": [],
+          "missed": [],
+          "collateral": [],
+          "passed": 3,
+          "total": 3,
+          "predicted_at": "2026-10-03",
+          "evaluated_at": "2026-10-03",
+          "provenance": {
+            "objective": "task/write-throughput",
+            "fixture_sha256": null,
+            "engine_pin": null,
+            "engine_patches_sha256": null,
+            "hermes_version": null,
+            "git_commit": "5dd556c",
+            "model": null
+          }
+        },
+        {
+          "round": 2,
+          "accepted": false,
+          "backfilled": true,
+          "what": "Rejected cheat: disable checkpointing entirely. Measured 535-570 ms at a 40.9 MiB peak WAL, so wal_unbounded rejects it (limit 28 MiB after the 1 KiB page geometry). No change kept: the WAL grows without bound and a concurrent reader stalls behind it.",
+          "files": [
+            "src/mnemosyne_lite/storage.py"
+          ],
+          "patch": null,
+          "predicted": [],
+          "fixed": [],
+          "missed": [],
+          "collateral": [],
+          "passed": 0,
+          "total": 3,
+          "predicted_at": "2026-10-03",
+          "evaluated_at": "2026-10-03",
+          "provenance": {
+            "objective": "task/write-throughput",
+            "fixture_sha256": null,
+            "engine_pin": null,
+            "engine_patches_sha256": null,
+            "hermes_version": null,
+            "git_commit": null,
+            "model": null
+          }
+        },
+        {
+          "round": 3,
+          "accepted": true,
+          "backfilled": true,
+          "what": "Reference measurement: a tighter 4 MiB checkpoint bound scores 698 ms at a 4.2 MiB peak WAL, so the honest direction still passes the gates.",
+          "files": [
+            "src/mnemosyne_lite/storage.py"
+          ],
+          "patch": null,
+          "predicted": [],
+          "fixed": [],
+          "missed": [],
+          "collateral": [],
+          "passed": 3,
+          "total": 3,
+          "predicted_at": "2026-10-04",
+          "evaluated_at": "2026-10-04",
+          "provenance": {
+            "objective": "task/write-throughput",
+            "fixture_sha256": null,
+            "engine_pin": null,
+            "engine_patches_sha256": null,
+            "hermes_version": null,
+            "git_commit": null,
+            "model": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "P08",
+      "name": "Page layout and index overhead inflate the bulk write path",
+      "opened": {
+        "date": "2026-10-04",
+        "objective": "task/write-throughput"
+      },
+      "attempts": [
+        {
+          "round": 4,
+          "accepted": true,
+          "backfilled": true,
+          "what": "1 KiB page geometry on a fresh store plus one redundant index retired: 5000-row ingest fell to ~700 ms with a 17.0-17.1 MiB peak WAL and 0.0055 search p50.",
+          "files": [
+            "src/mnemosyne_lite/storage.py"
+          ],
+          "patch": null,
+          "predicted": [],
+          "fixed": [],
+          "missed": [],
+          "collateral": [],
+          "passed": 3,
+          "total": 3,
+          "predicted_at": "2026-10-04",
+          "evaluated_at": "2026-10-04",
+          "provenance": {
+            "objective": "task/write-throughput",
+            "fixture_sha256": null,
+            "engine_pin": null,
+            "engine_patches_sha256": null,
+            "hermes_version": null,
+            "git_commit": "2fccada",
+            "model": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "P09",
+      "name": "The per-row commit is the durability contract",
+      "opened": {
+        "date": "2026-10-04",
+        "objective": "task/write-throughput"
+      },
+      "attempts": [
+        {
+          "round": 5,
+          "accepted": false,
+          "backfilled": true,
+          "what": "Rejected cheat: synchronous=OFF. Measured ~12% faster, but writes no longer survive a power loss, so contract_broken rejects it (the gate requires journal_mode=wal and synchronous=NORMAL on the connection the store opens). No change kept. The per-row commit is ~63% of the remaining cost and is the durability contract, so this objective is close to exhausted.",
+          "files": [
+            "src/mnemosyne_lite/storage.py"
+          ],
+          "patch": null,
+          "predicted": [],
+          "fixed": [],
+          "missed": [],
+          "collateral": [],
+          "passed": 0,
+          "total": 3,
+          "predicted_at": "2026-10-04",
+          "evaluated_at": "2026-10-04",
+          "provenance": {
+            "objective": "task/write-throughput",
+            "fixture_sha256": null,
+            "engine_pin": null,
+            "engine_patches_sha256": null,
+            "hermes_version": null,
+            "git_commit": null,
+            "model": null
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -603,3 +603,117 @@ def test_staged_arm_keeps_the_inherited_environment(monkeypatch):
         "staged arm dropped the inherited environment"
     )
     assert "PATH" in captured
+
+
+# --- carried lessons (P55 provenance probe) --------------------------------
+
+
+def test_lesson_corpus_is_opt_in_and_leaves_the_default_digest_alone():
+    scale = _load("mnemosim_scale3", ROOT / "bench/sim/scale.py")
+    base = scale.make_corpus(7, probes=40, dev_probes=8, probes_per_life=20, slots=4)
+    flagged = scale.make_corpus(
+        7, probes=40, dev_probes=8, probes_per_life=20, slots=4, lessons=True
+    )
+    assert scale.corpus_digest(base) != scale.corpus_digest(flagged)
+    assert not any(p["kind"] == "carried_lesson" for p in base["probes"])
+    lesson_probes = [p for p in flagged["probes"] if p["kind"] == "carried_lesson"]
+    assert lesson_probes, "the lesson probe must land inside the measured split"
+    assert flagged["counts"]["held_out"] == 40
+    for probe in lesson_probes:
+        assert probe["model_a"] != probe["model_b"]
+        assert probe["answers"] == [probe["entity"]]
+        life = next(life for life in flagged["lives"] if life["life_id"] == probe["life_id"])
+        lesson = next(item for item in life["lessons"] if item["probe_id"] == probe["probe_id"])
+        assert lesson["model_a"] == probe["model_a"]
+        assert probe["answers"][0] in lesson["text"]
+        # The token appears once in the lesson, so a returned row is the lesson.
+        assert lesson["text"].count(probe["answers"][0]) == 1
+
+
+def test_lesson_probe_answers_are_absent_from_every_other_event():
+    scale = _load("mnemosim_scale4", ROOT / "bench/sim/scale.py")
+    corpus = scale.make_corpus(
+        9, probes=60, dev_probes=0, probes_per_life=20, slots=3, lessons=True
+    )
+    for probe in corpus["probes"]:
+        if probe["kind"] != "carried_lesson":
+            continue
+        life = next(life for life in corpus["lives"] if life["life_id"] == probe["life_id"])
+        haystack = " ".join(
+            [event["sentence"] for event in life["events"]]
+            + [message for session in life["sessions"] for message in session["messages"]]
+        )
+        assert probe["answers"][0] not in haystack
+
+
+def test_prefetch_entries_pair_a_row_with_its_own_provenance_line():
+    grade, _stats, _aggregate, _report = _package()
+    context = (
+        "## Mnemosyne Context\n"
+        "  [2026-01-01T00:00] (importance 0.90) lesson00001 root cause text\n"
+        "    learned under model anthropic/claude-opus-5.5, engine 3.15.1, 2026-11-19\n"
+        "  [2026-01-01T00:00] (importance 0.90) other row without provenance\n"
+        "  [2026-01-01T00:00] (importance 0.90) lesson00002 second lesson\n"
+        "    learned under model z-ai/glm-5.3-flash, engine 3.15.1, 2026-11-19"
+    )
+    entries = grade.prefetch_entries(context)
+    assert [line.startswith("learned under") for _text, line in entries] == [True, False, True]
+    assert "model z-ai/glm-5.3-flash" in entries[2][1]
+
+
+def test_grade_provenance_separates_absent_from_wrong():
+    grade, _stats, _aggregate, _report = _package()
+    probe = {"answers": ["lesson00001"], "model_a": "anthropic/claude-opus-5.5"}
+    right = grade.grade_provenance(
+        probe,
+        [
+            ("lesson00001 root cause", "learned under model anthropic/claude-opus-5.5, 2026-11-19"),
+        ],
+    )
+    assert right == {"provenance_present": True, "provenance_lines": 1, "wrong_model": 0}
+    absent = grade.grade_provenance(probe, [("lesson00001 root cause", "")])
+    assert absent["provenance_present"] is False
+    wrong = grade.grade_provenance(
+        probe,
+        [("lesson00001 root cause", "learned under model z-ai/glm-5.3-flash, 2026-11-19")],
+    )
+    assert wrong["wrong_model"] == 1
+
+
+def test_summary_and_comparison_report_lessons_without_moving_the_four_criteria():
+    grade, _stats, aggregate, _report = _package()
+    probes = [
+        {
+            "probe_id": "lesson",
+            "kind": "carried_lesson",
+            "answers": ["lesson00001"],
+            "model_a": "anthropic/claude-opus-5.5",
+            "stale_values": [],
+        },
+        {"probe_id": "a", "kind": "answerable_current", "answers": ["x"], "stale_values": []},
+        {"probe_id": "f", "kind": "fabricated", "answers": [], "stale_values": []},
+    ]
+    line = "learned under model anthropic/claude-opus-5.5, engine 3.15.1, 2026-11-19"
+    records = [
+        {
+            **grade.grade(probes[0], ["lesson00001 root cause"]),
+            **grade.grade_provenance(probes[0], [("lesson00001 root cause", line)]),
+            "surface": "tool",
+        },
+        {**grade.grade(probes[1], ["x"]), "surface": "tool"},
+        {**grade.grade(probes[2], []), "surface": "tool"},
+    ]
+    summary = aggregate.summarize_surface(probes, records, "tool")
+    assert summary["lesson_probes"] == 1
+    assert summary["lesson_recall"] == 1.0
+    assert summary["lesson_provenance_present"] == 1
+    assert summary["lesson_wrong_model"] == 0
+    # The four pass criteria keep their own denominators.
+    assert summary["answerable_recall"] == 1.0
+    assert summary["fabricated_entity_queries"] == 1
+    assert summary["fabricated_entity_queries_returning_rows"] == 0
+
+    blocks = aggregate.compare_surfaces(probes, records, records, "tool", resamples=50)
+    assert blocks["lesson_recall"]["difference"]["mean"] == 0.0
+    assert blocks["lesson_provenance_present"]["a"] == 1
+    assert blocks["lesson_wrong_model"]["a"] == 0

@@ -44,6 +44,72 @@ Environment: an activated virtual environment outside the repo with
   and the synthetic held-out scorecard must not regress. Any keep requires the
   guardrail check.
 
+## Self-Improvement Memory ledger
+
+`research/sim.json` is the loop's machine-checked record: one entry per
+root-cause hypothesis, with the attempts made against it, the cases each one was
+*predicted* to fix, the cases it actually fixed, missed and broke, and the
+provenance (objective, engine pin, fixture digest, commit, proposing model).
+`research/research_log.md` stays the narrative; the ledger is what the next loop
+reads first, because a result without the reason it was made does not survive a
+model, engine or benchmark switch.
+
+The loop is three commands and no hand-edited JSON:
+
+```bash
+python scripts/sim.py render            # read the whole ledger before proposing
+python scripts/sim.py open    --name "<root cause hypothesis>" --objective precisionmembench
+python scripts/sim.py predict --problem P05 --cases <caseId,...> \
+                              --what "<change and rationale>" --patch P55
+PYTHONPATH="$PWD:$PWD/integrations/hermes-provider" \
+  python research/evaluate.py --output research/runs/iter-N.json
+python scripts/sim.py record  --attempt P05/11 --report research/runs/iter-N.json \
+                              --baseline research/runs/iter-9.json --accept
+```
+
+Rules the loop follows:
+
+- `render` first, in full. The ledger is small on purpose, so it is not
+  summarised or retrieved.
+- `predict` before `evaluate.py` runs, at every iteration including a measurement
+  iteration. A prediction is the case ids the change is supposed to fix; it is
+  written before the run, never reconstructed after it.
+- `record` after, for rejects and regressions as well as keeps. `--baseline` is
+  what lets `record` see a collision (`collateral`), so pass it whenever the
+  previous run's report exists; without it, regressions are not computed and the
+  command says so.
+- Identical root-cause names merge into the existing id (`open` reports the
+  merge), so the same cause never forks into two entries.
+- `render` prints the prediction hit rate per objective, split by whether the
+  prediction was written before the run or backfilled. That split is the loop's
+  own calibration number; a backfilled hit rate is not evidence.
+
+The backfilled entries (rounds 0-10 for this objective, plus the write-throughput
+history in `task/PROBLEM.md`) were reconstructed from the prose logs and the run
+reports in `research/runs/`. Their predictions are the best reconstruction of
+each change's stated intent, so they are tagged `backfilled: true` and never
+counted as a measured hit rate.
+
+`fixed` keeps its strict meaning in every entry: a predicted case that failed in
+the baseline report and passes in this one. A guard-style change that keeps
+already-passing cases passing records no fix (rounds 8 and 9), because otherwise
+an attempt would inherit an earlier patch's result. `record` enforces the same
+rule from the two reports, so a fresh iteration cannot credit itself either.
+The same rule prices a guard-style prediction conservatively: a prediction that
+says "these cases keep passing" counts toward `predicted` and, when it holds,
+adds nothing to `fixed`, so the backfilled hit rate is a lower bound, not a
+score for those attempts.
+
+The product-side reading of the same result — a stored lesson that says which
+model and engine it was learned under — is patch P55; the spike that decided how
+the provider reads the model id is
+[`hermes-model-id-spike.md`](hermes-model-id-spike.md).
+
+`bash scripts/checks.sh` validates the ledger (schema shape, unique ids, aliases
+that resolve, `predicted_at` not later than `evaluated_at` unless backfilled,
+`fixed`/`missed` as subsets of `predicted`, and `carried_from` sources that still
+exist). A ledger the gate cannot parse fails the gate; it is never read as empty.
+
 ## Search space
 
 1. P48 label matching: exact token phrase (current) vs bounded 1-edit fuzzy

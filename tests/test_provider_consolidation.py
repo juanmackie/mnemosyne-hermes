@@ -1759,9 +1759,7 @@ def test_sleep_demote_sources_dry_run_leaves_weight_unchanged(monkeypatch, tmp_p
 
 def test_sleep_demote_sources_on_by_default(monkeypatch, tmp_path):
     """Unset flags: verified consolidation demotes its sources by default."""
-    memory = _sleep_demote_memory(
-        monkeypatch, tmp_path, "demote-default", verify=None, demote=None
-    )
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-default", verify=None, demote=None)
     try:
         source_id = memory.remember(
             "The Orion storage limit is 40 terabytes.",

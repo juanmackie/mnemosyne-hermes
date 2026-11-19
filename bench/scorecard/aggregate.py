@@ -63,6 +63,17 @@ def summarize_surface(
     historical = counts("answerable_historical")
     fabricated = counts("fabricated")
     expired = counts("expired")
+    lessons = counts("carried_lesson")
+    lessons["provenance_present"] = sum(
+        1 for row in by_kind["carried_lesson"] if row.get("provenance_present")
+    )
+    # Every stamped line the probe's contexts contained, not only the lesson's:
+    # with tool-path ingestion each stored row is stamped, and its line carries
+    # no model. The lesson's own line is what `provenance_present` reports.
+    lessons["stamped_lines_seen"] = sum(
+        row.get("provenance_lines") or 0 for row in by_kind["carried_lesson"]
+    )
+    lessons["wrong_model"] = sum(row.get("wrong_model") or 0 for row in by_kind["carried_lesson"])
     answerable_total = current["probes"] + historical["probes"]
     answerable_hits = current["answerable_hits"] + historical["answerable_hits"]
 
@@ -74,6 +85,7 @@ def summarize_surface(
             "answerable_historical": historical,
             "fabricated": fabricated,
             "expired": expired,
+            "carried_lesson": lessons,
         },
         "answerable_recall": answerable_hits / answerable_total if answerable_total else None,
         "answerable_probes": answerable_total,
@@ -84,6 +96,16 @@ def summarize_surface(
         "expired_probes_served": expired["expired_probes_served"],
         "expired_probes": expired["probes"],
         "stale_outranking_current": current["stale_above_current"],
+        # Carried lessons: recalled at the same rate as an untagged control, and
+        # never reported under the model that is not on the row.
+        "lesson_probes": lessons["probes"],
+        "lesson_hits": lessons["answerable_hits"],
+        "lesson_recall": (
+            lessons["answerable_hits"] / lessons["probes"] if lessons["probes"] else None
+        ),
+        "lesson_provenance_present": lessons["provenance_present"],
+        "lesson_stamped_lines_seen": lessons["stamped_lines_seen"],
+        "lesson_wrong_model": lessons["wrong_model"],
     }
 
 
@@ -161,6 +183,29 @@ def compare_surfaces(
     # Stale above current, only meaningful on current-truth probes.
     left, right, picked = series("answerable_current", "stale_ranked_above_current")
     blocks["stale_ranked_above_current"] = {
+        "n": len(picked),
+        "a": sum(left),
+        "b": sum(right),
+        "difference": paired_bootstrap_ci(paired_differences(left, right), resamples=resamples),
+    }
+    # Carried lessons: recall must not change, and the provenance line must be
+    # present and correct. Both are zero-difference checks under A/A.
+    left, right, picked = series("carried_lesson", "answer_hit")
+    blocks["lesson_recall"] = {
+        "n": len(picked),
+        "a": _mean(left),
+        "b": _mean(right),
+        "difference": paired_bootstrap_ci(paired_differences(left, right), resamples=resamples),
+    }
+    left, right, picked = series("carried_lesson", "provenance_present")
+    blocks["lesson_provenance_present"] = {
+        "n": len(picked),
+        "a": sum(left),
+        "b": sum(right),
+        "difference": paired_bootstrap_ci(paired_differences(left, right), resamples=resamples),
+    }
+    left, right, picked = series("carried_lesson", "wrong_model")
+    blocks["lesson_wrong_model"] = {
         "n": len(picked),
         "a": sum(left),
         "b": sum(right),

@@ -214,6 +214,7 @@ def cmd_corpus(args: argparse.Namespace) -> int:
         dev_probes=args.dev_probes,
         probes_per_life=args.probes_per_life,
         slots=args.slots,
+        lessons=args.lessons,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(corpus, sort_keys=True), encoding="utf-8")
@@ -340,6 +341,11 @@ def main(argv: list[str] | None = None) -> int:
     corpus_parser.add_argument("--dev-probes", type=int, default=2511)
     corpus_parser.add_argument("--probes-per-life", type=int, default=20)
     corpus_parser.add_argument("--slots", type=int, default=5)
+    corpus_parser.add_argument(
+        "--lessons",
+        action="store_true",
+        help="add one carried-lesson probe per life (written under model A, queried under model B)",
+    )
     corpus_parser.add_argument("--output", type=Path, required=True)
     corpus_parser.set_defaults(func=cmd_corpus)
 

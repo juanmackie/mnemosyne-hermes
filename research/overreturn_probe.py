@@ -54,16 +54,18 @@ def main() -> int:
                     "source": "precisionmembench",
                     "metadata": seed_metadata(belief),
                 }
-                result = json.loads(
-                    store.provider.handle_tool_call("mnemosyne_remember", payload)
-                )
+                result = json.loads(store.provider.handle_tool_call("mnemosyne_remember", payload))
                 if isinstance(result.get("memory_id"), str):
                     alias_index[result["memory_id"]] = belief["_id"]
             provider = store.provider
             for query in QUERIES:
                 rows = provider._beam.recall(
-                    query, top_k=20, temporal_weight=0.0, query_time=None,
-                    temporal_halflife=24, explain=False,
+                    query,
+                    top_k=20,
+                    temporal_weight=0.0,
+                    query_time=None,
+                    temporal_halflife=24,
+                    explain=False,
                 )
                 print(f"\nquery={query!r}")
                 for row in rows:

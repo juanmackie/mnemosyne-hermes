@@ -65,6 +65,12 @@ when available; label untested hypotheses as such. When relying on a memory,
 check its source or current state if accuracy or freshness matters. A stored
 note is evidence to investigate, not proof that its contents remain true.
 
+For a lesson, keep the shape *root cause → what was tried → what was expected →
+what happened*, and keep the failed attempts beside the rule that replaced
+them. A rule without its failed attempts is re-tried; a rule with them is
+reused. Give the root cause one short label and reuse that label for the same
+cause, so a later search groups the attempts instead of splitting them.
+
 ## MCP
 
 The stdio server speaks newline-delimited JSON-RPC 2.0 on stdin/stdout,

@@ -23,6 +23,12 @@ run() {
 
 run bash scripts/check_version_drift.sh
 run bash scripts/check_no_secrets.sh
+# The Self-Improvement Memory ledger (research/sim.json): schema shape, unique
+# ids, aliases that point at real problems, predictions written before their
+# evaluation, and fixed/missed as subsets of the prediction. A ledger the gate
+# cannot parse fails; it is never read as empty. The loop's own mechanics
+# (predict -> evaluate -> record) are pytest cases in tests/test_sim_ledger.py.
+run "${PYTHON_BIN:-python3}" scripts/sim.py validate
 # Strict when MNEMOSYNE_REQUIRE_ENGINE=1: a missing engine fails instead of
 # skipping. The plain test file is also collected by `pytest tests`; this
 # wrapper is what the engine-contract CI job depends on.

@@ -1340,6 +1340,88 @@ def test_remember_redacts_credentials_before_persistence():
         assert "run_20261115_mnemosyne_report_12345678" in stored
 
 
+def test_lessons_carry_the_model_and_engine_they_were_learned_under():
+    """P55 against the real engine: stamp on write, one line on every read path.
+
+    The engine stores metadata as ``metadata_json`` and ``beam.get`` returns it
+    un-parsed, so this also pins the decode step: a dict-only reader passes an
+    engine-free fake and fails here.
+    """
+    BeamMemory = _require_engine()
+    if BeamMemory is None:
+        return
+    saved_model = os.environ.get("MNEMOSYNE_MODEL_ID")
+    os.environ["MNEMOSYNE_MODEL_ID"] = "z-ai/glm-5.3-flash"
+    try:
+        with tempfile.TemporaryDirectory() as tmp, _contract_env(tmp), _stub_hermes_constants():
+            provider = _init_contract_provider(tmp, session_id="contract_provenance")
+            try:
+                lesson = (
+                    "Lesson on verify-before-claiming: root cause was reporting a refactor "
+                    "complete before running the suite; the failed attempt is kept."
+                )
+                memory_id = _remember_id(provider, lesson)
+
+                stored = provider._beam.get(memory_id)
+                assert isinstance(stored.get("metadata"), str), (
+                    "the engine is expected to hand back metadata_json as a string"
+                )
+                assert '"z-ai/glm-5.3-flash"' in stored["metadata"]
+
+                fetched = _call(provider, "mnemosyne_get", {"memory_id": memory_id})
+                assert fetched["learned_under"].startswith(
+                    "learned under model z-ai/glm-5.3-flash"
+                ), fetched
+                assert "engine " in fetched["learned_under"], fetched
+
+                recalled = _call(provider, "mnemosyne_recall", {"query": lesson, "limit": 5})
+                lines = [
+                    row.get("learned_under")
+                    for row in recalled.get("results") or []
+                    if row.get("id") == memory_id
+                ]
+                assert lines and lines[0].startswith("learned under model z-ai/glm-5.3-flash")
+
+                injected = provider.prefetch(lesson, session_id="contract_provenance")
+                assert injected.count("learned under model z-ai/glm-5.3-flash") == 1, injected
+
+                # Batch remember is a remember write: it must stamp too, or a
+                # lesson becomes anonymous by arriving in a batch.
+                batched = _call(
+                    provider,
+                    "mnemosyne_batch",
+                    {
+                        "operations": [
+                            {
+                                "action": "remember",
+                                "content": "Batched lesson on the same root cause.",
+                                "scope": "session",
+                            }
+                        ]
+                    },
+                )
+                assert batched.get("results"), batched
+                batch_id = batched["results"][0]["memory_id"]
+                batch_meta = provider._beam.get(batch_id)["metadata"]
+                assert '"z-ai/glm-5.3-flash"' in batch_meta, batch_meta
+
+                # No declared model and no Hermes runtime: the field is null and
+                # the line still names what is known, instead of a guess.
+                os.environ.pop("MNEMOSYNE_MODEL_ID", None)
+                unknown_id = _remember_id(provider, "Second lesson on the same root cause.")
+                unknown = _call(provider, "mnemosyne_get", {"memory_id": unknown_id})
+                assert "model " not in unknown["learned_under"], unknown
+                assert '"model": null' in str(provider._beam.get(unknown_id)["metadata"])
+            finally:
+                with contextlib.suppress(Exception):
+                    provider.shutdown()
+    finally:
+        if saved_model is None:
+            os.environ.pop("MNEMOSYNE_MODEL_ID", None)
+        else:
+            os.environ["MNEMOSYNE_MODEL_ID"] = saved_model
+
+
 def test_real_audit_and_pinned_engine_lineage_baseline():
     """Characterize field survival without invoking any LLM-backed path."""
     BeamMemory = _require_engine()
@@ -1490,8 +1572,12 @@ if __name__ == "__main__":
         test_provider_validate_actions_use_runtime_scope,
         test_engine_mcp_batch_update_preserves_outer_transaction,
         test_engine_update_refreshes_vectors_and_cached_recall,
+        test_sync_turn_failure_rolls_back_and_retry_commits_all_roles,
+        test_concurrent_sync_turns_are_serialized_as_complete_transactions,
+        test_concurrent_canonical_writers_preserve_slot_history,
         test_remember_dedup_stays_session_local,
         test_remember_redacts_credentials_before_persistence,
+        test_lessons_carry_the_model_and_engine_they_were_learned_under,
         test_real_audit_and_pinned_engine_lineage_baseline,
     ]
     for fn in tests:

@@ -106,6 +106,25 @@ SECRET_TEMPLATES = (
     "webhook token {token}",
 )
 
+# Models a carried lesson can be learned under and later recalled under. The
+# names are synthetic labels for the provenance probe, not a claim about which
+# models were measured; `bench/scorecard` records the real engine attestation.
+LESSON_MODELS = (
+    "anthropic/claude-opus-5.5",
+    "z-ai/glm-5.3-flash",
+    "google/gemini-3.8-flash",
+)
+
+# One carried lesson per life, in the shape the provider's prompt guidance asks
+# for: root cause, what was tried, what was expected, what happened.
+LESSON_TEMPLATE = (
+    "Lesson on {token}: root cause was reporting a refactor complete before running "
+    "the suite. What was tried: a rename with no call-site check. What was expected: "
+    "every caller already updated. What happened: two callers broke and the failure "
+    "surfaced only after the report. Rule: run the suite before reporting done. "
+    "The failed attempt is kept so it is not retried."
+)
+
 _ENTITY_SYLLABLES = (
     "lumen",
     "zentra",
@@ -161,12 +180,50 @@ def _secret(rng: random.Random) -> str:
     return template.format(token=body)
 
 
+def _make_lesson(life_id: str, life_index: int, seed: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One carried-lesson write and the probe that measures it.
+
+    The lesson's distinctive token exists nowhere else in the life, so a probe
+    that returns the lesson is graded exactly. `model_a` is the model the lesson
+    is written under, `model_b` the model the recall happens under.
+    """
+    token = f"lesson{(life_index * 7919 + seed) % 100000:05d}"
+    model_a = LESSON_MODELS[life_index % len(LESSON_MODELS)]
+    model_b = LESSON_MODELS[(life_index + 1) % len(LESSON_MODELS)]
+    probe_id = f"{life_id}-lesson"
+    lesson = {
+        "lesson_id": f"{life_id}-carried-lesson",
+        "life_id": life_id,
+        "probe_id": probe_id,
+        "text": LESSON_TEMPLATE.format(token=token),
+        "model_a": model_a,
+        "model_b": model_b,
+        "token": token,
+    }
+    probe = {
+        "probe_id": probe_id,
+        "kind": "carried_lesson",
+        "query": f"what did we learn about {token}?",
+        "as_of": "2026-01-01T00:00:00Z",
+        "answers": [token],
+        "must_abstain": False,
+        "entity": token,
+        "attribute": "lesson",
+        "stale_values": [],
+        "model_a": model_a,
+        "model_b": model_b,
+        "lesson_id": lesson["lesson_id"],
+    }
+    return lesson, probe
+
+
 def make_life(
     seed: int,
     *,
     life_index: int = 0,
     slots: int = 5,
     probes_per_life: int = 20,
+    lessons: bool = False,
 ) -> dict[str, Any]:
     """Generate one synthetic life with exact probe labels.
 
@@ -369,7 +426,7 @@ def make_life(
         sessions[-1]["never_store_messages"] = [e["sentence"] for e in never_store]
 
     probes = _make_probes(rng, life_id, slot_truth, events, probes_per_life)
-    return {
+    life: dict[str, Any] = {
         "format": "mnemosim-life/v1",
         "seed": seed,
         "life_id": life_id,
@@ -379,6 +436,13 @@ def make_life(
         "probes": probes,
         "secrets": secrets,
     }
+    if lessons:
+        # Additive: the existing probe kinds keep their exact labels and order,
+        # so a corpus built without lessons has the same digest as before.
+        lesson, probe = _make_lesson(life_id, life_index, seed)
+        life["lessons"] = [lesson]
+        life["probes"] = [*probes, probe]
+    return life
 
 
 def _days_since_start(iso: str) -> int:
@@ -524,6 +588,7 @@ def make_corpus(
     dev_probes: int = 2511,
     probes_per_life: int = 20,
     slots: int = 5,
+    lessons: bool = False,
 ) -> dict[str, Any]:
     """Generate a full scorecard corpus with a dev/held-out split.
 
@@ -541,7 +606,13 @@ def make_corpus(
     held: list[dict[str, Any]] = []
     dev: list[dict[str, Any]] = []
     for life_index in range(lives_needed):
-        life = make_life(seed, life_index=life_index, slots=slots, probes_per_life=probes_per_life)
+        life = make_life(
+            seed,
+            life_index=life_index,
+            slots=slots,
+            probes_per_life=probes_per_life,
+            lessons=lessons,
+        )
         lives.append(life)
         for probe in life["probes"]:
             row = dict(probe)
