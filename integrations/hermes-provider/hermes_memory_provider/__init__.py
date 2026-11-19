@@ -409,10 +409,30 @@ def _stamped_metadata(
     return stamped
 
 
+def _parse_metadata(metadata: Any) -> Optional[Any]:
+    """Decode stored metadata, which the engine keeps as a JSON string.
+
+    `beam.get()` and engine recall rows hand back the `metadata_json` column
+    verbatim, so a dict-only reader silently sees no provenance at all. Both the
+    parse failure and an oversized value return None — a broken metadata blob is
+    not provenance.
+    """
+    if isinstance(metadata, dict):
+        return metadata
+    if isinstance(metadata, str) and len(metadata) <= 32768:
+        try:
+            decoded = json.loads(metadata)
+        except (TypeError, ValueError, RecursionError):
+            return None
+        return decoded
+    return None
+
+
 def _lesson_provenance(metadata: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(metadata, dict):
+    parsed = _parse_metadata(metadata)
+    if not isinstance(parsed, dict):
         return None
-    provenance = metadata.get(PROVENANCE_KEY)
+    provenance = parsed.get(PROVENANCE_KEY)
     return provenance if isinstance(provenance, dict) else None
 
 
@@ -4152,7 +4172,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             return None
 
     def _row_metadata(self, row: Dict[str, Any]) -> Optional[Any]:
-        """Stored metadata for one recall row, without inventing a value."""
+        """Stored metadata for one recall row, without inventing a value.
+
+        Engine recall rows normally carry no metadata, so this is one bounded
+        read-only ``get`` per returned row (at most ``top_k``) — the same shape
+        the P48 label pass already uses. A missing, malformed or oversized blob
+        yields None rather than a guess.
+        """
         metadata = row.get("metadata")
         if isinstance(metadata, dict):
             return metadata
@@ -4163,13 +4189,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             if isinstance(memory_id, str) and callable(get_memory)
             else None
         )
-        metadata = stored.get("metadata") if isinstance(stored, dict) else None
-        if isinstance(metadata, str) and len(metadata) <= 32768:
-            try:
-                metadata = json.loads(metadata)
-            except (TypeError, ValueError, RecursionError):
-                return None
-        return metadata
+        return _parse_metadata(stored.get("metadata") if isinstance(stored, dict) else None)
 
     def _row_provenance_line(self, row: Dict[str, Any]) -> Optional[str]:
         try:
@@ -4652,6 +4672,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             return json.dumps({"status": "not_found", "memory_id": memory_id})
         payload: Dict[str, Any] = {"status": "ok", "memory": result}
         # LOCAL PATCH: P55 name the model and engine this row was learned under.
+        # `_provenance_line` decodes the stored metadata_json string.
         line = _provenance_line(result.get("metadata") if isinstance(result, dict) else None)
         if line:
             payload["learned_under"] = line

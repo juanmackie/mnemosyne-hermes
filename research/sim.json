@@ -10,7 +10,7 @@
       "task/PROBLEM.md",
       "integrations/hermes-provider/PATCHES.md"
     ],
-    "note": "Backfilled from the prose logs and the run reports under research/runs/. Every attempt here is marked backfilled; predictions were reconstructed from each change's stated intent, so their hit rate is an upper bound, not evidence."
+    "note": "Backfilled from the prose logs and the run reports under research/runs/. Every attempt here is marked backfilled: predictions were reconstructed from each change's stated intent, so their hit rate is a lower-confidence number, not evidence. `fixed` keeps its strict meaning (failed in the baseline report, passes now): the two guard-style attempts (rounds 8 and 9) changed no fixture verdict, so they record no fix. Research iterations 4-6 have no attempt: they hardened tests, re-ran the evaluator A/A for determinism and ran the held-out guard, and changed no hypothesis or code path (research/research_log.md); iteration 5's re-run report is research/runs/iter-3-aa.json."
   },
   "aliases": {
     "p48": "P01",
@@ -60,7 +60,7 @@
             "objective": "precisionmembench",
             "fixture_sha256": {
               "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
-              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ea490db0ba"
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
             },
             "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
             "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
@@ -108,7 +108,7 @@
             "objective": "precisionmembench",
             "fixture_sha256": {
               "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
-              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ea490db0ba"
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
             },
             "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
             "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
@@ -154,7 +154,7 @@
             "objective": "precisionmembench",
             "fixture_sha256": {
               "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
-              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ea490db0ba"
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
             },
             "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
             "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
@@ -198,7 +198,7 @@
             "objective": "precisionmembench",
             "fixture_sha256": {
               "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
-              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ea490db0ba"
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
             },
             "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
             "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
@@ -272,7 +272,7 @@
             "objective": "precisionmembench",
             "fixture_sha256": {
               "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
-              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ea490db0ba"
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
             },
             "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
             "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
@@ -285,7 +285,7 @@
           "round": 9,
           "accepted": true,
           "backfilled": true,
-          "what": "P53: when narrowing finds no match in a fully labeled set and the P50 expansion rewrites the query, retry once with the restored query before abstaining; evidence is still checked against the original query. Recovers two-edit typo queries whose first recall is non-empty but evidence-free.",
+          "what": "P53: when narrowing finds no match in a fully labeled set and the P50 expansion rewrites the query, retry once with the restored query before abstaining; evidence is still checked against the original query. Predicted that the transposition case stays passing, which the report confirms; no fixture verdict flipped, so this attempt is not counted as newly fixing it.",
           "files": [
             "integrations/hermes-provider/hermes_memory_provider/__init__.py"
           ],
@@ -293,9 +293,7 @@
           "predicted": [
             "fuzzy-two-edit-transposition-blocked"
           ],
-          "fixed": [
-            "fuzzy-two-edit-transposition-blocked"
-          ],
+          "fixed": [],
           "missed": [],
           "collateral": [],
           "passed": 77,
@@ -306,7 +304,7 @@
             "objective": "precisionmembench",
             "fixture_sha256": {
               "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
-              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ea490db0ba"
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
             },
             "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
             "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
@@ -381,7 +379,7 @@
             "objective": "precisionmembench",
             "fixture_sha256": {
               "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
-              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ea490db0ba"
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
             },
             "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
             "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",
@@ -404,7 +402,7 @@
           "round": 8,
           "accepted": true,
           "backfilled": true,
-          "what": "P52: a one-edit match between a single-character side and a longer token cannot be a typo, so the shared one-edit check returns false when the shorter side is one character. Applies to narrowing and to the expansion index.",
+          "what": "P52: a one-edit match between a single-character side and a longer token cannot be a typo, so the shared one-edit check returns false when the shorter side is one character; applies to narrowing and to the expansion index. Predicted that the three fuzzy-evidence cases stay passing, which the report confirms; no fixture verdict flipped, so this attempt is not counted as newly fixing them.",
           "files": [
             "integrations/hermes-provider/hermes_memory_provider/__init__.py"
           ],
@@ -414,11 +412,7 @@
             "fuzzy-single-edit-fires-non-pinned",
             "fuzzy-single-term-only-signal"
           ],
-          "fixed": [
-            "messy-typo-blind-spot",
-            "fuzzy-single-edit-fires-non-pinned",
-            "fuzzy-single-term-only-signal"
-          ],
+          "fixed": [],
           "missed": [],
           "collateral": [],
           "passed": 77,
@@ -429,7 +423,7 @@
             "objective": "precisionmembench",
             "fixture_sha256": {
               "beliefs.seed.json": "d6ae1c270faba0e8bf2bc0eb4527cd008d481c451a9cd557b5ab85f918fe33f3",
-              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ea490db0ba"
+              "retrieval.cases.json": "6ab5a626356f4a6e947bee8e2e9a95af9ead7cfd58237e4aae6f02ae490db0ba"
             },
             "engine_pin": "mnemosyne-memory[embeddings]>=3.15.1,<3.16",
             "engine_patches_sha256": "d9791504c09dcf468d4bfa941d4aa8c24a23b0f41b050f757ebd538aeb0d3c2a",

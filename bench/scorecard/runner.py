@@ -461,11 +461,14 @@ def run_arm(
                 # model B. Stamping happens at write time, so the later switch
                 # cannot rewrite what the store recorded.
                 lessons = life.get("lessons") or []
-                for lesson in lessons:
-                    os.environ["MNEMOSYNE_MODEL_ID"] = str(lesson["model_a"])
-                    store.ingest_lesson(lesson["text"])
                 if lessons:
-                    os.environ["MNEMOSYNE_MODEL_ID"] = str(lessons[0]["model_b"])
+                    os.environ["MNEMOSYNE_MODEL_ID"] = str(lessons[0]["model_a"])
+                    for lesson in lessons:
+                        store.ingest_lesson(lesson["text"])
+                    # The query phase must not leave a declared model behind for
+                    # the next life's writes; provenance is stamped at write time,
+                    # so nothing after the ingest needs this set.
+                    os.environ.pop("MNEMOSYNE_MODEL_ID", None)
 
                 for probe_index, probe in enumerate(life_probes):
                     if probe_limit is not None and measured >= probe_limit:

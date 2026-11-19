@@ -90,6 +90,12 @@ reports in `research/runs/`. Their predictions are the best reconstruction of
 each change's stated intent, so they are tagged `backfilled: true` and never
 counted as a measured hit rate.
 
+`fixed` keeps its strict meaning in every entry: a predicted case that failed in
+the baseline report and passes in this one. A guard-style change that keeps
+already-passing cases passing records no fix (rounds 8 and 9), because otherwise
+an attempt would inherit an earlier patch's result. `record` enforces the same
+rule from the two reports, so a fresh iteration cannot credit itself either.
+
 The product-side reading of the same result — a stored lesson that says which
 model and engine it was learned under — is patch P55; the spike that decided how
 the provider reads the model id is

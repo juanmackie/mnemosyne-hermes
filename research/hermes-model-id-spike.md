@@ -49,8 +49,10 @@ and no second provider config.
 
 - `hermes_llm_adapter.active_model_id()` imports the helper lazily, bounds and
   sanitises the value (≤100 characters, no control characters), and returns
-  `None` on any exception. An explicit `MNEMOSYNE_MODEL_ID` declaration wins,
-  for measurement arms and scripts that have no Hermes runtime to ask.
+  `None` on any exception. The host answer wins; an explicit
+  `MNEMOSYNE_MODEL_ID` is the fallback for measurement arms and scripts that
+  have no Hermes runtime to ask (the helper returns `""` there). That order
+  means a stray export in the launching shell cannot relabel a real session.
 - `mnemosyne_remember` stores `metadata.provenance = {model, hermes_version,
   engine_version, recorded_at}`. `hermes_version` and `engine_version` come from
   the provider's existing `cli.detect_hermes_version()` / `cli.engine_version()`,

@@ -73,11 +73,12 @@ def _measure_life(job: dict[str, Any]) -> dict[str, Any]:
                     )
             # Carried lessons: written under model A, measured under model B.
             lessons = life.get("lessons") or []
-            for lesson in lessons:
-                os.environ["MNEMOSYNE_MODEL_ID"] = str(lesson["model_a"])
-                store.ingest_lesson(lesson["text"])
             if lessons:
-                os.environ["MNEMOSYNE_MODEL_ID"] = str(lessons[0]["model_b"])
+                os.environ["MNEMOSYNE_MODEL_ID"] = str(lessons[0]["model_a"])
+                for lesson in lessons:
+                    store.ingest_lesson(lesson["text"])
+                # See runner.run_arm: never leave a declared model behind.
+                os.environ.pop("MNEMOSYNE_MODEL_ID", None)
 
             if life.get("secrets"):
                 texts = runner_module.store_texts(Path(store.provider._beam.db_path))

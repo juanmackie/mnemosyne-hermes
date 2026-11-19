@@ -105,13 +105,23 @@ def test_model_id_reads_the_hermes_runtime_helper(monkeypatch) -> None:
     assert active_model_id() == "anthropic/claude-opus-5.5"
 
 
-def test_a_declared_model_id_wins_and_unusable_values_are_dropped(monkeypatch) -> None:
+def test_a_declared_model_id_fills_in_when_the_host_reports_none(monkeypatch) -> None:
     monkeypatch.setenv("MNEMOSYNE_MODEL_ID", "declared/model")
     assert active_model_id() == "declared/model"
     monkeypatch.setenv("MNEMOSYNE_MODEL_ID", "x" * 101)
     assert active_model_id() is None
     monkeypatch.setenv("MNEMOSYNE_MODEL_ID", "bad\nmodel")
     assert active_model_id() is None
+
+
+def test_the_host_answer_wins_over_a_stray_declaration(monkeypatch) -> None:
+    # A session started with a runtime model override must not be relabelled by
+    # an MNEMOSYNE_MODEL_ID left in the launching shell.
+    monkeypatch.setenv("MNEMOSYNE_MODEL_ID", "declared/model")
+    module = type("module", (), {})()
+    module._read_main_model = lambda: "anthropic/claude-opus-5.5"
+    monkeypatch.setitem(sys.modules, "agent.auxiliary_client", module)
+    assert active_model_id() == "anthropic/claude-opus-5.5"
 
 
 # --- stamping --------------------------------------------------------------
@@ -256,6 +266,21 @@ def test_get_adds_the_line_and_keeps_the_legacy_payload() -> None:
     beam.fetched["m2"] = {"id": "m2", "metadata": {"provenance": PROVENANCE}}
     payload = json.loads(provider._handle_get({"memory_id": "m2"}))
     assert payload["learned_under"].startswith("learned under model z-ai/glm-5.3-flash")
+
+
+def test_get_decodes_the_stored_metadata_json_string() -> None:
+    # The engine keeps metadata as `metadata_json` and `beam.get` returns it
+    # un-parsed; a dict-only reader would silently drop the line.
+    beam = RememberBeam()
+    beam.fetched["m3"] = {
+        "id": "m3",
+        "content": "lesson",
+        "metadata": json.dumps({"provenance": PROVENANCE}),
+    }
+    payload = json.loads(_provider(beam)._handle_get({"memory_id": "m3"}))
+    assert payload["learned_under"] == (
+        "learned under model z-ai/glm-5.3-flash, engine 3.15.1, hermes 0.19.0, 2026-11-19"
+    )
 
 
 def test_prefetch_grows_by_exactly_one_line_for_a_tagged_row() -> None:

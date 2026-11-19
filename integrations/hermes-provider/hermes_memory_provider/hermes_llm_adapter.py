@@ -57,19 +57,22 @@ def _clean_model_id(value: object) -> Optional[str]:
 
 
 def active_model_id() -> Optional[str]:
-    """The model that is running this turn, or None when it is not knowable."""
-    declared = _clean_model_id(os.environ.get("MNEMOSYNE_MODEL_ID"))
-    if declared:
-        # Explicit operator declaration: used by measurement arms and scripts
-        # whose process has no Hermes runtime to ask.
-        return declared
+    """The model that is running this turn, or None when it is not knowable.
+
+    The host answer wins: a session started with a runtime override must not be
+    relabelled by a stray `MNEMOSYNE_MODEL_ID` exported in the launching shell.
+    The declaration is the fallback for a process with no Hermes runtime to ask
+    (measurement arms, scripts), which always yields "" from the helper.
+    """
     try:
         from agent.auxiliary_client import _read_main_model
 
-        return _clean_model_id(_read_main_model())
+        hosted = _clean_model_id(_read_main_model())
+        if hosted:
+            return hosted
     except Exception as exc:
         logger.debug("Active model id unavailable: %s", exc)
-        return None
+    return _clean_model_id(os.environ.get("MNEMOSYNE_MODEL_ID"))
 
 
 class HermesAuxLLMBackend:

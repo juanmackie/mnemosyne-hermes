@@ -425,6 +425,8 @@ def test_record_refuses_an_attempt_without_a_prediction(tmp_path: Path) -> None:
                 "P01/0",
                 "--report",
                 str(ITER7),
+                "--baseline",
+                str(ITER1),
                 "--accept",
             ]
         )
@@ -474,6 +476,8 @@ def test_record_refuses_a_case_the_report_does_not_contain(tmp_path: Path) -> No
                 "P01/0",
                 "--report",
                 str(ITER7),
+                "--baseline",
+                str(ITER1),
                 "--accept",
             ]
         )
@@ -515,6 +519,8 @@ def test_record_refuses_to_overwrite_a_recorded_attempt(tmp_path: Path) -> None:
                 "P01/0",
                 "--report",
                 str(ITER7),
+                "--baseline",
+                str(ITER1),
                 "--accept",
             ]
         )
@@ -530,6 +536,8 @@ def test_record_refuses_to_overwrite_a_recorded_attempt(tmp_path: Path) -> None:
                 "P01/0",
                 "--report",
                 str(ITER7),
+                "--baseline",
+                str(ITER1),
                 "--accept",
             ]
         )
@@ -610,3 +618,248 @@ def test_render_shows_the_p51_trade_and_its_collateral(tmp_path: Path) -> None:
     # never mixed with predictions written before a run.
     assert "Prediction calibration" in rendered
     assert "| precisionmembench | backfilled |" in rendered
+
+
+# --- record is a before/after comparison, not "passing now" ----------------
+
+
+def _ledger_with_prediction(tmp_path: Path, cases: str) -> Path:
+    path = tmp_path / "sim.json"
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "open",
+                "--name",
+                "A root cause",
+                "--objective",
+                "precisionmembench",
+            ]
+        )
+        == 0
+    )
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "predict",
+                "--problem",
+                "P01",
+                "--cases",
+                cases,
+                "--what",
+                "a change",
+            ]
+        )
+        == 0
+    )
+    return path
+
+
+def test_record_requires_a_baseline(tmp_path: Path) -> None:
+    path = _ledger_with_prediction(tmp_path, "questions-pinned-active-only")
+    with pytest.raises(SystemExit):
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "record",
+                "--attempt",
+                "P01/0",
+                "--report",
+                str(ITER7),
+                "--accept",
+            ]
+        )
+
+
+def test_record_does_not_count_an_already_passing_case_as_fixed(tmp_path: Path) -> None:
+    # These cases already passed at iter-7, so iter-8 fixed nothing about them.
+    path = _ledger_with_prediction(tmp_path, "questions-pinned-active-only")
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "record",
+                "--attempt",
+                "P01/0",
+                "--report",
+                str(ITER7),
+                "--baseline",
+                str(ITER7),
+                "--accept",
+            ]
+        )
+        == 0
+    )
+    attempt = json.loads(path.read_text(encoding="utf-8"))["problems"][0]["attempts"][0]
+    assert attempt["fixed"] == []
+    assert attempt["missed"] == []
+    assert attempt["passed"] == 77
+
+
+def test_record_refuses_reports_measured_on_different_fixtures(tmp_path: Path) -> None:
+    path = _ledger_with_prediction(tmp_path, "questions-pinned-active-only")
+    report = json.loads(ITER7.read_text(encoding="utf-8"))
+    report["report"]["fixtureSha256"]["retrieval.cases.json"] = "0" * 64
+    tampered = tmp_path / "iter-tampered.json"
+    tampered.write_text(json.dumps(report), encoding="utf-8")
+    before = path.read_bytes()
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "record",
+                "--attempt",
+                "P01/0",
+                "--report",
+                str(tampered),
+                "--baseline",
+                str(ITER7),
+                "--accept",
+            ]
+        )
+        == 1
+    )
+    assert path.read_bytes() == before
+
+
+def test_record_refuses_a_duplicate_case_id(tmp_path: Path) -> None:
+    path = _ledger_with_prediction(tmp_path, "questions-pinned-active-only")
+    report = json.loads(ITER7.read_text(encoding="utf-8"))
+    report["report"]["cases"].append(dict(report["report"]["cases"][0]))
+    duplicated = tmp_path / "iter-duplicated.json"
+    duplicated.write_text(json.dumps(report), encoding="utf-8")
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "record",
+                "--attempt",
+                "P01/0",
+                "--report",
+                str(duplicated),
+                "--baseline",
+                str(ITER7),
+                "--accept",
+            ]
+        )
+        == 1
+    )
+
+
+def test_open_refuses_an_alias_that_shadows_a_name(tmp_path: Path) -> None:
+    path = tmp_path / "sim.json"
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "open",
+                "--name",
+                "Alpha cause",
+                "--objective",
+                "precisionmembench",
+            ]
+        )
+        == 0
+    )
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "open",
+                "--name",
+                "Beta cause",
+                "--objective",
+                "precisionmembench",
+                "--alias",
+                "alpha cause",
+            ]
+        )
+        == 1
+    )
+    ledger = json.loads(path.read_text(encoding="utf-8"))
+    assert ledger["aliases"] == {}
+    assert sim.validate(ledger) == []
+
+
+def test_problem_lookup_alias_is_case_insensitive(tmp_path: Path) -> None:
+    path = tmp_path / "sim.json"
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "open",
+                "--name",
+                "A root cause",
+                "--objective",
+                "precisionmembench",
+                "--alias",
+                "p48",
+            ]
+        )
+        == 0
+    )
+    for reference in ("p48", "P48", "P01"):
+        assert (
+            sim.main(
+                [
+                    "--ledger",
+                    str(path),
+                    "predict",
+                    "--problem",
+                    reference,
+                    "--cases",
+                    "x",
+                    "--what",
+                    "y",
+                ]
+            )
+            == 0
+        )
+
+
+def test_a_malformed_date_is_refused_before_writing(tmp_path: Path) -> None:
+    path = tmp_path / "sim.json"
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "open",
+                "--name",
+                "A root cause",
+                "--objective",
+                "precisionmembench",
+            ]
+        )
+        == 0
+    )
+    before = path.read_bytes()
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "predict",
+                "--problem",
+                "P01",
+                "--cases",
+                "x",
+                "--what",
+                "y",
+                "--date",
+                "last tuesday",
+            ]
+        )
+        == 1
+    )
+    assert path.read_bytes() == before

@@ -9,7 +9,8 @@ missed and regressed after it, and the provenance (objective, engine pin, fixtur
 digest, commit, proposing model) needed to read the result after a model or
 benchmark switch.
 
-Four commands, one per phase of the loop:
+Five commands, one per phase of the loop (``--ledger PATH`` goes before the
+command name; it defaults to ``research/sim.json``):
 
     python scripts/sim.py open    --name "..." --objective precisionmembench
     python scripts/sim.py predict --problem P05 --cases a,b --what "..." --patch P51
@@ -19,7 +20,11 @@ Four commands, one per phase of the loop:
     python scripts/sim.py validate
 
 ``record`` refuses an attempt that has no earlier prediction: the prediction is
-written before the run, the outcome is computed from the run's per-case report,
+written before the run, and the outcome is computed from two per-case reports —
+the baseline taken before the attempt and the report taken after it. ``fixed``
+means *newly* fixed (failed in the baseline, passes now), so an attempt cannot
+credit itself with a case an earlier change already fixed; ``collateral`` is a
+case that passed before and fails now. Both reports must name the same fixtures,
 and a collision (``fixed`` outside ``predicted``) is a validation error.
 
 Format (``mnemosyne-sim/v1``)
@@ -265,12 +270,16 @@ def find_problem(ledger: dict[str, Any], reference: str) -> dict[str, Any]:
     text = str(reference or "").strip()
     if not text:
         raise Refused("a problem reference is required")
-    if PROBLEM_ID.match(text):
-        for problem in problems:
-            if problem.get("id") == text:
-                return problem
-        raise Refused(f"unknown problem id {text}")
-    alias = (ledger.get("aliases") or {}).get(text)
+    aliases = ledger.get("aliases") or {}
+    for candidate in (text, text.upper()):
+        if PROBLEM_ID.match(candidate):
+            for problem in problems:
+                if problem.get("id") == candidate:
+                    return problem
+            # An alias may legitimately look like a P-number (`p48`), so an
+            # unmatched id-shaped reference falls through to the alias table.
+            break
+    alias = aliases.get(text) or aliases.get(text.lower())
     if alias:
         return find_problem(ledger, alias)
     wanted = normalize_name(text)
@@ -284,7 +293,7 @@ def find_problem(ledger: dict[str, Any], reference: str) -> dict[str, Any]:
 
 def find_attempt(ledger: dict[str, Any], reference: str) -> tuple[dict[str, Any], dict[str, Any]]:
     problem_ref, _, round_ref = str(reference or "").strip().rpartition("/")
-    if not problem_ref or not round_ref.strip().lstrip("-").isdigit():
+    if not problem_ref or not round_ref.strip().isdigit():
         raise Refused(f"attempt reference must look like P05/7, got {reference!r}")
     problem = find_problem(ledger, problem_ref)
     wanted = int(round_ref)
@@ -337,8 +346,20 @@ def cmd_open(ledger: dict[str, Any], args: argparse.Namespace) -> int:
     else:
         problem_id = next_problem_id(ledger)
         merged = False
+    names = {
+        normalize_name(problem.get("name", "")): problem["id"]
+        for problem in ledger.get("problems") or []
+        if problem.get("id") != problem_id
+    }
     for alias in requested:
-        owner = aliases.get(alias)
+        if normalize_name(alias) in names:
+            # An alias equal to a problem's name would make `--problem <name>`
+            # resolve to the alias target instead of the problem that owns the
+            # name. Refuse rather than become ambiguous.
+            raise Refused(
+                f"alias {alias!r} would shadow the name of {names[normalize_name(alias)]}"
+            )
+        owner = aliases.get(alias.lower())
         if owner is not None and owner != problem_id:
             raise Refused(f"alias {alias!r} already points at {owner}")
     if not merged:
@@ -351,7 +372,7 @@ def cmd_open(ledger: dict[str, Any], args: argparse.Namespace) -> int:
             }
         )
     for alias in requested:
-        aliases[alias] = problem_id
+        aliases[alias.lower()] = problem_id
     print(f"{problem_id} (merged into the existing root cause)" if merged else problem_id)
     return 0
 
@@ -418,8 +439,12 @@ def cmd_predict(ledger: dict[str, Any], args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_report(path: Path) -> tuple[dict[str, bool], dict[str, Any]]:
-    """Per-case pass map plus the fixture digest from an evaluator report."""
+def _read_report(path: Path) -> tuple[dict[str, bool], dict[str, str]]:
+    """Per-case pass map and fixture digests from an evaluator report.
+
+    A duplicated case id is refused rather than collapsed: two verdicts for one
+    case make every count downstream a guess.
+    """
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -433,44 +458,65 @@ def _read_report(path: Path) -> tuple[dict[str, bool], dict[str, Any]]:
     for case in report["cases"]:
         if not isinstance(case, dict) or "caseId" not in case:
             raise Refused(f"{path} has a case without a caseId")
-        cases[str(case["caseId"])] = bool(case.get("passed"))
+        case_id = str(case["caseId"])
+        if case_id in cases:
+            raise Refused(f"{path} reports case {case_id!r} twice")
+        cases[case_id] = bool(case.get("passed"))
     if not cases:
         raise Refused(f"{path} reports zero cases; refusing to record an empty run")
     fixt = report.get("fixtureSha256")
-    fixtures = {str(k): str(v) for k, v in fixt.items()} if isinstance(fixt, dict) else {}
-    return cases, {"fixture_sha256": fixtures, "upstream_commit": report.get("upstreamCommit")}
+    fixtures = (
+        {str(key): str(value) for key, value in fixt.items()} if isinstance(fixt, dict) else {}
+    )
+    return cases, fixtures
 
 
 def cmd_record(ledger: dict[str, Any], args: argparse.Namespace) -> int:
+    """Fill an attempt's outcome from a before/after pair of evaluator reports.
+
+    `fixed` is what the change newly fixed: a predicted case that FAILED in the
+    baseline report and passes in this one. A predicted case that already passed
+    in the baseline cannot be counted as fixed, and is reported separately —
+    otherwise a "made it worse" or "changed nothing" attempt credits itself with
+    someone else's earlier fix. `collateral` is the other direction: a case that
+    passed in the baseline and fails now.
+    """
     problem, attempt = find_attempt(ledger, args.attempt)
     if attempt.get("evaluated_at"):
         raise Refused(f"{problem['id']}/{attempt['round']} is already recorded")
     predicted = list(attempt.get("predicted") or [])
-    if not predicted and attempt.get("backfilled"):
+    if not predicted:
         raise Refused(
-            f"{problem['id']}/{attempt['round']} has no prediction; a backfilled attempt "
-            "still needs the cases it was supposed to fix"
+            f"{problem['id']}/{attempt['round']} has no prediction; "
+            "`predict` must run before the evaluation"
         )
     if not attempt.get("predicted_at"):
         raise Refused(f"{problem['id']}/{attempt['round']} has no prediction timestamp")
     cases, fixtures = _read_report(Path(args.report))
-    unknown = [case for case in predicted if case not in cases]
+    before, baseline_fixtures = _read_report(Path(args.baseline))
+    if fixtures != baseline_fixtures:
+        raise Refused(
+            "the report and the baseline were measured on different fixtures "
+            f"({fixtures or 'none recorded'} vs {baseline_fixtures or 'none recorded'}); "
+            "a change measured across two fixture sets is not a comparison"
+        )
+    unknown = [case for case in predicted if case not in cases or case not in before]
     if unknown:
         raise Refused(
-            f"the report does not contain the predicted case(s) {unknown}; "
+            f"the predicted case(s) {unknown} are missing from the report or the baseline; "
             "a typo in --cases would otherwise be recorded as a miss"
         )
     objective = (attempt.get("provenance") or {}).get("objective")
     if objective not in OBJECTIVES:
         raise Refused(f"{problem['id']}/{attempt['round']} has no known objective to record")
-    now = args.date or now_utc()
-    fixed = [case for case in predicted if cases[case]]
+    fixed = [case for case in predicted if not before[case] and cases[case]]
     missed = [case for case in predicted if not cases[case]]
-    collateral: list[str] = []
-    if args.baseline:
-        before, _ = _read_report(Path(args.baseline))
-        collateral = [case for case in before if before[case] and case in cases and not cases[case]]
-        collateral = [case for case in collateral if case not in predicted]
+    already = [case for case in predicted if before[case] and cases[case]]
+    collateral = [
+        case
+        for case in before
+        if before[case] and case in cases and not cases[case] and case not in predicted
+    ]
     attempt.update(
         {
             "fixed": fixed,
@@ -478,10 +524,10 @@ def cmd_record(ledger: dict[str, Any], args: argparse.Namespace) -> int:
             "collateral": collateral,
             "passed": sum(1 for passed in cases.values() if passed),
             "total": len(cases),
-            "evaluated_at": now,
+            "evaluated_at": args.date or now_utc(),
             "provenance": default_provenance(
                 objective,
-                fixture_sha256=fixtures["fixture_sha256"],
+                fixture_sha256=fixtures,
                 hermes=args.hermes_version
                 or (attempt.get("provenance") or {}).get("hermes_version"),
                 commit=args.git_commit
@@ -493,12 +539,15 @@ def cmd_record(ledger: dict[str, Any], args: argparse.Namespace) -> int:
     )
     attempt["accepted"] = bool(args.accept)
     print(
-        f"{problem['id']}/{attempt['round']}: {len(fixed)}/{len(predicted)} predicted fixed, "
-        f"{attempt['passed']}/{attempt['total']} passing, "
+        f"{problem['id']}/{attempt['round']}: {len(fixed)}/{len(predicted)} newly fixed, "
+        f"{len(missed)} missed, {attempt['passed']}/{attempt['total']} passing, "
         f"{len(collateral)} collateral, accepted={attempt['accepted']}"
     )
-    if not args.baseline:
-        print("  note: no --baseline, so regressions (collateral) were not computed")
+    if already:
+        print(
+            f"  note: {len(already)} predicted case(s) already passed in the baseline "
+            f"({', '.join(already)}); they are not counted as fixed"
+        )
     return 0
 
 
@@ -895,12 +944,15 @@ def validate(ledger: Any) -> list[str]:
 
     aliases = ledger.get("aliases")
     if isinstance(aliases, dict):
+        upper_ids = {problem_id.upper(): problem_id for problem_id in ids}
         for alias, target in aliases.items():
             if not isinstance(alias, str) or not alias.strip():
                 errors.append("aliases must be non-empty strings")
                 continue
-            if alias in ids:
+            if alias.upper() in upper_ids:
                 errors.append(f"alias {alias!r} collides with a problem id")
+            if normalize_name(alias) in names:
+                errors.append(f"alias {alias!r} shadows the name of {names[normalize_name(alias)]}")
             if target not in ids:
                 errors.append(f"alias {alias!r} points at unknown problem {target!r}")
     else:
@@ -952,7 +1004,11 @@ def build_parser() -> argparse.ArgumentParser:
     recorder = subparsers.add_parser("record", help="fill an attempt's outcome from a report")
     recorder.add_argument("--attempt", required=True, help="problem/round, e.g. P05/7")
     recorder.add_argument("--report", required=True, help="output of research/evaluate.py")
-    recorder.add_argument("--baseline", help="earlier report, to compute collateral")
+    recorder.add_argument(
+        "--baseline",
+        required=True,
+        help="report of the state BEFORE this attempt (the previous iteration)",
+    )
     verdict = recorder.add_mutually_exclusive_group(required=True)
     verdict.add_argument("--accept", action="store_true", help="the change was kept")
     verdict.add_argument(
@@ -998,6 +1054,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
         status = COMMANDS[args.command](ledger, args)
         if args.command in ("open", "predict", "record"):
+            # The command may have accepted an argument the schema rejects (a
+            # malformed --date, say). Refuse the write instead of storing a
+            # ledger the next gate run will fail on.
+            errors = validate(ledger)
+            if errors:
+                raise Refused(
+                    "the resulting ledger would be invalid; nothing was written:\n  - "
+                    + "\n  - ".join(errors)
+                )
             save(args.ledger, ledger)
         return status
     except Refused as error:

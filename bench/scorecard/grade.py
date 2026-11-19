@@ -20,7 +20,9 @@ _NORMALIZE = re.compile(r"\s+")
 
 
 PROVENANCE_PREFIX = "learned under "
-_MODEL_IN_LINE = re.compile(r"learned under model ([^,]+)")
+# Non-greedy up to the next labelled segment, so a model id containing a
+# comma is read whole instead of truncated.
+_MODEL_IN_LINE = re.compile(r"learned under model (.+?)(?:, (?:engine|hermes) |, \d{4}-)")
 
 
 def normalize(text: str) -> str:
