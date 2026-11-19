@@ -151,3 +151,16 @@ Both surfaces passed the A/A, working-source deletion and isolated summary-loss 
 The exploratory post-sleep source-deletion arm returned fewer targeted answers than sleep alone: tool difference −0.247 [−0.283, −0.215] and prefetch difference −0.281 [−0.319, −0.246], over 2,910 probes in 609 lives. This is a synthetic intervention, not a measured loss from a live store. The deliberately erased-summary control detected further loss on both surfaces.
 
 The quality invariants failed: in the default no-sleep arm, 2,803 of 2,851 fabricated probes returned rows on each surface (8,632 tool rows and 2,803 prefetch rows), and 45 expired facts were served among 1,289 expired probes on each surface. The command exited 1, indicating passed controls and failed quality invariants. Optional LLM consolidation, historical staged probes, natural aging, real user data, and power for a 2.5-point clustered effect remain unmeasured. The earlier 12,559-probe power claim does not establish power here. The raw JSON is a temporary local artifact and is not a published result.
+
+**Provider-corrected full run, 2026-11-19 (628 lives, corpus digest `da6252f7…`).**
+Earlier retention runs imported the engine wheel's copy of the provider, not the vendored one. The scorecard now refuses any non-matching import and records `provider_import` in the report. All numbers below come from runs with the vendored provider (`provider_import.matches_vendored: true`) and the audited engine (`core/beam.py` patch hash `273614c8…`). Three runs used the same corpus and engine: default, `--sleep-verify`, and `--sleep-verify --sleep-demote`.
+
+- Controls passed in all three: A/A, deletion, and the summary-loss control.
+- The zero-fabrication and expired-served invariants failed in every arm, as documented above. Expired-served was 45 in every arm.
+- Backward transfer on the tool surface was 0 in every sleep arm.
+- Default (unverified) sleep lost a small, significant amount on prefetch: mean −0.0057, life-clustered CI [−0.0106, −0.0020].
+- `--sleep-verify` removed that loss: prefetch backward transfer was 0, CI [0, 0], the same as no sleep. Its fabricated tool rows in the sleep arm were 8,507, against 8,400 for default sleep and 8,632 for no sleep.
+- Degradation, with or without `MNEMOSYNE_DEGRADE_VERIFY`, had backward transfer 0. The guard rejected 3,327 of 5,958 eligible steps. This corpus shows no recall loss from degradation to prevent.
+- Demotion (`--sleep-demote`, on top of verify) raised prefetch answers in the sleep arm by a mean of +0.0054 per observation (life-clustered CI [+0.0025, +0.0086]). The no-sleep arm's noise floor was +0.0002, CI [−0.0005, +0.0010]. Tool answers did not change, and sleep-arm fabricated tool rows fell from 8,507 to 8,292.
+
+These runs do not establish that the guards clear the zero-fabrication invariant, which fails in every arm. They also do not establish a general gain: one synthetic corpus, keyless summaries, and accelerated degradation.

@@ -84,6 +84,33 @@ def provider_tree_hashes() -> dict[str, str]:
     }
 
 
+def require_vendored_provider(module: Any) -> dict[str, Any]:
+    """Refuse any imported provider whose bytes differ from the vendored snapshot.
+
+    A plain import can resolve to the engine wheel's own copy of the provider,
+    which lacks the vendored local patches. Measuring that copy answers a
+    different question, so the run stops before it creates a store.
+    """
+    package = Path(str(module.__file__)).resolve().parent
+    expected = provider_tree_hashes()
+    mismatched = []
+    for relative, digest in expected.items():
+        candidate = package / relative
+        if not candidate.is_file() or _sha256_file(candidate) != digest:
+            mismatched.append(relative)
+    attestation = {
+        "package": str(package),
+        "files_checked": len(expected),
+        "mismatched": sorted(mismatched),
+        "matches_vendored": not mismatched,
+    }
+    if mismatched:
+        raise RuntimeError(
+            f"imported hermes_memory_provider is not the vendored snapshot: {attestation}"
+        )
+    return attestation
+
+
 def engine_attestation() -> dict[str, Any]:
     """Distribution version plus the digest of every manifest-covered file.
 
@@ -215,6 +242,7 @@ class LifeStore:
         # Imported lazily: importing the provider is what pulls the engine in.
         import hermes_memory_provider as provider_module
 
+        require_vendored_provider(provider_module)
         provider = provider_module.MnemosyneMemoryProvider()
         provider._init_audit_log = lambda: None
         provider._read_config_key = lambda _key: None

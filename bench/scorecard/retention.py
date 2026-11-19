@@ -156,6 +156,7 @@ def measure_life(
         "no-sleep",
         "sleep",
         "sleep+degrade",
+        "sleep+degrade-verified",
         "delete-originals",
         "sleep-delete-originals",
         "sleep-loss-control",
@@ -178,6 +179,9 @@ def measure_life(
                     "MNEMOSYNE_HOST_LLM_ENABLED": "false",
                     **({"MNEMOSYNE_SLEEP_VERIFY": "1"} if verify_sleep else {}),
                     **({"MNEMOSYNE_SLEEP_DEMOTE_SOURCES": "1"} if demote_sources else {}),
+                    **(
+                        {"MNEMOSYNE_DEGRADE_VERIFY": "1"} if arm == "sleep+degrade-verified" else {}
+                    ),
                 },
             )
         )
@@ -215,6 +219,7 @@ def measure_life(
                 if arm in (
                     "sleep",
                     "sleep+degrade",
+                    "sleep+degrade-verified",
                     "sleep-delete-originals",
                     "sleep-loss-control",
                 ):
@@ -227,7 +232,8 @@ def measure_life(
                     if sleep_result.get("status") not in ("consolidated", "no_op"):
                         raise RuntimeError(f"sleep failed: {sleep_result}")
                     operation: dict[str, Any] = {"stage": stage, "sleep": sleep_result}
-                    if arm == "sleep+degrade":
+                    if arm in ("sleep+degrade", "sleep+degrade-verified"):
+                        guarded = arm == "sleep+degrade-verified"
                         beam.conn.execute(
                             "UPDATE episodic_memory SET created_at = ?", ("2000-01-01T00:00:00",)
                         )
@@ -249,7 +255,16 @@ def measure_life(
                             transitions.append(
                                 {"eligible": len(before), "failed_ids": failed, "result": result}
                             )
-                            if failed:
+                            if guarded:
+                                # The guard may hold a row at its tier; any other tier is a bug.
+                                moved_wrongly = sorted(
+                                    mid for mid in before if after.get(mid) not in (tier, tier + 1)
+                                )
+                                if moved_wrongly:
+                                    raise RuntimeError(
+                                        f"guarded tier {tier} degradation moved rows wrongly: {moved_wrongly}"
+                                    )
+                            elif failed:
                                 raise RuntimeError(
                                     f"incomplete tier {tier} degradation: {transitions[-1]}"
                                 )
@@ -444,13 +459,19 @@ def _job(args: tuple[Any, ...]) -> dict[str, Any]:
 
 def main() -> int:
     import argparse
+    import importlib
     import json
     import multiprocessing
     import sys
     from pathlib import Path
 
     from .corpus import load_or_build
-    from .runner import PROVIDER_ROOT, engine_attestation, provider_tree_hashes
+    from .runner import (
+        PROVIDER_ROOT,
+        engine_attestation,
+        provider_tree_hashes,
+        require_vendored_provider,
+    )
 
     parser = argparse.ArgumentParser(
         description="Measure staged retention in synthetic scratch stores"
@@ -495,6 +516,7 @@ def main() -> int:
         ("aa", "no-sleep"),
         ("sleep", "sleep"),
         ("sleep+degrade", "sleep+degrade"),
+        ("sleep+degrade-verified", "sleep+degrade-verified"),
         ("delete-originals", "delete-originals"),
         ("sleep-delete-originals", "sleep-delete-originals"),
         ("sleep-loss-control", "sleep-loss-control"),
@@ -550,6 +572,9 @@ def main() -> int:
         "corpus_digest": corpus["digest"],
         "engine": attestation,
         "provider_hashes": provider_tree_hashes(),
+        "provider_import": require_vendored_provider(
+            importlib.import_module("hermes_memory_provider")
+        ),
         "settings": {
             "ingest": "tool",
             "optional_llm": "disabled",
@@ -571,7 +596,7 @@ def main() -> int:
                 )
                 for surface in ("tool", "prefetch")
             }
-            for arm in ("sleep", "sleep+degrade")
+            for arm in ("sleep", "sleep+degrade", "sleep+degrade-verified")
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -582,7 +607,7 @@ def main() -> int:
     )
     quality_ok = all(
         results[arm]["summary"].get(surface, {}).get("invariants_pass", False)
-        for arm in ("no-sleep", "sleep", "sleep+degrade")
+        for arm in ("no-sleep", "sleep", "sleep+degrade", "sleep+degrade-verified")
         for surface in ("tool", "prefetch")
     )
     print(f"invariants: {'PASS' if quality_ok else 'FAIL'}")

@@ -68,7 +68,26 @@ python -m bench.precisionmembench.run_eval --output .scorecard/pmb.json
 # gate a target
 python -m bench.precisionmembench.run_eval \
   --require-active-passes 35 --require-missing-beliefs 8
+
+# consolidation: one forced sleep after seeding, before recall
+python -m bench.precisionmembench.run_eval --consolidate
+python -m bench.precisionmembench.run_eval --consolidate --sleep-verify
+python -m bench.precisionmembench.run_eval --consolidate --sleep-verify --sleep-demote
 ```
+
+The default run never sleeps, so `--sleep-demote` cannot change its numbers.
+With `--consolidate`, the report records the sleep status, the number of items
+consolidated, and the demoted rows. Summary rows have no benchmark alias, so
+the adapter drops them from context and only the original beliefs are scored.
+
+Measured on 2026-11-19 with the vendored provider and the audited engine
+(patch hash `273614c8…`): the default run gives 43/43 active passes, 0
+over-return and 0 missing. `--consolidate` alone gives 22/43, with 42 missing,
+because unverified episodic summaries displace the originals in recall.
+`--sleep-verify` restores 43/43 and serves no summary rows. In this replay the
+single 35-item group fails the exact-reproduction check, so
+`--sleep-demote` demotes 0 rows and its 43/43 result is not evidence about
+demotion. Demotion was measured in the staged scorecard instead.
 
 ## What it does not claim
 

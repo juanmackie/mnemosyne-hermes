@@ -532,3 +532,30 @@ def test_retention_only_enables_sleep_verification_when_requested(monkeypatch, t
             {"life_id": "synthetic", "events": []}, [], "no-sleep", verify_sleep=enabled
         )
     assert seen == ["1" if enabled else None]
+
+
+def test_require_vendored_provider_accepts_snapshot_and_refuses_other_copies(tmp_path):
+    """The scorecard must measure the vendored provider, not a same-name copy.
+
+    The engine wheel ships its own hermes_memory_provider without the local
+    patches; a plain import can pick it up. The guard compares bytes.
+    """
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(ROOT))
+    from bench.scorecard import runner
+
+    vendored = runner.PROVIDER_ROOT / "hermes_memory_provider" / "__init__.py"
+    accepted = runner.require_vendored_provider(SimpleNamespace(__file__=str(vendored)))
+    assert accepted["matches_vendored"] is True
+    assert accepted["files_checked"] == len(runner.provider_tree_hashes())
+
+    copy = tmp_path / "hermes_memory_provider"
+    copy.mkdir()
+    for name in runner.provider_tree_hashes():
+        source = runner.PROVIDER_ROOT / "hermes_memory_provider" / name
+        (copy / name).parent.mkdir(parents=True, exist_ok=True)
+        (copy / name).write_bytes(source.read_bytes())
+    (copy / "__init__.py").write_bytes(b"# unpatched wheel copy\n")
+    with pytest.raises(RuntimeError, match="not the vendored snapshot"):
+        runner.require_vendored_provider(SimpleNamespace(__file__=str(copy / "__init__.py")))

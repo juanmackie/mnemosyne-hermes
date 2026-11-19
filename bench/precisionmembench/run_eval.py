@@ -504,8 +504,19 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def run(*, limit: int | None = None) -> dict[str, Any]:
-    """Seed the suite into a fresh provider store and score every case."""
+def run(
+    *,
+    limit: int | None = None,
+    consolidate: bool = False,
+    sleep_verify: bool = False,
+    sleep_demote: bool = False,
+) -> dict[str, Any]:
+    """Seed the suite into a fresh provider store and score every case.
+
+    With `consolidate`, one forced sleep runs after seeding and before recall.
+    The replay never sleeps by default, so demotion cannot change its numbers
+    unless this mode is on.
+    """
     from bench.scorecard.runner import LifeStore, clean_environment
 
     cases, beliefs = load_fixtures()
@@ -517,11 +528,16 @@ def run(*, limit: int | None = None) -> dict[str, Any]:
     }
 
     alias_index: dict[str, str] = {}
+    sleep_report: dict[str, Any] | None = None
     with tempfile.TemporaryDirectory(prefix="precisionmembench-") as folder:
         scratch = Path(folder)
         previous = dict(os.environ)
         os.environ.clear()
         os.environ.update(clean_environment(scratch))
+        if sleep_verify:
+            os.environ["MNEMOSYNE_SLEEP_VERIFY"] = "1"
+        if sleep_demote:
+            os.environ["MNEMOSYNE_SLEEP_DEMOTE_SOURCES"] = "1"
         store = None
         try:
             store = LifeStore.create(scratch, "precisionmembench")
@@ -541,6 +557,18 @@ def run(*, limit: int | None = None) -> dict[str, Any]:
                 if isinstance(belief_id, str) and belief_id:
                     alias_index[belief_id] = belief["_id"]
                 ingested += 1
+            if consolidate:
+                # Summary rows have no alias, so the adapter drops them from
+                # context. Originals stay mapped and are only down-weighted.
+                beam = store.provider._beam
+                degrade = beam.degrade_episodic
+                beam.degrade_episodic = lambda **kwargs: {"status": "suppressed"}
+                try:
+                    sleep_report = beam.sleep(force=True)
+                finally:
+                    beam.degrade_episodic = degrade
+                if sleep_report.get("status") not in ("consolidated", "no_op"):
+                    raise RuntimeError(f"sleep failed: {sleep_report}")
             # `seed_index` stays keyed by benchmark id; `alias_index` maps the
             # engine's generated id back to it. Both are needed because the
             # assertion set is written in benchmark ids.
@@ -570,6 +598,16 @@ def run(*, limit: int | None = None) -> dict[str, Any]:
         "seededBeliefs": ingested,
         "multiScopeFanout": True,
         "structuredLabelMetadata": True,
+        "consolidation": None
+        if sleep_report is None
+        else {
+            "mode": "forced-sleep-after-seed",
+            "sleep_verify": sleep_verify,
+            "sleep_demote": sleep_demote,
+            "status": sleep_report.get("status"),
+            "items_consolidated": sleep_report.get("items_consolidated"),
+            "demoted_rows": sleep_report.get("demoted_rows"),
+        },
         "summary": summarize(rows),
         "cases": rows,
     }
@@ -581,8 +619,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--require-active-passes", type=int, default=None)
     parser.add_argument("--require-missing-beliefs", type=int, default=None)
+    parser.add_argument(
+        "--consolidate", action="store_true", help="run one forced sleep after seeding"
+    )
+    parser.add_argument("--sleep-verify", action="store_true", help="coverage guard on sleep")
+    parser.add_argument(
+        "--sleep-demote", action="store_true", help="demote verified sources (needs --sleep-verify)"
+    )
     args = parser.parse_args(argv)
-    report = run(limit=args.limit)
+    report = run(
+        limit=args.limit,
+        consolidate=args.consolidate,
+        sleep_verify=args.sleep_verify,
+        sleep_demote=args.sleep_demote,
+    )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, sort_keys=True, indent=1), encoding="utf-8")
