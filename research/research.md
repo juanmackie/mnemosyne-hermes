@@ -95,6 +95,10 @@ the baseline report and passes in this one. A guard-style change that keeps
 already-passing cases passing records no fix (rounds 8 and 9), because otherwise
 an attempt would inherit an earlier patch's result. `record` enforces the same
 rule from the two reports, so a fresh iteration cannot credit itself either.
+The same rule prices a guard-style prediction conservatively: a prediction that
+says "these cases keep passing" counts toward `predicted` and, when it holds,
+adds nothing to `fixed`, so the backfilled hit rate is a lower bound, not a
+score for those attempts.
 
 The product-side reading of the same result — a stored lesson that says which
 model and engine it was learned under — is patch P55; the spike that decided how

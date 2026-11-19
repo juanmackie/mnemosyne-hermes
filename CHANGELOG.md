@@ -95,10 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root-cause hypothesis carries its attempts: the cases predicted to be fixed
   before the run, the cases fixed, missed and regressed after it, and the
   provenance needed to read the result after a model or engine switch.
-  `record` refuses an attempt with no earlier prediction and computes the outcome
-  from `research/evaluate.py`'s per-case report; `render` prints the prediction
-  hit rate per objective, split between predictions written before a run and
-  backfilled ones. `scripts/checks.sh` validates the ledger as a repo gate. The
+  `record` refuses an attempt with no earlier prediction, requires the baseline
+  report taken before the attempt, and counts `fixed` only where a predicted case
+  failed in the baseline and passes now, so a change cannot inherit an earlier
+  patch's result; the two reports must name the same fixtures. `render` prints
+  the prediction hit rate per objective, split between predictions written
+  before a run and backfilled ones. `scripts/checks.sh` validates the ledger as a repo gate. The
   precision-membench and write-throughput history is backfilled from the prose
   logs, including the P51 paraphrase trade and the rejected write-throughput
   cheats.

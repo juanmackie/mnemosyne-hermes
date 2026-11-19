@@ -205,7 +205,9 @@ def prefetch_entries(context: str) -> list[tuple[str, str]]:
     The injected format puts a row line (`  [timestamp] …`) and, when the row
     carries provenance, one indented `learned under …` line directly after it.
     Pairing is what lets the lesson probe check *its own* row's provenance
-    instead of any line in the block.
+    instead of any line in the block. The prefix match is case-sensitive and
+    indented, so a lesson whose body begins "learned under …" is not mistaken
+    for a provenance line; on the scored corpus no row text starts that way.
     """
     entries: list[tuple[str, str]] = []
     pending: tuple[str, str] | None = None

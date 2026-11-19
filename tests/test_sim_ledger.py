@@ -863,3 +863,48 @@ def test_a_malformed_date_is_refused_before_writing(tmp_path: Path) -> None:
         == 1
     )
     assert path.read_bytes() == before
+
+
+def test_predict_refuses_a_negative_round(tmp_path: Path) -> None:
+    path = tmp_path / "sim.json"
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "open",
+                "--name",
+                "A root cause",
+                "--objective",
+                "precisionmembench",
+            ]
+        )
+        == 0
+    )
+    before = path.read_bytes()
+    assert (
+        sim.main(
+            [
+                "--ledger",
+                str(path),
+                "predict",
+                "--problem",
+                "P01",
+                "--cases",
+                "x",
+                "--what",
+                "y",
+                "--round",
+                "-5",
+            ]
+        )
+        == 1
+    )
+    assert path.read_bytes() == before
+
+
+def test_a_negative_round_in_the_file_is_invalid() -> None:
+    ledger = _base_ledger()
+    ledger["problems"][0]["attempts"][0]["round"] = -1
+    errors = sim.validate(ledger)
+    assert any("non-negative iteration number" in error for error in errors), errors

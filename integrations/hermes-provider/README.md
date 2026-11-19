@@ -140,9 +140,11 @@ store, config or diagnostic log.
 
 Every lesson write records which model and engine produced it, in
 `metadata.provenance` (patch P55): `mnemosyne_remember`, a `remember` operation
-inside `mnemosyne_batch`, and an approved `mnemosyne_apply_pending` replay.
-Turn capture (`sync_turn`) stores transcript rows and is deliberately not
-stamped:
+inside `mnemosyne_batch`, and an approved `mnemosyne_apply_pending` replay (stamped when the write is staged; the approved replay preserves that stamp).
+Turn capture (`sync_turn`, `on_delegation`, `on_memory_write`) stores transcript rows
+and is deliberately not stamped, and neither is the shared surface
+(`mnemosyne_shared_remember`): those rows are not lessons, and a stamp on the
+cross-profile surface would attribute a shared anchor to one profile's model:
 
 ```json
 {"model": "z-ai/glm-5.3-flash", "hermes_version": "0.19.0",

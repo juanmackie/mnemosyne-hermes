@@ -401,6 +401,8 @@ def cmd_predict(ledger: dict[str, Any], args: argparse.Namespace) -> int:
         round_number = max((int(a.get("round") or 0) for a in attempts), default=-1) + 1
     else:
         round_number = int(args.round)
+        if round_number < 0:
+            raise Refused(f"--round is an iteration number, got {round_number}")
     if any(int(a.get("round") or 0) == round_number for a in attempts):
         raise Refused(f"{problem['id']} already has round {round_number}")
     patch = (args.patch or "").strip() or None
@@ -744,7 +746,12 @@ def _validate_attempt(where: str, attempt: Any, errors: list[str]) -> None:
     extra = set(attempt) - ATTEMPT_FIELDS
     _require(not missing, f"{where}: attempt is missing {sorted(missing)}", errors)
     _require(not extra, f"{where}: attempt has unknown fields {sorted(extra)}", errors)
-    _require(isinstance(attempt.get("round"), int), f"{where}: round must be an integer", errors)
+    round_number = attempt.get("round")
+    _require(isinstance(round_number, int), f"{where}: round must be an integer", errors)
+    if isinstance(round_number, int):
+        _require(
+            round_number >= 0, f"{where}: round must be a non-negative iteration number", errors
+        )
     for field in ("accepted", "backfilled"):
         _require(
             isinstance(attempt.get(field), bool), f"{where}: {field} must be a boolean", errors
