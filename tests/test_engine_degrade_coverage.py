@@ -5,6 +5,21 @@ import os
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_engine_home(monkeypatch, tmp_path):
+    """Keep the engine's config out of the real ``~/.hermes``.
+
+    Some recall paths construct the engine's ``Config``, which auto-seeds
+    ``$HERMES_HOME/mnemosyne/config.yaml``. That seed writes a comment
+    containing an em dash through the platform encoding, so on Windows the
+    file lands as cp1252 while every reader here opens it as UTF-8. Seeding
+    into ``tmp_path`` keeps the run hermetic and leaves no file behind that a
+    later test would fail to decode.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.delenv("MNEMOSYNE_DATA_DIR", raising=False)
+
+
 @pytest.mark.parametrize("tier", [1, 2])
 def test_degradation_guard_keeps_original_when_compression_loses_text(monkeypatch, tmp_path, tier):
     try:
