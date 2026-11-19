@@ -61,3 +61,7 @@ over-returns, on either population. The machinery runs on the real engine, and
 the rejection is a measured result.
 
 Run: `python -m bench.rehearsal.rehearse --output <report.json> [--batch-file <fixes.json>]`
+
+## Phase 4 closure (2026-11-19)
+
+Phase 4 closes with the rejection as its result. The plan's acceptance rule was applied unchanged. No candidate batch passed it on either population. On the constructed alias population, held-out hits rose from 20 to 27, but over-returns rose from 62 to 88, so the batch was rejected. On the PrecisionMemBench population there were no misses to repair. The gate, that held-out recall improves without raising over-returns, is not met, and the README records that as the outcome. The rule was not loosened to get a pass.
