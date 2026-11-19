@@ -79,7 +79,7 @@ ENGINE_MANIFEST = ROOT / "integrations" / "engine-patches" / "manifest.json"
 # is cheaper than a rename later.
 OBJECTIVES = ("precisionmembench", "task/write-throughput", "retrieval-mrr")
 
-PROBLEM_ID = re.compile(r"^P[0-9]{2}$")
+PROBLEM_ID = re.compile(r"^P[0-9]{2,3}$")
 PATCH_ID = re.compile(r"^P[0-9]{1,3}$")
 GIT_COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -960,7 +960,8 @@ def validate(ledger: Any) -> list[str]:
     return errors
 
 
-def cmd_validate(ledger: dict[str, Any], args: argparse.Namespace) -> int:
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Check the ledger on disk. Takes no in-memory ledger: it reads the file."""
     path = Path(args.file) if args.file else DEFAULT_LEDGER
     ledger = load(path)
     errors = validate(ledger)
@@ -997,7 +998,10 @@ def build_parser() -> argparse.ArgumentParser:
     predictor.add_argument("--patch", help="P-number of the local patch, if any")
     predictor.add_argument("--round", type=int, help="round number (default: next)")
     predictor.add_argument("--date", help="prediction timestamp (default: now, UTC)")
-    predictor.add_argument("--model", help="model that proposed the change")
+    predictor.add_argument(
+        "--model",
+        help="model that proposed the change (default: $SIM_MODEL, else null)",
+    )
     predictor.add_argument("--hermes-version", dest="hermes_version")
     predictor.add_argument("--git-commit", dest="git_commit")
 
@@ -1015,7 +1019,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--reject", dest="accept", action="store_false", help="the change was reverted"
     )
     recorder.add_argument("--date", help="evaluation timestamp (default: now, UTC)")
-    recorder.add_argument("--model", help="model that proposed the change")
+    recorder.add_argument(
+        "--model",
+        help="model that proposed the change (default: $SIM_MODEL, else the predicted value)",
+    )
     recorder.add_argument("--hermes-version", dest="hermes_version")
     recorder.add_argument("--git-commit", dest="git_commit")
 
@@ -1040,7 +1047,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "validate":
-            return cmd_validate({}, args)
+            return cmd_validate(args)
         if args.command == "open" and not args.ledger.is_file():
             # `open` is the first step of a ledger's life, so it may create it.
             ledger = empty_ledger()

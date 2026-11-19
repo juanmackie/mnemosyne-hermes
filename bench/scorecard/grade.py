@@ -231,9 +231,11 @@ def grade_provenance(probe: dict[str, Any], entries: list[tuple[str, str]]) -> d
     `entries` are (row text, provenance line or "") pairs. A lesson is
     `provenance_present` when the row that answers the probe carries a line, and
     `wrong_model` counts lines that name a model other than the one the lesson
-    was written under. With one lesson per life, every provenance line in the
-    store names that lesson's `model_a`, so a differing name is a real violation
-    rather than another row's legitimate origin.
+    was written under. The scored corpus writes conversational events through
+    `sync_turn` (unstamped) and one lesson through `mnemosyne_remember`
+    (stamped), so the only line naming a model is that lesson's. A tool-path
+    ingest arm stamps every row, and those lines carry no model, which the
+    parser ignores.
     """
     answer = (probe.get("answers") or [""])[0]
     model_a = str(probe.get("model_a") or "")

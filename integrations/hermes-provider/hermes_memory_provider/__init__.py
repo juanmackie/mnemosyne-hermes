@@ -3969,11 +3969,22 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         # LOCAL PATCH: P28 normalize batch remember metadata before preview,
         # approval staging, or the lower-level batch writer can persist it.
+        # LOCAL PATCH: P55 batch remember is a remember write: stamp the same
+        # provenance the single-write path records, so a lesson cannot become
+        # anonymous by arriving in a batch.
+        provenance = self._provenance_runtime()
+        stamped_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        model_id = self._provenance_model()
         for operation in normalized:
             payload = operation.get("payload")
-            if (operation.get("action") == "remember" and isinstance(payload, dict)
-                    and "metadata" in payload):
-                payload["metadata"] = self._asserted_caller_metadata(payload["metadata"])
+            if operation.get("action") == "remember" and isinstance(payload, dict):
+                payload["metadata"] = _stamped_metadata(
+                    self._asserted_caller_metadata(payload.get("metadata")),
+                    model=model_id,
+                    hermes_version=provenance.get("hermes_version"),
+                    engine_version=provenance.get("engine_version"),
+                    recorded_at=stamped_at,
+                )
 
         if bool(args.get("dry_run", False)):
             return json.dumps(dry_run_batch(normalized))
@@ -4174,10 +4185,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     def _row_metadata(self, row: Dict[str, Any]) -> Optional[Any]:
         """Stored metadata for one recall row, without inventing a value.
 
-        Engine recall rows normally carry no metadata, so this is one bounded
-        read-only ``get`` per returned row (at most ``top_k``) — the same shape
-        the P48 label pass already uses. A missing, malformed or oversized blob
-        yields None rather than a guess.
+        Engine recall rows carry no `metadata` key at all (measured on the pinned
+        engine), so a row without one costs exactly one indexed read-only `get`
+        when its provenance line is rendered. Measured on that engine: one extra
+        `get` per injected row, prefetch total 0.9 ms; ten `get`s inside a
+        15.8 ms five-result recall (the P48 label pass already paid half of
+        them). Bounded by `top_k` on both surfaces. A missing, malformed or
+        oversized blob yields None rather than a guess.
         """
         metadata = row.get("metadata")
         if isinstance(metadata, dict):

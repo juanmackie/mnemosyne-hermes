@@ -42,8 +42,10 @@ tells the truth about where the lesson came from:
 - the life carries one lesson written through `mnemosyne_remember` with
   `MNEMOSYNE_MODEL_ID` set to `model_a`, in the shape the provider's guidance
   asks for (root cause, what was tried, what was expected, what happened);
-- the probe's query is issued with `MNEMOSYNE_MODEL_ID` set to `model_b`, so the
-  write and the read happen under different models;
+- the declared model is cleared after the lesson ingest, and the probe's query is
+  issued under no declared model (`model_b` names the model the query is made
+  "under"); provenance is stamped at write time, so the switch cannot rewrite
+  what the store recorded — which is the property being measured;
 - the lesson's distinctive token appears nowhere else in the life, so "the
   lesson was returned" is an exact label, not a heuristic.
 

@@ -67,7 +67,10 @@ def summarize_surface(
     lessons["provenance_present"] = sum(
         1 for row in by_kind["carried_lesson"] if row.get("provenance_present")
     )
-    lessons["provenance_lines"] = sum(
+    # Every stamped line the probe's contexts contained, not only the lesson's:
+    # with tool-path ingestion each stored row is stamped, and its line carries
+    # no model. The lesson's own line is what `provenance_present` reports.
+    lessons["stamped_lines_seen"] = sum(
         row.get("provenance_lines") or 0 for row in by_kind["carried_lesson"]
     )
     lessons["wrong_model"] = sum(row.get("wrong_model") or 0 for row in by_kind["carried_lesson"])
@@ -101,7 +104,7 @@ def summarize_surface(
             lessons["answerable_hits"] / lessons["probes"] if lessons["probes"] else None
         ),
         "lesson_provenance_present": lessons["provenance_present"],
-        "lesson_provenance_lines": lessons["provenance_lines"],
+        "lesson_stamped_lines_seen": lessons["stamped_lines_seen"],
         "lesson_wrong_model": lessons["wrong_model"],
     }
 

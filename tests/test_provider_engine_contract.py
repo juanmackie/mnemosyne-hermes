@@ -1385,6 +1385,26 @@ def test_lessons_carry_the_model_and_engine_they_were_learned_under():
                 injected = provider.prefetch(lesson, session_id="contract_provenance")
                 assert injected.count("learned under model z-ai/glm-5.3-flash") == 1, injected
 
+                # Batch remember is a remember write: it must stamp too, or a
+                # lesson becomes anonymous by arriving in a batch.
+                batched = _call(
+                    provider,
+                    "mnemosyne_batch",
+                    {
+                        "operations": [
+                            {
+                                "action": "remember",
+                                "content": "Batched lesson on the same root cause.",
+                                "scope": "session",
+                            }
+                        ]
+                    },
+                )
+                assert batched.get("results"), batched
+                batch_id = batched["results"][0]["memory_id"]
+                batch_meta = provider._beam.get(batch_id)["metadata"]
+                assert '"z-ai/glm-5.3-flash"' in batch_meta, batch_meta
+
                 # No declared model and no Hermes runtime: the field is null and
                 # the line still names what is known, instead of a guess.
                 os.environ.pop("MNEMOSYNE_MODEL_ID", None)

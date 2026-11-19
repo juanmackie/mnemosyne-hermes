@@ -138,8 +138,11 @@ store, config or diagnostic log.
 
 ## Lesson provenance
 
-Every `mnemosyne_remember` write records which model and engine produced it, in
-`metadata.provenance` (patch P55):
+Every lesson write records which model and engine produced it, in
+`metadata.provenance` (patch P55): `mnemosyne_remember`, a `remember` operation
+inside `mnemosyne_batch`, and an approved `mnemosyne_apply_pending` replay.
+Turn capture (`sync_turn`) stores transcript rows and is deliberately not
+stamped:
 
 ```json
 {"model": "z-ai/glm-5.3-flash", "hermes_version": "0.19.0",

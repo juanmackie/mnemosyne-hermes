@@ -141,6 +141,7 @@ def build_arm_report(
             "tool_lesson_recall": tool["lesson_recall"],
             "prefetch_lesson_recall": prefetch["lesson_recall"],
             "tool_lesson_provenance_present": tool["lesson_provenance_present"],
+            "prefetch_lesson_provenance_present": prefetch["lesson_provenance_present"],
             "tool_lesson_wrong_model": tool["lesson_wrong_model"],
             "prefetch_lesson_wrong_model": prefetch["lesson_wrong_model"],
             "errors": len(merged["errors"]),
