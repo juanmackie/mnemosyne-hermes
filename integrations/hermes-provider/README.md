@@ -139,12 +139,19 @@ store, config or diagnostic log.
 ## Lesson provenance
 
 Every lesson write records which model and engine produced it, in
-`metadata.provenance` (patch P55): `mnemosyne_remember`, a `remember` operation
-inside `mnemosyne_batch`, and an approved `mnemosyne_apply_pending` replay (stamped when the write is staged; the approved replay preserves that stamp).
-Turn capture (`sync_turn`, `on_delegation`, `on_memory_write`) stores transcript rows
-and is deliberately not stamped, and neither is the shared surface
-(`mnemosyne_shared_remember`): those rows are not lessons, and a stamp on the
-cross-profile surface would attribute a shared anchor to one profile's model:
+`metadata.provenance` (patch P55):
+
+- `mnemosyne_remember`;
+- a `remember` operation inside `mnemosyne_batch`;
+- an approved `mnemosyne_apply_pending` replay — the stamp is made when the
+  write is staged, which is when the proposing model is known, and the approved
+  replay preserves it, so `recorded_at` stays the proposal time even if approval
+  comes later under another model.
+
+Turn capture (`sync_turn`, `on_delegation`, `on_memory_write`) and the shared
+surface (`mnemosyne_shared_remember`) are deliberately not stamped: those rows
+are not lessons, and a stamp on the cross-profile surface would attribute a
+shared anchor to one profile's model.
 
 ```json
 {"model": "z-ai/glm-5.3-flash", "hermes_version": "0.19.0",
