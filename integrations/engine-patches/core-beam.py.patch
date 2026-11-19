@@ -855,7 +855,7 @@
          )
          if explain:
              return results
-@@ -7009,12 +7413,59 @@
+@@ -7009,12 +7413,95 @@
              except Exception:
                  logger.info("Regex extraction failed, skipping", exc_info=True)
  
@@ -912,15 +912,52 @@
 +        required_labels = ([labels["canonical_name"]] if labels.get("canonical_name") else []) + (labels.get("aliases") or [])
 +        return normalized_summary == " | ".join(originals) and all(normalize(label) in normalized_summary for label in required_labels)
 +
++    def _collapse_degraded_lineage(self, results: List[Dict]) -> List[Dict]:
++        """LOCAL PATCH: option A recall collapse for additive degradation.
++
++        A degraded copy whose parent (`metadata.degraded_from`) is also in
++        `results` is dropped. The parent keeps full weight and is the complete
++        text, so it is the row to keep. Only the topmost surviving row of each
++        lineage remains, so every lineage keeps at least one row.
++        """
++        ids = [r.get("id") for r in results if isinstance(r.get("id"), str)]
++        if not ids:
++            return results
++        placeholders = ",".join("?" * len(ids))
++        try:
++            rows = self.conn.execute(
++                f"SELECT id, metadata_json FROM episodic_memory WHERE id IN ({placeholders})",
++                ids,
++            ).fetchall()
++        except Exception:
++            return results
++        parent_of: Dict[str, str] = {}
++        for row in rows:
++            raw = row[1] or "{}"
++            if not isinstance(raw, str) or len(raw) > 65536:
++                continue
++            try:
++                meta = json.loads(raw)
++            except (TypeError, ValueError, RecursionError):
++                continue
++            if isinstance(meta, dict) and isinstance(meta.get("degraded_from"), str):
++                parent_of[row[0]] = meta["degraded_from"]
++        if not parent_of:
++            return results
++        present = set(ids)
++        drop = {child for child, parent in parent_of.items() if parent in present}
++        return [r for r in results if r.get("id") not in drop]
++
      def _dedup_cross_tier_summary_links(
          self,
          results: List[Dict],
-@@ -7087,12 +7538,41 @@
+@@ -7087,12 +7574,42 @@
          returning the input list unchanged. Used by the BEAM-recovery
          Phase 4 ablation to isolate the dedup's contribution.
          """
 -        if _env_disabled("MNEMOSYNE_CROSS_TIER_DEDUP"):
 -            return results
++        results = self._collapse_degraded_lineage(results)
          ep_ids = [r["id"] for r in results if r.get("tier") == "episodic"]
          if not ep_ids:
              return results
@@ -959,7 +996,7 @@
          # Build summary_map from either precomputed map or own SELECT.
          summary_map: Dict[str, set] = {}
          if ep_summary_of_map is not None:
-@@ -7243,7 +7723,8 @@
+@@ -7243,7 +7760,8 @@
                             channel_id: Optional[str] = None,
                             veracity: Optional[str] = None,
                             memory_type: Optional[str] = None,
@@ -969,7 +1006,7 @@
          """[E5] Polyphonic recall path.
  
          Delegates to PolyphonicRecallEngine when MNEMOSYNE_POLYPHONIC_RECALL=1.
-@@ -7354,6 +7835,8 @@
+@@ -7354,6 +7872,8 @@
          # rather than relying on the diversity rerank to handle
          # summary↔source duplicates implicitly.
          final = self._dedup_cross_tier_summary_links(final)
@@ -978,7 +1015,7 @@
          final = final[:top_k]
          # Rebuild recall_count attribution lists from the deduped final
          # so dropped duplicates aren't credited with a recall.
-@@ -7862,7 +8345,20 @@
+@@ -7862,7 +8382,20 @@
              compressed += " [...]"
          return compressed
  
@@ -1000,7 +1037,7 @@
          """Refresh dense-recall embedding stores for an episodic row whose
          content has been mutated (degraded). Without this the
          vec_episodes / memory_embeddings / binary_vector entries continue
-@@ -7878,13 +8374,11 @@
+@@ -7878,13 +8411,11 @@
          """
          cursor = self.conn.cursor()
  
@@ -1017,21 +1054,101 @@
              if vec is not None:
                  # vec_episodes is a sqlite-vec virtual table; vec0 doesn't
                  # support UPDATE on the embedding column reliably, so we
-@@ -7926,7 +8420,7 @@
+@@ -7926,7 +8457,82 @@
                  (memory_id,),
              )
  
 -    def degrade_episodic(self, dry_run: bool = False) -> Dict:
++    def _additive_degrade_step(
++        self, cursor, row, new_content, new_tier, now, db_lock, results, counter
++    ) -> None:
++        """LOCAL PATCH: additive degradation (option A, opt-in).
++
++        The parent row keeps its content, tier and recall weight. A copy at
++        `new_tier` carries the compressed text, the parent's created_at and
++        metadata, and `degraded_from`. The parent gets `degraded_at`, which
++        removes it from later candidate selection. The copy has no
++        `degraded_at`, so it can degrade to the next tier. A step that changes
++        nothing only marks the parent.
++        """
++        parent_id = row["id"]
++        if new_content == row["content"]:
++            cursor.execute(
++                "UPDATE episodic_memory SET degraded_at = ? WHERE id = ? AND degraded_at IS NULL",
++                (now.isoformat(), parent_id),
++            )
++            return
++        copy_id = hashlib.sha256(f"{parent_id}|tier{new_tier}".encode("utf-8")).hexdigest()[:32]
++        prepared = self._prepare_episodic_embedding(new_content, db_lock=db_lock)
++        cursor.execute("SAVEPOINT degrade_row")
++        try:
++            cursor.execute("SELECT 1 FROM episodic_memory WHERE id = ?", (copy_id,))
++            if cursor.fetchone() is None:
++                cursor.execute(
++                    "SELECT metadata_json FROM episodic_memory WHERE id = ?", (parent_id,)
++                )
++                parent_meta = cursor.fetchone()
++                try:
++                    meta = json.loads((parent_meta[0] if parent_meta else None) or "{}")
++                except (TypeError, ValueError):
++                    meta = {}
++                if not isinstance(meta, dict):
++                    meta = {}
++                meta.update({"degraded_from": parent_id, "degradation_tier": new_tier})
++                columns = [
++                    r[1] for r in cursor.execute("PRAGMA table_info(episodic_memory)").fetchall()
++                    if r[1] != "rowid"
++                ]
++                overrides = {
++                    "id": copy_id,
++                    "content": _sanitize_utf8(new_content),
++                    "tier": new_tier,
++                    "degraded_at": None,
++                    "metadata_json": json.dumps(meta),
++                }
++                exprs, params = [], []
++                for column in columns:
++                    if column in overrides:
++                        exprs.append("?")
++                        params.append(overrides[column])
++                    else:
++                        exprs.append(column)
++                cursor.execute(
++                    f"INSERT INTO episodic_memory ({', '.join(columns)}) "
++                    f"SELECT {', '.join(exprs)} FROM episodic_memory WHERE id = ?",
++                    (*params, parent_id),
++                )
++                if cursor.rowcount != 1:
++                    raise RuntimeError(f"additive copy not inserted for {parent_id}")
++                self._refresh_episodic_embedding(
++                    copy_id, cursor.lastrowid, new_content, db_lock=db_lock, prepared=prepared,
++                )
++                results[counter] += 1
++            cursor.execute(
++                "UPDATE episodic_memory SET degraded_at = ? WHERE id = ?",
++                (now.isoformat(), parent_id),
++            )
++            cursor.execute("RELEASE degrade_row")
++        except Exception:
++            cursor.execute("ROLLBACK TO degrade_row")
++            cursor.execute("RELEASE degrade_row")
++            raise
++
 +    def degrade_episodic(self, dry_run: bool = False, *, db_lock=None) -> Dict:
          """Degrade old episodic memories through tier 1→2→3 compression.
  
          Tier 1 (0-TIER2_DAYS): Full detail, 1.0x recall weight
-@@ -7944,6 +8438,12 @@
+@@ -7944,6 +8550,17 @@
          now = datetime.now()
          results = {"status": "dry_run" if dry_run else "degraded",
                     "tier1_to_tier2": 0, "tier2_to_tier3": 0}
 +        # LOCAL PATCH: opt-in key-token guard; default behavior is unchanged.
 +        coverage_guard = _env_truthy("MNEMOSYNE_DEGRADE_VERIFY")
++        # LOCAL PATCH: opt-in additive degradation; default behavior is unchanged.
++        additive = _env_truthy("MNEMOSYNE_DEGRADE_ADDITIVE")
++        degrade_filter = " AND degraded_at IS NULL" if additive else ""
++        if additive:
++            results["mode"] = "additive"
 +        if coverage_guard:
 +            results["coverage_rejected"] = 0
 +            if dry_run:
@@ -1039,7 +1156,31 @@
  
          # --- Find candidates for degradation ---
          tier2_cutoff = (now - timedelta(days=TIER2_DAYS)).isoformat()
-@@ -7997,36 +8497,45 @@
+@@ -7952,9 +8569,9 @@
+         # Tier 1 → Tier 2: old enough, still at tier 1.
+         # rowid is selected so the embedding refresh can address vec_episodes.
+         try:
+-            cursor.execute("""
++            cursor.execute(f"""
+                 SELECT id, rowid, content, importance FROM episodic_memory
+-                WHERE tier = 1 AND created_at < ?
++                WHERE tier = 1 AND created_at < ?{degrade_filter}
+                 ORDER BY created_at ASC LIMIT ?
+             """, (tier2_cutoff, DEGRADE_BATCH_SIZE))
+             tier1_rows = cursor.fetchall()
+@@ -7968,9 +8585,9 @@
+ 
+         # Tier 2 → Tier 3: very old, at tier 2
+         try:
+-            cursor.execute("""
++            cursor.execute(f"""
+                 SELECT id, rowid, content FROM episodic_memory
+-                WHERE tier = 2 AND created_at < ?
++                WHERE tier = 2 AND created_at < ?{degrade_filter}
+                 ORDER BY created_at ASC LIMIT ?
+             """, (tier3_cutoff, DEGRADE_BATCH_SIZE // 2))
+             tier2_rows = cursor.fetchall()
+@@ -7997,36 +8614,50 @@
          # (caught by /review for C18.b).
          from mnemosyne.core import local_llm
          for row in tier1_rows:
@@ -1063,6 +1204,11 @@
 -                # call would be wasted.
 +                if coverage_guard and not _degrade_keeps_key_tokens(row["content"], _sanitize_utf8(final_content)):
 +                    results["coverage_rejected"] += 1
++                    continue
++                if additive:
++                    self._additive_degrade_step(
++                        cursor, row, final_content, 2, now, db_lock, results, "tier1_to_tier2"
++                    )
 +                    continue
 +                prepared = None
                  if final_content != row["content"]:
@@ -1103,7 +1249,7 @@
              try:
                  content = row["content"]
                  if SMART_COMPRESS and len(content) > TIER3_MAX_CHARS:
-@@ -8035,21 +8544,34 @@
+@@ -8035,21 +8666,39 @@
                      compressed = content[:TIER3_MAX_CHARS]
                      if len(content) > TIER3_MAX_CHARS:
                          compressed += " [...]"
@@ -1113,6 +1259,11 @@
 -                )
 +                if coverage_guard and not _degrade_keeps_key_tokens(row["content"], _sanitize_utf8(compressed)):
 +                    results["coverage_rejected"] += 1
++                    continue
++                if additive:
++                    self._additive_degrade_step(
++                        cursor, row, compressed, 3, now, db_lock, results, "tier2_to_tier3"
++                    )
 +                    continue
 +                prepared = None
                  if compressed != row["content"]:
@@ -1149,7 +1300,7 @@
          self.conn.commit()
          return results
  
-@@ -8261,7 +8783,37 @@
+@@ -8261,7 +8910,37 @@
              "candidate_ids": candidate_ids,
          }
  
@@ -1188,7 +1339,7 @@
          """
          Consolidate old working_memory for this session into episodic summaries.
          Uses a local lightweight LLM when available; falls back to aaak
-@@ -8369,6 +8921,10 @@
+@@ -8369,6 +9048,10 @@
          conflicts_resolved = 0
          model_refresh_proposals = 0
          model_refresh_applied = 0
@@ -1199,7 +1350,7 @@
          for source, items in grouped.items():
              lines = [item["content"] for item in items]
              ids = [item["id"] for item in items]
-@@ -8383,6 +8939,10 @@
+@@ -8383,6 +9066,10 @@
                      if aggregated_valid_until is None or item["valid_until"] < aggregated_valid_until:
                          aggregated_valid_until = item["valid_until"]
  
@@ -1210,7 +1361,7 @@
              # E4.a.1: aggregate per-row veracity into the summary's
              # veracity label. Mode of sources with conservative tie-break.
              # Pre-fix the episodic INSERT omitted veracity and the row
-@@ -8409,8 +8969,21 @@
+@@ -8409,8 +9096,21 @@
                              newer_content,
                              session_id=self.session_id,
                              db_path=self.db_path,
@@ -1232,7 +1383,7 @@
                              if not dry_run:
                                  self.invalidate(older_id, replacement_id=newer_id)
                              conflicts_resolved += 1
-@@ -8428,20 +9001,32 @@
+@@ -8428,20 +9128,32 @@
                  # Uses CompressionPlugin (registered in plugins.py). The env
                  # var MNEMOSYNE_USE_CAVEMAN still works as a deprecated
                  # fallback — see CompressionPlugin for deprecation warning.
@@ -1272,7 +1423,7 @@
                              if chunk_summary:
                                  chunk_summaries.append(chunk_summary)
                          if chunk_summaries:
-@@ -8449,9 +9034,9 @@
+@@ -8449,9 +9161,9 @@
                              if len(chunk_summaries) == 1:
                                  summary = chunk_summaries[0]
                              else:
@@ -1285,7 +1436,7 @@
                                  )
                                  # If second-pass also overflows, concatenate
                                  if not summary:
-@@ -8471,6 +9056,29 @@
+@@ -8471,6 +9183,29 @@
                  compressed = aaak_encode(combined)
                  summary = f"[{source}] {compressed}"
  
@@ -1315,7 +1466,7 @@
              # --- Phase 2: model-refresh inference for canonical model slots ---
              # This follows sleep by default. It asks the same configured LLM path
              # for structured candidate updates, then stores pending proposal rows
-@@ -8478,10 +9086,11 @@
+@@ -8478,10 +9213,11 @@
              proposals = []
              agent_context = str(getattr(self, "agent_context", "") or "").strip().lower()
              model_refresh_owner_id = str(getattr(self, "canonical_owner_id", "") or "").strip() or "default"
@@ -1329,7 +1480,7 @@
                  except Exception:
                      proposals = []
              model_refresh_proposals += len(proposals)
-@@ -8492,7 +9101,7 @@
+@@ -8492,7 +9228,7 @@
                  # the claim survives -- the rows show as consolidated but
                  # without a summary. That's preferable to a phantom-summary-
                  # without-claim race the previous ordering allowed.
@@ -1338,7 +1489,7 @@
                      summary=summary,
                      source_wm_ids=ids,
                      source="sleep_consolidation",
-@@ -8503,9 +9112,38 @@
+@@ -8503,9 +9239,38 @@
                      metadata={
                          "original_count": len(items),
                          "source": source,
@@ -1379,7 +1530,7 @@
                  if proposals:
                      from mnemosyne.core import model_refresh
                      proposal_ts = datetime.now().isoformat()
-@@ -8519,6 +9157,7 @@
+@@ -8519,6 +9284,7 @@
                              scope="session",
                              veracity="inferred",
                              trust_tier="DERIVED",
@@ -1387,7 +1538,7 @@
                          )
                          # Proposal rows are review artifacts from this sleep pass,
                          # not fresh raw memories that should recursively trigger
-@@ -8556,13 +9195,13 @@
+@@ -8556,13 +9322,13 @@
              """, (
                  self.session_id,
                  len(consolidated_ids),
@@ -1403,7 +1554,7 @@
  
          logger.info(
              "sleep: consolidated=%d summaries=%d conflicts=%d llm=%s method=%s",
-@@ -8582,7 +9221,8 @@
+@@ -8582,7 +9348,8 @@
              "model_refresh": {
                  "proposals": model_refresh_proposals,
                  "applied": model_refresh_applied,

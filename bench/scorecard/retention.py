@@ -157,6 +157,7 @@ def measure_life(
         "sleep",
         "sleep+degrade",
         "sleep+degrade-verified",
+        "sleep+degrade-additive",
         "delete-originals",
         "sleep-delete-originals",
         "sleep-loss-control",
@@ -181,6 +182,11 @@ def measure_life(
                     **({"MNEMOSYNE_SLEEP_DEMOTE_SOURCES": "1"} if demote_sources else {}),
                     **(
                         {"MNEMOSYNE_DEGRADE_VERIFY": "1"} if arm == "sleep+degrade-verified" else {}
+                    ),
+                    **(
+                        {"MNEMOSYNE_DEGRADE_ADDITIVE": "1"}
+                        if arm == "sleep+degrade-additive"
+                        else {}
                     ),
                 },
             )
@@ -220,6 +226,7 @@ def measure_life(
                     "sleep",
                     "sleep+degrade",
                     "sleep+degrade-verified",
+                    "sleep+degrade-additive",
                     "sleep-delete-originals",
                     "sleep-loss-control",
                 ):
@@ -232,7 +239,25 @@ def measure_life(
                     if sleep_result.get("status") not in ("consolidated", "no_op"):
                         raise RuntimeError(f"sleep failed: {sleep_result}")
                     operation: dict[str, Any] = {"stage": stage, "sleep": sleep_result}
-                    if arm in ("sleep+degrade", "sleep+degrade-verified"):
+                    if arm == "sleep+degrade-additive":
+                        # Additive copies leave originals at their tier, so the in-place
+                        # transition check does not apply. Record eligibility and the row count.
+                        beam.conn.execute(
+                            "UPDATE episodic_memory SET created_at = ?", ("2000-01-01T00:00:00",)
+                        )
+                        beam.conn.commit()
+                        transitions = []
+                        for _tier in (1, 2):
+                            eligible = beam.conn.execute(
+                                "SELECT COUNT(*) FROM episodic_memory WHERE tier = ? AND degraded_at IS NULL",
+                                (_tier,),
+                            ).fetchone()[0]
+                            transitions.append({"eligible": eligible, "result": degrade()})
+                        operation["degradation"] = transitions
+                        operation["episodic_rows"] = beam.conn.execute(
+                            "SELECT COUNT(*) FROM episodic_memory"
+                        ).fetchone()[0]
+                    elif arm in ("sleep+degrade", "sleep+degrade-verified"):
                         guarded = arm == "sleep+degrade-verified"
                         beam.conn.execute(
                             "UPDATE episodic_memory SET created_at = ?", ("2000-01-01T00:00:00",)
@@ -517,6 +542,7 @@ def main() -> int:
         ("sleep", "sleep"),
         ("sleep+degrade", "sleep+degrade"),
         ("sleep+degrade-verified", "sleep+degrade-verified"),
+        ("sleep+degrade-additive", "sleep+degrade-additive"),
         ("delete-originals", "delete-originals"),
         ("sleep-delete-originals", "sleep-delete-originals"),
         ("sleep-loss-control", "sleep-loss-control"),
@@ -596,7 +622,12 @@ def main() -> int:
                 )
                 for surface in ("tool", "prefetch")
             }
-            for arm in ("sleep", "sleep+degrade", "sleep+degrade-verified")
+            for arm in (
+                "sleep",
+                "sleep+degrade",
+                "sleep+degrade-verified",
+                "sleep+degrade-additive",
+            )
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -607,7 +638,13 @@ def main() -> int:
     )
     quality_ok = all(
         results[arm]["summary"].get(surface, {}).get("invariants_pass", False)
-        for arm in ("no-sleep", "sleep", "sleep+degrade", "sleep+degrade-verified")
+        for arm in (
+            "no-sleep",
+            "sleep",
+            "sleep+degrade",
+            "sleep+degrade-verified",
+            "sleep+degrade-additive",
+        )
         for surface in ("tool", "prefetch")
     )
     print(f"invariants: {'PASS' if quality_ok else 'FAIL'}")
