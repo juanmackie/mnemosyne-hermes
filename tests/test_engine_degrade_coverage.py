@@ -55,9 +55,7 @@ def test_degradation_guard_keeps_original_when_compression_loses_text(monkeypatc
         memory.conn.close()
 
 
-def test_degradation_guard_allows_lossless_transition_and_default_is_unchanged(
-    monkeypatch, tmp_path
-):
+def test_degradation_guard_allows_lossless_transition(monkeypatch, tmp_path):
     try:
         from mnemosyne.core import local_llm
         from mnemosyne.core.beam import BeamMemory
@@ -83,21 +81,76 @@ def test_degradation_guard_allows_lossless_transition_and_default_is_unchanged(
             "SELECT content, tier FROM episodic_memory WHERE id = ?", (short_id,)
         ).fetchone()
         assert (row["content"], row["tier"]) == (short, 2)
-        monkeypatch.delenv("MNEMOSYNE_DEGRADE_VERIFY")
-        long = "Long archive content. " * 50
-        long_id = memory.consolidate_to_episodic(
-            summary=long, source_wm_ids=[], source="guard", scope="session"
+    finally:
+        memory.conn.close()
+
+
+def test_degradation_guard_is_on_by_default(monkeypatch, tmp_path):
+    """With the flag unset the key-token guard still cancels a lossy step."""
+    try:
+        from mnemosyne.core import local_llm
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires audited engine")
+    monkeypatch.delenv("MNEMOSYNE_DEGRADE_VERIFY", raising=False)
+    monkeypatch.setattr(local_llm, "llm_available", lambda: False)
+    memory = BeamMemory(
+        session_id="guard-default", db_path=str(tmp_path / "default.db"), seed_config=False
+    )
+    try:
+        content = "filler words " * 120 + "The vault code is QX-7741."
+        memory_id = memory.consolidate_to_episodic(
+            summary=content, source_wm_ids=[], source="guard", scope="session"
         )
         memory.conn.execute(
-            "UPDATE episodic_memory SET created_at = '2000-01-01T00:00:00' WHERE id = ?", (long_id,)
+            "UPDATE episodic_memory SET tier = 1, created_at = '2000-01-01T00:00:00' WHERE id = ?",
+            (memory_id,),
         )
         memory.conn.commit()
-        memory.degrade_episodic()
+        result = memory.degrade_episodic()
         row = memory.conn.execute(
-            "SELECT content, tier FROM episodic_memory WHERE id = ?", (long_id,)
+            "SELECT content, tier FROM episodic_memory WHERE id = ?", (memory_id,)
+        ).fetchone()
+        assert row["tier"] == 1
+        assert row["content"] == content
+        assert result["coverage_rejected"] == 1
+    finally:
+        memory.conn.close()
+
+
+def test_degradation_guard_explicit_opt_out_restores_legacy_rewrite(monkeypatch, tmp_path):
+    """MNEMOSYNE_DEGRADE_VERIFY=0 restores the unguarded in-place rewrite."""
+    try:
+        from mnemosyne.core import local_llm
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires audited engine")
+    monkeypatch.setenv("MNEMOSYNE_DEGRADE_VERIFY", "0")
+    monkeypatch.setattr(local_llm, "llm_available", lambda: False)
+    memory = BeamMemory(
+        session_id="guard-off", db_path=str(tmp_path / "off.db"), seed_config=False
+    )
+    try:
+        content = "filler words " * 120 + "The vault code is QX-7741."
+        memory_id = memory.consolidate_to_episodic(
+            summary=content, source_wm_ids=[], source="guard", scope="session"
+        )
+        memory.conn.execute(
+            "UPDATE episodic_memory SET tier = 1, created_at = '2000-01-01T00:00:00' WHERE id = ?",
+            (memory_id,),
+        )
+        memory.conn.commit()
+        result = memory.degrade_episodic()
+        row = memory.conn.execute(
+            "SELECT content, tier FROM episodic_memory WHERE id = ?", (memory_id,)
         ).fetchone()
         assert row["tier"] == 2
-        assert row["content"] != long
+        assert row["content"] != content
+        assert "coverage_rejected" not in result
     finally:
         memory.conn.close()
 

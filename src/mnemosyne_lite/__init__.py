@@ -15,6 +15,6 @@ id ``mnemosyne``.
 
 # The distribution's one version source: pyproject.toml reads this value
 # dynamically and scripts/check_version_drift.sh gates it against the README.
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 __all__ = []

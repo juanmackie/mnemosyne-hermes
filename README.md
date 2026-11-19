@@ -1,6 +1,6 @@
 # mnemosyne-hermes
 
-**Current Version**: 3.0.0
+**Current Version**: 3.1.0
 
 A Hermes memory-provider distribution: the Hermes provider this repo owns, plus
 a small standalone SQLite store that ships alongside it.

@@ -588,6 +588,14 @@ def test_engine_sql_phases_hold_foreground_lock_but_llm_wait_does_not(monkeypatc
     saved_env = _isolate_engine_environment(temporary.name)
     saved_auto_apply = os.environ.get("MNEMOSYNE_SLEEP_MODEL_REFRESH_AUTO_APPLY")
     os.environ["MNEMOSYNE_SLEEP_MODEL_REFRESH_AUTO_APPLY"] = "false"
+    # This test gates lock phases, not coverage: pin the guards off so the fake
+    # summarizer's lossy text cannot trigger coverage retries or rejections.
+    saved_guards = {
+        name: os.environ.get(name)
+        for name in ("MNEMOSYNE_SLEEP_VERIFY", "MNEMOSYNE_DEGRADE_VERIFY")
+    }
+    os.environ["MNEMOSYNE_SLEEP_VERIFY"] = "0"
+    os.environ["MNEMOSYNE_DEGRADE_VERIFY"] = "0"
     connections = []
     real_connect = sqlite3.connect
     sleep_started = threading.Event()
@@ -778,6 +786,11 @@ def test_engine_sql_phases_hold_foreground_lock_but_llm_wait_does_not(monkeypatc
             os.environ.pop("MNEMOSYNE_SLEEP_MODEL_REFRESH_AUTO_APPLY", None)
         else:
             os.environ["MNEMOSYNE_SLEEP_MODEL_REFRESH_AUTO_APPLY"] = saved_auto_apply
+        for name, value in saved_guards.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def test_engine_rejects_stale_summary_after_public_memory_update(monkeypatch):
@@ -799,6 +812,9 @@ def test_engine_rejects_stale_summary_after_public_memory_update(monkeypatch):
 
     temporary = tempfile.TemporaryDirectory()
     saved_env = _isolate_engine_environment(temporary.name)
+    # Subject is stale-snapshot invalidation, not coverage: pin the guard off.
+    saved_sleep_verify = os.environ.get("MNEMOSYNE_SLEEP_VERIFY")
+    os.environ["MNEMOSYNE_SLEEP_VERIFY"] = "0"
     connections = []
     real_connect = sqlite3.connect
     summary_started = threading.Event()
@@ -913,6 +929,10 @@ def test_engine_rejects_stale_summary_after_public_memory_update(monkeypatch):
         connect_patch.stop()
         temporary.cleanup()
         _restore_engine_environment(saved_env)
+        if saved_sleep_verify is None:
+            os.environ.pop("MNEMOSYNE_SLEEP_VERIFY", None)
+        else:
+            os.environ["MNEMOSYNE_SLEEP_VERIFY"] = saved_sleep_verify
 
 
 @pytest.mark.parametrize("mutation", ["edit", "delete"])
@@ -1098,6 +1118,9 @@ def test_engine_sleep_does_not_invalidate_after_conflict_snapshot_changes(monkey
 
     temporary = tempfile.TemporaryDirectory()
     saved_env = _isolate_engine_environment(temporary.name)
+    # Subject is conflict-snapshot invalidation, not coverage: pin the guard off.
+    saved_sleep_verify = os.environ.get("MNEMOSYNE_SLEEP_VERIFY")
+    os.environ["MNEMOSYNE_SLEEP_VERIFY"] = "0"
     connections = []
     real_connect = sqlite3.connect
     validation_started = threading.Event()
@@ -1208,6 +1231,10 @@ def test_engine_sleep_does_not_invalidate_after_conflict_snapshot_changes(monkey
         connect_patch.stop()
         temporary.cleanup()
         _restore_engine_environment(saved_env)
+        if saved_sleep_verify is None:
+            os.environ.pop("MNEMOSYNE_SLEEP_VERIFY", None)
+        else:
+            os.environ["MNEMOSYNE_SLEEP_VERIFY"] = saved_sleep_verify
 
 
 def _time_call(fn, durations):
@@ -1316,7 +1343,8 @@ def test_sleep_coverage_preserves_source_authority(
         assert json.loads(row["metadata_json"])["verified"] is expected_verified
         assert bool(graph_calls) is expected_verified
         if not expected_verified:
-            # Persisted incomplete summaries remain safe after the flag is disabled.
+            # Persisted incomplete summaries remain safe when the flag is unset:
+            # the patch still honors their verification metadata.
             monkeypatch.delenv("MNEMOSYNE_SLEEP_VERIFY")
             assert any(item["id"] == source_id for item in memory.get_context(limit=10))
             recalled = memory.recall("Orion storage limit", top_k=10)
@@ -1354,7 +1382,7 @@ def test_sleep_coverage_preserves_source_authority(
         memory.conn.close()
 
 
-def test_sleep_coverage_retry_and_default_off(monkeypatch, tmp_path):
+def test_sleep_coverage_retry_and_explicit_opt_out(monkeypatch, tmp_path):
     try:
         from mnemosyne.core import local_llm, model_refresh
         from mnemosyne.core.beam import BeamMemory
@@ -1380,7 +1408,7 @@ def test_sleep_coverage_retry_and_default_off(monkeypatch, tmp_path):
     finally:
         memory.conn.close()
 
-    monkeypatch.delenv("MNEMOSYNE_SLEEP_VERIFY")
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "0")
     monkeypatch.setattr(
         local_llm, "summarize_memories", lambda *_args, **_kwargs: "Incomplete summary."
     )
@@ -1395,6 +1423,47 @@ def test_sleep_coverage_retry_and_default_off(monkeypatch, tmp_path):
         ).fetchone()
         assert row["content"] == "Incomplete summary."
         assert "verified" not in json.loads(row["metadata_json"])
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_coverage_default_on_marks_lossy_summary_unverified(monkeypatch, tmp_path):
+    """With the flag unset, coverage still runs and a lossy summary stays unverified."""
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    monkeypatch.delenv("MNEMOSYNE_SLEEP_VERIFY", raising=False)
+    monkeypatch.delenv("MNEMOSYNE_SLEEP_DEMOTE_SOURCES", raising=False)
+    monkeypatch.setattr(local_llm, "llm_available", lambda: True)
+    monkeypatch.setattr(
+        local_llm, "summarize_memories", lambda *_args, **_kwargs: "Incomplete summary."
+    )
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    memory = BeamMemory(
+        session_id="default-on", db_path=str(tmp_path / "default-on.db"), seed_config=False
+    )
+    try:
+        source = "The Orion storage limit is 40 terabytes."
+        source_id = memory.remember(source, source="user_note", scope="session")
+        graph_calls = []
+        monkeypatch.setattr(
+            memory, "_ingest_graph_and_veracity", lambda *_args, **_kwargs: graph_calls.append(True)
+        )
+        result = memory.sleep(force=True)
+        assert result["status"] == "consolidated"
+        row = memory.conn.execute(
+            "SELECT content, metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert row["content"] == "Incomplete summary."
+        assert json.loads(row["metadata_json"])["verified"] is False
+        assert graph_calls == [], "an unverified summary must not feed graph ingestion"
+        assert any(
+            item["id"] == source_id for item in memory.recall("Orion storage limit", top_k=10)
+        ), "the source must remain recallable beside an unverified summary"
     finally:
         memory.conn.close()
 
@@ -1632,7 +1701,7 @@ def test_sleep_demote_sources_leaves_unverified_sources_alone(monkeypatch, tmp_p
 
 
 def test_sleep_demote_sources_requires_coverage_gate(monkeypatch, tmp_path):
-    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-no-verify", verify=None)
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-no-verify", verify="0")
     try:
         source_id = memory.remember(
             "The Orion storage limit is 40 terabytes.",
@@ -1651,7 +1720,7 @@ def test_sleep_demote_sources_requires_coverage_gate(monkeypatch, tmp_path):
 
 
 def test_sleep_demote_sources_off_leaves_weight_unchanged(monkeypatch, tmp_path):
-    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-off", demote=None)
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-off", demote="0")
     try:
         source_id = memory.remember(
             "The Orion storage limit is 40 terabytes.",
@@ -1682,6 +1751,52 @@ def test_sleep_demote_sources_dry_run_leaves_weight_unchanged(monkeypatch, tmp_p
         row = memory.conn.execute(
             "SELECT importance FROM working_memory WHERE id = ?", (source_id,)
         ).fetchone()
+        assert result["demoted_rows"] == 0
+        assert row["importance"] == 0.8
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_demote_sources_on_by_default(monkeypatch, tmp_path):
+    """Unset flags: verified consolidation demotes its sources by default."""
+    memory = _sleep_demote_memory(
+        monkeypatch, tmp_path, "demote-default", verify=None, demote=None
+    )
+    try:
+        source_id = memory.remember(
+            "The Orion storage limit is 40 terabytes.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        result = memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT importance FROM working_memory WHERE id = ?", (source_id,)
+        ).fetchone()
+        assert result["demoted_rows"] == 1
+        assert row["importance"] == 0.25
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_demote_sources_explicit_opt_out_keeps_verified_summary(monkeypatch, tmp_path):
+    """Demote=0 opts out of demotion while coverage still verifies the summary."""
+    memory = _sleep_demote_memory(monkeypatch, tmp_path, "demote-opt-out", demote="0")
+    try:
+        source_id = memory.remember(
+            "The Orion storage limit is 40 terabytes.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        result = memory.sleep(force=True)
+        row = memory.conn.execute(
+            "SELECT importance FROM working_memory WHERE id = ?", (source_id,)
+        ).fetchone()
+        episodic = memory.conn.execute(
+            "SELECT metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert json.loads(episodic["metadata_json"])["verified"] is True
         assert result["demoted_rows"] == 0
         assert row["importance"] == 0.8
     finally:

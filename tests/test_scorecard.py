@@ -507,7 +507,7 @@ def test_retention_rejects_shadow_engine_before_creating_store(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_retention_only_enables_sleep_verification_when_requested(monkeypatch, tmp_path, enabled):
+def test_retention_pins_sleep_verification_to_the_requested_state(monkeypatch, tmp_path, enabled):
     import importlib.util
     from types import SimpleNamespace
 
@@ -523,7 +523,17 @@ def test_retention_only_enables_sleep_verification_when_requested(monkeypatch, t
     seen = []
 
     def stop_before_store(*_args, **_kwargs):
-        seen.append(os.environ.get("MNEMOSYNE_SLEEP_VERIFY"))
+        seen.append(
+            tuple(
+                os.environ.get(name)
+                for name in (
+                    "MNEMOSYNE_SLEEP_VERIFY",
+                    "MNEMOSYNE_SLEEP_DEMOTE_SOURCES",
+                    "MNEMOSYNE_DEGRADE_VERIFY",
+                    "MNEMOSYNE_DEGRADE_ADDITIVE",
+                )
+            )
+        )
         raise RuntimeError("controlled stop")
 
     monkeypatch.setattr(runner.LifeStore, "create", stop_before_store)
@@ -531,7 +541,9 @@ def test_retention_only_enables_sleep_verification_when_requested(monkeypatch, t
         retention.measure_life(
             {"life_id": "synthetic", "events": []}, [], "no-sleep", verify_sleep=enabled
         )
-    assert seen == ["1" if enabled else None]
+    # The engine defaults the guards on, so every arm pins them explicitly:
+    # the requested state for sleep verification, off for the rest.
+    assert seen == [("1" if enabled else "0", "0", "0", "0")]
 
 
 def test_require_vendored_provider_accepts_snapshot_and_refuses_other_copies(tmp_path):

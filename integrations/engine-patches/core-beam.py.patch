@@ -1142,8 +1142,8 @@
          now = datetime.now()
          results = {"status": "dry_run" if dry_run else "degraded",
                     "tier1_to_tier2": 0, "tier2_to_tier3": 0}
-+        # LOCAL PATCH: opt-in key-token guard; default behavior is unchanged.
-+        coverage_guard = _env_truthy("MNEMOSYNE_DEGRADE_VERIFY")
++        # LOCAL PATCH: key-token guard, on by default; MNEMOSYNE_DEGRADE_VERIFY=0 opts out.
++        coverage_guard = not _env_disabled("MNEMOSYNE_DEGRADE_VERIFY")
 +        # LOCAL PATCH: opt-in additive degradation; default behavior is unchanged.
 +        additive = _env_truthy("MNEMOSYNE_DEGRADE_ADDITIVE")
 +        degrade_filter = " AND degraded_at IS NULL" if additive else ""
@@ -1344,8 +1344,8 @@
          model_refresh_proposals = 0
          model_refresh_applied = 0
 +        coverage_failures = 0
-+        coverage_enabled = _env_truthy("MNEMOSYNE_SLEEP_VERIFY")
-+        demote_sources = _env_truthy("MNEMOSYNE_SLEEP_DEMOTE_SOURCES")
++        coverage_enabled = not _env_disabled("MNEMOSYNE_SLEEP_VERIFY")
++        demote_sources = not _env_disabled("MNEMOSYNE_SLEEP_DEMOTE_SOURCES")
 +        demoted_rows = 0
          for source, items in grouped.items():
              lines = [item["content"] for item in items]

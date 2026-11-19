@@ -534,10 +534,10 @@ def run(
         previous = dict(os.environ)
         os.environ.clear()
         os.environ.update(clean_environment(scratch))
-        if sleep_verify:
-            os.environ["MNEMOSYNE_SLEEP_VERIFY"] = "1"
-        if sleep_demote:
-            os.environ["MNEMOSYNE_SLEEP_DEMOTE_SOURCES"] = "1"
+        # The engine defaults these guards on; pin both states explicitly so
+        # the baseline arm measures the unguarded behavior.
+        os.environ["MNEMOSYNE_SLEEP_VERIFY"] = "1" if sleep_verify else "0"
+        os.environ["MNEMOSYNE_SLEEP_DEMOTE_SOURCES"] = "1" if sleep_demote else "0"
         store = None
         try:
             store = LifeStore.create(scratch, "precisionmembench")

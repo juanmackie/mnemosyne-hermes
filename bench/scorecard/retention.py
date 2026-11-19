@@ -182,10 +182,13 @@ def measure_life(
             {
                 "MNEMOSYNE_LLM_ENABLED": "false",
                 "MNEMOSYNE_HOST_LLM_ENABLED": "false",
-                **({"MNEMOSYNE_SLEEP_VERIFY": "1"} if verify_sleep else {}),
-                **({"MNEMOSYNE_SLEEP_DEMOTE_SOURCES": "1"} if demote_sources else {}),
-                **({"MNEMOSYNE_DEGRADE_VERIFY": "1"} if arm == "sleep+degrade-verified" else {}),
-                **({"MNEMOSYNE_DEGRADE_ADDITIVE": "1"} if arm == "sleep+degrade-additive" else {}),
+                # The engine defaults these guards on; pin every arm explicitly
+                # so baselines measure the unguarded behavior regardless of the
+                # engine default and no ambient shell setting leaks in.
+                "MNEMOSYNE_SLEEP_VERIFY": "1" if verify_sleep else "0",
+                "MNEMOSYNE_SLEEP_DEMOTE_SOURCES": "1" if demote_sources else "0",
+                "MNEMOSYNE_DEGRADE_VERIFY": "1" if arm == "sleep+degrade-verified" else "0",
+                "MNEMOSYNE_DEGRADE_ADDITIVE": "1" if arm == "sleep+degrade-additive" else "0",
             },
         )
         os.environ.clear()
