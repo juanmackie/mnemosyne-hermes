@@ -32,6 +32,12 @@
         "e8bd89e3dde27eeea4bb8b5577dceff5accd24905d9772dc1bd33c5ec8f4908d"
       ]
     },
+    "core/config.py": {
+      "original_sha256": "3adac4825d8495036945e873f7d9b43700166729e6a09b4876049fe56b116929",
+      "patch": "core-config.py.patch",
+      "patch_sha256": "f7d1b6425ba29cb6d2cd6112c3a30fd29fcf8572fc9c9e7f85c1cc52e75114ab",
+      "patched_sha256": "143e9112affe4c86e26270ff10ae8323b5ed5fdfc5a706c2d96b20ef8c800d62"
+    },
     "core/entities.py": {
       "original_sha256": "a2fe3855ec6280e46f676b80c3364ab8917f4d3e59cfa5af7530815b395eaf6b",
       "patch": "core-entities.py.patch",

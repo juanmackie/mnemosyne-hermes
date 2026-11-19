@@ -176,8 +176,9 @@ def test_upgrade_from_previous_audited_patch_requires_original_backup():
         assert (package / "first.py").read_bytes() == original
 
 
-def test_engine_import_and_profile_constructor_do_not_touch_default_store():
-    """Exercise the real patched engine in a fresh process with isolated paths."""
+def _engine_package_dir(requirement: str) -> pathlib.Path | None:
+    """The installed engine package directory, or None when it is absent."""
+    package_dir: pathlib.Path | None
     engine_root = os.environ.get("MNEMOSYNE_TEST_ENGINE_ROOT")
     if engine_root:
         package_dir = pathlib.Path(engine_root).resolve()
@@ -190,8 +191,16 @@ def test_engine_import_and_profile_constructor_do_not_touch_default_store():
         )
     if package_dir is None or not (package_dir / "core" / "memory.py").is_file():
         if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
-            raise AssertionError("real engine constructor smoke requires mnemosyne-memory")
+            raise AssertionError(f"{requirement} requires mnemosyne-memory")
         print("skip: mnemosyne-memory is not importable")
+        return None
+    return package_dir
+
+
+def test_engine_import_and_profile_constructor_do_not_touch_default_store():
+    """Exercise the real patched engine in a fresh process with isolated paths."""
+    package_dir = _engine_package_dir("real engine constructor smoke")
+    if package_dir is None:
         return
 
     script = r"""
@@ -262,6 +271,53 @@ print("import/profile isolation and standalone defaults passed")
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_seeded_config_is_utf8_whatever_the_locale():
+    """P35: the engine's own config.yaml is UTF-8 even when the locale is not.
+
+    The seed header contains an em dash. Written through the locale encoding it
+    became a cp1252 byte on Windows, so the engine's UTF-8 readers and the
+    Hermes provider both failed to decode the engine's own config file.
+    """
+    package_dir = _engine_package_dir("seeded config encoding")
+    if package_dir is None:
+        return
+
+    script = r"""
+import pathlib, sys
+package = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(package.parent))
+from mnemosyne.core.config import MnemosyneConfig
+
+target = pathlib.Path(sys.argv[2])
+MnemosyneConfig(config_path=target)
+raw = target.read_bytes()
+text = raw.decode("utf-8")
+assert "\u2014" in text, text[:120]
+print("seeded config is valid utf-8")
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = pathlib.Path(tmp) / "config.yaml"
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "0",
+            "PYTHONPATH": str(package_dir.parent),
+        }
+        # Off Windows the locale encoding is what the bug depended on, so pin it
+        # to a non-UTF-8 one. Windows already uses its ANSI code page here.
+        if os.name != "nt":
+            env.update({"LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0"})
+        env.pop("MNEMOSYNE_DATA_DIR", None)
+        env.pop("HERMES_HOME", None)
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(package_dir), str(target)],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 if __name__ == "__main__":
     tests = [
         test_patch_apply_dry_run_idempotency_and_restore,
@@ -271,6 +327,7 @@ if __name__ == "__main__":
         test_shipped_patch_digests,
         test_upgrade_from_previous_audited_patch_requires_original_backup,
         test_engine_import_and_profile_constructor_do_not_touch_default_store,
+        test_seeded_config_is_utf8_whatever_the_locale,
     ]
     for fn in tests:
         fn()
