@@ -134,6 +134,15 @@ def build_arm_report(
             "tool_stale_outranking_current": tool["stale_outranking_current"],
             "prefetch_answerable_recall": prefetch["answerable_recall"],
             "prefetch_expired_present": prefetch["by_kind"]["expired"]["expired_present_total"],
+            # Carried lessons (probe kind `carried_lesson`); `None` when the
+            # measured split holds none, so an absent measurement is never 0.
+            # Each field names its surface; nothing is summed across surfaces.
+            "lesson_probes": tool["lesson_probes"],
+            "tool_lesson_recall": tool["lesson_recall"],
+            "prefetch_lesson_recall": prefetch["lesson_recall"],
+            "tool_lesson_provenance_present": tool["lesson_provenance_present"],
+            "tool_lesson_wrong_model": tool["lesson_wrong_model"],
+            "prefetch_lesson_wrong_model": prefetch["lesson_wrong_model"],
             "errors": len(merged["errors"]),
             "error_rate": (
                 len(merged["errors"]) / (len(merged["errors"]) + len(probes)) if probes else None

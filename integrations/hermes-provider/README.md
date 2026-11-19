@@ -136,6 +136,39 @@ unless `db_path` is explicit. See the [configuration reference](../../docs/HERME
 `doctor --no-fix` checks the selected store with read-only SQLite and creates no
 store, config or diagnostic log.
 
+## Lesson provenance
+
+Every `mnemosyne_remember` write records which model and engine produced it, in
+`metadata.provenance` (patch P55):
+
+```json
+{"model": "z-ai/glm-5.3-flash", "hermes_version": "0.19.0",
+ "engine_version": "3.15.1", "recorded_at": "2026-11-19T10:00:00Z"}
+```
+
+The model id comes from Hermes' own runtime helper
+(`agent.auxiliary_client._read_main_model`, which prefers the live per-turn model
+and falls back to `config.yaml` `model.default`), or from an explicit
+`MNEMOSYNE_MODEL_ID` when the host reports nothing. A value the host did not
+supply is stored as `null`; it is never guessed. Rows written before this patch
+carry no provenance and render exactly as they did before. How the model id is
+obtained, and what that depends on, is recorded in
+[../../research/hermes-model-id-spike.md](../../research/hermes-model-id-spike.md).
+
+`mnemosyne_recall` rows and `mnemosyne_get` add one `learned_under` field, and
+prefetch injection adds at most one indented line per row:
+
+```
+learned under model z-ai/glm-5.3-flash, engine 3.15.1, 2026-11-19
+```
+
+This is context for the agent, not a ranking signal and not a factual claim:
+a recalled lesson is prior experience from the model and engine named on it. The
+provider's `system_prompt_block` says so, and asks for a lesson shape that keeps
+failed attempts: root cause, what was tried, what was expected, what happened,
+plus one short structured label for the root cause so the same cause groups
+together on recall.
+
 ## Inspect evidence and recorded history
 
 ```bash

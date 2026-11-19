@@ -16,7 +16,13 @@ from bench.sim.scale import make_corpus
 
 
 def build_corpus(
-    *, seed: int, probes: int, dev_probes: int, probes_per_life: int, slots: int
+    *,
+    seed: int,
+    probes: int,
+    dev_probes: int,
+    probes_per_life: int,
+    slots: int,
+    lessons: bool = False,
 ) -> dict[str, Any]:
     corpus = make_corpus(
         seed,
@@ -24,6 +30,7 @@ def build_corpus(
         dev_probes=dev_probes,
         probes_per_life=probes_per_life,
         slots=slots,
+        lessons=lessons,
     )
     corpus["digest"] = sim_corpus_digest(corpus)
     return corpus

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import runner as runner_module
-from .grade import grade, grade_prefetch
+from .grade import grade, grade_prefetch, grade_provenance, prefetch_entries
 
 
 def _measure_life(job: dict[str, Any]) -> dict[str, Any]:
@@ -71,6 +71,13 @@ def _measure_life(job: dict[str, Any]) -> dict[str, Any]:
                             event["valid_to"] if event.get("valid_to_stated_in_text") else None
                         ),
                     )
+            # Carried lessons: written under model A, measured under model B.
+            lessons = life.get("lessons") or []
+            for lesson in lessons:
+                os.environ["MNEMOSYNE_MODEL_ID"] = str(lesson["model_a"])
+                store.ingest_lesson(lesson["text"])
+            if lessons:
+                os.environ["MNEMOSYNE_MODEL_ID"] = str(lessons[0]["model_b"])
 
             if life.get("secrets"):
                 texts = runner_module.store_texts(Path(store.provider._beam.db_path))
@@ -87,11 +94,23 @@ def _measure_life(job: dict[str, Any]) -> dict[str, Any]:
                     texts = [str(row.get("content") or "") for row in results]
                     tool_grade = grade(probe, texts)
                     tool_grade["surface"] = "tool"
+                    if probe["kind"] == "carried_lesson":
+                        tool_grade.update(
+                            grade_provenance(
+                                probe,
+                                [
+                                    (text, str(row.get("learned_under") or ""))
+                                    for text, row in zip(texts, results, strict=True)
+                                ],
+                            )
+                        )
                     records.append(tool_grade)
 
                     context = store.prefetch(probe["query"])
                     prefetch_grade = grade_prefetch(probe, context)
                     prefetch_grade["surface"] = "prefetch"
+                    if probe["kind"] == "carried_lesson":
+                        prefetch_grade.update(grade_provenance(probe, prefetch_entries(context)))
                     records.append(prefetch_grade)
 
                     want_dump = dump_candidates and (

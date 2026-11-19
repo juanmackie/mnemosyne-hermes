@@ -30,9 +30,46 @@ extractable content) returns ``None``. The Mnemosyne caller treats that as
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# LOCAL PATCH: P55 the active model id, read without a key and without a second
+# provider configuration. Hermes' own plugin-LLM facade records the same value
+# from `agent.auxiliary_client._read_main_model()`, which prefers the live
+# per-turn runtime override and falls back to config.yaml `model.default`. Any
+# failure returns None: a store written when the model is unknown records
+# `model: null` instead of a guess, and a renamed private helper degrades to
+# null rather than to a wrong value.
+MAX_MODEL_ID_CHARS = 100
+
+
+def _clean_model_id(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > MAX_MODEL_ID_CHARS:
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in text):
+        return None
+    return text
+
+
+def active_model_id() -> Optional[str]:
+    """The model that is running this turn, or None when it is not knowable."""
+    declared = _clean_model_id(os.environ.get("MNEMOSYNE_MODEL_ID"))
+    if declared:
+        # Explicit operator declaration: used by measurement arms and scripts
+        # whose process has no Hermes runtime to ask.
+        return declared
+    try:
+        from agent.auxiliary_client import _read_main_model
+
+        return _clean_model_id(_read_main_model())
+    except Exception as exc:
+        logger.debug("Active model id unavailable: %s", exc)
+        return None
 
 
 class HermesAuxLLMBackend:

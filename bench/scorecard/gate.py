@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sys.path.insert(0, str(ROOT))
     from bench.scorecard import parallel
-    from bench.scorecard.aggregate import compare_surfaces
+    from bench.scorecard.aggregate import compare_surfaces, summarize_surface
     from bench.scorecard.cli import engine_state
     from bench.scorecard.corpus import corpus_digest
     from bench.scorecard.retention import (
@@ -79,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         dev_probes=args.dev_probes,
         probes_per_life=args.probes_per_life,
         slots=4,
+        lessons=True,
     )
     again = make_corpus(
         seed=7,
@@ -86,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         dev_probes=args.dev_probes,
         probes_per_life=args.probes_per_life,
         slots=4,
+        lessons=True,
     )
     _check(
         corpus_digest(corpus) == corpus_digest(again),
@@ -104,6 +106,11 @@ def main(argv: list[str] | None = None) -> int:
     _check(
         {"answerable_current", "fabricated", "expired"} <= kinds,
         "the corpus covers answerable, fabricated and expired probes",
+        failures,
+    )
+    _check(
+        "carried_lesson" in kinds,
+        "the corpus covers carried lessons written under one model and queried under another",
         failures,
     )
     label_errors = []
@@ -164,6 +171,47 @@ def main(argv: list[str] | None = None) -> int:
         _check(
             low <= 0.0 <= high,
             f"A/A {name}: CI [{low:.5f}, {high:.5f}] spans zero",
+            failures,
+        )
+
+    print("== carried lessons ==")
+    for name in ("lesson_recall", "lesson_provenance_present"):
+        block = aa[name]
+        if not block["n"]:
+            continue  # the presence check above already failed the corpus
+        low, high = block["difference"]["ci_low"], block["difference"]["ci_high"]
+        _check(
+            low <= 0.0 <= high,
+            f"A/A {name}: CI [{low:.5f}, {high:.5f}] spans zero",
+            failures,
+        )
+    lesson_probes = [probe for probe in probes if probe["kind"] == "carried_lesson"]
+    _check(
+        len(lesson_probes) >= max(1, len(lives) // 2),
+        f"the held-out split carries lesson probes ({len(lesson_probes)})",
+        failures,
+    )
+    for surface in ("tool", "prefetch"):
+        summary = summarize_surface(probes, arm_a, surface)
+        # The line is present on every lesson the surface returned, and no row
+        # reports a model other than the one its lesson was written under.
+        _check(
+            summary["lesson_provenance_present"] == summary["lesson_hits"],
+            f"{surface} lesson provenance is present on every returned lesson "
+            f"({summary['lesson_provenance_present']}/{summary['lesson_hits']})",
+            failures,
+        )
+        _check(
+            summary["lesson_wrong_model"] == 0,
+            f"{surface} lesson wrong_model is 0 ({summary['lesson_wrong_model']})",
+            failures,
+        )
+        control = summary["answerable_recall"] or 0.0
+        rate = summary["lesson_recall"] or 0.0
+        _check(
+            rate >= control - 0.1,
+            f"{surface} lesson recall {rate:.3f} is within 0.1 of the untagged "
+            f"control {control:.3f}",
             failures,
         )
 

@@ -11,3 +11,24 @@ Sessions may expose an event directly, indirectly, through a tool observation, t
 ## v0 boundaries
 
 `python bench/sim/generate.py --seed N --output FILE` writes one canonical life spanning personal, coding, and homelab domains. The seed is included in the output. Output contains synthetic content only. This first fixture demonstrates schema and deterministic labels; it does not claim the roadmap scale target or language-model surface realization. Public benchmarks remain eval-only and are not downloaded or used here.
+
+## Probe kinds
+
+Every probe has `probe_id`, `kind`, `query`, `as_of`, `answers`, `must_abstain`
+and `entity`. Kinds:
+
+| Kind | Answers | Correct behaviour |
+| --- | --- | --- |
+| `answerable_current` | the current value | serve it; a superseded value must not outrank it |
+| `answerable_historical` | the value inside a past window | serve it for that `as_of` |
+| `expired` | none | serve nothing |
+| `fabricated` | none | serve nothing |
+| `carried_lesson` | the lesson's distinctive token | serve the lesson with its provenance line |
+
+`carried_lesson` is opt-in (`make_corpus(..., lessons=True)`), and then adds one
+lesson per life: `life["lessons"]` holds the write (text, `model_a`, `model_b`),
+and the probe carries `model_a`/`model_b`/`lesson_id`. The write happens under
+`model_a`, the query under `model_b`; the graded facts are the same as for any
+other probe plus `learned under …` provenance. Without `lessons=True` the corpus,
+its digest and its probe order are exactly what they were before the kind
+existed.

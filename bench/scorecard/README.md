@@ -33,6 +33,33 @@ The four pass criteria (see `RESULTS.md` for the measured values):
 4. PrecisionMemBench active passes ≥35/43 with ≤8 missing beliefs — measured
    separately by `bench/precisionmembench/`.
 
+## Carried lessons (P55)
+
+A lesson written under one model is often recalled under another. The
+`carried_lesson` probe measures whether that still works and whether the recall
+tells the truth about where the lesson came from:
+
+- the life carries one lesson written through `mnemosyne_remember` with
+  `MNEMOSYNE_MODEL_ID` set to `model_a`, in the shape the provider's guidance
+  asks for (root cause, what was tried, what was expected, what happened);
+- the probe's query is issued with `MNEMOSYNE_MODEL_ID` set to `model_b`, so the
+  write and the read happen under different models;
+- the lesson's distinctive token appears nowhere else in the life, so "the
+  lesson was returned" is an exact label, not a heuristic.
+
+Pass criteria, on both surfaces (tool and prefetch):
+
+1. the lesson is returned at the same rate as the untagged `answerable_current`
+   control (within 0.1 in the repo gate; A/A must show a zero paired difference);
+2. the `learned under …` provenance line is present on every returned lesson;
+3. zero lessons are reported under a model other than the one they were written
+   under.
+
+The probe is opt-in per corpus (`python -m bench.scorecard.cli corpus --lessons`)
+so a corpus built without it keeps its exact digest. `bench/scorecard/gate.py`
+always turns it on: the four pass criteria above are unchanged, and the lesson
+criteria are checked alongside them.
+
 ## Why the corpus looks like this
 
 `bench/sim/scale.py` makes unique synthetic lives. Two design choices carry the

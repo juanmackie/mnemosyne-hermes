@@ -278,6 +278,19 @@ class LifeStore:
     def ingest_turn(self, message: str) -> None:
         self.provider.sync_turn(message, "", session_id=self.session_id)
 
+    def ingest_lesson(self, content: str) -> None:
+        """Write one carried lesson through the path that stamps provenance.
+
+        The model the lesson is written under comes from
+        ``MNEMOSYNE_MODEL_ID``, which the caller sets from the life's lesson
+        record: a provider with no Hermes runtime to ask records `model: null`
+        instead of a guess.
+        """
+        self.provider.handle_tool_call(
+            "mnemosyne_remember",
+            {"content": content, "importance": 0.7, "source": "user", "scope": "session"},
+        )
+
     def ingest_tool(
         self, content: str, *, importance: float = 0.6, valid_until: str | None = None
     ) -> None:
@@ -401,7 +414,7 @@ def run_arm(
     progress: bool = True,
 ) -> dict[str, Any]:
     """Measure one arm over the corpus and return the raw per-probe records."""
-    from .grade import grade, grade_prefetch
+    from .grade import grade, grade_prefetch, grade_provenance, prefetch_entries
 
     lives = corpus["lives"]
     probes_by_life: dict[str, list[dict[str, Any]]] = {}
@@ -444,6 +457,15 @@ def run_arm(
                             if event.get("valid_to_stated_in_text")
                             else None,
                         )
+                # Carried lessons: written under model A, then measured under
+                # model B. Stamping happens at write time, so the later switch
+                # cannot rewrite what the store recorded.
+                lessons = life.get("lessons") or []
+                for lesson in lessons:
+                    os.environ["MNEMOSYNE_MODEL_ID"] = str(lesson["model_a"])
+                    store.ingest_lesson(lesson["text"])
+                if lessons:
+                    os.environ["MNEMOSYNE_MODEL_ID"] = str(lessons[0]["model_b"])
 
                 for probe_index, probe in enumerate(life_probes):
                     if probe_limit is not None and measured >= probe_limit:
@@ -461,11 +483,25 @@ def run_arm(
                         texts = [str(row.get("content") or "") for row in results]
                         tool_grade = grade(probe, texts)
                         tool_grade["surface"] = "tool"
+                        if probe["kind"] == "carried_lesson":
+                            tool_grade.update(
+                                grade_provenance(
+                                    probe,
+                                    [
+                                        (text, str(row.get("learned_under") or ""))
+                                        for text, row in zip(texts, results, strict=True)
+                                    ],
+                                )
+                            )
                         records.append(tool_grade)
 
                         context = store.prefetch(probe["query"])
                         prefetch_grade = grade_prefetch(probe, context)
                         prefetch_grade["surface"] = "prefetch"
+                        if probe["kind"] == "carried_lesson":
+                            prefetch_grade.update(
+                                grade_provenance(probe, prefetch_entries(context))
+                            )
                         records.append(prefetch_grade)
 
                         want_dump = dump_candidates and (
