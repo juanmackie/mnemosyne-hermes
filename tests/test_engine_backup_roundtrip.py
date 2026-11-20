@@ -20,6 +20,7 @@ from pathlib import Path
 def _require_engine():
     try:
         from mnemosyne.dr import recovery
+
         return recovery
     except ImportError:
         if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
@@ -30,6 +31,7 @@ def _require_engine():
 def _sqlite_vec_available() -> bool:
     try:
         import sqlite_vec  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -51,6 +53,7 @@ def _build_store(path: Path):
     has_vec = False
     if _sqlite_vec_available():
         import sqlite_vec
+
         con.enable_load_extension(True)
         sqlite_vec.load(con)
         con.execute("CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[4])")
@@ -103,22 +106,17 @@ def test_roundtrip_preserves_rows_vectors_and_wal_frames():
         assert report["integrity_check"] is True
         check = sqlite3.connect(str(target))
         try:
-            rows = check.execute(
-                "SELECT content FROM items ORDER BY id"
-            ).fetchall()
+            rows = check.execute("SELECT content FROM items ORDER BY id").fetchall()
             assert [r[0] for r in rows] == ["alpha", "beta", "gamma", "delta"]
             if has_vec:
                 # Querying a vec0 table needs the module on this connection;
                 # the restored shadow data itself is extension-independent.
                 import sqlite_vec
+
                 check.enable_load_extension(True)
                 sqlite_vec.load(check)
-                vec_count = check.execute(
-                    "SELECT count(*) FROM vec_items"
-                ).fetchone()[0]
-                assert vec_count == 3, (
-                    f"vec0 rows must survive the round trip, got {vec_count}"
-                )
+                vec_count = check.execute("SELECT count(*) FROM vec_items").fetchone()[0]
+                assert vec_count == 3, f"vec0 rows must survive the round trip, got {vec_count}"
         finally:
             check.close()
 
@@ -131,9 +129,7 @@ def test_legacy_sql_dump_backups_still_restore():
         db = Path(tmp) / "mnemosyne.db"
         con = sqlite3.connect(str(db))
         con.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, content TEXT)")
-        con.executemany(
-            "INSERT INTO items (content) VALUES (?)", [("one",), ("two",)]
-        )
+        con.executemany("INSERT INTO items (content) VALUES (?)", [("one",), ("two",)])
         con.commit()
         legacy = Path(tmp) / "legacy.db.gz"
         with gzip.open(legacy, "wb") as f:
@@ -146,9 +142,7 @@ def test_legacy_sql_dump_backups_still_restore():
         assert report["integrity_check"] is True
         check = sqlite3.connect(str(target))
         try:
-            rows = check.execute(
-                "SELECT content FROM items ORDER BY id"
-            ).fetchall()
+            rows = check.execute("SELECT content FROM items ORDER BY id").fetchall()
             assert [r[0] for r in rows] == ["one", "two"]
         finally:
             check.close()
@@ -160,9 +154,7 @@ def test_restore_missing_backup_raises():
         return
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            recovery.restore_backup(
-                Path(tmp) / "nope.db.gz", Path(tmp) / "out.db"
-            )
+            recovery.restore_backup(Path(tmp) / "nope.db.gz", Path(tmp) / "out.db")
         except FileNotFoundError:
             return
         raise AssertionError("missing backup must raise FileNotFoundError")
