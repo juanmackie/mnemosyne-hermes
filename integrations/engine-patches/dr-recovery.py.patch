@@ -77,7 +77,26 @@
      
      # Calculate checksums
      db_checksum = hashlib.sha256(db_path.read_bytes()).hexdigest()[:16]
-@@ -150,15 +153,31 @@
+@@ -143,22 +146,49 @@
+     
+     # Create emergency backup of current DB
+     if db_path.exists():
++        # LOCAL PATCH: WAL-safe emergency copy — sqlite3.backup() folds
++        # uncheckpointed WAL frames into the snapshot. shutil.copy2 of a
++        # WAL-mode database captures only the checkpointed main file and
++        # silently drops recent commits.
+         emergency_path = db_path.with_suffix('.emergency_backup.db')
+-        shutil.copy2(db_path, emergency_path)
++        emerg_src = sqlite3.connect(str(db_path))
++        emerg_dst = sqlite3.connect(str(emergency_path))
++        try:
++            emerg_src.backup(emerg_dst)
++            emerg_dst.execute("PRAGMA journal_mode=DELETE")
++        finally:
++            emerg_dst.close()
++            emerg_src.close()
+     
+     # Decompress and restore using sqlite3 backup API
      db_path.parent.mkdir(parents=True, exist_ok=True)
  
      with gzip.open(backup_path, "rb") as f_in:

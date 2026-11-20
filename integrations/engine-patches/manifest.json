@@ -75,8 +75,11 @@
     "dr/recovery.py": {
       "original_sha256": "26d602fb2009c8ae46853d5dcf356e3a94a11117acffdfac684ba55963eefd06",
       "patch": "dr-recovery.py.patch",
-      "patch_sha256": "b59ae5629dacee972c93b1f5cb94460d737802cb4058e5d93c943809012128bb",
-      "patched_sha256": "7459dc32455ac4737363ef4c534329b01db487a8f1bd67897bc599f266599fc0"
+      "patch_sha256": "de95d4cc6f587eb5b3b9198855ff893b28ce93bfad27f6767006749e9b370748",
+      "patched_sha256": "85b23253e63fb3de61785a6a223b60287ad757cd5e610908aa6b0ceb64d49162",
+      "previous_patched_sha256": [
+        "7459dc32455ac4737363ef4c534329b01db487a8f1bd67897bc599f266599fc0"
+      ]
     }
   },
   "version": "3.15.1"

@@ -17,7 +17,7 @@ is refused until its patches have been audited.
 | `mcp_tools.py.patch` | An update with no fields returns a validation error before constructing a memory instance. |
 | `core-llm-conflict-detector.py.patch` | Optional consolidation lock coordination yields during conflict-model calls and retains protection for cost logging. |
 | `diagnose.py.patch` | Provider diagnostics accept an explicit store and profile log directory instead of deriving another database from the environment. |
-| `dr-recovery.py.patch` | Backup/restore gzips the raw SQLite page image from `sqlite3.backup()` instead of an `iterdump()` SQL-text dump, so vec0 shadow tables survive the round trip. Restore sniffs the payload and still accepts legacy SQL-text dumps. Return shapes, filenames, and the metadata sidecar are unchanged. |
+| `dr-recovery.py.patch` | Backup/restore gzips the raw SQLite page image from `sqlite3.backup()` instead of an `iterdump()` SQL-text dump, so vec0 shadow tables survive the round trip. Restore sniffs the payload and still accepts legacy SQL-text dumps. The pre-restore emergency copy also uses `sqlite3.backup()`, so uncheckpointed WAL frames survive it. Return shapes, filenames, and the metadata sidecar are unchanged. |
 
 P31 removes import-time default database initialization from `core.memory`.
 Each real constructor (including the standalone default-memory helper) still
