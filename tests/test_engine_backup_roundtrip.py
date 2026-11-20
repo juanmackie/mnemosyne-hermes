@@ -13,6 +13,8 @@ MNEMOSYNE_REQUIRE_ENGINE=1 like the other engine contract gates.
 import gzip
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -160,12 +162,81 @@ def test_restore_missing_backup_raises():
         raise AssertionError("missing backup must raise FileNotFoundError")
 
 
+def test_cli_backup_emits_raw_sqlite_image():
+    recovery = _require_engine()
+    if recovery is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp) / "data"
+        data_dir.mkdir()
+        db = data_dir / "mnemosyne.db"
+        con, _ = _build_store(db)
+        con.close()
+        backup_dir = Path(tmp) / "backups"
+        # The ambient PYTHONPATH can shadow the venv's engine with another
+        # generation; the CLI must resolve the interpreter's own package.
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["MNEMOSYNE_DATA_DIR"] = str(data_dir)
+        env["MNEMOSYNE_BACKUP_DIR"] = str(backup_dir)
+        cli = Path(sys.executable).parent / "mnemosyne"
+        if cli.exists():
+            cmd = [str(cli), "backup", str(backup_dir)]
+        else:
+            cmd = [sys.executable, "-m", "mnemosyne.dr.recovery", "backup"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+        assert proc.returncode == 0, proc.stderr
+        archives = sorted(backup_dir.glob("mnemosyne_backup_*.db.gz"))
+        assert archives, proc.stdout
+        payload = gzip.decompress(archives[-1].read_bytes())
+        assert payload[:16] == b"SQLite format 3\x00", (
+            f"the CLI backup path must emit a raw page image, got {payload[:24]!r}"
+        )
+
+
+def test_emergency_copy_folds_wal_frames():
+    recovery = _require_engine()
+    if recovery is None:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "mnemosyne.db"
+        con, _ = _build_store(db)
+        try:
+            result = recovery.create_backup(db, Path(tmp) / "backups")
+            # A fourth commit lands in the WAL only, after the backup.
+            con.execute("INSERT INTO items (content) VALUES ('delta')")
+            con.commit()
+            report = recovery.restore_backup(Path(result["backup_path"]), db)
+            assert report["restored"] is True
+        finally:
+            con.close()
+        emergency = db.with_suffix(".emergency_backup.db")
+        assert emergency.exists()
+        check = sqlite3.connect(str(emergency))
+        try:
+            assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            rows = check.execute("SELECT content FROM items ORDER BY id").fetchall()
+            assert [r[0] for r in rows] == ["alpha", "beta", "gamma", "delta"], (
+                "the emergency copy must fold uncheckpointed WAL frames; "
+                "shutil.copy2 of the main file loses them"
+            )
+        finally:
+            check.close()
+        restored = sqlite3.connect(str(db))
+        try:
+            count = restored.execute("SELECT count(*) FROM items").fetchone()[0]
+            assert count == 3, f"restore must land the backup's 3 rows, got {count}"
+        finally:
+            restored.close()
+
+
 if __name__ == "__main__":
     tests = [
         test_backup_payload_is_a_raw_sqlite_image,
         test_roundtrip_preserves_rows_vectors_and_wal_frames,
         test_legacy_sql_dump_backups_still_restore,
         test_restore_missing_backup_raises,
+        test_cli_backup_emits_raw_sqlite_image,
+        test_emergency_copy_folds_wal_frames,
     ]
     for fn in tests:
         fn()
