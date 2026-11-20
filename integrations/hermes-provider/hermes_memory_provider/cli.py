@@ -331,6 +331,55 @@ def _engine_distribution_matches(engine_file):
         return False, f"cannot identify installed mnemosyne-memory distribution: {exc}"
 
 
+def _engine_newer_than_boot(engine_dir, started_epoch: float) -> bool:
+    """True when any engine source file was modified after the given boot time."""
+    try:
+        newest = max(
+            (p.stat().st_mtime for p in Path(engine_dir).rglob("*.py")
+             if "__pycache__" not in p.parts),
+            default=0.0,
+        )
+        return newest > started_epoch
+    except OSError:
+        return False
+
+
+def _gateway_engine_freshness_note(hermes_home, engine_dir):
+    """LOCAL PATCH: P56 warn when the running gateway predates engine changes.
+
+    A gateway keeps imported engine code for the life of the process; a PM
+    generation rebuild or patch re-apply after its boot leaves it serving
+    stale code while fresh-process checks look green (silent turn-capture
+    outages). Informational only: never changes doctor's exit status, and
+    any unreadable input simply yields no note.
+    """
+    try:
+        record = json.loads(
+            (Path(hermes_home) / "gateway.pid").read_text(encoding="utf-8")
+        )
+        pid = int(record.get("pid") or 0)
+        if pid <= 0:
+            return None
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields = stat_text[stat_text.rindex(")") + 2:].split()
+        started = None
+        for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines():
+            if line.startswith("btime "):
+                started = int(line.split()[1]) + int(fields[19]) / os.sysconf("SC_CLK_TCK")
+                break
+        if started is None:
+            return None
+        if _engine_newer_than_boot(engine_dir, started):
+            return (
+                f"running gateway (pid {pid}) booted before the latest engine "
+                "change on disk; restart it so running processes load the "
+                "current engine"
+            )
+        return None
+    except Exception:
+        return None
+
+
 def _engine_patch_audit(pkg_root=None, manifest_path=None):
     """Verify the resolved engine is the audited patched source.
 
@@ -963,6 +1012,7 @@ def mnemosyne_command(args):
         critical = []  # (label, ok, detail)
         # LOCAL PATCH: P44 notes that must be printed but never gate the exit code.
         notes = []
+        engine_file = None
         try:
             import mnemosyne.core.beam  # noqa: F401
             engine_file = _engine_package_file()
@@ -1042,6 +1092,14 @@ def mnemosyne_command(args):
                         notes.append(f"patch re-apply incomplete: {audit_detail}")
                 else:
                     notes.append(f"automatic patch re-apply refused: {detail}")
+
+        # LOCAL PATCH: P56 informational freshness note (never gates exit).
+        if engine_file:
+            freshness = _gateway_engine_freshness_note(
+                hermes_home, Path(engine_file).parent
+            )
+            if freshness:
+                notes.append(freshness)
 
         critical_ok = all(ok for _, ok, _ in critical)
 

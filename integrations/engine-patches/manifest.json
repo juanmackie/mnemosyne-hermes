@@ -71,6 +71,12 @@
       "patch": "mcp_tools.py.patch",
       "patch_sha256": "1b400601bd772a4167760e4323f3ba374a6979007ec4b2c3541eac6bb856870b",
       "patched_sha256": "8d540920eb006a9edbb2f7983572d68ee438a4257445159bf3eea664e738afcd"
+    },
+    "dr/recovery.py": {
+      "original_sha256": "26d602fb2009c8ae46853d5dcf356e3a94a11117acffdfac684ba55963eefd06",
+      "patch": "dr-recovery.py.patch",
+      "patch_sha256": "b59ae5629dacee972c93b1f5cb94460d737802cb4058e5d93c943809012128bb",
+      "patched_sha256": "7459dc32455ac4737363ef4c534329b01db487a8f1bd67897bc599f266599fc0"
     }
   },
   "version": "3.15.1"

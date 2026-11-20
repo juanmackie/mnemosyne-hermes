@@ -685,3 +685,15 @@ doctor hash audit is unavailable. Regression coverage is in
 | Verification | `tests/test_provider_provenance.py` (engine-free): the host helper and the declared fallback (the host answer wins), `null` for an unknown model, stamping without mutating caller metadata, legacy rows unchanged on all three surfaces, `mnemosyne_get` decoding the stored `metadata_json` string, exactly one extra line per prefetch row, malformed metadata ignored or passed through, guidance text present. `tests/test_provider_engine_contract.py::test_lessons_carry_the_model_and_engine_they_were_learned_under` proves the same round trip against the real pinned engine: the stamp persists, `get`/`recall`/prefetch each show one line, and an undeclared, hostless write stores `model: null`. `tests/test_vendored_provider.py` gates the snapshot hashes and this entry. `bench/scorecard` carries the carried-lesson probe (`bench/sim` kind `carried_lesson`) that measures the same lesson written under one model and queried under another; see `bench/scorecard/README.md`. The model-id read itself is recorded in [../../research/hermes-model-id-spike.md](../../research/hermes-model-id-spike.md). |
 | Upstream | Not sent. Depot-specific: upstream has no equivalent of `MNEMOSYNE_MODEL_ID`, and the model-id read depends on a private Hermes helper that fails to `null` rather than to a wrong value. |
 | Numbering | P54 stays reserved for the P51 opt-out switch named at the end of `research/research_log.md`; it is planned, not landed, so this patch takes P55. |
+
+### P56 — doctor notes a gateway that predates the engine on disk
+
+| | |
+| --- | --- |
+| Files | `hermes_memory_provider/cli.py` (`_engine_newer_than_boot`, `_gateway_engine_freshness_note`, doctor note wiring) |
+| Date | 2026-11-20 |
+| Reason | A running gateway keeps imported engine code for the life of the process. A PM generation rebuild or patch re-apply after its boot leaves fresh-process doctor green while the live process serves stale code; on one host turn capture silently stopped for two days while MCP recall kept answering, because the gateway had booted onto an unpatched generation. |
+| Behaviour | Doctor compares the newest engine source mtime (excluding `__pycache__`) against the running gateway's boot time (`gateway.pid` record, `/proc/<pid>/stat` starttime, `/proc/stat` btime). When engine files are newer it prints one `[note]` line recommending a restart. Informational only: the exit status is unchanged, and unreadable inputs (no `gateway.pid`, dead pid, non-Linux) yield no note. |
+| Verification | `tests/test_provider_doctor_freshness.py` (engine-free): mtime comparison including `__pycache__` exclusion, missing/garbage records fail soft, live-process note on Linux. `tests/test_vendored_provider.py` gates the snapshot hashes and this entry. |
+| Upstream | Not sent. Depot-specific: reads Hermes' `gateway.pid` record and Linux `/proc`. |
+| Numbering | P54 stays reserved for the P51 opt-out switch; P55 landed, so this patch takes P56. |
