@@ -7,6 +7,7 @@ not an in-process call that could pass while the CLI is broken.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sqlite3
 import subprocess
@@ -244,3 +245,180 @@ def test_unique_snapshot_path_reservation_is_atomic_under_threads(tmp_path):
     assert not errors
     assert len(set(paths)) == 12
     assert all(path.is_file() for path in paths)
+
+
+# --------------------------------------------------------------------------- #
+# Config safety: never silently act on a different database
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_config_db_path_keeps_hash_inside_quotes(tmp_path, quote):
+    """A quoted path containing '#' is data; only the trailing comment is dropped."""
+    home = tmp_path / "hermes"
+    store = home / "db#archive"
+    store.mkdir(parents=True)
+    db = make_db(store / "mnemosyne.db", rows=5)
+    (home / "config.yaml").write_text(
+        f"memory:\n  mnemosyne:\n    db_path: {quote}{db}{quote}  # set by the installer\n",
+        encoding="utf-8",
+    )
+    result = run("report", "--hermes-home", str(home))
+    assert result.returncode == 0, result.stderr
+    assert str(db) in result.stdout
+    assert "memories=5" in result.stdout
+
+
+def test_config_db_path_keeps_unquoted_hash_without_a_space(tmp_path):
+    """YAML starts a comment only after whitespace, so a plain a#b.db survives."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    db = make_db(home / "a#b.db", rows=3)
+    (home / "config.yaml").write_text(
+        f"memory:\n  mnemosyne:\n    db_path: {db}   # trailing comment\n", encoding="utf-8"
+    )
+    result = run("report", "--hermes-home", str(home))
+    assert result.returncode == 0, result.stderr
+    assert str(db) in result.stdout
+    assert "memories=3" in result.stdout
+    assert not (home / "a").exists(), "a '#': path must not retarget the connection"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions only")
+def test_unreadable_config_fails_loudly(tmp_path):
+    """An unreadable config is a failure, not a silent fall back to another DB."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    home = tmp_path / "hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text(
+        f"memory:\n  mnemosyne:\n    db_path: {tmp_path / 'elsewhere.db'}\n", encoding="utf-8"
+    )
+    config.chmod(0o000)
+    try:
+        result = run("verify", "--hermes-home", str(home))
+    finally:
+        config.chmod(0o600)
+    assert result.returncode == 2
+    assert "cannot read" in result.stderr
+    assert "config.yaml" in result.stderr
+
+
+def test_unterminated_quoted_db_path_fails_loudly(tmp_path):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        'memory:\n  mnemosyne:\n    db_path: "' + str(home / "half.db") + "\n",
+        encoding="utf-8",
+    )
+    result = run("report", "--hermes-home", str(home))
+    assert result.returncode == 2
+    assert "unterminated quoted db_path" in result.stderr
+
+
+# --------------------------------------------------------------------------- #
+# Health telemetry: read-only, count-only, optional per store
+# --------------------------------------------------------------------------- #
+def make_engine_db(
+    path: pathlib.Path,
+    *,
+    working: int = 200,
+    embedded: int = 150,
+    consolidated: int = 10,
+) -> pathlib.Path:
+    """A store shaped like mnemosyne-memory 3.15.1's BEAM schema, without the engine."""
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE working_memory (
+            id TEXT PRIMARY KEY, content TEXT NOT NULL, source TEXT, timestamp TEXT,
+            session_id TEXT DEFAULT 'default', importance REAL DEFAULT 0.5,
+            metadata_json TEXT, veracity TEXT DEFAULT 'unknown',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, consolidated_at TEXT
+        );
+        CREATE TABLE episodic_memory (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
+            content TEXT NOT NULL, source TEXT, timestamp TEXT,
+            session_id TEXT DEFAULT 'default', importance REAL DEFAULT 0.5,
+            metadata_json TEXT, summary_of TEXT DEFAULT '',
+            veracity TEXT DEFAULT 'unknown',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tier INTEGER DEFAULT 1, degraded_at TEXT
+        );
+        CREATE TABLE memory_embeddings (
+            memory_id TEXT PRIMARY KEY, embedding_json TEXT NOT NULL, model TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    con.executemany(
+        "INSERT INTO working_memory (id, content, consolidated_at) VALUES (?, ?, ?)",
+        [
+            (
+                f"wm-{index}",
+                f"note {index}",
+                "2026-01-01T00:00:00Z" if index < consolidated else None,
+            )
+            for index in range(working)
+        ],
+    )
+    con.executemany(
+        "INSERT INTO memory_embeddings (memory_id, embedding_json) VALUES (?, '[0.0]')",
+        [(f"wm-{index}",) for index in range(embedded)],
+    )
+    con.executemany(
+        "INSERT INTO episodic_memory (id, content, source, metadata_json) VALUES (?, ?, ?, ?)",
+        [
+            ("em-1", "summary one", "sleep_consolidation", '{"verified": false}'),
+            ("em-2", "summary two", "sleep_consolidation", '{"verified": false}'),
+            ("em-3", "summary three", "sleep_consolidation", '{"verified": true}'),
+            ("em-4", "summary four", "sleep_consolidation", "not json at all"),
+            ("em-5", "a user note", "user_note", '{"verified": false}'),
+        ],
+    )
+    con.commit()
+    con.close()
+    return path
+
+
+def test_report_surfaces_telemetry_in_one_line(tmp_path):
+    db = make_engine_db(tmp_path / "mnemosyne.db")
+    result = run("report", "--db-path", str(db))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("\n") == 1
+    assert "working-embeddings=150/200(75%)" in result.stdout
+    assert "unconsolidated=190" in result.stdout
+    assert "unverified-sleep=2" in result.stdout, "malformed metadata must not crash the scan"
+    assert "episodic-embeddings=0/5(0%)" in result.stdout, "counts are truthful, not filtered"
+
+
+def test_report_omits_telemetry_it_cannot_answer(tmp_path):
+    """A lite-only/minimal store has none of the engine tables: skip, never crash."""
+    db = make_db(tmp_path / "mnemosyne.db", rows=4)
+    result = run("report", "--db-path", str(db))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("\n") == 1
+    assert "embeddings=" not in result.stdout
+    assert "unconsolidated=" not in result.stdout
+    assert "unverified-sleep=" not in result.stdout
+
+
+def test_verify_is_quiet_on_healthy_telemetry(tmp_path):
+    db = make_engine_db(tmp_path / "mnemosyne.db", embedded=200, consolidated=200)
+    result = run("verify", "--db-path", str(db))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
+
+
+def test_verify_warns_on_partial_embedding_coverage(tmp_path):
+    db = make_engine_db(tmp_path / "mnemosyne.db", embedded=150)
+    result = run("verify", "--db-path", str(db))
+    assert result.returncode == 0, "a coverage warning is delivered output, not a failure"
+    assert "working_memory embeddings cover 150/200 rows (75%)" in result.stdout
+
+
+def test_verify_stays_quiet_when_no_vectors_exist_at_all(tmp_path):
+    """Keyless installs legitimately have no embeddings; that is not drift."""
+    db = make_engine_db(tmp_path / "mnemosyne.db", embedded=0)
+    result = run("verify", "--db-path", str(db))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
