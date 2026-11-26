@@ -13,7 +13,9 @@ Design rules (learned in production, encoded here):
   something needs a human; never swallow it.
 * Never invent a database. Read-only paths (``verify``, ``compact``, ``hygiene``)
   refuse to create a missing file; only ``backup`` treats "no DB yet" as a
-  no-op, because a fresh install legitimately has no memory.
+  no-op, because a fresh install legitimately has no memory. A config that
+  cannot be read or parsed is a failure, never a silent fall back to whichever
+  database the default would have picked.
 * Back up before you rewrite. ``compact`` takes a verified checkpoint first and
   aborts if the checkpoint is not clean.
 * One owner per destructive action. ``compact`` (VACUUM) is the only command
@@ -27,11 +29,16 @@ Commands
 ``hygiene``     Engine noise audit, report only. Never deletes.
 ``compact``     Threshold-gated VACUUM with a verified checkpoint. Reboots WAL.
 ``report``      One-screen health summary (what the daily job prints on trouble).
+
+``verify`` and ``report`` also read content-level health counters (embedding
+coverage, consolidation backlog, unverified sleep summaries) from a read-only
+connection. Each counter is omitted when the store cannot answer it.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
 import json
 import os
@@ -41,12 +48,23 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 DEFAULT_KEEP = 14
 FREELIST_COMPACT_THRESHOLD = 0.20
 FREELIST_WARN_THRESHOLD = 0.35
 WAL_WARN_BYTES = 512 * 1024 * 1024
 BACKUP_PREFIX = "mnemosyne-"
+
+# Embedding coverage is only worth a warning when vectors are expected: some
+# rows carry one, the store is big enough to be a real sample, and the rest do
+# not. A store with no vectors at all is a valid keyless install, not drift.
+EMBEDDING_COVERAGE_WARN = 0.90
+EMBEDDING_COVERAGE_MIN_ROWS = 100
+
+
+class ConfigError(RuntimeError):
+    """``config.yaml`` exists but its ``db_path`` cannot be honoured."""
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +106,33 @@ def _provider_resolver(home: Path):
     return resolve
 
 
+def _strip_yaml_comment(value: str) -> str:
+    """Drop a trailing ``#`` comment. A ``#`` inside a quoted scalar is data.
+
+    YAML starts a comment only at a ``#`` preceded by whitespace, so an unquoted
+    ``a#b.db`` also survives. The previous first-``#`` split truncated real
+    paths, and a truncated path is a different (or new) database.
+    """
+    quote = ""
+    for index, char in enumerate(value):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (index == 0 or value[index - 1] in " \t"):
+            return value[:index].strip()
+    return value.strip()
+
+
+def _yaml_scalar(raw: str) -> str:
+    """Comment-stripped, quote-stripped scalar text (no escape handling)."""
+    value = _strip_yaml_comment(raw)
+    if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+        return value[1:-1]
+    return value
+
+
 def _config_db_path(home: Path) -> str | None:
     """Read ``memory.mnemosyne.db_path`` without a YAML dependency.
 
@@ -96,31 +141,41 @@ def _config_db_path(home: Path) -> str | None:
     has none. Failing over to the engine default in that case resolves a
     *different* database, which is the one failure mode this whole script exists
     to prevent. A tiny indentation-aware reader cannot disagree with the config.
+
+    ``None`` means "no config file, or no db_path in it"; a config that exists
+    but cannot be read or whose db_path cannot be parsed raises ``ConfigError``,
+    because guessing in that case means maintaining the wrong database.
     """
+    config = home / "config.yaml"
     try:
-        lines = (home / "config.yaml").read_text(encoding="utf-8").splitlines()
-    except OSError:
+        lines = config.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise ConfigError(f"cannot read {config} ({exc}); refusing to guess the database") from exc
     stack: list[tuple[int, str]] = []
-    for raw in lines:
+    for number, raw in enumerate(lines, 1):
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
         indent = len(raw) - len(raw.lstrip())
-        key, _, value = stripped.partition(":")
-        value = value.strip()
-        if value.startswith("#"):
-            value = ""
-        if "#" in value:
-            value = value.split("#", 1)[0].strip()
+        key, separator, tail = stripped.partition(":")
+        if not separator:
+            continue
+        key = key.strip()
+        value = _yaml_scalar(tail)
         while stack and indent <= stack[-1][0]:
             stack.pop()
         if not value:
-            stack.append((indent, key.strip()))
+            stack.append((indent, key))
             continue
         path_keys = [name for _, name in stack]
-        if key.strip() == "db_path" and path_keys[-2:] == ["memory", "mnemosyne"]:
-            return value.strip("'\"")
+        if key == "db_path" and path_keys[-2:] == ["memory", "mnemosyne"]:
+            if value[:1] in ("'", '"'):
+                raise ConfigError(
+                    f"{config}:{number}: unterminated quoted db_path; refusing to guess the database"
+                )
+            return value
     return None
 
 
@@ -164,11 +219,18 @@ def warn(message: str) -> None:
 
 
 def ro_uri(path: Path) -> str:
-    """Read-only SQLite URI that works on POSIX and Windows paths."""
+    """Read-only SQLite URI that works on POSIX and Windows paths.
+
+    The path is percent-encoded because SQLite ends a URI filename at ``?`` and
+    ``#``: an unencoded ``#`` retargets the connection at a truncated name, and
+    with the ``?mode=ro`` swallowed by the fragment that name is created empty.
+    A store under ``db#archive/`` would then be reported healthy while never
+    being opened.
+    """
     resolved = path.resolve().as_posix()
     if not resolved.startswith("/"):
         resolved = "/" + resolved  # C:/... -> /C:/... for the file: URI form
-    return f"file:{resolved}?mode=ro"
+    return f"file:{quote(resolved, safe='/:')}?mode=ro"
 
 
 def connect_readonly(db: Path) -> sqlite3.Connection:
@@ -184,6 +246,82 @@ def integrity(con: sqlite3.Connection, full: bool = False) -> tuple[bool, str]:
     return result == "ok", result
 
 
+def _has_column(con: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        return any(row[1] == column for row in con.execute(f"PRAGMA table_info({table})"))
+    except sqlite3.Error:
+        return False
+
+
+def memory_telemetry(con: sqlite3.Connection) -> dict:
+    """Content-level health counters from an open read-only connection.
+
+    Every metric is optional: a store from an older engine, a lite-only store or
+    a half-migrated schema omits what it cannot answer. Counts only, so nothing
+    here can leak memory content into a cron mail. Never raises: a diagnostic
+    must not replace the integrity result that the caller is reporting.
+    """
+    telemetry: dict = {}
+    try:
+        tables = {
+            row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    except sqlite3.Error:
+        return telemetry
+
+    # Embeddings live in ``memory_embeddings`` keyed by memory id, but that is
+    # only the working-memory store and the *fallback* for episodic rows: with
+    # sqlite-vec available the engine writes episodic vectors to ``vec_episodes``
+    # and skips ``memory_embeddings`` entirely. A vec0 row count needs the
+    # extension loaded, so a healthy store would otherwise read as 0/N (or as
+    # partial when a few stale fallback rows remain) and raise a false alarm.
+    coverage: dict = {}
+    episodic_vectors_in_vec = "vec_episodes" in tables
+    for table in ("working_memory", "episodic_memory"):
+        if table not in tables or "memory_embeddings" not in tables:
+            continue
+        if table == "episodic_memory" and episodic_vectors_in_vec:
+            continue
+        try:
+            total = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            covered = con.execute(
+                f"SELECT COUNT(DISTINCT t.id) FROM {table} AS t "
+                "JOIN memory_embeddings AS me ON me.memory_id = t.id"
+            ).fetchone()[0]
+        except sqlite3.Error:
+            continue
+        if total:
+            coverage[table] = {"covered": covered, "total": total}
+    if coverage:
+        telemetry["embedding_coverage"] = coverage
+
+    if "working_memory" in tables and _has_column(con, "working_memory", "consolidated_at"):
+        with contextlib.suppress(sqlite3.Error):
+            telemetry["unconsolidated"] = con.execute(
+                "SELECT COUNT(*) FROM working_memory WHERE consolidated_at IS NULL"
+            ).fetchone()[0]
+
+    if "episodic_memory" in tables and all(
+        _has_column(con, "episodic_memory", column) for column in ("source", "metadata_json")
+    ):
+        try:
+            rows = con.execute(
+                "SELECT metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+            ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        unverified = 0
+        for (payload,) in rows:
+            try:
+                metadata = json.loads(payload or "{}")
+            except (TypeError, ValueError):
+                continue  # unparsable metadata cannot claim verification
+            if isinstance(metadata, dict) and metadata.get("verified") is False:
+                unverified += 1
+        telemetry["unverified_sleep_summaries"] = unverified
+    return telemetry
+
+
 def file_stats(db: Path) -> dict:
     """Read-only database facts. Never creates sidecars (URI mode=ro)."""
     stats: dict = {"db": str(db), "size_bytes": db.stat().st_size}
@@ -195,6 +333,7 @@ def file_stats(db: Path) -> dict:
         freelist = con.execute("PRAGMA freelist_count").fetchone()[0]
         page_size = con.execute("PRAGMA page_size").fetchone()[0]
         journal = con.execute("PRAGMA journal_mode").fetchone()[0]
+        telemetry = memory_telemetry(con)
     finally:
         con.close()
     stats.update(
@@ -203,8 +342,42 @@ def file_stats(db: Path) -> dict:
         page_size=page_size,
         journal_mode=journal,
         freelist_ratio=(freelist / page_count) if page_count else 0.0,
+        telemetry=telemetry,
     )
     return stats
+
+
+def telemetry_summary(telemetry: dict) -> str:
+    """Compact ``key=value`` suffix for the one-line report; empty when unknown."""
+    parts = []
+    for table, label in (("working_memory", "working"), ("episodic_memory", "episodic")):
+        entry = (telemetry.get("embedding_coverage") or {}).get(table)
+        if entry:
+            parts.append(
+                f"{label}-embeddings={entry['covered']}/{entry['total']}"
+                f"({entry['covered'] / entry['total']:.0%})"
+            )
+    if "unconsolidated" in telemetry:
+        parts.append(f"unconsolidated={telemetry['unconsolidated']}")
+    if "unverified_sleep_summaries" in telemetry:
+        parts.append(f"unverified-sleep={telemetry['unverified_sleep_summaries']}")
+    return " ".join(parts)
+
+
+def coverage_problem(telemetry: dict) -> str | None:
+    """Partial embedding coverage is fixable drift; no vectors at all is a config."""
+    for table, entry in (telemetry.get("embedding_coverage") or {}).items():
+        covered, total = entry["covered"], entry["total"]
+        if (
+            covered
+            and total >= EMBEDDING_COVERAGE_MIN_ROWS
+            and covered / total < EMBEDDING_COVERAGE_WARN
+        ):
+            return (
+                f"{table} embeddings cover {covered}/{total} rows "
+                f"({covered / total:.0%}) — vector recall misses the rest"
+            )
+    return None
 
 
 def engine_cmd(home: Path) -> list[str] | None:
@@ -402,6 +575,9 @@ def cmd_verify(args) -> int:
         )
     if stats["wal_bytes"] > WAL_WARN_BYTES:
         problems.append(f"WAL is {stats['wal_bytes'] / 1024**2:.0f} MiB — checkpoint it")
+    telemetry_issue = coverage_problem(stats["telemetry"])
+    if telemetry_issue:
+        problems.append(telemetry_issue)
     if args.json:
         say(json.dumps({**stats, "integrity": result, "problems": problems}, indent=2))
     elif problems:
@@ -595,10 +771,11 @@ def cmd_report(args) -> int:
         con.close()
     stats = file_stats(db)
     rows = ", ".join(f"{name}={count}" for name, count in counts.items()) or "no known tables"
+    summary = telemetry_summary(stats["telemetry"])
     say(
         f"mnemosyne db={db} size={stats['size_bytes'] / 1024**2:.1f}MiB "
         f"freelist={stats['freelist_ratio']:.1%} wal={stats['wal_bytes'] / 1024**2:.1f}MiB "
-        f"integrity={result} rows({rows})"
+        f"integrity={result} rows({rows})" + (f" {summary}" if summary else "")
     )
     return 0 if ok else 1
 
@@ -679,6 +856,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args)
+    except ConfigError as exc:
+        warn(f"{args.command} FAILED: {exc}")
+        return 2
     except FileNotFoundError as exc:
         warn(f"{args.command} FAILED: no database at {exc}")
         return 1
