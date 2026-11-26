@@ -14,8 +14,9 @@ What it does, in the original order:
 3. Backdate `created_at`/`timestamp` by the row's `age_days`.
 4. Replay each query against a per-query copy of that database, so recall
    hotness from an earlier query cannot leak into a later ranking.
-5. Report Hit@1, Hit@5, MRR and per-category MRR. A result matches a target
-   when the target is a substring of its id, summary or content.
+5. Report Hit@1, Hit@5, MRR, per-category MRR, latency p50/p95 and peak RSS. A
+   result matches a target when the target is a substring of its id, summary
+   or content.
 
 The engine keeps connections in a module thread-local and offers no `close()`,
 so teardown tracks `sqlite3.connect` and resets that local, as
@@ -24,11 +25,13 @@ database locked and the per-query copy fails.
 
 Run with the pinned engine installed:
 
+    python bench/retrieval/run_eval.py --split dev
     python bench/retrieval/run_eval.py --dataset bench/retrieval/eval_dev.jsonl
     python bench/retrieval/run_eval.py --all
 
-This is a synthetic 177-row corpus with 27 queries per split. It measures
-ranking on those fixtures, not production retrieval quality.
+This is a synthetic 177-row corpus with 27 queries in each lexical split and
+37 in the paraphrase split. It measures ranking on those fixtures, not
+production retrieval quality.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -50,6 +54,16 @@ from pathlib import Path
 SESSION_ID = "retrieval-fixture-replay"
 SCOPE = "session"
 HERE = Path(__file__).resolve().parent
+
+# Split name to fixture file. `dev`, `heldout_a` and `heldout_b` are the
+# lexical fixtures from the Rust era; `paraphrase` is the low-lexical-overlap
+# split that only a working dense path can separate from a keyword baseline.
+SPLITS = {
+    "dev": "eval_dev.jsonl",
+    "heldout_a": "eval_heldout_a.jsonl",
+    "heldout_b": "eval_heldout_b.jsonl",
+    "paraphrase": "eval_paraphrase.jsonl",
+}
 
 _REAL_CONNECT = sqlite3.connect
 _CONNECTIONS: list[tuple[sqlite3.Connection, int]] = []
@@ -140,6 +154,11 @@ def _copy_db(template: Path, target: Path) -> None:
             shutil.copy2(source, Path(str(target) + suffix))
 
 
+def row_is_answerable(item: dict) -> bool:
+    """A fixture row is answerable when it names at least one target."""
+    return bool(item.get("relevant"))
+
+
 def rank_of(results: list[dict], targets: list[str]) -> int | None:
     for index, result in enumerate(results, 1):
         rid = str(result.get("id", "")).lower()
@@ -176,6 +195,10 @@ def evaluate(
                     "latency_ms": elapsed_ms,
                     "count": len(results),
                     "category": item.get("category", "uncategorized"),
+                    # A query with no target cannot be hit; scoring it as a miss
+                    # would cap a perfect retriever below 1.0. Abstention is
+                    # scored separately in `summarize`.
+                    "answerable": row_is_answerable(item),
                 }
             )
             if details:
@@ -187,17 +210,56 @@ def evaluate(
     return summarize(rows)
 
 
+def percentile(values: list[float], fraction: float) -> float:
+    """Nearest-rank percentile. Small samples make interpolation meaningless."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil(fraction * len(ordered)) - 1))
+    return ordered[index]
+
+
+def peak_rss_mb() -> float | None:
+    """Process peak resident set in MB, or None where `resource` is absent.
+
+    `getrusage` reports kilobytes on Linux and bytes on macOS; Windows has no
+    module, so the field is omitted rather than reported as zero.
+    """
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - Windows has no resource module
+        return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
+    return round(peak / divisor, 1)
+
+
 def summarize(rows: list[dict]) -> dict:
-    ranks = [row["rank"] for row in rows]
+    """Hit and MRR over the answerable queries, plus abstention on the rest.
+
+    `rank` is always None for a query with no target, so counting those rows in
+    the hit and MRR denominators would cap an accurate retriever below 1.0. Rows
+    without an `answerable` key count as answerable, which keeps every older
+    caller and split unchanged.
+    """
+    answerable = [row for row in rows if row.get("answerable", True)]
+    unanswerable = [row for row in rows if not row.get("answerable", True)]
+    ranks = [row["rank"] for row in answerable]
+    latencies = [row["latency_ms"] for row in rows]
+    scored = len(answerable)
     out = {
         "queries": len(rows),
-        "hit1": sum(rank == 1 for rank in ranks) / len(rows) if rows else 0.0,
-        "hit5": sum(rank is not None and rank <= 5 for rank in ranks) / len(rows) if rows else 0.0,
-        "mrr": sum((1.0 / rank) if rank else 0.0 for rank in ranks) / len(rows) if rows else 0.0,
-        "latency_p50_ms": statistics.median(row["latency_ms"] for row in rows) if rows else 0.0,
+        "hit1": sum(rank == 1 for rank in ranks) / scored if scored else 0.0,
+        "hit5": sum(rank is not None and rank <= 5 for rank in ranks) / scored if scored else 0.0,
+        "mrr": sum((1.0 / rank) if rank else 0.0 for rank in ranks) / scored if scored else 0.0,
+        "latency_p50_ms": statistics.median(latencies) if latencies else 0.0,
+        "latency_p95_ms": percentile(latencies, 0.95),
         "empty": sum(row["count"] == 0 for row in rows),
         "by_category": {},
     }
+    if unanswerable:
+        out["unanswerable_queries"] = len(unanswerable)
+        out["unanswerable_abstained"] = sum(row["count"] == 0 for row in unanswerable)
     for category in sorted({row["category"] for row in rows}):
         subset = [row for row in rows if row["category"] == category]
         cranks = [row["rank"] for row in subset]
@@ -220,37 +282,53 @@ def format_report(name: str, report: dict) -> str:
             f"  {category:<20} n={values['queries']:<3} "
             f"hit@1={values['hit1']:.4f} mrr={values['mrr']:.4f}"
         )
+    if report.get("unanswerable_queries"):
+        lines.append(
+            f"  abstention: {report['unanswerable_abstained']}"
+            f"/{report['unanswerable_queries']} unanswerable queries returned nothing"
+        )
     return "\n".join(lines)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=HERE / "corpus.jsonl")
-    parser.add_argument("--dataset", type=Path, default=HERE / "eval_dev.jsonl")
-    parser.add_argument("--all", action="store_true", help="replay dev and both heldout splits")
+    parser.add_argument(
+        "--split",
+        action="append",
+        choices=sorted(SPLITS),
+        help="named split to replay; repeat for several (default: dev)",
+    )
+    parser.add_argument("--dataset", type=Path, help="explicit query-split path")
+    parser.add_argument("--all", action="store_true", help="replay every split in SPLITS")
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--json-out", type=Path, help="write per-split JSON here")
     parser.add_argument("--keep-template", type=Path, help="copy the seeded database here")
     parser.add_argument("--details", action="store_true", help="print per-query rank and top hit")
-    args = parser.parse_args()
+    return parser
 
-    datasets = (
-        [
-            HERE / "eval_dev.jsonl",
-            HERE / "eval_heldout_a.jsonl",
-            HERE / "eval_heldout_b.jsonl",
-        ]
-        if args.all
-        else [args.dataset]
+
+def select_datasets(all_splits: bool, splits: list[str] | None, dataset: Path | None) -> list[Path]:
+    """Resolve the selected query splits, in a stable order."""
+    if all_splits:
+        return [HERE / name for name in SPLITS.values()]
+    if splits:
+        return [HERE / SPLITS[name] for name in splits]
+    return [dataset or HERE / SPLITS["dev"]]
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    datasets = select_datasets(args.all, args.split, args.dataset)
+    embeddings_on = os.environ.get("MNEMOSYNE_EVAL_EMBEDDINGS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
     with tempfile.TemporaryDirectory(prefix="mnemosyne-fixture-seed-") as scratch:
-        if os.environ.get("MNEMOSYNE_EVAL_EMBEDDINGS", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if embeddings_on:
             os.environ.pop("MNEMOSYNE_EMBEDDINGS_OFF", None)
             os.environ.pop("MNEMOSYNE_NO_EMBEDDINGS", None)
             os.environ.pop("MNEMOSYNE_SKIP_EMBEDDINGS", None)
@@ -292,6 +370,12 @@ def main() -> int:
                     {
                         "corpus": str(args.corpus),
                         "limit": args.limit,
+                        # The A/B arm, recorded in the artifact: two runs that
+                        # differ only in the model env would otherwise be
+                        # indistinguishable reports.
+                        "embeddings": embeddings_on,
+                        "embedding_model": os.environ.get("MNEMOSYNE_EMBEDDING_MODEL") or None,
+                        "peak_rss_mb": peak_rss_mb(),
                         "reports": reports,
                     },
                     indent=2,

@@ -1,0 +1,37 @@
+{"query": "what kind of animal is biscuit exactly?", "relevant": ["he is a golden retriever"], "category": "paraphrase_entity"}
+{"query": "which profession does maya follow nowadays?", "relevant": ["works as an ICU nurse"], "category": "paraphrase_entity"}
+{"query": "where did my parents go to live after they stopped working?", "relevant": ["retired to Tucson, Arizona in 2021"], "category": "paraphrase_entity"}
+{"query": "which phone do I carry, and what hardened mobile system?", "relevant": ["My phone is a Pixel 9 Pro on GrapheneOS."], "category": "paraphrase_entity"}
+{"query": "which physical key proves my identity at login?", "relevant": ["YubiKey 5C Nano kept on the keyring"], "category": "paraphrase_entity"}
+{"query": "what feeds internet to my home, and is the visitor signal off?", "relevant": ["Home router is a Fritz!Box 7590 with guest WiFi disabled."], "category": "paraphrase_entity"}
+{"query": "which car do I own, and which fuel does it burn?", "relevant": ["Car is a 2019 Volvo V40 diesel"], "category": "paraphrase_entity"}
+{"query": "which solar hardware converts the roof output?", "relevant": ["Solar inverter brand is Growatt"], "category": "paraphrase_entity"}
+{"query": "which shellfish dishes must I avoid because of a reaction?", "relevant": ["I am allergic to shellfish"], "category": "paraphrase_preference"}
+{"query": "how should vegetarian meals be prepared in my kitchen?", "relevant": ["cook without meat or fish stock"], "category": "paraphrase_preference"}
+{"query": "which colour scheme should the app show me?", "relevant": ["I prefer dark mode in every app and IDE."], "category": "paraphrase_preference"}
+{"query": "why do I avoid phone conversations, and what should replace them?", "relevant": ["I dislike phone calls; prefer async text or email."], "category": "paraphrase_preference"}
+{"query": "how do I take my coffee when buying a cup?", "relevant": ["flat white, oat milk, no sugar"], "category": "paraphrase_preference"}
+{"query": "how should you keep your writing, and what gets cut?", "relevant": ["Keep answers short and skip filler preamble."], "category": "paraphrase_preference"}
+{"query": "which interpreter does my session start by default?", "relevant": ["Default shell is zsh with starship prompt."], "category": "paraphrase_config"}
+{"query": "how large is the lettering inside ghostty?", "relevant": ["Terminal emulator is Ghostty with JetBrains Mono Nerd Font 13pt."], "category": "paraphrase_config"}
+{"query": "which starter configuration do I layer on neovim?", "relevant": ["Editor choice: Neovim with LazyVim distro"], "category": "paraphrase_config"}
+{"query": "which server hardware do I own, and how much memory does it hold?", "relevant": ["Home server is a Minisforum HM90 with 64GB RAM running Debian 12."], "category": "paraphrase_config"}
+{"query": "which graphics card does my desktop carry?", "relevant": ["Desktop GPU is an RTX 4080 Super"], "category": "paraphrase_config"}
+{"query": "which persistence layer does atlas rely on?", "relevant": ["Atlas uses libsql for storage"], "category": "paraphrase_config"}
+{"query": "which region hosts the cluster for my job?", "relevant": ["Kubernetes cluster for work runs on EKS in eu-west-1."], "category": "paraphrase_config"}
+{"query": "which postgres socket number differs from the usual one?", "relevant": ["port 5433, not the default 5432"], "category": "paraphrase_config"}
+{"query": "which password vault holds my credentials?", "relevant": ["Password manager is Bitwarden; family plan shared with Maya."], "category": "paraphrase_config"}
+{"query": "how does my document sync work between machines?", "relevant": ["Synology Drive replaced Dropbox for documents"], "category": "paraphrase_config"}
+{"query": "when do I leave by train for the northern city?", "relevant": ["Lisbon to Porto September 12-19, train tickets booked for the 12th"], "category": "paraphrase_task"}
+{"query": "which hotel holds my reservation up north, and what is the code?", "relevant": ["Porto hotel is Casa do Fado, booking reference CF-2841"], "category": "paraphrase_task"}
+{"query": "which conference am I attending, and which city is it in?", "relevant": ["conference is October 8-10 in Amsterdam"], "category": "paraphrase_task"}
+{"query": "when is my next appointment with the tooth doctor?", "relevant": ["Dentist appointment October 3 at 09:30"], "category": "paraphrase_task"}
+{"query": "when does my passport run out, and when may I renew?", "relevant": ["current passport expires March 2027, renewal window opens late 2026"], "category": "paraphrase_task"}
+{"query": "which book should I read for the reading group?", "relevant": ["November pick is Piranesi"], "category": "paraphrase_task"}
+{"query": "how many minutes did the long loop take?", "relevant": ["first 10k jog around Parque Eduardo VII in 58 minutes"], "category": "paraphrase_task"}
+{"query": "what charity work fills my saturday?", "relevant": ["Volunteer shift booked: food bank sorting Saturday morning"], "category": "paraphrase_task"}
+{"query": "which university did I graduate from?", "relevant": [], "category": "unanswerable"}
+{"query": "what is my blood group?", "relevant": [], "category": "unanswerable"}
+{"query": "which airline loyalty programme number do I hold?", "relevant": [], "category": "unanswerable"}
+{"query": "how much rent do I pay each month?", "relevant": [], "category": "unanswerable"}
+{"query": "what is my yearly salary at Northwind?", "relevant": [], "category": "unanswerable"}
