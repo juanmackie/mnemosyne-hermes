@@ -154,6 +154,11 @@ def _copy_db(template: Path, target: Path) -> None:
             shutil.copy2(source, Path(str(target) + suffix))
 
 
+def row_is_answerable(item: dict) -> bool:
+    """A fixture row is answerable when it names at least one target."""
+    return bool(item.get("relevant"))
+
+
 def rank_of(results: list[dict], targets: list[str]) -> int | None:
     for index, result in enumerate(results, 1):
         rid = str(result.get("id", "")).lower()
@@ -190,6 +195,10 @@ def evaluate(
                     "latency_ms": elapsed_ms,
                     "count": len(results),
                     "category": item.get("category", "uncategorized"),
+                    # A query with no target cannot be hit; scoring it as a miss
+                    # would cap a perfect retriever below 1.0. Abstention is
+                    # scored separately in `summarize`.
+                    "answerable": row_is_answerable(item),
                 }
             )
             if details:
@@ -226,18 +235,31 @@ def peak_rss_mb() -> float | None:
 
 
 def summarize(rows: list[dict]) -> dict:
-    ranks = [row["rank"] for row in rows]
+    """Hit and MRR over the answerable queries, plus abstention on the rest.
+
+    `rank` is always None for a query with no target, so counting those rows in
+    the hit and MRR denominators would cap an accurate retriever below 1.0. Rows
+    without an `answerable` key count as answerable, which keeps every older
+    caller and split unchanged.
+    """
+    answerable = [row for row in rows if row.get("answerable", True)]
+    unanswerable = [row for row in rows if not row.get("answerable", True)]
+    ranks = [row["rank"] for row in answerable]
     latencies = [row["latency_ms"] for row in rows]
+    scored = len(answerable)
     out = {
         "queries": len(rows),
-        "hit1": sum(rank == 1 for rank in ranks) / len(rows) if rows else 0.0,
-        "hit5": sum(rank is not None and rank <= 5 for rank in ranks) / len(rows) if rows else 0.0,
-        "mrr": sum((1.0 / rank) if rank else 0.0 for rank in ranks) / len(rows) if rows else 0.0,
+        "hit1": sum(rank == 1 for rank in ranks) / scored if scored else 0.0,
+        "hit5": sum(rank is not None and rank <= 5 for rank in ranks) / scored if scored else 0.0,
+        "mrr": sum((1.0 / rank) if rank else 0.0 for rank in ranks) / scored if scored else 0.0,
         "latency_p50_ms": statistics.median(latencies) if latencies else 0.0,
         "latency_p95_ms": percentile(latencies, 0.95),
         "empty": sum(row["count"] == 0 for row in rows),
         "by_category": {},
     }
+    if unanswerable:
+        out["unanswerable_queries"] = len(unanswerable)
+        out["unanswerable_abstained"] = sum(row["count"] == 0 for row in unanswerable)
     for category in sorted({row["category"] for row in rows}):
         subset = [row for row in rows if row["category"] == category]
         cranks = [row["rank"] for row in subset]
@@ -259,6 +281,11 @@ def format_report(name: str, report: dict) -> str:
         lines.append(
             f"  {category:<20} n={values['queries']:<3} "
             f"hit@1={values['hit1']:.4f} mrr={values['mrr']:.4f}"
+        )
+    if report.get("unanswerable_queries"):
+        lines.append(
+            f"  abstention: {report['unanswerable_abstained']}"
+            f"/{report['unanswerable_queries']} unanswerable queries returned nothing"
         )
     return "\n".join(lines)
 

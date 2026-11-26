@@ -53,7 +53,11 @@ substrings occurs in its `id`, `summary` or `content`. The dev split is
    `latency_p50_ms`/`latency_p95_ms` and, at the top level of `--json-out`,
    `peak_rss_mb` (stdlib `resource.getrusage`; the field is `null` on Windows,
    which has no `resource` module) plus the `embeddings`/`embedding_model`
-   A/B arm that produced the file.
+   A/B arm that produced the file. Hit@1, Hit@5 and MRR are computed over the
+   rows that name a target; a row with an empty `relevant` list cannot be hit
+   and would otherwise cap a perfect retriever below 1.0. Those rows are
+   reported instead as `unanswerable_queries` and `unanswerable_abstained`
+   (returned nothing), the second number being the one to maximize.
 
 Embeddings are off (`MNEMOSYNE_EMBEDDINGS_OFF=1`), so this measures the lexical
 path and needs no API key. The engine keeps its connections in a module
@@ -105,9 +109,14 @@ the gap, not the absolute MRR, is the signal. `tests/test_retrieval_eval.py`
 gates the split on schema, ground truth, unique anchor and that coverage.
 
 Five `unanswerable` queries (salary, rent, degree, blood group, airline
-programme) carry an empty `relevant` list. They have no correct row, so their
-hit@1 and MRR are 0 by construction; the number to read for them is `empty`,
-which counts queries that return nothing at all.
+programme) carry an empty `relevant` list, because the correct answer is not in
+the store. They are excluded from Hit@1, Hit@5 and MRR, which are computed over
+the 32 queries that name a target; a row that cannot be hit would otherwise cap
+a perfect retriever at 32/37. They are scored as abstention instead, by
+`unanswerable_queries` and `unanswerable_abstained` (queries that returned
+nothing), and `format_report` prints `abstention: n/N`. High
+`unanswerable_abstained` together with high Hit@1 on the rest is the wanted
+result; a dense path that answers everything is not.
 
 This machine has no engine installed, so the split is data only here. The
 section below gives the command, not a recorded result.

@@ -221,6 +221,75 @@ def test_run_eval_discovers_the_paraphrase_split():
     assert parser.parse_args(["--all"]).all is True
 
 
+def test_summary_scores_answerable_queries_and_abstention_separately():
+    run_eval = load_run_eval()
+    report = run_eval.summarize(
+        [
+            {
+                "rank": 1,
+                "latency_ms": 10.0,
+                "count": 3,
+                "category": "paraphrase_task",
+                "answerable": True,
+            },
+            {
+                "rank": 2,
+                "latency_ms": 20.0,
+                "count": 3,
+                "category": "paraphrase_task",
+                "answerable": True,
+            },
+            {
+                "rank": None,
+                "latency_ms": 30.0,
+                "count": 0,
+                "category": "unanswerable",
+                "answerable": False,
+            },
+            {
+                "rank": None,
+                "latency_ms": 40.0,
+                "count": 2,
+                "category": "unanswerable",
+                "answerable": False,
+            },
+        ]
+    )
+    # The two rows without a target must not pad the hit and MRR denominators.
+    assert report["queries"] == 4
+    assert report["hit1"] == 0.5
+    assert report["hit5"] == 1.0
+    assert report["mrr"] == (1.0 + 0.5) / 2
+    assert report["empty"] == 1
+    assert report["unanswerable_queries"] == 2
+    assert report["unanswerable_abstained"] == 1
+    assert "abstention: 1/2" in run_eval.format_report("paraphrase", report)
+
+
+def test_summary_of_an_all_answerable_split_is_unchanged():
+    run_eval = load_run_eval()
+    rows = [
+        {"rank": 1, "latency_ms": 10.0, "count": 3, "category": "correction"},
+        {"rank": None, "latency_ms": 20.0, "count": 0, "category": "correction"},
+    ]
+    report = run_eval.summarize(rows)
+    # Rows without an `answerable` key stay in the denominators: dev, heldout_a
+    # and heldout_b keep their recorded numbers.
+    assert report["hit1"] == 0.5
+    assert report["mrr"] == 0.5
+    assert "unanswerable_queries" not in report
+    assert "abstention:" not in run_eval.format_report("dev", report)
+    # The reason those numbers cannot move: every lexical-split row has a target.
+    for name in ("eval_dev.jsonl", "eval_heldout_a.jsonl", "eval_heldout_b.jsonl"):
+        assert all(row["relevant"] for row in load_rows(name)), name
+
+
+def test_evaluate_marks_rows_answerable_from_the_fixture():
+    run_eval = load_run_eval()
+    assert run_eval.row_is_answerable({"query": "q", "relevant": ["x"]}) is True
+    assert run_eval.row_is_answerable({"query": "q", "relevant": []}) is False
+
+
 def test_summary_carries_latency_percentiles_and_peak_rss():
     run_eval = load_run_eval()
     report = run_eval.summarize(
