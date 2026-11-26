@@ -677,8 +677,11 @@
                  from_date=from_date, to_date=to_date,
                  source=source, topic=topic,
                  author_id=author_id, author_type=author_type,
-@@ -5810,6 +6159,9 @@
-                     base_score = base_score * 0.80 + vec_sim * 0.20
+@@ -5810,7 +6159,11 @@
+-                    base_score = base_score * 0.80 + vec_sim * 0.20
++                    # LOCAL PATCH: real-conversation calibration favors lexical
++                    # evidence while retaining a bounded dense-search contribution.
++                    base_score = base_score * 0.90 + vec_sim * 0.10
                  score = base_score * (rc_share + (1.0 - rc_share) * decay)
                  score += _current_state_recency_bonus(query_words, row["content"])
 +                # LOCAL PATCH: MNEMOSYNE_RECALL_CORRECTION_PRIORITY
