@@ -152,12 +152,29 @@ def test_prefetch_adds_lexically_connected_recent_session_user(monkeypatch):
             "session-a",
         ),
     )
+    beam.conn.execute(
+        "INSERT INTO working_memory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "earlier-user",
+            "[USER] Earlier concise planning notes",
+            "conversation",
+            "2026-11-27T09:00:00",
+            0.65,
+            "STATED",
+            "session",
+            "stated",
+            None,
+            None,
+            "session-a",
+        ),
+    )
     provider = _provider(beam)
     monkeypatch.delenv("MNEMOSYNE_PREFETCH_RECENT_USER", raising=False)
+    monkeypatch.delenv("MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT", raising=False)
 
-    assert "User prefers concise summaries" in provider.prefetch(
-        "concise summaries", session_id="session-a"
-    )
+    context = provider.prefetch("concise summaries", session_id="session-a")
+    assert "User prefers concise summaries" in context
+    assert "Earlier concise planning notes" in context
     assert provider.prefetch("unrelated topic", session_id="session-a") == ""
 
     beam.conn.execute("UPDATE working_memory SET scope='global'")
@@ -463,8 +480,10 @@ def test_prefetch_cache_observes_recent_user_changes():
         instance.prefetch(query, session_id="session-a")
         os.environ["MNEMOSYNE_PREFETCH_RECENT_USER"] = "1"
         instance.prefetch(query, session_id="session-a")
+        os.environ["MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT"] = "2"
+        instance.prefetch(query, session_id="session-a")
 
-    assert beam.recall_calls == 2
+    assert beam.recall_calls == 3
 
 
 def test_prefetch_cache_observes_recall_score_floor_changes():

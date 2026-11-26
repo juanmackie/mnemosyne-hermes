@@ -318,19 +318,35 @@ def _prefetch_content_char_limit() -> int:
 
 
 
-def _prefetch_recent_session_user(beam, query: str) -> Optional[Dict[str, Any]]:
-    """Return one lexically connected recent user row from this session.
+def _prefetch_recent_session_user_limit() -> int:
+    """Return the bounded recent-session continuity row count (0..3)."""
+    raw = os.environ.get("MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT", "2").strip()
+    try:
+        return min(3, max(0, int(raw)))
+    except ValueError:
+        logger.warning(
+            "Invalid MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT=%r; using default 2",
+            raw,
+        )
+        return 2
+
+
+def _prefetch_recent_session_users(beam, query: str) -> List[Dict[str, Any]]:
+    """Return lexically connected recent user rows from this session.
 
     Global rows are deliberately excluded: this is conversation continuity,
-    not a second global recall path. P61 keeps the source bounded to one row.
+    not a second global recall path. P62 bounds the source to two rows by default.
     """
     if not _parse_env_bool("MNEMOSYNE_PREFETCH_RECENT_USER", True):
-        return None
+        return []
+    limit = _prefetch_recent_session_user_limit()
+    if limit == 0:
+        return []
     query_tokens = _prefetch_tokens(query)
     if not query_tokens:
-        return None
+        return []
     try:
-        row = beam.conn.execute(
+        rows = beam.conn.execute(
             """
             SELECT id, content, source, timestamp, importance, trust_tier,
                    scope, veracity
@@ -340,31 +356,32 @@ def _prefetch_recent_session_user(beam, query: str) -> Optional[Dict[str, Any]]:
               AND (valid_until IS NULL OR valid_until > ?)
               AND superseded_by IS NULL
             ORDER BY timestamp DESC, id DESC
-            LIMIT 1
+            LIMIT ?
             """,
-            (beam.session_id, datetime.now().isoformat()),
-        ).fetchone()
+            (beam.session_id, datetime.now().isoformat(), limit),
+        ).fetchall()
     except Exception as exc:
         logger.debug("Mnemosyne: recent session context read failed: %s", exc)
-        return None
-    if row is None:
-        return None
-    content = row["content"] if hasattr(row, "keys") else row[1]
-    if not query_tokens.intersection(_prefetch_tokens(content)):
-        return None
-    if _is_low_quality_prefetch(content):
-        return None
-    return {
-        "id": row["id"] if hasattr(row, "keys") else row[0],
-        "content": content,
-        "source": row["source"] if hasattr(row, "keys") else row[2],
-        "timestamp": row["timestamp"] if hasattr(row, "keys") else row[3],
-        "importance": row["importance"] if hasattr(row, "keys") else row[4],
-        "trust_tier": row["trust_tier"] if hasattr(row, "keys") else row[5],
-        "scope": row["scope"] if hasattr(row, "keys") else row[6],
-        "veracity": row["veracity"] if hasattr(row, "keys") else row[7],
-        "tier": "working",
-    }
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        content = row["content"] if hasattr(row, "keys") else row[1]
+        if not query_tokens.intersection(_prefetch_tokens(content)):
+            continue
+        if _is_low_quality_prefetch(content):
+            continue
+        out.append({
+            "id": row["id"] if hasattr(row, "keys") else row[0],
+            "content": content,
+            "source": row["source"] if hasattr(row, "keys") else row[2],
+            "timestamp": row["timestamp"] if hasattr(row, "keys") else row[3],
+            "importance": row["importance"] if hasattr(row, "keys") else row[4],
+            "trust_tier": row["trust_tier"] if hasattr(row, "keys") else row[5],
+            "scope": row["scope"] if hasattr(row, "keys") else row[6],
+            "veracity": row["veracity"] if hasattr(row, "keys") else row[7],
+            "tier": "working",
+        })
+    return out
 
 
 def _sync_turn_user_limit() -> int:
@@ -2839,6 +2856,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             for name in (
                 "MNEMOSYNE_PREFETCH_CONTENT_CHARS",
                 "MNEMOSYNE_PREFETCH_RECENT_USER",
+                "MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT",
                 "MNEMOSYNE_PREFETCH_TOTAL_CHARS",
                 "MNEMOSYNE_PREFETCH_MODEL_SLOT_LIMIT",
                 "MNEMOSYNE_PREFETCH_MODEL_SLOT_MIN_OVERLAP",
@@ -3268,14 +3286,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             with self._prefetch_cache_lock:
                 self._prefetch_stats["last_lock_wait_ms"] = lock_wait_ms
                 self._prefetch_stats["last_recall_ms"] = recall_ms
-            # LOCAL PATCH: P61 add one lexically connected recent session user
-            # row for conversation continuity, even when semantic recall is empty.
-            recent_user = (
-                _prefetch_recent_session_user(self._beam, query)
+            # LOCAL PATCH: P61/P62 add lexically connected recent session user
+            # rows for continuity, even when semantic recall is empty.
+            recent_users = (
+                _prefetch_recent_session_users(self._beam, query)
                 if profile.top_k > 0
-                else None
+                else []
             )
-            if not results and recent_user is None:
+            if not results and not recent_users:
                 bank_counts = {
                     "rows_seen": 0, "selected": 0, "skipped_low_quality": 0,
                     "skipped_source": 0, "skipped_relevance": 0,
@@ -3314,18 +3332,22 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             filtered.sort(key=_prefetch_adjusted_score, reverse=True)
             if profile.semantic_dedup:
                 filtered = _semantic_dedup_prefetch(filtered)
-            # LOCAL PATCH: P61 reserve one slot for recent session continuity.
-            if recent_user is not None:
-                recent_text = " ".join(str(recent_user.get("content") or "").split()).casefold()
-                duplicate = any(
-                    " ".join(str(row.get("content") or "").split()).casefold()
-                    == recent_text
-                    for row in filtered
-                )
-                if not duplicate:
-                    filtered = filtered[:max(profile.top_k - 1, 0)] + [recent_user]
-                else:
-                    filtered = filtered[:profile.top_k]
+            # LOCAL PATCH: P61/P62 reserve slots for recent session continuity.
+            recent_unique: List[Dict[str, Any]] = []
+            recent_texts: Set[str] = set()
+            for recent in recent_users:
+                recent_text = " ".join(str(recent.get("content") or "").split()).casefold()
+                if recent_text and recent_text not in recent_texts:
+                    recent_texts.add(recent_text)
+                    recent_unique.append(recent)
+            if recent_unique:
+                filtered = [
+                    row for row in filtered
+                    if " ".join(str(row.get("content") or "").split()).casefold()
+                    not in recent_texts
+                ]
+                room = max(profile.top_k - len(recent_unique), 0)
+                filtered = filtered[:room] + recent_unique[:profile.top_k]
             else:
                 filtered = filtered[:profile.top_k]
             counts["selected"] = len(filtered)

@@ -424,6 +424,18 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Upstream | Not sent. |
 | Numbering | P54 remains reserved; P61 follows P60 (P60 was discarded). |
 
+### P62 — two-row lexical session continuity
+
+| | |
+|---|---|
+| File | `hermes_memory_provider/__init__.py` |
+| Date | 2026-11-27 |
+| Reason | P61's single recent user row improved continuity, but a predefined dev probe found one additional recoverable turn when a second lexically connected row was available. |
+| Behaviour | The recent-session source returns up to `MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT` rows, default two and clamped to 0–3. Each row must independently share a meaningful query token. Exact duplicates are removed across semantic and recent results, and the existing profile output cap still applies. Global rows remain excluded. The limit is part of prefetch cache identity. |
+| Verification | `tests/test_provider_prefetch.py::test_prefetch_adds_lexically_connected_recent_session_user` now requires both connected rows. `test_prefetch_cache_observes_recent_user_changes` also varies the limit. Session and global real-conversation workloads decide effectiveness and non-regression; holdout confirmation is required. |
+| Upstream | Not sent. |
+| Numbering | P54 remains reserved; P62 follows P61. |
+
 ## Sync procedure (run on every upstream release)
 
 **Triage decision (2026-11-10): keep `mnemosyne-memory 4.0.0` outside the

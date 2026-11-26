@@ -61,7 +61,8 @@ memory:
 | `MNEMOSYNE_PREFETCH_TOTAL_CHARS` | `8000` | Complete returned block ceiling, including identity/model/bank/custom sources. Truncation and omitted items are visibly marked. Identity receives priority. Characters are a deterministic size proxy, not actual tokenizer counts. |
 | `MNEMOSYNE_PREFETCH_CONTENT_CHARS` | profile limit | Optional per-item cap in addition to the total cap. |
 | `MNEMOSYNE_PREFETCH_INCLUDE_RAW_TOOL_CAPTURE` | `false` | Explicit opt-in to silently inject raw tool/delegation captures. Capture and manual recall remain available independently. |
-| `MNEMOSYNE_PREFETCH_RECENT_USER` | `true` | Reserve at most one prefetch slot for the most recent session-scoped user row when it shares a meaningful query token. Set `false` to disable. Global rows are never selected by this source. |
+| `MNEMOSYNE_PREFETCH_RECENT_USER` | `true` | Reserve up to two prefetch slots for recent session-scoped user rows when each shares a meaningful query token. Set `false` to disable. Global rows are never selected by this source. |
+| `MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT` | `2` | Recent-session continuity row limit, clamped to 0–3. Zero disables the source without changing the enable switch. |
 | `MNEMOSYNE_PREFETCH_CACHE_ENABLED` | `false` | Experimental bounded exact-query cache and `queue_prefetch` warming on Hermes' existing serialized worker. Enable only after measuring useful hits for your sessions. |
 
 Cache keys include the exact-query digest, session, profile, canonical owner,
