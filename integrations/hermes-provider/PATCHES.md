@@ -412,6 +412,18 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Upstream | Not sent. |
 | Numbering | P54 remains reserved; P59 follows P58. |
 
+### P61 — lexically connected recent session context
+
+| | |
+|---|---|
+| File | `hermes_memory_provider/__init__.py` |
+| Date | 2026-11-27 |
+| Reason | Semantic recall can miss a recent same-session user message that shares meaningful query vocabulary, weakening conversation continuity. |
+| Behaviour | Prefetch may reserve one of its existing output slots for the most recent visible, unexpired, non-superseded `scope='session'` user row when it shares at least one meaningful token with the query. Global rows are excluded, exact duplicates are not re-added, and `MNEMOSYNE_PREFETCH_RECENT_USER=0` disables the source. Source text, output caps and character budgets are unchanged. |
+| Verification | `tests/test_provider_prefetch.py::test_prefetch_adds_lexically_connected_recent_session_user` covers admission, no-overlap abstention, global-row exclusion and the disable switch. Session-scoped and global real-conversation workloads check relevance and non-regression; holdout confirmation is required. |
+| Upstream | Not sent. |
+| Numbering | P54 remains reserved; P61 follows P60 (P60 was discarded). |
+
 ## Sync procedure (run on every upstream release)
 
 **Triage decision (2026-11-10): keep `mnemosyne-memory 4.0.0` outside the

@@ -318,6 +318,55 @@ def _prefetch_content_char_limit() -> int:
 
 
 
+def _prefetch_recent_session_user(beam, query: str) -> Optional[Dict[str, Any]]:
+    """Return one lexically connected recent user row from this session.
+
+    Global rows are deliberately excluded: this is conversation continuity,
+    not a second global recall path. P61 keeps the source bounded to one row.
+    """
+    if not _parse_env_bool("MNEMOSYNE_PREFETCH_RECENT_USER", True):
+        return None
+    query_tokens = _prefetch_tokens(query)
+    if not query_tokens:
+        return None
+    try:
+        row = beam.conn.execute(
+            """
+            SELECT id, content, source, timestamp, importance, trust_tier,
+                   scope, veracity
+            FROM working_memory
+            WHERE session_id = ? AND scope = 'session'
+              AND content LIKE '[USER]%'
+              AND (valid_until IS NULL OR valid_until > ?)
+              AND superseded_by IS NULL
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 1
+            """,
+            (beam.session_id, datetime.now().isoformat()),
+        ).fetchone()
+    except Exception as exc:
+        logger.debug("Mnemosyne: recent session context read failed: %s", exc)
+        return None
+    if row is None:
+        return None
+    content = row["content"] if hasattr(row, "keys") else row[1]
+    if not query_tokens.intersection(_prefetch_tokens(content)):
+        return None
+    if _is_low_quality_prefetch(content):
+        return None
+    return {
+        "id": row["id"] if hasattr(row, "keys") else row[0],
+        "content": content,
+        "source": row["source"] if hasattr(row, "keys") else row[2],
+        "timestamp": row["timestamp"] if hasattr(row, "keys") else row[3],
+        "importance": row["importance"] if hasattr(row, "keys") else row[4],
+        "trust_tier": row["trust_tier"] if hasattr(row, "keys") else row[5],
+        "scope": row["scope"] if hasattr(row, "keys") else row[6],
+        "veracity": row["veracity"] if hasattr(row, "keys") else row[7],
+        "tier": "working",
+    }
+
+
 def _sync_turn_user_limit() -> int:
     """Return the per-turn user content truncation limit.
 
@@ -3218,7 +3267,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             with self._prefetch_cache_lock:
                 self._prefetch_stats["last_lock_wait_ms"] = lock_wait_ms
                 self._prefetch_stats["last_recall_ms"] = recall_ms
-            if not results:
+            # LOCAL PATCH: P61 add one lexically connected recent session user
+            # row for conversation continuity, even when semantic recall is empty.
+            recent_user = (
+                _prefetch_recent_session_user(self._beam, query)
+                if profile.top_k > 0
+                else None
+            )
+            if not results and recent_user is None:
                 bank_counts = {
                     "rows_seen": 0, "selected": 0, "skipped_low_quality": 0,
                     "skipped_source": 0, "skipped_relevance": 0,
@@ -3257,8 +3313,20 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             filtered.sort(key=_prefetch_adjusted_score, reverse=True)
             if profile.semantic_dedup:
                 filtered = _semantic_dedup_prefetch(filtered)
-            # Cap back to the intended injection size after over-fetch+filter.
-            filtered = filtered[:profile.top_k]
+            # LOCAL PATCH: P61 reserve one slot for recent session continuity.
+            if recent_user is not None:
+                recent_text = " ".join(str(recent_user.get("content") or "").split()).casefold()
+                duplicate = any(
+                    " ".join(str(row.get("content") or "").split()).casefold()
+                    == recent_text
+                    for row in filtered
+                )
+                if not duplicate:
+                    filtered = filtered[:max(profile.top_k - 1, 0)] + [recent_user]
+                else:
+                    filtered = filtered[:profile.top_k]
+            else:
+                filtered = filtered[:profile.top_k]
             counts["selected"] = len(filtered)
             self._prefetch_call_state.bank_counts = dict(counts)
             self._prefetch_last_bank_counts = counts

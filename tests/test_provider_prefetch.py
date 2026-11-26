@@ -125,6 +125,41 @@ def test_prefetch_uses_ten_candidate_overfetch():
     assert beam.recall_kwargs[-1]["top_k"] == 10
 
 
+def test_prefetch_adds_lexically_connected_recent_session_user(monkeypatch):
+    beam = RecallBeam()
+    beam.conn.execute(
+        """
+        CREATE TABLE working_memory (
+            id TEXT, content TEXT, source TEXT, timestamp TEXT, importance REAL,
+            trust_tier TEXT, scope TEXT, veracity TEXT, valid_until TEXT,
+            superseded_by TEXT, session_id TEXT
+        )
+        """
+    )
+    beam.conn.execute(
+        "INSERT INTO working_memory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "recent-user", "[USER] User prefers concise summaries", "conversation",
+            "2026-11-27T10:00:00", 0.65, "STATED", "session", "stated",
+            None, None, "session-a",
+        ),
+    )
+    provider = _provider(beam)
+    monkeypatch.delenv("MNEMOSYNE_PREFETCH_RECENT_USER", raising=False)
+
+    assert "User prefers concise summaries" in provider.prefetch(
+        "concise summaries", session_id="session-a"
+    )
+    assert provider.prefetch("unrelated topic", session_id="session-a") == ""
+
+    beam.conn.execute("UPDATE working_memory SET scope='global'")
+    assert provider.prefetch("concise summaries", session_id="session-a") == ""
+
+    beam.conn.execute("UPDATE working_memory SET scope='session'")
+    monkeypatch.setenv("MNEMOSYNE_PREFETCH_RECENT_USER", "0")
+    assert provider.prefetch("concise summaries", session_id="session-a") == ""
+
+
 def test_real_engine_cache_observes_memory_writes_visibility_and_source_revisions(tmp_path):
     with _real_provider(tmp_path) as (instance, _, db_path):
         beam = instance._beam
