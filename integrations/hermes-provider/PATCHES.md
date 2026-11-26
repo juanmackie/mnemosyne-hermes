@@ -460,6 +460,18 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Upstream | Not sent. |
 | Numbering | P54 remains reserved; P64 follows P63. |
 
+### P66 — calibrate the semantic continuity default to 0.45
+
+| | |
+|---|---|
+| File | `hermes_memory_provider/__init__.py` (`_prefetch_recent_user_similarity`) |
+| Date | 2026-11-27 |
+| Reason | A miss audit found one additional reachable development turn below the 0.55 cutoff. A predefined lower-band probe found that 0.45 improved automatic-context recall and entry precision; 0.40 added no further benefit. |
+| Behaviour | The semantic recent-session gate defaults to `MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY=0.45`. Explicit overrides, the zero-disable path, bounded local cosine comparison, and all P61–P64 session/global guards remain unchanged. |
+| Verification | `tests/test_provider_prefetch.py::test_recent_user_semantic_similarity_default_boundaries_and_fallback` pins the default, just-above/just-below cosine admission, and invalid-value fallback. The fixed winner raised dev prefetch recall from 0.54 to 0.56 and holdout recall from 0.50 to 0.52 without changing explicit recall or precision. Session/global workloads remain hard guards. |
+| Upstream | Not sent. |
+| Numbering | P54 remains reserved; P66 follows P65 (P65 was discarded). |
+
 ## Sync procedure (run on every upstream release)
 
 **Triage decision (2026-11-10): keep `mnemosyne-memory 4.0.0` outside the

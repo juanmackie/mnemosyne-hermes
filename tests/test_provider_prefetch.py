@@ -217,16 +217,16 @@ def test_prefetch_recent_user_accepts_strong_semantic_similarity(monkeypatch):
 
 def test_recent_user_semantic_similarity_default_boundaries_and_fallback(monkeypatch):
     monkeypatch.delenv("MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY", raising=False)
-    assert provider_mod._prefetch_recent_user_similarity() == 0.55
+    assert provider_mod._prefetch_recent_user_similarity() == 0.45
 
-    above = [0.56, (1 - 0.56**2) ** 0.5]
-    below = [0.54, (1 - 0.54**2) ** 0.5]
+    above = [0.46, (1 - 0.46**2) ** 0.5]
+    below = [0.44, (1 - 0.44**2) ** 0.5]
     assert provider_mod._recent_user_semantically_related([1, 0], json.dumps(above))
     assert not provider_mod._recent_user_semantically_related([1, 0], json.dumps(below))
 
     for invalid in ("invalid", "-0.1", "1.1"):
         monkeypatch.setenv("MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY", invalid)
-        assert provider_mod._prefetch_recent_user_similarity() == 0.55
+        assert provider_mod._prefetch_recent_user_similarity() == 0.45
 
 
 def test_real_engine_cache_observes_memory_writes_visibility_and_source_revisions(tmp_path):
