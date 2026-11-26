@@ -1,6 +1,14 @@
 --- a/core/beam.py
 +++ b/core/beam.py
-@@ -31,8 +31,61 @@
+@@ -16,6 +16,7 @@
+ from __future__ import annotations
+ 
+ import contextlib
++from functools import lru_cache
+ import logging
+ import sqlite3
+ import json
+@@ -31,7 +32,60 @@
  from pathlib import Path
  
  
@@ -19,7 +27,7 @@
 +
 +
  logger = logging.getLogger(__name__)
- 
++
 +
 +# LOCAL PATCH: relevance selection is opt-in until a full benchmark tunes it.
 +def _apply_recall_score_floor(results: List[Dict]) -> List[Dict]:
@@ -58,14 +66,14 @@
 +        and row["score"] >= threshold
 +    ]
 +
-+
+ 
  # Typed memory classification (Phase 1 -- zero overhead, pattern-based)
  try:
-     from mnemosyne.core.typed_memory import classify_memory, MemoryType
-@@ -222,6 +275,28 @@
+@@ -221,6 +275,28 @@
+ DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "mnemosyne.db"
  
  _thread_local = threading.local()
- 
++
 +# LOCAL PATCH: deterministic key-token check for one degradation step.
 +_DEGRADE_KEY_TOKEN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_@-]|[./:](?=[A-Za-z0-9]))*")
 +
@@ -87,11 +95,10 @@
 +    """
 +    return _degrade_key_tokens(original) <= _degrade_key_tokens(compressed)
 +
-+
+ 
  def _env_truthy(name: str) -> bool:
      """Parse an env var as truthy. Accepts `1`/`true`/`yes`/`on`
-     (case-insensitive, whitespace-stripped). Everything else
-@@ -1332,6 +1407,10 @@
+@@ -1332,6 +1408,10 @@
          yield
          return
  
@@ -102,7 +109,7 @@
      conn._defer_commit = True
      try:
          yield
-@@ -1676,21 +1755,49 @@
+@@ -1676,21 +1756,49 @@
      now all surface (silent-destruction bug fixed) -- the pre-E6 path
      against TripleStore returned only the last-written mention per memory
      because of auto-invalidation on (subject, predicate).
@@ -156,18 +163,45 @@
              results = beam.annotations.query_by_kind("mentions", value=matched_entity)
              for row in results:
                  memory_ids.add(row["memory_id"])
-@@ -1818,18 +1925,132 @@
+@@ -1750,18 +1858,22 @@
+ }
+ 
+ 
++# LOCAL PATCH: bounded caches remove repeated regex/stopword work in hot recall.
++# Tuples keep cached token sequences immutable; both caches are thread-safe.
++@lru_cache(maxsize=65536)
+ def _is_meaningful_recall_token(token: str) -> bool:
+     """Return whether a token is eligible for lexical recall matching."""
+     return len(token) >= 3 and token not in _FACT_MATCH_STOPWORDS and not token.isdigit()
+ 
+ 
+-def _recall_tokens(text: str) -> List[str]:
++@lru_cache(maxsize=4096)
++def _recall_tokens(text: str) -> Tuple[str, ...]:
+     """Meaningful lexical tokens for precision gates and fallback scoring."""
+-    return [
++    return tuple(
+         token
+         for token in _RECALL_TOKEN_RE.findall(text.lower())
+         if _is_meaningful_recall_token(token)
+-    ]
++    )
+ 
+ 
+ def _hyphen_components(token: str) -> List[str]:
+@@ -1818,16 +1930,130 @@
  
  
  def _minimum_recall_relevance(query_tokens: List[str]) -> float:
 -    """Raise the lexical gate for broad natural-language queries.
+-
+-    One matching real word is enough for short lookup-style queries, but not
+-    for broad nonsense strings like "purple bicycle quantum oatmeal".
 +    """Lexical admission floor for a recall candidate.
 +
 +    A candidate must match at least one meaningful query token. Beyond that,
 +    coverage is expressed by the score, not by a hard cutoff.
- 
--    One matching real word is enough for short lookup-style queries, but not
--    for broad nonsense strings like "purple bicycle quantum oatmeal".
++
 +    The previous stepped gate (0.5 for three tokens, 0.3 for four or more)
 +    rejected rows that answered a multi-term question with one precise term.
 +    "laptop specs - what machine do I have?" matches "My laptop is a ThinkPad
@@ -183,8 +217,8 @@
 -    if len(query_tokens) == 3:
 -        return 0.5
      return 0.15
- 
- 
++
++
 +# LOCAL PATCH: abstention and temporal-truth capture, both opt-in.
 +_IDENTIFIER_RE = re.compile(r"^(?=.*[0-9])[a-z0-9][a-z0-9_-]*$|^[a-z]{4,}[a-f]{4}$")
 +# A leading speaker label is part of the real captured text ("[USER] ..."), so
@@ -291,15 +325,15 @@
 +    except Exception:
 +        return None
 +    return f"{iso}T00:00:00" if iso else None
-+
-+
+ 
+ 
  _CURRENT_STATE_QUERY_TOKENS = {"current", "currently", "latest", "now", "newer"}
- _CURRENT_STATE_CONTENT_TOKENS = {"current", "currently", "latest", "newer", "updated"}
- 
-@@ -1850,6 +2071,28 @@
+@@ -1848,6 +2074,28 @@
+     if _CURRENT_STATE_CONTENT_TOKENS & content_tokens:
+         return 0.04
      return 0.0
- 
- 
++
++
 +def _correction_priority_bonus(content: str) -> float:
 +    """Bounded bonus for a row that explicitly corrects an earlier statement.
 +
@@ -320,15 +354,10 @@
 +
 +
 +_CORRECTION_PRIORITY_BONUS = 0.05
-+
-+
+ 
+ 
  def _fact_match_tokens(text: str) -> Set[str]:
-     """Return meaningful tokens for strict fact matching."""
-     return set(_recall_tokens(text))
-@@ -2551,7 +2794,9 @@
- def _fts_query_terms(query: str) -> List[str]:
-     """FTS-safe meaningful terms for natural-language recall queries."""
-     terms = []
+@@ -2554,7 +2802,9 @@
      for term in _expanded_query_tokens(_recall_tokens(query)):
          term = term.replace('"', '""').strip()
          if term:
@@ -339,7 +368,7 @@
      return terms
  
  
-@@ -2969,6 +3212,19 @@
+@@ -2969,6 +3219,19 @@
      return results[:k]
  
  
@@ -359,7 +388,7 @@
  class BeamMemory:
      """
      BEAM memory interface.
-@@ -2977,10 +3233,13 @@
+@@ -2977,10 +3240,13 @@
      def __init__(self, session_id: str = "default", db_path: Path = None,
                   author_id: str = None, author_type: str = None,
                   channel_id: str = None, use_cloud: bool = False,
@@ -375,7 +404,7 @@
  
          self.session_id = session_id
          self.author_id = author_id
-@@ -3216,7 +3475,8 @@
+@@ -3216,7 +3482,8 @@
                   extract_entities: bool = False,
                   extract: bool = False,
                   veracity: str = "unknown",
@@ -385,7 +414,7 @@
          """Store into working_memory. Deduplicates exact content matches.
  
          When called from the legacy-compatible Mnemosyne.remember() path,
-@@ -3239,6 +3499,11 @@
+@@ -3239,6 +3506,11 @@
                  Non-canonical labels are clamped to 'unknown' with a WARNING
                  (mirrors the C12.b clamp at the hermes_memory_provider boundary).
          """
@@ -397,7 +426,7 @@
          # Clamp veracity at the BeamMemory.remember entry too -- the
          # method is the lowest-level public ingest path under BeamMemory,
          # so consistency with remember_batch and the provider
-@@ -3247,6 +3512,11 @@
+@@ -3247,6 +3519,11 @@
          # silently fall through to UNKNOWN_WEIGHT at scoring time.
          veracity = clamp_veracity(veracity, context="remember")
  
@@ -409,7 +438,7 @@
      # --- Content sanitization: extract binary payloads to blob storage ---
          from mnemosyne.core.content_sanitizer import sanitize_content as _sanitize
          sanitized_content, blob_meta = _sanitize(content)
-@@ -3254,6 +3524,7 @@
+@@ -3254,6 +3531,7 @@
              metadata = (metadata or {}).copy()
              metadata["_blob"] = blob_meta
              content = sanitized_content
@@ -417,7 +446,7 @@
  
          # --- Auto-derive trust_tier from source if not explicitly set ---
          if trust_tier is None:
-@@ -3290,6 +3561,9 @@
+@@ -3290,6 +3568,9 @@
              # Conservative policy: only upgrade if the new call passes a
              # non-'unknown' veracity (preserves per-row trust on
              # backfills that don't carry a meaningful veracity arg).
@@ -427,7 +456,7 @@
              cursor.execute("""
                  UPDATE working_memory
                  SET importance = MAX(importance, ?), timestamp = ?, source = ?,
-@@ -3361,11 +3635,31 @@
+@@ -3361,11 +3642,31 @@
          # never populated memory_embeddings. This left _detect_conflicts
          # with zero embeddings to compare, making Phase 1 conflict
          # detection a no-op despite 3762+ working memories.
@@ -462,7 +491,7 @@
              except Exception as exc:
                  logger.warning(
                      "remember: embedding storage failed for '%s' (%s): %s",
-@@ -3924,7 +4218,24 @@
+@@ -3924,7 +4225,24 @@
              "superseded_by IS NULL",
          ]
          if not include_consolidated:
@@ -488,7 +517,7 @@
          common_predicate = " AND ".join(predicates)
  
          cursor.execute(f"""
-@@ -4017,24 +4328,28 @@
+@@ -4017,24 +4335,28 @@
          If replacement_id is provided, sets superseded_by.
          Otherwise sets valid_until to now (immediate expiry).
          """
@@ -523,7 +552,7 @@
          invalidated = cursor.rowcount > 0
          self.conn.commit()
          if invalidated:
-@@ -4237,9 +4552,13 @@
+@@ -4237,9 +4559,13 @@
              params.append(importance)
          if not updates:
              return False
@@ -539,7 +568,7 @@
              params
          )
          affected = cursor.rowcount
-@@ -4260,6 +4579,8 @@
+@@ -4260,6 +4586,8 @@
                  )
  
          self.conn.commit()
@@ -548,7 +577,7 @@
          return affected > 0
  
      def get(self, memory_id: str) -> Optional[Dict]:
-@@ -4272,15 +4593,19 @@
+@@ -4272,15 +4600,19 @@
  
          Returns None if not found in either table.
          """
@@ -571,7 +600,7 @@
          row = cursor.fetchone()
          if row:
              return {
-@@ -4297,12 +4622,12 @@
+@@ -4297,12 +4629,12 @@
              }
  
          # Episodic memory (fallback)
@@ -587,7 +616,7 @@
          row = cursor.fetchone()
          if row:
              return {
-@@ -4338,17 +4663,21 @@
+@@ -4338,17 +4670,21 @@
          # rolls back the working_memory DELETE rather than leaving it
          # uncommitted on the connection for a later unrelated commit to
          # silently include.
@@ -613,7 +642,7 @@
              )
              wm_rows = cursor.rowcount
              if wm_rows > 0:
-@@ -4365,7 +4694,9 @@
+@@ -4365,7 +4701,9 @@
                                  source: str = "consolidation", importance: float = 0.6,
                                  metadata: Dict = None, valid_until: str = None,
                                  scope: str = "session",
@@ -624,7 +653,7 @@
          """
          Store a consolidated summary into episodic_memory with optional embedding.
  
-@@ -4410,7 +4741,8 @@
+@@ -4410,7 +4748,8 @@
          vec = None
          if _embeddings.available():
              try:
@@ -634,7 +663,7 @@
              except Exception as exc:
                  logger.warning(
                      "consolidate_to_episodic: embedding failed, storing "
-@@ -4418,6 +4750,19 @@
+@@ -4418,6 +4757,19 @@
                      type(exc).__name__, exc,
                  )
          cursor = self.conn.cursor()
@@ -654,7 +683,7 @@
          cursor.execute("""
              INSERT INTO episodic_memory
              (id, content, source, timestamp, session_id, importance, metadata_json, summary_of, valid_until, scope,
-@@ -4465,11 +4810,13 @@
+@@ -4465,11 +4817,13 @@
          # the consolidator's `consolidate_fact` then used as the veracity
          # weight in its confidence update -- undermining the very signal
          # we just preserved in the episodic INSERT.
@@ -673,7 +702,7 @@
          return memory_id
  
      # ------------------------------------------------------------------
-@@ -5463,7 +5810,8 @@
+@@ -5463,7 +5817,8 @@
                 fts_weight: float = None,
                 importance_weight: float = None,
                 explain: bool = False,
@@ -683,7 +712,7 @@
          """
          Hybrid recall across working_memory + episodic_memory.
          Uses sqlite-vec + FTS5 for episodic, FTS5 for working.
-@@ -5526,6 +5874,7 @@
+@@ -5526,6 +5881,7 @@
          if os.environ.get("MNEMOSYNE_POLYPHONIC_RECALL", "0") == "1":
              poly_results = self._recall_polyphonic(
                  query, top_k,
@@ -691,7 +720,7 @@
                  from_date=from_date, to_date=to_date,
                  source=source, topic=topic,
                  author_id=author_id, author_type=author_type,
-@@ -5810,6 +6159,9 @@
+@@ -5810,6 +6166,9 @@
                      base_score = base_score * 0.80 + vec_sim * 0.20
                  score = base_score * (rc_share + (1.0 - rc_share) * decay)
                  score += _current_state_recency_bonus(query_words, row["content"])
@@ -701,7 +730,7 @@
                  # Temporal boost (Phase 3)
                  if temporal_weight > 0.0:
                      t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
-@@ -6538,7 +6890,23 @@
+@@ -6538,7 +6897,23 @@
              if _memoria_result and _memoria_result.get("source") != "fallback":
                  _ctx = _memoria_result.get("context", "")
                  _memoria_relevance = _lexical_relevance(query_words, _ctx, query_lower)
@@ -726,7 +755,7 @@
                      results.append({
                          "id": f"memoria_{_memoria_result['source']}",
                          "content": f"[MEMORIA {_memoria_result['source']}]\n{_ctx}",
-@@ -6558,10 +6926,26 @@
+@@ -6558,10 +6933,26 @@
                      ]
                      if _source_ids:
                          _ph = ",".join("?" * len(_source_ids))
@@ -755,7 +784,7 @@
                          ).fetchall()
                          for _row in _src_rows:
                              results.append({
-@@ -6583,6 +6967,11 @@
+@@ -6583,6 +6974,11 @@
          except Exception:
              pass  # MEMORIA retrieval is best-effort
  
@@ -767,7 +796,7 @@
          if len(query_words) >= 4 and len(results) > top_k:
              # Multi-aspect questions often need several rows, not five variants
              # of one aspect. Greedily prefer rows that add not-yet-covered exact
-@@ -6604,9 +6993,49 @@
+@@ -6604,8 +7000,48 @@
                  covered.update(set(_recall_tokens(picked.get("content", "").lower())) & q_word_set)
              results = selected + pool
  
@@ -784,7 +813,7 @@
 +
          _ranked_results_for_explain = list(results) if _explain_trace is not None else None
          final_results = results[:top_k]
- 
++
 +        # [Fact Recall Integration] Optionally merge LLM-extracted facts
 +        # into the standard recall output. Gated behind
 +        # MNEMOSYNE_FACT_RECALL_ENABLED=1 for backward compatibility.
@@ -813,14 +842,14 @@
 +                final_results = final_results[:top_k]
 +            except Exception:
 +                logger.debug("fact recall integration failed (non-fatal)", exc_info=True)
-+
+ 
          # --- Recall tracking: increment counts + set last_recalled ---
          now_iso = datetime.now().isoformat()
-         wm_ids = [r["id"] for r in final_results if r.get("tier") == "working"]
-@@ -6671,33 +7100,6 @@
+@@ -6670,33 +7106,6 @@
+         )
          _truly_empty = (len(final_results) == 0) and (_total_kept == 0)
          _recall_diag.record_call(truly_empty=_truly_empty)
- 
+-
 -        # [Fact Recall Integration] Optionally merge LLM-extracted facts
 -        # into the standard recall output. Gated behind
 -        # MNEMOSYNE_FACT_RECALL_ENABLED=1 for backward compatibility.
@@ -847,11 +876,10 @@
 -                final_results = final_results[:top_k]
 -            except Exception:
 -                logger.debug("fact recall integration failed (non-fatal)", exc_info=True)
--
+ 
          if _explain_trace is not None:
              _explain_trace.set_embedding(
-                 available=embeddings_available,
-@@ -6816,6 +7218,7 @@
+@@ -6816,6 +7225,7 @@
                  "embedding_query_prefix": os.environ.get("MNEMOSYNE_EMBEDDING_QUERY_PREFIX", ""),
                  "beam_optimizations": _BEAM_MODE,
                  "polyphonic_recall": os.environ.get("MNEMOSYNE_POLYPHONIC_RECALL", "0") == "1",
@@ -859,7 +887,7 @@
                  "query_intent": os.environ.get("MNEMOSYNE_QUERY_INTENT", "0") == "1",
                  "fact_recall": os.environ.get("MNEMOSYNE_FACT_RECALL_ENABLED", "0") == "1",
                  "lenient_fact_match": _env_truthy("MNEMOSYNE_LENIENT_FACT_MATCH"),
-@@ -6922,7 +7325,8 @@
+@@ -6922,7 +7332,8 @@
  
          # 4. Run base recall with expanded query
          results = self.recall(
@@ -869,7 +897,7 @@
          )
          if explain:
              return results
-@@ -7009,12 +7413,95 @@
+@@ -7009,11 +7420,94 @@
              except Exception:
                  logger.info("Regex extraction failed, skipping", exc_info=True)
  
@@ -882,7 +910,7 @@
              self._query_cache.put_opaque(cache_key, results)
  
          return results
- 
++
 +    # LOCAL PATCH: only exact source reproduction and preserved labels pass.
 +    @staticmethod
 +    def _sleep_coverage_labels(items: List[Dict]):
@@ -961,11 +989,10 @@
 +        present = set(ids)
 +        drop = {child for child, parent in parent_of.items() if parent in present}
 +        return [r for r in results if r.get("id") not in drop]
-+
+ 
      def _dedup_cross_tier_summary_links(
          self,
-         results: List[Dict],
-@@ -7087,12 +7574,42 @@
+@@ -7087,10 +7581,40 @@
          returning the input list unchanged. Used by the BEAM-recovery
          Phase 4 ablation to isolate the dedup's contribution.
          """
@@ -974,8 +1001,8 @@
 +        results = self._collapse_degraded_lineage(results)
          ep_ids = [r["id"] for r in results if r.get("tier") == "episodic"]
          if not ep_ids:
-             return results
- 
++            return results
++
 +        # LOCAL PATCH: a summary explicitly marked incomplete is never a recall
 +        # substitute, including when the linked source did not enter candidates.
 +        placeholders = ",".join("?" * len(ep_ids))
@@ -1005,12 +1032,10 @@
 +                return results
 +
 +        if _env_disabled("MNEMOSYNE_CROSS_TIER_DEDUP"):
-+            return results
-+
+             return results
+ 
          # Build summary_map from either precomputed map or own SELECT.
-         summary_map: Dict[str, set] = {}
-         if ep_summary_of_map is not None:
-@@ -7243,7 +7760,8 @@
+@@ -7243,7 +7767,8 @@
                             channel_id: Optional[str] = None,
                             veracity: Optional[str] = None,
                             memory_type: Optional[str] = None,
@@ -1020,7 +1045,7 @@
          """[E5] Polyphonic recall path.
  
          Delegates to PolyphonicRecallEngine when MNEMOSYNE_POLYPHONIC_RECALL=1.
-@@ -7354,6 +7872,8 @@
+@@ -7354,6 +7879,8 @@
          # rather than relying on the diversity rerank to handle
          # summary↔source duplicates implicitly.
          final = self._dedup_cross_tier_summary_links(final)
@@ -1029,7 +1054,7 @@
          final = final[:top_k]
          # Rebuild recall_count attribution lists from the deduped final
          # so dropped duplicates aren't credited with a recall.
-@@ -7862,7 +8382,20 @@
+@@ -7862,7 +8389,20 @@
              compressed += " [...]"
          return compressed
  
@@ -1051,7 +1076,7 @@
          """Refresh dense-recall embedding stores for an episodic row whose
          content has been mutated (degraded). Without this the
          vec_episodes / memory_embeddings / binary_vector entries continue
-@@ -7878,13 +8411,11 @@
+@@ -7878,13 +8418,11 @@
          """
          cursor = self.conn.cursor()
  
@@ -1068,7 +1093,7 @@
              if vec is not None:
                  # vec_episodes is a sqlite-vec virtual table; vec0 doesn't
                  # support UPDATE on the embedding column reliably, so we
-@@ -7926,7 +8457,82 @@
+@@ -7926,7 +8464,82 @@
                  (memory_id,),
              )
  
@@ -1152,7 +1177,7 @@
          """Degrade old episodic memories through tier 1→2→3 compression.
  
          Tier 1 (0-TIER2_DAYS): Full detail, 1.0x recall weight
-@@ -7944,6 +8550,17 @@
+@@ -7944,6 +8557,17 @@
          now = datetime.now()
          results = {"status": "dry_run" if dry_run else "degraded",
                     "tier1_to_tier2": 0, "tier2_to_tier3": 0}
@@ -1170,7 +1195,7 @@
  
          # --- Find candidates for degradation ---
          tier2_cutoff = (now - timedelta(days=TIER2_DAYS)).isoformat()
-@@ -7952,9 +8569,9 @@
+@@ -7952,9 +8576,9 @@
          # Tier 1 → Tier 2: old enough, still at tier 1.
          # rowid is selected so the embedding refresh can address vec_episodes.
          try:
@@ -1182,7 +1207,7 @@
                  ORDER BY created_at ASC LIMIT ?
              """, (tier2_cutoff, DEGRADE_BATCH_SIZE))
              tier1_rows = cursor.fetchall()
-@@ -7968,9 +8585,9 @@
+@@ -7968,9 +8592,9 @@
  
          # Tier 2 → Tier 3: very old, at tier 2
          try:
@@ -1194,7 +1219,7 @@
                  ORDER BY created_at ASC LIMIT ?
              """, (tier3_cutoff, DEGRADE_BATCH_SIZE // 2))
              tier2_rows = cursor.fetchall()
-@@ -7997,36 +8614,50 @@
+@@ -7997,36 +8621,50 @@
          # (caught by /review for C18.b).
          from mnemosyne.core import local_llm
          for row in tier1_rows:
@@ -1234,7 +1259,6 @@
 +                # No database transaction is open during summarization/embedding.
 +                cursor.execute("SAVEPOINT degrade_row")
                  try:
--                    cursor.execute("ROLLBACK TO degrade_row")
 +                    cursor.execute(
 +                        "UPDATE episodic_memory SET content = ?, tier = 2, degraded_at = ? "
 +                        "WHERE id = ? AND tier = 1 AND content = ?",
@@ -1246,14 +1270,15 @@
 +                            row["id"], row["rowid"], final_content,
 +                            db_lock=db_lock, prepared=prepared,
 +                        )
-                     cursor.execute("RELEASE degrade_row")
++                    cursor.execute("RELEASE degrade_row")
 +                    if updated:
 +                        results["tier1_to_tier2"] += 1
-                 except Exception:
++                except Exception:
+                     cursor.execute("ROLLBACK TO degrade_row")
+                     cursor.execute("RELEASE degrade_row")
+-                except Exception:
 -                    logger.info("Regex extraction failed, skipping", exc_info=True)
 -
-+                    cursor.execute("ROLLBACK TO degrade_row")
-+                    cursor.execute("RELEASE degrade_row")
 +                    raise
 +            except Exception:
 +                logger.info("Regex extraction failed, skipping", exc_info=True)
@@ -1263,7 +1288,7 @@
              try:
                  content = row["content"]
                  if SMART_COMPRESS and len(content) > TIER3_MAX_CHARS:
-@@ -8035,21 +8666,39 @@
+@@ -8035,21 +8673,39 @@
                      compressed = content[:TIER3_MAX_CHARS]
                      if len(content) > TIER3_MAX_CHARS:
                          compressed += " [...]"
@@ -1288,7 +1313,6 @@
 +                    prepared = self._prepare_episodic_embedding(compressed, db_lock=db_lock)
 +                cursor.execute("SAVEPOINT degrade_row")
                  try:
--                    cursor.execute("ROLLBACK TO degrade_row")
 +                    cursor.execute(
 +                        "UPDATE episodic_memory SET content = ?, tier = 3, degraded_at = ? "
 +                        "WHERE id = ? AND tier = 2 AND content = ?",
@@ -1300,21 +1324,22 @@
 +                            row["id"], row["rowid"], compressed,
 +                            db_lock=db_lock, prepared=prepared,
 +                        )
-                     cursor.execute("RELEASE degrade_row")
++                    cursor.execute("RELEASE degrade_row")
 +                    if updated:
 +                        results["tier2_to_tier3"] += 1
-                 except Exception:
++                except Exception:
+                     cursor.execute("ROLLBACK TO degrade_row")
+                     cursor.execute("RELEASE degrade_row")
+-                except Exception:
 -                    logger.info("Regex extraction failed, skipping", exc_info=True)
 -
-+                    cursor.execute("ROLLBACK TO degrade_row")
-+                    cursor.execute("RELEASE degrade_row")
 +                    raise
 +            except Exception:
 +                logger.info("Regex extraction failed, skipping", exc_info=True)
          self.conn.commit()
          return results
  
-@@ -8261,7 +8910,37 @@
+@@ -8261,7 +8917,37 @@
              "candidate_ids": candidate_ids,
          }
  
@@ -1353,7 +1378,7 @@
          """
          Consolidate old working_memory for this session into episodic summaries.
          Uses a local lightweight LLM when available; falls back to aaak
-@@ -8369,6 +9048,10 @@
+@@ -8369,6 +9055,10 @@
          conflicts_resolved = 0
          model_refresh_proposals = 0
          model_refresh_applied = 0
@@ -1364,18 +1389,18 @@
          for source, items in grouped.items():
              lines = [item["content"] for item in items]
              ids = [item["id"] for item in items]
-@@ -8383,6 +9066,10 @@
+@@ -8382,6 +9072,10 @@
+                 if item.get("valid_until"):
                      if aggregated_valid_until is None or item["valid_until"] < aggregated_valid_until:
                          aggregated_valid_until = item["valid_until"]
- 
++
 +            # LOCAL PATCH: mixed-visibility content must never be promoted.
 +            if coverage_enabled and any((item.get("scope") or "session") != "global" for item in items):
 +                aggregated_scope = "session"
-+
+ 
              # E4.a.1: aggregate per-row veracity into the summary's
              # veracity label. Mode of sources with conservative tie-break.
-             # Pre-fix the episodic INSERT omitted veracity and the row
-@@ -8409,8 +9096,21 @@
+@@ -8409,8 +9103,21 @@
                              newer_content,
                              session_id=self.session_id,
                              db_path=self.db_path,
@@ -1397,7 +1422,7 @@
                              if not dry_run:
                                  self.invalidate(older_id, replacement_id=newer_id)
                              conflicts_resolved += 1
-@@ -8428,20 +9128,32 @@
+@@ -8428,20 +9135,32 @@
                  # Uses CompressionPlugin (registered in plugins.py). The env
                  # var MNEMOSYNE_USE_CAVEMAN still works as a deprecated
                  # fallback — see CompressionPlugin for deprecation warning.
@@ -1437,7 +1462,7 @@
                              if chunk_summary:
                                  chunk_summaries.append(chunk_summary)
                          if chunk_summaries:
-@@ -8449,9 +9161,9 @@
+@@ -8449,9 +9168,9 @@
                              if len(chunk_summaries) == 1:
                                  summary = chunk_summaries[0]
                              else:
@@ -1450,7 +1475,7 @@
                                  )
                                  # If second-pass also overflows, concatenate
                                  if not summary:
-@@ -8471,6 +9183,29 @@
+@@ -8471,6 +9190,29 @@
                  compressed = aaak_encode(combined)
                  summary = f"[{source}] {compressed}"
  
@@ -1480,7 +1505,7 @@
              # --- Phase 2: model-refresh inference for canonical model slots ---
              # This follows sleep by default. It asks the same configured LLM path
              # for structured candidate updates, then stores pending proposal rows
-@@ -8478,10 +9213,11 @@
+@@ -8478,10 +9220,11 @@
              proposals = []
              agent_context = str(getattr(self, "agent_context", "") or "").strip().lower()
              model_refresh_owner_id = str(getattr(self, "canonical_owner_id", "") or "").strip() or "default"
@@ -1494,7 +1519,7 @@
                  except Exception:
                      proposals = []
              model_refresh_proposals += len(proposals)
-@@ -8492,7 +9228,7 @@
+@@ -8492,7 +9235,7 @@
                  # the claim survives -- the rows show as consolidated but
                  # without a summary. That's preferable to a phantom-summary-
                  # without-claim race the previous ordering allowed.
@@ -1503,7 +1528,7 @@
                      summary=summary,
                      source_wm_ids=ids,
                      source="sleep_consolidation",
-@@ -8503,9 +9239,38 @@
+@@ -8503,9 +9246,38 @@
                      metadata={
                          "original_count": len(items),
                          "source": source,
@@ -1544,7 +1569,7 @@
                  if proposals:
                      from mnemosyne.core import model_refresh
                      proposal_ts = datetime.now().isoformat()
-@@ -8519,6 +9284,7 @@
+@@ -8519,6 +9291,7 @@
                              scope="session",
                              veracity="inferred",
                              trust_tier="DERIVED",
@@ -1552,7 +1577,7 @@
                          )
                          # Proposal rows are review artifacts from this sleep pass,
                          # not fresh raw memories that should recursively trigger
-@@ -8556,13 +9322,13 @@
+@@ -8556,13 +9329,13 @@
              """, (
                  self.session_id,
                  len(consolidated_ids),
@@ -1568,7 +1593,7 @@
  
          logger.info(
              "sleep: consolidated=%d summaries=%d conflicts=%d llm=%s method=%s",
-@@ -8582,7 +9348,8 @@
+@@ -8582,7 +9355,8 @@
              "model_refresh": {
                  "proposals": model_refresh_proposals,
                  "applied": model_refresh_applied,

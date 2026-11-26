@@ -96,13 +96,24 @@ os.environ["MNEMOSYNE_POLYPHONIC_RECALL"] = "0"
 os.environ.pop("MNEMOSYNE_RECALL_SCORE_FLOOR", None)
 
 import mnemosyne.core.beam as beam_module
-from mnemosyne.core.beam import BeamMemory, _apply_recall_score_floor, _fts_query_terms
+from mnemosyne.core.beam import (
+    BeamMemory,
+    _apply_recall_score_floor,
+    _fts_query_terms,
+    _is_meaningful_recall_token,
+    _recall_tokens,
+)
 
 # Four-character-and-longer FTS terms admit inflection/compound candidates;
 # shorter terms stay exact and lexical reranking remains the precision gate.
 assert _fts_query_terms("run running runner cat") == [
     '"run"', '"running"*', '"runner"*', '"cat"',
 ]
+tokens = _recall_tokens("Cached recall tokens")
+assert isinstance(tokens, tuple)
+assert _recall_tokens("Cached recall tokens") is tokens
+assert _recall_tokens.cache_info().maxsize == 4096
+assert _is_meaningful_recall_token.cache_info().maxsize == 65536
 
 # The option uses an inclusive relative boundary, preserves ties at ratio 1,
 # and treats invalid or disabled values as no filter.
