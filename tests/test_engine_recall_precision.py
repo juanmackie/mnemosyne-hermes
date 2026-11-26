@@ -286,6 +286,14 @@ with patch.object(beam_module, "_fts_search_working", wraps=beam_module._fts_sea
     owner.recall("Kubernetes deployment GitHub Actions", top_k=5, _cross_session=False)
 assert fts.call_args.kwargs["k"] == 20
 
+# Both vector backends use ten dense neighbors for the default budget.
+import numpy as np
+with patch.object(beam_module._embeddings, "available", return_value=True), patch.object(
+    beam_module._embeddings, "embed_query", return_value=np.zeros(384, dtype=np.float32)
+), patch.object(beam_module, "_wm_vec_search", return_value=[]) as vector_search:
+    owner.recall("Kubernetes deployment GitHub Actions", top_k=5, _cross_session=False)
+assert vector_search.call_args.kwargs["k"] == 10
+
 other_session.conn.close()
 owner.conn.close()
 print("baseline scores:", [(r["id"], r["tier"], r["score"]) for r in baseline])
