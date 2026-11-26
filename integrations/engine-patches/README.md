@@ -43,6 +43,10 @@ commit change reduced p50 from 42.7 ms to 31.4 ms with identical relevance.
 A precompiled lexical separator regex provided a further paired dev p50
 reduction from 40.7 ms to 39.2 ms and holdout p50 from 30.9 ms to 29.8 ms,
 with identical relevance; one holdout run had a noisier/worse p99 tail.
+Overlapping cold query embedding with FTS retrieval and lexical scoring reduced
+paired dev p50 from 39.4 ms to 34.4 ms and holdout p50 from 30.2 ms to 27.8 ms,
+with identical relevance. The worker is daemonized, joined before vector use,
+and re-raises control exceptions in the caller.
 Retained ranking changes left holdout recall unchanged; proposed dense-inference
 and vector-budget changes that lost holdout recall were reverted. Public
 PrecisionMemBench remains 43/43.
