@@ -779,8 +779,69 @@
  
          # ---- Configurable hybrid scoring setup (Phase 4) ----
          vw, fw, iw = _normalize_weights(vec_weight, fts_weight, importance_weight)
-@@ -5647,7 +6031,9 @@
+@@ -5603,6 +5987,26 @@
+         embeddings_available = _embeddings.available()
+         query_embedding = None
+         query_embedding_computed = False
++        query_embedding_thread = None
++        query_embedding_pending: Dict[str, Any] = {}
++
++        def _start_query_embedding():
++            nonlocal query_embedding_thread
++            if not embeddings_available or query_embedding_thread is not None:
++                return
++
++            def _load_query_embedding():
++                try:
++                    query_embedding_pending["value"] = _embeddings.embed_query(query)
++                except Exception as exc:
++                    query_embedding_pending["error"] = exc
++
++            query_embedding_thread = threading.Thread(
++                target=_load_query_embedding,
++                name="mnemosyne-query-embedding",
++                daemon=True,
++            )
++            query_embedding_thread.start()
  
+         def _get_query_embedding():
+             nonlocal query_embedding, query_embedding_computed
+@@ -5610,11 +6014,23 @@
+                 return None
+             if not query_embedding_computed:
+                 query_embedding_computed = True
+-                try:
+-                    query_embedding = _embeddings.embed_query(query)
+-                except Exception:
+-                    logger.info("Query embedding failed, skipping vector recall paths", exc_info=True)
+-                    query_embedding = None
++                if query_embedding_thread is not None:
++                    query_embedding_thread.join()
++                    error = query_embedding_pending.get("error")
++                    if error is not None:
++                        logger.info(
++                            "Query embedding failed, skipping vector recall paths",
++                            exc_info=(type(error), error, error.__traceback__),
++                        )
++                        query_embedding = None
++                    else:
++                        query_embedding = query_embedding_pending.get("value")
++                else:
++                    try:
++                        query_embedding = _embeddings.embed_query(query)
++                    except Exception:
++                        logger.info("Query embedding failed, skipping vector recall paths", exc_info=True)
++                        query_embedding = None
+             return query_embedding
+ 
+         # ---- Temporal scoring setup ----
+@@ -5645,9 +6061,14 @@
+         _wm_had_candidates = False
+         _em_had_candidates = False
+ 
++        # LOCAL PATCH: overlap cold query inference with FTS and lexical work.
++        _start_query_embedding()
++
          # ---- Working memory (FTS5 fast path) ----
          try:
 -            wm_fts = _fts_search_working(self.conn, query, k=max(top_k * 3, 50))
@@ -790,9 +851,104 @@
          except Exception:
              wm_fts = []
          _wm_fts_raw_count = len(wm_fts)
-@@ -5779,10 +6165,10 @@
-                     query_word_set & set(_recall_tokens(candidate_row["content"].lower()))
-                 )
+@@ -5707,6 +6128,34 @@
+         wm_where = " AND ".join(wm_where_clauses)
+ 
+         # ---- Working memory (vector search) ----
++        # Prefetch and score FTS rows while the embedding worker runs. Reuse
++        # those rows/scores unless vector search expands the candidate set.
++        wm_fts_ids = set(wm_ids)
++        rows = None
++        lexical_by_id: Dict[str, float] = {}
++        content_token_by_id: Dict[str, Set[str]] = {}
++        if wm_ids:
++            try:
++                placeholders = ",".join("?" * len(wm_ids))
++                cursor = self.conn.cursor()
++                cursor.execute(f"""
++                    SELECT id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, veracity, memory_type
++                    FROM working_memory
++                    WHERE id IN ({placeholders})
++                      AND {wm_where}
++                """, (*tuple(wm_ids), *wm_params))
++                rows = cursor.fetchall()
++                for candidate_row in rows:
++                    content_lower = candidate_row["content"].lower()
++                    content_token_by_id[candidate_row["id"]] = set(_recall_tokens(content_lower))
++                    lexical_by_id[candidate_row["id"]] = _lexical_relevance(
++                        query_words, candidate_row["content"], query_lower
++                    )
++            except BaseException:
++                if query_embedding_thread is not None:
++                    query_embedding_thread.join()
++                raise
++
+         wm_vec_sims = {}
+         if embeddings_available:
+             try:
+@@ -5727,22 +6176,30 @@
+             _wm_had_candidates = True
+         # If both FTS and vec produced nothing, the WM fallback at
+         # the else-branch below fires. Recording the fallback signal
+-        # uses a boolean (per-call), not a per-row count -- that
+-        # avoids double-counting against the kept-row accumulators.
++        # uses a boolean for this call -- that avoids double-counting
++        # against the kept-row accumulators.
+         _wm_fallback_used = not wm_ids
+         if _wm_fallback_used:
+             _recall_diag.record_fallback_used(wm=True)
+ 
+         if wm_ids:
+-            placeholders = ",".join("?" * len(wm_ids))
+-            cursor = self.conn.cursor()
+-            cursor.execute(f"""
+-                SELECT id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, veracity, memory_type
+-                FROM working_memory
+-                WHERE id IN ({placeholders})
+-                  AND {wm_where}
+-            """, (*tuple(wm_ids), *wm_params))
+-            rows = cursor.fetchall()
++            if rows is None or wm_ids != wm_fts_ids:
++                placeholders = ",".join("?" * len(wm_ids))
++                cursor = self.conn.cursor()
++                cursor.execute(f"""
++                    SELECT id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, veracity, memory_type
++                    FROM working_memory
++                    WHERE id IN ({placeholders})
++                      AND {wm_where}
++                """, (*tuple(wm_ids), *wm_params))
++                rows = cursor.fetchall()
++                for candidate_row in rows:
++                    if candidate_row["id"] not in lexical_by_id:
++                        content_lower = candidate_row["content"].lower()
++                        content_token_by_id[candidate_row["id"]] = set(_recall_tokens(content_lower))
++                        lexical_by_id[candidate_row["id"]] = _lexical_relevance(
++                            query_words, candidate_row["content"], query_lower
++                        )
+         else:
+             # Fallback: fetch recent items and score in Python (old path)
+             cursor = self.conn.cursor()
+@@ -5756,7 +6213,7 @@
+             rows = cursor.fetchall()
+             # [C4] _wm_fallback_kept incremented per-row inside the
+             # scoring loop above. record_fallback_used was already
+-            # called when wm_ids was empty.
++            # called because wm_ids was empty.
+ 
+         _wm_after_filter_count = len(rows)
+ 
+@@ -5775,41 +6232,44 @@
+         if len(query_words) >= 4:
+             query_word_set = set(query_words)
+             for candidate_row in rows:
+-                matched_query_tokens.update(
+-                    query_word_set & set(_recall_tokens(candidate_row["content"].lower()))
+-                )
++                content_tokens = content_token_by_id.get(candidate_row["id"])
++                if content_tokens is None:
++                    content_tokens = set(_recall_tokens(candidate_row["content"].lower()))
++                    content_token_by_id[candidate_row["id"]] = content_tokens
++                matched_query_tokens.update(query_word_set & content_tokens)
          broad_multi_hit_query = len(query_words) >= 4 and len(matched_query_tokens) >= 2
 +        row_min_relevance = single_token_relevance if broad_multi_hit_query else min_relevance
 +        kw_share = (1.0 - iw) * 0.6
@@ -801,18 +957,25 @@
 -            content_lower = row["content"].lower()
 -            content_words_list = content_lower.split()
 -            content_words_set = set(content_words_list)
++            lexical = lexical_by_id.get(row["id"])
++            if lexical is None:
++                lexical = _lexical_relevance(query_words, row["content"], query_lower)
++                lexical_by_id[row["id"]] = lexical
              if wm_ranks and row["id"] in wm_ranks:
                  normalized = 1.0 - ((wm_ranks[row["id"]] - min_rank) / rng)
-                 lexical = _lexical_relevance(query_words, row["content"], query_lower)
-@@ -5792,24 +6178,22 @@
+-                lexical = _lexical_relevance(query_words, row["content"], query_lower)
+                 # FTS rank is a candidate-order signal, not a hard relevance
+                 # ceiling. Multi-fact queries can legitimately need several
+                 # different rows. If several distinct query terms match across
                  # the candidate set, admit one-token-per-row hits so prefetch
                  # and multi-aspect recall can assemble the full answer without
                  # letting single-token nonsense queries leak through.
 -                row_min_relevance = single_token_relevance if broad_multi_hit_query else min_relevance
                  relevance = max(lexical, (0.75 * lexical + 0.25 * normalized)) if lexical >= row_min_relevance else 0.0
              else:
-                 relevance = _lexical_relevance(query_words, row["content"], query_lower)
+-                relevance = _lexical_relevance(query_words, row["content"], query_lower)
 -                row_min_relevance = single_token_relevance if broad_multi_hit_query else min_relevance
++                relevance = lexical
              if relevance >= row_min_relevance or (wm_ranks and len(query_words) <= 1 and relevance > 0):
                  decay = _recency_decay(row["timestamp"])
 -                # Phase 4: configurable scoring for working memory
@@ -834,7 +997,7 @@
                  # Temporal boost (Phase 3)
                  if temporal_weight > 0.0:
                      t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
-@@ -5893,7 +6277,7 @@
+@@ -5893,7 +6353,7 @@
                  else:
                      decay = _recency_decay(row["timestamp"])
                      score = (0.6 + row["importance"] * 0.2) * (0.7 + 0.3 * decay)
@@ -843,7 +1006,7 @@
                      # Temporal boost (Phase 3)
                      if temporal_weight > 0.0:
                          t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
-@@ -5955,7 +6339,7 @@
+@@ -5955,7 +6415,7 @@
                  else:
                      decay = _recency_decay(row["timestamp"])
                      score = (0.6 + row["importance"] * 0.2) * (0.7 + 0.3 * decay)
@@ -852,7 +1015,7 @@
                      # Temporal boost (Phase 3)
                      if temporal_weight > 0.0:
                          t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
-@@ -6016,7 +6400,7 @@
+@@ -6016,7 +6476,7 @@
                  else:
                      decay = _recency_decay(row["timestamp"])
                      score = (0.5 + row["importance"] * 0.2) * (0.7 + 0.3 * decay)
@@ -861,7 +1024,7 @@
                      # Temporal boost (Phase 3)
                      if temporal_weight > 0.0:
                          t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
-@@ -6077,7 +6461,7 @@
+@@ -6077,7 +6537,7 @@
                  else:
                      decay = _recency_decay(row["timestamp"])
                      score = (0.5 + row["importance"] * 0.2) * (0.7 + 0.3 * decay)
@@ -870,7 +1033,7 @@
                      # Temporal boost (Phase 3)
                      if temporal_weight > 0.0:
                          t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
-@@ -6295,7 +6679,7 @@
+@@ -6295,7 +6755,7 @@
                  binary_bonus = 0.0
  
              score = max(base_score, lexical * 0.8) * (0.7 + 0.3 * decay)
@@ -879,7 +1042,7 @@
              score += graph_bonus + fact_bonus + binary_bonus  # Phase 5: polyphonic bonuses
              # Temporal boost (Phase 3)
              if temporal_weight > 0.0:
-@@ -6370,7 +6754,7 @@
+@@ -6370,7 +6830,7 @@
                      rc_share = (1.0 - iw) * 0.4
                      base_score = relevance * kw_share + row["importance"] * iw + (relevance ** 2) * 0.08
                      score = base_score * (rc_share + (1.0 - rc_share) * decay)
@@ -888,7 +1051,7 @@
  
                      # Phase 5: Graph + fact + binary bonuses for fallback.
                      # Gated by the same toggles as the main loop above
-@@ -6538,7 +6922,23 @@
+@@ -6538,7 +6998,23 @@
              if _memoria_result and _memoria_result.get("source") != "fallback":
                  _ctx = _memoria_result.get("context", "")
                  _memoria_relevance = _lexical_relevance(query_words, _ctx, query_lower)
@@ -913,7 +1076,7 @@
                      results.append({
                          "id": f"memoria_{_memoria_result['source']}",
                          "content": f"[MEMORIA {_memoria_result['source']}]\n{_ctx}",
-@@ -6558,10 +6958,26 @@
+@@ -6558,10 +7034,26 @@
                      ]
                      if _source_ids:
                          _ph = ",".join("?" * len(_source_ids))
@@ -942,7 +1105,7 @@
                          ).fetchall()
                          for _row in _src_rows:
                              results.append({
-@@ -6583,6 +6999,11 @@
+@@ -6583,6 +7075,11 @@
          except Exception:
              pass  # MEMORIA retrieval is best-effort
  
@@ -954,7 +1117,7 @@
          if len(query_words) >= 4 and len(results) > top_k:
              # Multi-aspect questions often need several rows, not five variants
              # of one aspect. Greedily prefer rows that add not-yet-covered exact
-@@ -6604,45 +7025,86 @@
+@@ -6604,45 +7101,86 @@
                  covered.update(set(_recall_tokens(picked.get("content", "").lower())) & q_word_set)
              results = selected + pool
  
@@ -1072,7 +1235,7 @@
  
          # [C4] Final tier-attribution records. Each counter holds the
          # number of kept rows attributed to that tier on this call.
-@@ -6670,33 +7132,6 @@
+@@ -6670,33 +7208,6 @@
          )
          _truly_empty = (len(final_results) == 0) and (_total_kept == 0)
          _recall_diag.record_call(truly_empty=_truly_empty)
@@ -1106,7 +1269,7 @@
  
          if _explain_trace is not None:
              _explain_trace.set_embedding(
-@@ -6816,6 +7251,7 @@
+@@ -6816,6 +7327,7 @@
                  "embedding_query_prefix": os.environ.get("MNEMOSYNE_EMBEDDING_QUERY_PREFIX", ""),
                  "beam_optimizations": _BEAM_MODE,
                  "polyphonic_recall": os.environ.get("MNEMOSYNE_POLYPHONIC_RECALL", "0") == "1",
@@ -1114,7 +1277,7 @@
                  "query_intent": os.environ.get("MNEMOSYNE_QUERY_INTENT", "0") == "1",
                  "fact_recall": os.environ.get("MNEMOSYNE_FACT_RECALL_ENABLED", "0") == "1",
                  "lenient_fact_match": _env_truthy("MNEMOSYNE_LENIENT_FACT_MATCH"),
-@@ -6922,7 +7358,8 @@
+@@ -6922,7 +7434,8 @@
  
          # 4. Run base recall with expanded query
          results = self.recall(
@@ -1124,7 +1287,7 @@
          )
          if explain:
              return results
-@@ -7009,11 +7446,94 @@
+@@ -7009,11 +7522,94 @@
              except Exception:
                  logger.info("Regex extraction failed, skipping", exc_info=True)
  
@@ -1219,7 +1382,7 @@
  
      def _dedup_cross_tier_summary_links(
          self,
-@@ -7087,10 +7607,40 @@
+@@ -7087,10 +7683,40 @@
          returning the input list unchanged. Used by the BEAM-recovery
          Phase 4 ablation to isolate the dedup's contribution.
          """
@@ -1262,7 +1425,7 @@
              return results
  
          # Build summary_map from either precomputed map or own SELECT.
-@@ -7243,7 +7793,8 @@
+@@ -7243,7 +7869,8 @@
                             channel_id: Optional[str] = None,
                             veracity: Optional[str] = None,
                             memory_type: Optional[str] = None,
@@ -1272,7 +1435,7 @@
          """[E5] Polyphonic recall path.
  
          Delegates to PolyphonicRecallEngine when MNEMOSYNE_POLYPHONIC_RECALL=1.
-@@ -7354,6 +7905,8 @@
+@@ -7354,6 +7981,8 @@
          # rather than relying on the diversity rerank to handle
          # summary↔source duplicates implicitly.
          final = self._dedup_cross_tier_summary_links(final)
@@ -1281,7 +1444,7 @@
          final = final[:top_k]
          # Rebuild recall_count attribution lists from the deduped final
          # so dropped duplicates aren't credited with a recall.
-@@ -7862,7 +8415,20 @@
+@@ -7862,7 +8491,20 @@
              compressed += " [...]"
          return compressed
  
@@ -1303,7 +1466,7 @@
          """Refresh dense-recall embedding stores for an episodic row whose
          content has been mutated (degraded). Without this the
          vec_episodes / memory_embeddings / binary_vector entries continue
-@@ -7878,13 +8444,11 @@
+@@ -7878,13 +8520,11 @@
          """
          cursor = self.conn.cursor()
  
@@ -1320,7 +1483,7 @@
              if vec is not None:
                  # vec_episodes is a sqlite-vec virtual table; vec0 doesn't
                  # support UPDATE on the embedding column reliably, so we
-@@ -7926,7 +8490,82 @@
+@@ -7926,7 +8566,82 @@
                  (memory_id,),
              )
  
@@ -1404,7 +1567,7 @@
          """Degrade old episodic memories through tier 1→2→3 compression.
  
          Tier 1 (0-TIER2_DAYS): Full detail, 1.0x recall weight
-@@ -7944,6 +8583,17 @@
+@@ -7944,6 +8659,17 @@
          now = datetime.now()
          results = {"status": "dry_run" if dry_run else "degraded",
                     "tier1_to_tier2": 0, "tier2_to_tier3": 0}
@@ -1422,7 +1585,7 @@
  
          # --- Find candidates for degradation ---
          tier2_cutoff = (now - timedelta(days=TIER2_DAYS)).isoformat()
-@@ -7952,9 +8602,9 @@
+@@ -7952,9 +8678,9 @@
          # Tier 1 → Tier 2: old enough, still at tier 1.
          # rowid is selected so the embedding refresh can address vec_episodes.
          try:
@@ -1434,7 +1597,7 @@
                  ORDER BY created_at ASC LIMIT ?
              """, (tier2_cutoff, DEGRADE_BATCH_SIZE))
              tier1_rows = cursor.fetchall()
-@@ -7968,9 +8618,9 @@
+@@ -7968,9 +8694,9 @@
  
          # Tier 2 → Tier 3: very old, at tier 2
          try:
@@ -1446,7 +1609,7 @@
                  ORDER BY created_at ASC LIMIT ?
              """, (tier3_cutoff, DEGRADE_BATCH_SIZE // 2))
              tier2_rows = cursor.fetchall()
-@@ -7997,36 +8647,50 @@
+@@ -7997,36 +8723,50 @@
          # (caught by /review for C18.b).
          from mnemosyne.core import local_llm
          for row in tier1_rows:
@@ -1515,7 +1678,7 @@
              try:
                  content = row["content"]
                  if SMART_COMPRESS and len(content) > TIER3_MAX_CHARS:
-@@ -8035,21 +8699,39 @@
+@@ -8035,21 +8775,39 @@
                      compressed = content[:TIER3_MAX_CHARS]
                      if len(content) > TIER3_MAX_CHARS:
                          compressed += " [...]"
@@ -1566,7 +1729,7 @@
          self.conn.commit()
          return results
  
-@@ -8261,7 +8943,37 @@
+@@ -8261,7 +9019,37 @@
              "candidate_ids": candidate_ids,
          }
  
@@ -1605,7 +1768,7 @@
          """
          Consolidate old working_memory for this session into episodic summaries.
          Uses a local lightweight LLM when available; falls back to aaak
-@@ -8369,6 +9081,10 @@
+@@ -8369,6 +9157,10 @@
          conflicts_resolved = 0
          model_refresh_proposals = 0
          model_refresh_applied = 0
@@ -1616,7 +1779,7 @@
          for source, items in grouped.items():
              lines = [item["content"] for item in items]
              ids = [item["id"] for item in items]
-@@ -8382,6 +9098,10 @@
+@@ -8382,6 +9174,10 @@
                  if item.get("valid_until"):
                      if aggregated_valid_until is None or item["valid_until"] < aggregated_valid_until:
                          aggregated_valid_until = item["valid_until"]
@@ -1627,7 +1790,7 @@
  
              # E4.a.1: aggregate per-row veracity into the summary's
              # veracity label. Mode of sources with conservative tie-break.
-@@ -8409,8 +9129,21 @@
+@@ -8409,8 +9205,21 @@
                              newer_content,
                              session_id=self.session_id,
                              db_path=self.db_path,
@@ -1649,7 +1812,7 @@
                              if not dry_run:
                                  self.invalidate(older_id, replacement_id=newer_id)
                              conflicts_resolved += 1
-@@ -8428,20 +9161,32 @@
+@@ -8428,20 +9237,32 @@
                  # Uses CompressionPlugin (registered in plugins.py). The env
                  # var MNEMOSYNE_USE_CAVEMAN still works as a deprecated
                  # fallback — see CompressionPlugin for deprecation warning.
@@ -1689,7 +1852,7 @@
                              if chunk_summary:
                                  chunk_summaries.append(chunk_summary)
                          if chunk_summaries:
-@@ -8449,9 +9194,9 @@
+@@ -8449,9 +9270,9 @@
                              if len(chunk_summaries) == 1:
                                  summary = chunk_summaries[0]
                              else:
@@ -1702,7 +1865,7 @@
                                  )
                                  # If second-pass also overflows, concatenate
                                  if not summary:
-@@ -8471,6 +9216,29 @@
+@@ -8471,6 +9292,29 @@
                  compressed = aaak_encode(combined)
                  summary = f"[{source}] {compressed}"
  
@@ -1732,7 +1895,7 @@
              # --- Phase 2: model-refresh inference for canonical model slots ---
              # This follows sleep by default. It asks the same configured LLM path
              # for structured candidate updates, then stores pending proposal rows
-@@ -8478,10 +9246,11 @@
+@@ -8478,10 +9322,11 @@
              proposals = []
              agent_context = str(getattr(self, "agent_context", "") or "").strip().lower()
              model_refresh_owner_id = str(getattr(self, "canonical_owner_id", "") or "").strip() or "default"
@@ -1746,7 +1909,7 @@
                  except Exception:
                      proposals = []
              model_refresh_proposals += len(proposals)
-@@ -8492,7 +9261,7 @@
+@@ -8492,7 +9337,7 @@
                  # the claim survives -- the rows show as consolidated but
                  # without a summary. That's preferable to a phantom-summary-
                  # without-claim race the previous ordering allowed.
@@ -1755,7 +1918,7 @@
                      summary=summary,
                      source_wm_ids=ids,
                      source="sleep_consolidation",
-@@ -8503,9 +9272,38 @@
+@@ -8503,9 +9348,38 @@
                      metadata={
                          "original_count": len(items),
                          "source": source,
@@ -1796,7 +1959,7 @@
                  if proposals:
                      from mnemosyne.core import model_refresh
                      proposal_ts = datetime.now().isoformat()
-@@ -8519,6 +9317,7 @@
+@@ -8519,6 +9393,7 @@
                              scope="session",
                              veracity="inferred",
                              trust_tier="DERIVED",
@@ -1804,7 +1967,7 @@
                          )
                          # Proposal rows are review artifacts from this sleep pass,
                          # not fresh raw memories that should recursively trigger
-@@ -8556,13 +9355,13 @@
+@@ -8556,13 +9431,13 @@
              """, (
                  self.session_id,
                  len(consolidated_ids),
@@ -1820,7 +1983,7 @@
  
          logger.info(
              "sleep: consolidated=%d summaries=%d conflicts=%d llm=%s method=%s",
-@@ -8582,7 +9381,8 @@
+@@ -8582,7 +9457,8 @@
              "model_refresh": {
                  "proposals": model_refresh_proposals,
                  "applied": model_refresh_applied,

@@ -4,9 +4,10 @@
     "core/beam.py": {
       "original_sha256": "00d79c0642a01b666473fd6e36749ed012802930ea8694eb24f3b17593a20aa0",
       "patch": "core-beam.py.patch",
-      "patch_sha256": "df30431caea1b4ba0a348d5b48c419d6f428a0f763ebee201b41cb39aee9f1b2",
-      "patched_sha256": "7613e98422eb40e1fe2084a3ca7d4a953816a0ccedb332e61e4b2a0519eb7f08",
+      "patch_sha256": "e7907077ac8201113dd8a7f94d7320a4f8913633ddbb512fd26b627792d9d4d6",
+      "patched_sha256": "7410c59ad11c618b1b6bef1d3818af6cbbf0f2a9a517266b5b3113630c857b4d",
       "previous_patched_sha256": [
+        "7613e98422eb40e1fe2084a3ca7d4a953816a0ccedb332e61e4b2a0519eb7f08",
         "3dc87e3bb1b1d8bcb7ebfdc22bc5f84d48c8c7b9fde15f1aa89b4aa45c27ac98",
         "ec4aaa51831597aa0fa3e68a41b71ad4d55bca2775764f4699a0e1d2533b4ea4",
         "8374fff83aba2a67f03c2c00d76dfa86b3c91a46868d7b6b25243a68e62159ef",

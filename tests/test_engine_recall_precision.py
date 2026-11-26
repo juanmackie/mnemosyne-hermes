@@ -326,6 +326,29 @@ with patch.object(beam_module, "_fts_search_working", wraps=beam_module._fts_sea
     owner.recall("Kubernetes deployment GitHub Actions", top_k=5, _cross_session=False)
 assert fts.call_args.kwargs["k"] == 20
 
+# Cold query inference starts before FTS retrieval so the two paths overlap.
+import threading
+import numpy as np
+embedding_started = threading.Event()
+fts_entered = threading.Event()
+original_fts = beam_module._fts_search_working
+def overlapping_embed(_query):
+    embedding_started.set()
+    return np.zeros(384, dtype=np.float32)
+def overlapping_fts(*args, **kwargs):
+    fts_entered.set()
+    assert embedding_started.wait(1), "query embedding did not start before FTS"
+    return original_fts(*args, **kwargs)
+with patch.object(beam_module._embeddings, "available", return_value=True), patch.object(
+    beam_module._embeddings, "embed_query", side_effect=overlapping_embed
+), patch.object(beam_module, "_fts_search_working", side_effect=overlapping_fts), patch.object(
+    beam_module, "_wm_vec_search", return_value=[]
+), patch.object(beam_module, "_vec_search", return_value=[]), patch.object(
+    beam_module, "_in_memory_vec_search", return_value=[]
+):
+    owner.recall("Kubernetes deployment GitHub Actions", top_k=5, _cross_session=False)
+assert embedding_started.is_set() and fts_entered.is_set()
+
 other_session.conn.close()
 owner.conn.close()
 print("baseline scores:", [(r["id"], r["tier"], r["score"]) for r in baseline])
