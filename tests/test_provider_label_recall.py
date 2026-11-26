@@ -182,3 +182,116 @@ def test_abstaining_recall_without_expandable_tokens_returns_zero() -> None:
 
     assert response["count"] == 0
     assert beam.calls == ["Vue component architecture"]
+
+
+def test_strict_label_abstain_opt_out_preserves_paraphrase_results(monkeypatch) -> None:
+    """P54: MNEMOSYNE_LABEL_STRICT_ABSTAIN=0 preserves engine results on labeled paraphrases."""
+    monkeypatch.setenv("MNEMOSYNE_LABEL_STRICT_ABSTAIN", "0")
+    provider = Provider()
+    provider._shared_surface_read = False
+    beam = FakeBeam([[_row()]])
+    provider._beam = beam
+
+    response = json.loads(
+        provider._handle_recall(
+            {"query": "do we prefer strong static typing for our frontend?", "limit": 5}
+        )
+    )
+
+    assert response["count"] == 1
+    assert response["results"][0]["id"] == "m1"
+
+
+def test_hydrate_search_label_index_recovers_labels_from_sqlite() -> None:
+    """P57: P50 typo-recovery index hydrates from existing SQLite rows on initialize."""
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE working_memory (id TEXT, session_id TEXT, scope TEXT, metadata_json TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE episodic_memory (id TEXT, session_id TEXT, scope TEXT, metadata_json TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO working_memory VALUES (?, ?, ?, ?)",
+        (
+            "m1",
+            "session-a",
+            "session",
+            json.dumps({"canonical_name": "language_typescript", "aliases": ["TypeScript"]}),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO working_memory VALUES (?, ?, ?, ?)",
+        (
+            "m-other",
+            "session-other",
+            "session",
+            json.dumps({"canonical_name": "secret_other", "aliases": ["OtherPrivate"]}),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO episodic_memory VALUES (?, ?, ?, ?)",
+        (
+            "e1",
+            "session-other",
+            "global",
+            json.dumps({"canonical_name": "cache_redis", "aliases": ["Redis"]}),
+        ),
+    )
+    conn.commit()
+    try:
+        provider = Provider()
+        provider._session_id = "session-a"
+        provider._beam = type("StubBeam", (), {"conn": conn, "session_id": "session-a"})()
+        provider._hydrate_search_label_index()
+        assert provider._search_label_index["typescript"] == "TypeScript"
+        assert provider._search_label_index["redis"] == "Redis"
+        assert "otherprivate" not in provider._search_label_index
+    finally:
+        conn.close()
+
+
+def test_recall_batches_metadata_lookup_once_across_labels_and_provenance() -> None:
+    """P57: _handle_recall resolves metadata once (no double beam.get() per row)."""
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE working_memory (id TEXT, metadata_json TEXT)")
+    conn.execute("CREATE TABLE episodic_memory (id TEXT, metadata_json TEXT)")
+    meta = {
+        "canonical_name": "language_typescript",
+        "aliases": ["TypeScript"],
+        "provenance": {
+            "model": "test-model",
+            "engine_version": "3.15.1",
+            "recorded_at": "2026-11-26T00:00:00Z",
+        },
+    }
+    conn.execute("INSERT INTO working_memory VALUES (?, ?)", ("m1", json.dumps(meta)))
+    conn.commit()
+
+    class CountingBeam:
+        def __init__(self) -> None:
+            self.conn = conn
+            self.get_calls = 0
+
+        def recall(self, _query: str, **_kwargs: object) -> list[dict]:
+            return [{"id": "m1", "content": "TypeScript with strict mode"}]
+
+        def get(self, _memory_id: str) -> dict | None:
+            self.get_calls += 1
+            return {"id": "m1", "metadata": json.dumps(meta)}
+
+    try:
+        beam = CountingBeam()
+        provider = Provider()
+        provider._shared_surface_read = False
+        provider._beam = beam
+        response = json.loads(provider._handle_recall({"query": "TypeScript config", "limit": 5}))
+        assert response["count"] == 1
+        assert "test-model" in response["results"][0]["learned_under"]
+        assert beam.get_calls == 0, "real SQLite batch query should avoid N+1 beam.get() calls"
+    finally:
+        conn.close()

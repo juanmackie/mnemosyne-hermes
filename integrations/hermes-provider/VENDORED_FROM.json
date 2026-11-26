@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "j98I4HFy7N3ftwnRDD_-UJRINNmirq0FYFdaw3YNo8c",
-      "bytes": 292502,
-      "lines": 6117
+      "sha256": "H4AtXdkPl24C5xccP206UhYZXbDGlSWi2v2QRnoNLEs",
+      "bytes": 302061,
+      "lines": 6305
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
@@ -27,9 +27,9 @@
       "lines": 390
     },
     "hermes_memory_provider/cli.py": {
-      "sha256": "die2ctLoKAQYCCQFv-zMgZaMWLmOYUmexqnrCYs-H9s",
-      "bytes": 66024,
-      "lines": 1419
+      "sha256": "Tmb_L-BKPOb6zxqD4pvkzZb0Xx9neWiP7dFMq66F8Aw",
+      "bytes": 68130,
+      "lines": 1479
     },
     "hermes_memory_provider/hermes_llm_adapter.py": {
       "sha256": "FpY393NdH7q0T1fchBSFzOwhB8Ph8DNyMOAQwQVe1Lw",
@@ -114,7 +114,11 @@
       "P51 abstain when no labeled row matches the query",
       "P52 one-edit fuzzy evidence needs two characters on the shorter side",
       "P53 restore the query once more before abstaining",
-      "P55 model and engine provenance on mnemosyne_remember writes, one short line on recall/get/prefetch, lesson-shape guidance"
+      "P55 model and engine provenance on mnemosyne_remember writes, one short line on recall/get/prefetch, lesson-shape guidance",
+      "P54 opt-out switch MNEMOSYNE_LABEL_STRICT_ABSTAIN for P51 strict label abstention and complete recall-guard keys in _prefetch_cache_key",
+      "P57 hydrate P50 label index on initialize() and batch recall/prefetch metadata reads (eliminates double N+1 beam.get())",
+      "P58 prefetch relative adjusted-score floor (min_relative_score=0.45) drops weak trailing distractors",
+      "P59 opt-in multi-signal recall confidence verdict (MNEMOSYNE_RECALL_CONFIDENCE_ENABLED) and content-free per-band diagnostics"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",
@@ -135,7 +139,8 @@
       "P44 doctor prints the resolved engine path and audits the resolved engine's source files against integrations/engine-patches/manifest.json (informational skip when no manifest is beside a copied provider)",
       "P46 doctor identifies the interpreter and package on engine import failure",
       "P47 doctor's fix path re-applies the audited engine patches to the generation it runs under (post-PM-rebuild repair); --no-fix and scripts/update.sh never write",
-      "P56 doctor notes a running gateway that predates the engine on disk (informational, never gates exit)"
+      "P56 doctor notes a running gateway that predates the engine on disk (informational, never gates exit)",
+      "P60 doctor read-only embedding-dimension mismatch note (informational, never gates exit)"
     ],
     "hermes_memory_provider/pyproject.toml": [
       "P25 local directory-plugin dependency declaration for Hermes PM, using the unchanged audited engine pin"

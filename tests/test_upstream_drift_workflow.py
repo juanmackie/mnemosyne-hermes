@@ -181,3 +181,16 @@ def test_weekly_latest_engine_step_stops_after_setup_or_install_failure(tmp_path
     assert calls.count("uv ") == failed_uv_call
     assert "scripts/apply_engine_patches.py" not in calls
     assert "tests/test_provider_engine_contract.py" not in calls
+
+
+def test_weekly_scorecard_job_reinstalls_vendored_provider_and_uses_live_flags():
+    import yaml
+
+    for workflow_path in (WORKFLOW, ROOT / ".github" / "workflows" / "python-ci.yml"):
+        parsed = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        assert isinstance(parsed, dict) and "jobs" in parsed, workflow_path.name
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "--reinstall-package mnemosyne-hermes-provider" in workflow
+    assert "MNEMOSYNE_CAPTURE_SUPERSEDE" not in workflow
+    assert "MNEMOSYNE_RECALL_CORRECTION_PRIORITY=1" in workflow
+    assert "provider_import" not in workflow

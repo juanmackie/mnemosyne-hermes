@@ -980,6 +980,34 @@ def test_recall_falls_back_when_metadata_json_is_deeply_nested():
     assert [row["id"] for row in response["results"]] == ["legacy"]
 
 
+def test_embedding_dim_mismatch_note_detects_drift_read_only():
+    check = _module_attr(cli_mod, "_embedding_dim_mismatch_note")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = pathlib.Path(tmp) / "store.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE vec_working (embedding float32[384])")
+        conn.execute("CREATE TABLE vec_episodes (embedding int8[384])")
+        conn.commit()
+        conn.close()
+        before = db.read_bytes()
+
+        with patch.dict(os.environ, {"MNEMOSYNE_EMBEDDING_DIM": "384"}):
+            assert check(str(db)) is None
+        with patch.dict(os.environ, {"MNEMOSYNE_EMBEDDING_DIM": "768"}):
+            note = check(str(db))
+            assert note is not None
+            assert (
+                "768" in note
+                and "vec_working=384" in note
+                and "vec_episodes=384" in note
+                and "reindex" in note
+            )
+        with patch.dict(os.environ, {"MNEMOSYNE_EMBEDDING_DIM": ""}):
+            assert check(str(db)) is None
+        assert check(str(pathlib.Path(tmp) / "missing.db")) is None
+        assert db.read_bytes() == before, "dimension check must not mutate the database"
+
+
 if __name__ == "__main__":
     tests = [
         test_db_path_from_env,
@@ -1024,6 +1052,7 @@ if __name__ == "__main__":
         test_recall_keeps_mixed_labeled_and_legacy_results,
         test_recall_keeps_results_when_one_label_has_no_matchable_tokens,
         test_recall_falls_back_when_metadata_json_is_deeply_nested,
+        test_embedding_dim_mismatch_note_detects_drift_read_only,
     ]
     for fn in tests:
         fn()

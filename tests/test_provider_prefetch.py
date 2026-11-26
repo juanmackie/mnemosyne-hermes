@@ -31,7 +31,7 @@ class RecallBeam:
         self.rows = list(rows or [])
         self.recall_calls = 0
 
-    def recall(self, **kwargs):
+    def recall(self, *_args, **kwargs):
         self.recall_calls += 1
         return list(self.rows)
 
@@ -451,3 +451,84 @@ def test_prefetch_diagnostics_distinguish_store_error_from_no_match():
     assert diagnostics["errors_by_source"] == {"bank": 1}
     assert "private store path" not in str(diagnostics)
     beam.conn.close()
+
+
+def test_prefetch_cache_key_observes_engine_guard_and_confidence_flags():
+    beam = RecallBeam(rows=[_row("User prefers brief summaries")])
+    instance = _provider(beam)
+    profile = provider_mod._resolve_profile("general")
+    try:
+        keys = []
+        for env in (
+            {},
+            {"MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS": "1"},
+            {"MNEMOSYNE_CAPTURE_TEMPORAL": "1"},
+            {"MNEMOSYNE_RECALL_CORRECTION_PRIORITY": "1"},
+            {"MNEMOSYNE_LABEL_STRICT_ABSTAIN": "0"},
+            {"MNEMOSYNE_RECALL_CONFIDENCE_ENABLED": "1"},
+        ):
+            with patch.dict(os.environ, env, clear=False):
+                keys.append(instance._prefetch_cache_key("query", "session-a", profile))
+        assert len(set(keys)) == len(keys), "each guard flag must produce a distinct cache key"
+    finally:
+        beam.conn.close()
+
+
+def test_prefetch_relative_score_floor_drops_weak_distractor_and_keeps_multi_hits():
+    strong = _row("Casey prefers pytest for Python testing", source="preference")
+    strong.update(score=0.75, keyword_score=1.0, importance=0.95)
+    peer = _row("Casey runs pytest with -q on pull requests", source="user")
+    peer.update(score=0.65, keyword_score=0.80, importance=0.90)
+    weak = _row("[USER] Yesterday I ran pytest checks", source="conversation")
+    weak.update(score=0.40, keyword_score=0.45, importance=0.95)
+    beam = RecallBeam(rows=[strong, peer, weak])
+    instance = _provider(beam)
+    instance._prefetch_model_slots = lambda query, profile: ""
+    try:
+        output = instance.prefetch("pytest testing preference", session_id="session-a")
+        assert "Casey prefers pytest" in output
+        assert "pytest with -q" in output
+        assert "Yesterday I ran pytest" not in output
+    finally:
+        beam.conn.close()
+
+
+def test_opt_in_recall_confidence_verdict_and_diagnostics():
+    beam = RecallBeam()
+    instance = _provider(beam)
+    instance._shared_surface_read = False
+    try:
+        # Default off: response schema unchanged
+        beam.rows = [
+            {"id": "m1", "content": "Casey uses pytest", "score": 0.8, "keyword_score": 0.9}
+        ]
+        with patch.dict(os.environ, {"MNEMOSYNE_RECALL_CONFIDENCE_ENABLED": "0"}):
+            default_resp = json.loads(instance._handle_recall({"query": "pytest"}))
+        assert "confidence" not in default_resp
+
+        with patch.dict(os.environ, {"MNEMOSYNE_RECALL_CONFIDENCE_ENABLED": "1"}):
+            high_resp = json.loads(instance._handle_recall({"query": "Casey pytest"}))
+            assert high_resp["confidence"]["band"] == "HIGH"
+            assert high_resp["confidence"]["answerable"] is True
+
+            beam.rows = [
+                {
+                    "id": "m2",
+                    "content": "Unrelated gardening tip",
+                    "score": 0.22,
+                    "keyword_score": 0.1,
+                }
+            ]
+            low_resp = json.loads(instance._handle_recall({"query": "Norsk Hydrokinetic turbines"}))
+            assert low_resp["confidence"]["band"] == "LOW"
+            assert low_resp["confidence"]["answerable"] is False
+
+            beam.rows = []
+            none_resp = json.loads(instance._handle_recall({"query": "unknown entity"}))
+            assert none_resp["confidence"]["band"] == "NONE"
+            assert none_resp["confidence"]["answerable"] is False
+
+        diag = instance.get_prefetch_diagnostics()
+        assert diag["recall_confidence_bands"] == {"HIGH": 1, "LOW": 1, "NONE": 1}
+    finally:
+        beam.conn.close()

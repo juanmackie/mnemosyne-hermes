@@ -14,6 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `MNEMOSYNE_SLEEP_VERIFY` now allows genuine paraphrased LLM consolidation
+  summaries while preserving every source's key tokens (entities, numbers,
+  versions, identifiers), lowercase content substance, structured labels,
+  uniform scope/validity, negation polarity parity, and rejecting fabricated
+  numbers. Keyless fallback summaries keep the strict verbatim check.
+- Provider recall and prefetch metadata lookups (P57) now batch-read
+  `metadata_json` once per query (eliminating double N+1 `beam.get()` calls in
+  `_handle_recall` and lock-external reads in `_prefetch_bank`), and the P50
+  typo-recovery label index hydrates from SQLite on `initialize()` so it
+  survives restarts.
+- Automatic prefetch now applies a relative adjusted-score floor
+  (`PrefetchProfile.min_relative_score = 0.45`, P58) to drop weak trailing
+  distractors, bringing `bench/hermes_prefetch_eval.py` from 12/14 to 14/14 and
+  gating it in CI.
+- Weekly `upstream-drift.yml` scorecard job now reinstalls the vendored
+  provider last (matching `python-ci.yml`), asserts `matches_vendored`, and
+  replaces the removed `MNEMOSYNE_CAPTURE_SUPERSEDE` arm with
+  `MNEMOSYNE_RECALL_CORRECTION_PRIORITY` and a combined arm.
 - Lite recall no longer pays for the full-text index's history. FTS5 writes one
   b-tree per committed transaction and every query must scan and merge each of
   them, so a store written one memory at a time had accumulated 12-19 of them;
@@ -79,6 +97,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P54 (`MNEMOSYNE_LABEL_STRICT_ABSTAIN=0`) opt-out for P51 strict label
+  abstention on labeled paraphrase queries, plus recall-guard and confidence
+  flags in `_prefetch_cache_key`.
+- P59 opt-in multi-signal recall confidence verdict
+  (`MNEMOSYNE_RECALL_CONFIDENCE_ENABLED=1`) with `HIGH`/`MODERATE`/`LOW`/`NONE`
+  bands and content-free diagnostics counters.
+- P60 read-only `doctor` note flagging `MNEMOSYNE_EMBEDDING_DIM` mismatches
+  against existing `vec_working`/`vec_episodes` tables.
 - Lesson provenance in the provider (P55): every `mnemosyne_remember` write
   records `metadata.provenance = {model, hermes_version, engine_version,
   recorded_at}`, and `mnemosyne_recall`, `mnemosyne_get` and prefetch injection

@@ -176,6 +176,10 @@ jobs:
           echo "PYTHON_BIN=$py" >> "$GITHUB_ENV"
           # The pin comes from the provider's pyproject (single source).
           uv pip install --python "$py" ./integrations/hermes-provider pytest
+          # The engine wheel also ships a `hermes_memory_provider` copy; reinstall
+          # the vendored snapshot last so its files win (matches python-ci.yml).
+          uv pip install --python "$py" --no-deps \
+            --reinstall-package mnemosyne-hermes-provider ./integrations/hermes-provider
           "$py" scripts/apply_engine_patches.py
 
       - name: Scorecard (held-out, 12,559 probes)
@@ -190,10 +194,13 @@ jobs:
             for spec in "baseline:installed:" "aa:installed:" \
                         "abstain:installed:MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS=1" \
                         "temporal:installed:MNEMOSYNE_CAPTURE_TEMPORAL=1" \
-                        "supersede:installed:MNEMOSYNE_CAPTURE_SUPERSEDE=1"; do
+                        "correction:installed:MNEMOSYNE_RECALL_CORRECTION_PRIORITY=1" \
+                        "recommended:installed:MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS=1,MNEMOSYNE_CAPTURE_TEMPORAL=1,MNEMOSYNE_RECALL_CORRECTION_PRIORITY=1"; do
               IFS=: read -r arm patch envspec <<< "$spec"
               env_prefix=()
-              [ -n "$envspec" ] && env_prefix=("$envspec")
+              if [[ -n "$envspec" ]]; then
+                IFS=, read -r -a env_prefix <<< "$envspec"
+              fi
               env "${env_prefix[@]}" "$PYTHON_BIN" -m bench.scorecard.cli run \
                 --arm "$arm" --engine-patch "$patch" \
                 --corpus .scorecard/corpus.json \
@@ -211,9 +218,14 @@ jobs:
               --output .scorecard/compare-temporal.json
             "$PYTHON_BIN" -m bench.scorecard.cli compare \
               --baseline .scorecard/arm-baseline.json \
-              --candidate .scorecard/arm-supersede.json \
+              --candidate .scorecard/arm-correction.json \
               --corpus .scorecard/corpus.json \
-              --output .scorecard/compare-supersede.json
+              --output .scorecard/compare-correction.json
+            "$PYTHON_BIN" -m bench.scorecard.cli compare \
+              --baseline .scorecard/arm-baseline.json \
+              --candidate .scorecard/arm-recommended.json \
+              --corpus .scorecard/corpus.json \
+              --output .scorecard/compare-recommended.json
             # A/A control: the instrument must show no difference.
             "$PYTHON_BIN" -m bench.scorecard.cli compare \
               --baseline .scorecard/arm-baseline.json \
