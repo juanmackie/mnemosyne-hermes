@@ -281,6 +281,11 @@ assert [row["id"] for row in again] == baseline_ids, (baseline, again)
 os.environ["MNEMOSYNE_RECALL_SCORE_FLOOR"] = "0.6"
 assert owner.recall("qzxwvv no matching stored memory", top_k=10, _cross_session=False) == []
 
+# Working-memory FTS uses the same top_k-scaled budget as episodic recall.
+with patch.object(beam_module, "_fts_search_working", wraps=beam_module._fts_search_working) as fts:
+    owner.recall("Kubernetes deployment GitHub Actions", top_k=5, _cross_session=False)
+assert fts.call_args.kwargs["k"] == 20
+
 other_session.conn.close()
 owner.conn.close()
 print("baseline scores:", [(r["id"], r["tier"], r["score"]) for r in baseline])
