@@ -473,7 +473,8 @@ _PREFETCH_FRAGMENT_STOPWORDS = frozenset({
     "down", "over", "that", "this", "it", "so",
 })
 _PREFETCH_MIN_FRAGMENT_CHARS = 8   # lone tokens shorter than this are dropped
-_PREFETCH_OVERFETCH = 16           # recall more, then filter junk and cap
+# LOCAL PATCH: P59 ten candidates match twice the default five-row output.
+_PREFETCH_OVERFETCH = 10
 _PREFETCH_TOP_K = 5                # final injected count: compact, relevance-first
 
 # Prompt-usefulness filter for automatic memory-context injection. Manual recall

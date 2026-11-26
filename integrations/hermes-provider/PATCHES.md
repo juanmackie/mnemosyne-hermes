@@ -400,6 +400,18 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Verification | `tests/test_provider_consolidation.py` (retry path, log content, no double consolidation); injecting a `TypeError` into `summarize_memories` aborted `sleep()` before the patch and consolidates via AAAK after it. |
 | Upstream | Not sent; the engine-side half is carried as an audited engine patch, so keep both halves together. |
 
+### P59 — align prefetch overfetch with the default output budget
+
+| | |
+|---|---|
+| File | `hermes_memory_provider/__init__.py` |
+| Date | 2026-11-27 |
+| Reason | Prefetch requested 16 candidates for a default five-row output. On frozen real conversations, the larger window admitted weaker neighbors and lowered automatic-context precision. |
+| Behaviour | The overfetch floor is ten candidates, matching `profile.top_k * 2` for the default profile. Larger configured output budgets still scale normally. Filtering, deduplication, source policy, character limits and response contracts are unchanged. |
+| Verification | `tests/test_provider_prefetch.py::test_prefetch_uses_ten_candidate_overfetch` pins the engine request. A predefined real-conversation dev sweep measured prefetch recall 0.26 -> 0.28, entry precision 0.112 -> 0.139, mean context 1151.7 -> 959.16 characters, with a small p50 improvement. Holdout confirmation is required before release. |
+| Upstream | Not sent. |
+| Numbering | P54 remains reserved; P59 follows P58. |
+
 ## Sync procedure (run on every upstream release)
 
 **Triage decision (2026-11-10): keep `mnemosyne-memory 4.0.0` outside the

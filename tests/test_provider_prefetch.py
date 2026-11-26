@@ -30,9 +30,11 @@ class RecallBeam:
         self.canonical_owner_id = "owner-a"
         self.rows = list(rows or [])
         self.recall_calls = 0
+        self.recall_kwargs: list[dict] = []
 
     def recall(self, **kwargs):
         self.recall_calls += 1
+        self.recall_kwargs.append(dict(kwargs))
         return list(self.rows)
 
 
@@ -112,6 +114,15 @@ def _real_provider(tmp_path):
             local = getattr(module, "_thread_local", None)
             if local is not None:
                 local.conn = None
+
+
+def test_prefetch_uses_ten_candidate_overfetch():
+    beam = RecallBeam(rows=[_row()])
+    provider = _provider(beam)
+
+    provider.prefetch("summaries", session_id="session-a")
+
+    assert beam.recall_kwargs[-1]["top_k"] == 10
 
 
 def test_real_engine_cache_observes_memory_writes_visibility_and_source_revisions(tmp_path):
