@@ -349,6 +349,17 @@ with patch.object(beam_module._embeddings, "available", return_value=True), patc
     owner.recall("Kubernetes deployment GitHub Actions", top_k=5, _cross_session=False)
 assert embedding_started.is_set() and fts_entered.is_set()
 
+# BaseException control signals still propagate from the worker to the caller.
+with patch.object(beam_module._embeddings, "available", return_value=True), patch.object(
+    beam_module._embeddings, "embed_query", side_effect=KeyboardInterrupt
+), patch.object(beam_module, "_fts_search_working", wraps=beam_module._fts_search_working):
+    try:
+        owner.recall("Kubernetes deployment GitHub Actions", top_k=5, _cross_session=False)
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("embedding KeyboardInterrupt was swallowed")
+
 other_session.conn.close()
 owner.conn.close()
 print("baseline scores:", [(r["id"], r["tier"], r["score"]) for r in baseline])
