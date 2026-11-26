@@ -20,6 +20,26 @@ is refused until its patches have been audited.
 | `diagnose.py.patch` | Provider diagnostics accept an explicit store and profile log directory instead of deriving another database from the environment. |
 | `dr-recovery.py.patch` | Backup/restore gzips the raw SQLite page image from `sqlite3.backup()` instead of an `iterdump()` SQL-text dump, so vec0 shadow tables survive the round trip. Restore sniffs the payload and still accepts legacy SQL-text dumps. The pre-restore emergency copy also uses `sqlite3.backup()`, so uncheckpointed WAL frames survive it. Return shapes, filenames, and the metadata sidecar are unchanged. |
 
+### Real-conversation calibration (2026-11-26)
+
+A private, read-only snapshot of 100 real local T3 conversations supplied 50
+development and 50 holdout turns. Each query was the last substantive user
+message with earlier context; up to eight immediately preceding messages were
+stored with their source timestamps. The query and later messages were excluded.
+Every measurement used a fresh store copy with zeroed recall counters, and the
+query-embedding cache was cleared before each sample. No transcript text or
+source database is committed. These are intrinsic same-conversation labels, not
+independent semantic judgments.
+
+On the 50-turn development split, the final branch reduced cold explicit-recall
+p50 from **115.8 ms to 55.5 ms** and recall@5 from **0.40 to 0.44** versus the
+untouched `main` engine. nDCG@5 rose from 0.3383 to 0.3564, precision@5 from 0.116
+to 0.124, and prefetch recall from 0.24 to 0.26. Retained ranking changes left
+holdout recall unchanged; proposed dense-inference and vector-budget changes
+that lost holdout recall were reverted. Public PrecisionMemBench remains 43/43.
+Cache retention is entry-bounded; normal recall rows are truncated before
+scoring, while unusually long query keys remain a memory/latency trade-off.
+
 P31 removes import-time default database initialization from `core.memory`.
 Each real constructor (including the standalone default-memory helper) still
 initializes its selected database. Both `Mnemosyne` and `BeamMemory` accept
