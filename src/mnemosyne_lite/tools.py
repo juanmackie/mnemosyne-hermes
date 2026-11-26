@@ -6,6 +6,7 @@ provider does not use them: it is engine-backed and exposes the engine's own
 """
 
 from .plan import fallback_terms
+from .redact import redact_capture_secrets
 from .storage import PythonMemoryStorage
 from .tooltable import ALIASES, TOOL_BY_NAME, schemas
 
@@ -54,6 +55,17 @@ def _sync_turn(storage, args, namespace):
         or not text.strip()
     ):
         return {"ok": True, "synced": False, "status": "skipped"}
+    # A retried turn must not become a second memory. The stored row holds the
+    # redacted text, so the comparison runs in that form; the same turn written
+    # to another namespace is a different row, as it was before.
+    existing = storage.find_sync_turn(redact_capture_secrets(text), namespace)
+    if existing is not None:
+        return {
+            "ok": True,
+            "synced": False,
+            "status": "duplicate",
+            "source_memory_id": existing,
+        }
     result = storage.remember(text, namespace, 5, context="sync_turn")
     return {"ok": True, "synced": True, "status": "captured", "source_memory_id": result["id"]}
 
