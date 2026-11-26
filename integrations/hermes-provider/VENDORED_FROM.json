@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "ZA6Y0E71OPrnT8DMOT48mT8UdwMgLR0rprI85HPuJvA",
-      "bytes": 296386,
-      "lines": 6209
+      "sha256": "-vE1AXS0hgll569IwjjgAoDtIBVyphwuufkWfAwsEww",
+      "bytes": 298981,
+      "lines": 6268
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
@@ -117,7 +117,8 @@
       "P55 model and engine provenance on mnemosyne_remember writes, one short line on recall/get/prefetch, lesson-shape guidance",
       "P59 prefetch overfetch defaults to ten candidates, twice the default five-row output",
       "P61 prefetch may reserve one slot for the most recent session-scoped user row when it shares a meaningful query token; MNEMOSYNE_PREFETCH_RECENT_USER=0 disables",
-      "P62 prefetch recent-session continuity defaults to two lexically connected user rows; MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT is clamped to 0..3 and included in cache identity"
+      "P62 prefetch recent-session continuity defaults to two lexically connected user rows; MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT is clamped to 0..3 and included in cache identity",
+      "P63 recent-session continuity also admits rows with local cosine similarity >= MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY (default 0.6); lexical fallback and session/global guards remain"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",

@@ -436,6 +436,18 @@ Candidates that deliberately were **not** patched live in `CONTRACT_AUDIT.md`
 | Upstream | Not sent. |
 | Numbering | P54 remains reserved; P62 follows P61. |
 
+### P63 — semantic recent-session continuity
+
+| | |
+|---|---|
+| File | `hermes_memory_provider/__init__.py` |
+| Date | 2026-11-27 |
+| Reason | Lexical continuity cannot recover a recent user row that is semantically related but uses different vocabulary. A predefined dev probe found five additional recoverable turns with a local cosine gate. |
+| Behaviour | Within P62's existing session/validity/source/row-limit guards, a recent user row may qualify through meaningful lexical overlap or cosine similarity at least `MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY` (default 0.6). The query embedding is the already-cached local engine vector; stored vectors are read from `memory_embeddings`. Zero disables only the semantic path. No LLM, network call, new store or global-row path is added. The threshold is part of prefetch cache identity. |
+| Verification | `tests/test_provider_prefetch.py::test_prefetch_recent_user_accepts_strong_semantic_similarity` covers semantic-only admission and the zero-disable path. The cache test varies the threshold. Session/global real-conversation workloads and holdout confirmation decide effectiveness and non-regression. |
+| Upstream | Not sent. |
+| Numbering | P54 remains reserved; P63 follows P62. |
+
 ## Sync procedure (run on every upstream release)
 
 **Triage decision (2026-11-10): keep `mnemosyne-memory 4.0.0` outside the

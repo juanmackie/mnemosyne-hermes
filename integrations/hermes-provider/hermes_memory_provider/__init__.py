@@ -331,11 +331,60 @@ def _prefetch_recent_session_user_limit() -> int:
         return 2
 
 
+def _prefetch_recent_user_similarity() -> float:
+    """Minimum cosine similarity for semantic recent-session continuity."""
+    raw = os.environ.get("MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY", "0.6").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY=%r; using default 0.6",
+            raw,
+        )
+        return 0.6
+    if not 0.0 <= value <= 1.0:
+        logger.warning(
+            "Out-of-range MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY=%r; using default 0.6",
+            raw,
+        )
+        return 0.6
+    return value
+
+
+def _prefetch_query_embedding(query: str) -> Optional[Any]:
+    """Return the local query embedding already used by engine recall, if available."""
+    try:
+        from mnemosyne.core import embeddings
+
+        return embeddings.embed_query(query)
+    except Exception as exc:
+        logger.debug("Mnemosyne: recent context embedding unavailable: %s", exc)
+        return None
+
+
+def _recent_user_semantically_related(query_embedding: Any, stored_json: Any) -> bool:
+    """Compare bounded local vectors without another model or network call."""
+    if query_embedding is None or not isinstance(stored_json, str):
+        return False
+    try:
+        query_vector = list(query_embedding)
+        stored_vector = json.loads(stored_json)
+        if not isinstance(stored_vector, list) or len(query_vector) != len(stored_vector):
+            return False
+        dot = sum(float(a) * float(b) for a, b in zip(query_vector, stored_vector, strict=True))
+        query_norm = sum(float(value) ** 2 for value in query_vector) ** 0.5
+        stored_norm = sum(float(value) ** 2 for value in stored_vector) ** 0.5
+        denominator = query_norm * stored_norm
+        return denominator > 0 and dot / denominator >= _prefetch_recent_user_similarity()
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _prefetch_recent_session_users(beam, query: str) -> List[Dict[str, Any]]:
-    """Return lexically connected recent user rows from this session.
+    """Return lexically or semantically connected recent user rows from this session.
 
     Global rows are deliberately excluded: this is conversation continuity,
-    not a second global recall path. P62 bounds the source to two rows by default.
+    not a second global recall path. P63 adds a bounded local semantic gate.
     """
     if not _parse_env_bool("MNEMOSYNE_PREFETCH_RECENT_USER", True):
         return []
@@ -349,8 +398,9 @@ def _prefetch_recent_session_users(beam, query: str) -> List[Dict[str, Any]]:
         rows = beam.conn.execute(
             """
             SELECT id, content, source, timestamp, importance, trust_tier,
-                   scope, veracity
+                   scope, veracity, embedding_json
             FROM working_memory
+            LEFT JOIN memory_embeddings ON memory_embeddings.memory_id = working_memory.id
             WHERE session_id = ? AND scope = 'session'
               AND content LIKE '[USER]%'
               AND (valid_until IS NULL OR valid_until > ?)
@@ -364,9 +414,17 @@ def _prefetch_recent_session_users(beam, query: str) -> List[Dict[str, Any]]:
         logger.debug("Mnemosyne: recent session context read failed: %s", exc)
         return []
     out: List[Dict[str, Any]] = []
+    query_embedding = None
     for row in rows:
         content = row["content"] if hasattr(row, "keys") else row[1]
-        if not query_tokens.intersection(_prefetch_tokens(content)):
+        lexical = bool(query_tokens.intersection(_prefetch_tokens(content)))
+        semantic = False
+        if not lexical and _prefetch_recent_user_similarity() > 0:
+            if query_embedding is None:
+                query_embedding = _prefetch_query_embedding(query)
+            stored_json = row["embedding_json"] if hasattr(row, "keys") else row[8]
+            semantic = _recent_user_semantically_related(query_embedding, stored_json)
+        if not (lexical or semantic):
             continue
         if _is_low_quality_prefetch(content):
             continue
@@ -2857,6 +2915,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 "MNEMOSYNE_PREFETCH_CONTENT_CHARS",
                 "MNEMOSYNE_PREFETCH_RECENT_USER",
                 "MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT",
+                "MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY",
                 "MNEMOSYNE_PREFETCH_TOTAL_CHARS",
                 "MNEMOSYNE_PREFETCH_MODEL_SLOT_LIMIT",
                 "MNEMOSYNE_PREFETCH_MODEL_SLOT_MIN_OVERLAP",

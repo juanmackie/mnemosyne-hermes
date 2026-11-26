@@ -127,13 +127,14 @@ def test_prefetch_uses_ten_candidate_overfetch():
 
 def test_prefetch_adds_lexically_connected_recent_session_user(monkeypatch):
     beam = RecallBeam()
-    beam.conn.execute(
+    beam.conn.executescript(
         """
         CREATE TABLE working_memory (
             id TEXT, content TEXT, source TEXT, timestamp TEXT, importance REAL,
             trust_tier TEXT, scope TEXT, veracity TEXT, valid_until TEXT,
             superseded_by TEXT, session_id TEXT
-        )
+        );
+        CREATE TABLE memory_embeddings (memory_id TEXT, embedding_json TEXT)
         """
     )
     beam.conn.execute(
@@ -183,6 +184,35 @@ def test_prefetch_adds_lexically_connected_recent_session_user(monkeypatch):
     beam.conn.execute("UPDATE working_memory SET scope='session'")
     monkeypatch.setenv("MNEMOSYNE_PREFETCH_RECENT_USER", "0")
     assert provider.prefetch("concise summaries", session_id="session-a") == ""
+
+
+def test_prefetch_recent_user_accepts_strong_semantic_similarity(monkeypatch):
+    beam = RecallBeam()
+    beam.conn.executescript(
+        """
+        CREATE TABLE working_memory (
+            id TEXT, content TEXT, source TEXT, timestamp TEXT, importance REAL,
+            trust_tier TEXT, scope TEXT, veracity TEXT, valid_until TEXT,
+            superseded_by TEXT, session_id TEXT
+        );
+        CREATE TABLE memory_embeddings (memory_id TEXT, embedding_json TEXT);
+        INSERT INTO working_memory VALUES (
+            'semantic-user', '[USER] The schema rollout plan needs a backup window',
+            'conversation', '2026-11-27T10:00:00', 0.65, 'STATED', 'session',
+            'stated', NULL, NULL, 'session-a'
+        );
+        INSERT INTO memory_embeddings VALUES ('semantic-user', '[1, 0]')
+        """
+    )
+    monkeypatch.delenv("MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY", raising=False)
+    monkeypatch.setattr(provider_mod, "_prefetch_query_embedding", lambda _query: [1, 0])
+    provider = _provider(beam)
+
+    assert "schema rollout plan" in provider.prefetch(
+        "database migration strategy", session_id="session-a"
+    )
+    monkeypatch.setenv("MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY", "0")
+    assert provider.prefetch("database migration strategy", session_id="session-a") == ""
 
 
 def test_real_engine_cache_observes_memory_writes_visibility_and_source_revisions(tmp_path):
@@ -482,8 +512,10 @@ def test_prefetch_cache_observes_recent_user_changes():
         instance.prefetch(query, session_id="session-a")
         os.environ["MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT"] = "2"
         instance.prefetch(query, session_id="session-a")
+        os.environ["MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY"] = "0"
+        instance.prefetch(query, session_id="session-a")
 
-    assert beam.recall_calls == 3
+    assert beam.recall_calls == 4
 
 
 def test_prefetch_cache_observes_recall_score_floor_changes():
