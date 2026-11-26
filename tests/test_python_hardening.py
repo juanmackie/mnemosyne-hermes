@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from mnemosyne_lite.db_path import resolve_db_path
 from mnemosyne_lite.plan import fallback_terms, fold_accesses, plan_consolidation
+from mnemosyne_lite.redact import redact_capture_secrets
 from mnemosyne_lite.schema import (
     MIGRATABLE_SCHEMA_VERSIONS,
     MIGRATIONS,
@@ -76,6 +77,92 @@ def test_sync_turn_skip_policy_and_capture_are_stable():
         assert result["status"] == "captured"
         assert store.recall("keep")[0]["context"] == "sync_turn"
         store.close()
+
+
+def test_sync_turn_retry_of_the_same_turn_is_idempotent():
+    """A retried turn is one memory, and the retry points at the original row."""
+    with tempfile.TemporaryDirectory() as d:
+        store = PythonMemoryStorage(os.path.join(d, "sync.db"))
+        text = "deploy the widget to production"
+        first = call_tool(store, "mnemosyne_sync_turn", {"user_text": text})
+        assert first["status"] == "captured"
+        assert store.count() == 1
+
+        retry = call_tool(store, "mnemosyne_sync_turn", {"user_text": text})
+        assert retry["status"] == "duplicate"
+        assert retry["synced"] is False
+        assert retry["source_memory_id"] == first["source_memory_id"]
+        assert store.count() == 1
+
+        # A different namespace and different text are different turns, and
+        # still capture exactly as they did before.
+        other_ns = call_tool(
+            store, "mnemosyne_sync_turn", {"user_text": text, "namespace": "other"}
+        )
+        assert other_ns["status"] == "captured"
+        other_text = call_tool(store, "mnemosyne_sync_turn", {"user_text": "deploy the gadget"})
+        assert other_text["status"] == "captured"
+        assert store.count() == 3
+
+        # The comparison runs on the stored (redacted) text, so a retry of a
+        # turn that carried a credential is still recognised as a duplicate
+        # instead of writing the same text a second time.
+        secret = "token=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"
+        first_secret = call_tool(store, "mnemosyne_sync_turn", {"user_text": f"rotate {secret}"})
+        retry_secret = call_tool(store, "mnemosyne_sync_turn", {"user_text": f"rotate {secret}"})
+        assert first_secret["status"] == "captured"
+        assert retry_secret["status"] == "duplicate"
+        assert retry_secret["source_memory_id"] == first_secret["source_memory_id"]
+        assert store.count() == 4
+        store.close()
+
+
+def test_remember_redacts_credentials_before_persistence():
+    """A credential in captured text must not reach the row, index or recall."""
+    planted = (
+        "The webhook token aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1zA3bC5 must never persist. "
+        "The run id is run_20261115_mnemosyne_report_12345678. "
+        "api_key=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0 "
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9c2VjcmV0cGF5bG9hZA "
+        "password=hunter2hunter2hunter2 "
+        "-----BEGIN RSA PRIVATE KEY----- MIIEowIBAAKCAQEA -----END RSA PRIVATE KEY-----"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "secrets.db")
+        store = PythonMemoryStorage(path)
+        memory_id = store.remember(planted, "ns", 5)["id"]
+        with closing(sqlite3.connect(path)) as conn:
+            stored = conn.execute(
+                "SELECT content FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()[0]
+        for secret in (
+            "aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1zA3bC5",
+            "ghp_",
+            "eyJhbGciOiJIUzI1NiJ9",
+            "hunter2hunter2hunter2",
+            "MIIEowIBAAKCAQEA",
+        ):
+            assert secret not in stored, secret
+        assert stored.count("[REDACTED]") >= 5, stored
+        # Identifier-shaped neighbours are not secrets and must survive verbatim.
+        assert "run_20261115_mnemosyne_report_12345678" in stored
+        # Recall must not hand the secret back either.
+        recalled = store.recall("webhook", max_results=5)
+        assert recalled and "aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1zA3bC5" not in recalled[0]["content"]
+        store.close()
+
+
+def test_redaction_leaves_ordinary_text_byte_identical():
+    """Only credential shapes change; prose and code identifiers do not."""
+    for sample in (
+        "The meeting moved to Thursday at 15:00 in room 4B.",
+        "def calculate_total(items): return sum(item.price for item in items)",
+        "SELECT id, content FROM memories WHERE namespace = 'default';",
+        "commit 4f9c2ab1 fixed the retry loop",
+        "Use `tokenize()` before comparing tokens.",
+        "a_very_long_descriptive_function_name_used_for_parity",
+    ):
+        assert redact_capture_secrets(sample) == sample
 
 
 def test_prefetch_fallback_terms_are_unique_and_bounded():

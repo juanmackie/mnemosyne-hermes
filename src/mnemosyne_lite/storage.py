@@ -24,6 +24,7 @@ from typing import Any
 from . import schema as _schema
 from .plan import count_sql, fold_accesses, plan_consolidation, predicate
 from .records import Query, ThreadState
+from .redact import redact_capture_secrets
 from .schema import actions_from
 
 logger = logging.getLogger(__name__)
@@ -1130,6 +1131,13 @@ class PythonMemoryStorage:
         if not (0 <= importance <= 10):
             raise ValueError(f"importance must be 0-10, got {importance}")
 
+        # Credentials must never enter persistent memory. This runs after the
+        # caller's input is validated (each replacement is shorter than the span
+        # it replaces, so the length limit still measures the caller's own text)
+        # and before the INSERT, so neither the row, the full-text index, nor the
+        # returned preview below can carry the secret.
+        content = redact_capture_secrets(content)
+
         mem_id = secrets.token_hex(8)
 
         conn = self._conn()
@@ -1164,6 +1172,27 @@ class PythonMemoryStorage:
             "importance": importance,
             "success": True,
         }
+
+    def find_sync_turn(self, content: str, namespace: str) -> str | None:
+        """Return the id of an identical already-captured turn, or None.
+
+        Clients retry `sync_turn` after a transport hiccup, so it asks this
+        before writing: one row per distinct turn. The comparison is against the
+        stored form, which is the redacted one, so `content` must already have
+        been through `redact_capture_secrets`.
+        """
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM memories "
+                "WHERE namespace = ? AND context = 'sync_turn' AND content = ? "
+                "ORDER BY created_at, id LIMIT 1",
+                (namespace, content),
+            ).fetchone()
+            return row[0] if row else None
+        except sqlite3.Error as e:
+            logger.exception("sync_turn lookup failed")
+            raise StorageError(f"sync_turn lookup failed on {self.db_path}: {e}") from e
 
     def _search_version(self, conn):
         # data_version detects other connections; total_changes detects this

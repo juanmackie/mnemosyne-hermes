@@ -209,6 +209,57 @@ def test_no_match_search_is_a_successful_empty_mcp_result():
         assert "shown 0 of 0" in result["text"], result
 
 
+def test_sync_turn_retry_over_mcp_is_one_memory_and_leaks_no_secret():
+    """A retried turn is captured once, and its credential never comes back."""
+    with tempfile.TemporaryDirectory() as d:
+        db = _new_store(d)
+        secret = "aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1zA3bC5"
+
+        def sync(request_id):
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "tools/call",
+                "params": {
+                    "name": "mnemosyne_sync_turn",
+                    "arguments": {"user_text": f"rotate the webhook token={secret}"},
+                },
+            }
+
+        first, retry = [r["result"] for r in _serve(db, [sync(1), sync(2)])]
+        assert first["isError"] is False, first
+        captured = first["structuredContent"]
+        duplicate = retry["structuredContent"]
+        assert captured["status"] == "captured", captured
+        assert duplicate["status"] == "duplicate", duplicate
+        assert duplicate["synced"] is False
+        assert duplicate["source_memory_id"] == captured["source_memory_id"]
+
+        storage = PythonMemoryStorage(db)
+        try:
+            assert storage.count() == 1
+        finally:
+            storage.close()
+
+        search = _serve(
+            db,
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "mnemosyne_memory_search",
+                        "arguments": {"query": "webhook"},
+                    },
+                }
+            ],
+        )[0]["result"]
+        assert search["isError"] is False, search
+        assert search["structuredContent"]["count"] == 1, search
+        assert secret not in json.dumps(search), "the secret came back on recall"
+
+
 if __name__ == "__main__":
     tests = [
         test_lite_tool_table_contract_is_stable,
@@ -217,6 +268,7 @@ if __name__ == "__main__":
         test_missing_store_is_refused_not_fabricated,
         test_foreign_store_is_refused_byte_identically,
         test_count_read_failures_are_mcp_errors_after_successful_recall,
+        test_sync_turn_retry_over_mcp_is_one_memory_and_leaks_no_secret,
         test_no_match_search_is_a_successful_empty_mcp_result,
     ]
     for fn in tests:
