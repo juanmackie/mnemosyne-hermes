@@ -139,9 +139,17 @@ def test_prefetch_adds_lexically_connected_recent_session_user(monkeypatch):
     beam.conn.execute(
         "INSERT INTO working_memory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            "recent-user", "[USER] User prefers concise summaries", "conversation",
-            "2026-11-27T10:00:00", 0.65, "STATED", "session", "stated",
-            None, None, "session-a",
+            "recent-user",
+            "[USER] User prefers concise summaries",
+            "conversation",
+            "2026-11-27T10:00:00",
+            0.65,
+            "STATED",
+            "session",
+            "stated",
+            None,
+            None,
+            "session-a",
         ),
     )
     provider = _provider(beam)
@@ -441,6 +449,22 @@ def test_queue_prefetch_is_opt_in_until_hit_rate_is_measured():
     assert beam.recall_calls == 0
     assert instance.get_prefetch_diagnostics()["cache_enabled"] is False
     beam.conn.close()
+
+
+def test_prefetch_cache_observes_recent_user_changes():
+    beam = RecallBeam(rows=[_row()])
+    instance = _provider(beam)
+    query = "What summaries do I prefer?"
+
+    with patch.dict(
+        os.environ,
+        {"MNEMOSYNE_PREFETCH_CACHE_ENABLED": "1", "MNEMOSYNE_PREFETCH_RECENT_USER": "0"},
+    ):
+        instance.prefetch(query, session_id="session-a")
+        os.environ["MNEMOSYNE_PREFETCH_RECENT_USER"] = "1"
+        instance.prefetch(query, session_id="session-a")
+
+    assert beam.recall_calls == 2
 
 
 def test_prefetch_cache_observes_recall_score_floor_changes():

@@ -2838,6 +2838,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             (name, os.environ.get(name, ""))
             for name in (
                 "MNEMOSYNE_PREFETCH_CONTENT_CHARS",
+                "MNEMOSYNE_PREFETCH_RECENT_USER",
                 "MNEMOSYNE_PREFETCH_TOTAL_CHARS",
                 "MNEMOSYNE_PREFETCH_MODEL_SLOT_LIMIT",
                 "MNEMOSYNE_PREFETCH_MODEL_SLOT_MIN_OVERLAP",
