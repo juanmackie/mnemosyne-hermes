@@ -31,14 +31,18 @@ query-embedding cache was cleared before each sample. No transcript text or
 source database is committed. These are intrinsic same-conversation labels, not
 independent semantic judgments.
 
-On the 50-turn development split, the final branch reduced cold explicit-recall
-p50 from **115.8 ms to 55.5 ms** in a low-load run and recall@5 from **0.40 to
-0.44** versus the untouched `main` engine. A repeat under three unrelated CPU
-saturated test shards measured 88.2 ms with identical relevance, so latency is
-host-load dependent. nDCG@5 rose from 0.3383 to 0.3564, precision@5 from 0.116 to
-0.124, and prefetch recall from 0.24 to 0.26. Retained ranking changes left
-holdout recall unchanged; proposed dense-inference and vector-budget changes
-that lost holdout recall were reverted. Public PrecisionMemBench remains 43/43.
+On the 50-turn development split, scoping WAL `synchronous=NORMAL` to
+diagnostic recall-counter commits reduced paired cold explicit-recall p50 from
+**54.9 ms to 40.9 ms** versus the pre-change branch, with identical relevance.
+Against untouched `main`, the final branch reduced p50 from **115.8 ms to 40.9 ms**
+in a low-load run and recall@5 from **0.40 to 0.44**. A repeat under three
+unrelated CPU-saturated test shards measured 88.2 ms before this commit change,
+so latency is host-load dependent. nDCG@5 rose from 0.3383 to 0.3564, precision@5
+from 0.116 to 0.124, and prefetch recall from 0.24 to 0.26. On holdout, the
+commit change reduced p50 from 42.7 ms to 31.4 ms with identical relevance.
+Retained ranking changes left holdout recall unchanged; proposed dense-inference
+and vector-budget changes that lost holdout recall were reverted. Public
+PrecisionMemBench remains 43/43.
 Cache retention is entry-bounded; normal recall rows are truncated before
 scoring, while unusually long query keys remain a memory/latency trade-off.
 
