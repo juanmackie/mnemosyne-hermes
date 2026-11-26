@@ -325,6 +325,20 @@
  def _fact_match_tokens(text: str) -> Set[str]:
      """Return meaningful tokens for strict fact matching."""
      return set(_recall_tokens(text))
+@@ -2551,7 +2794,9 @@
+ def _fts_query_terms(query: str) -> List[str]:
+     """FTS-safe meaningful terms for natural-language recall queries."""
+     terms = []
+     for term in _expanded_query_tokens(_recall_tokens(query)):
+         term = term.replace('"', '""').strip()
+         if term:
+-            terms.append(f'"{term}"')
++            # LOCAL PATCH: prefix candidates recover inflections and compounds;
++            # exact lexical reranking still decides admission and score.
++            terms.append(f'"{term}"*' if len(term) >= 4 else f'"{term}"')
+     return terms
+ 
+ 
 @@ -2969,6 +3212,19 @@
      return results[:k]
  

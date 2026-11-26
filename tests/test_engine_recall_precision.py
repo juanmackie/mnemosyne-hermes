@@ -96,7 +96,13 @@ os.environ["MNEMOSYNE_POLYPHONIC_RECALL"] = "0"
 os.environ.pop("MNEMOSYNE_RECALL_SCORE_FLOOR", None)
 
 import mnemosyne.core.beam as beam_module
-from mnemosyne.core.beam import BeamMemory, _apply_recall_score_floor
+from mnemosyne.core.beam import BeamMemory, _apply_recall_score_floor, _fts_query_terms
+
+# Four-character-and-longer FTS terms admit inflection/compound candidates;
+# shorter terms stay exact and lexical reranking remains the precision gate.
+assert _fts_query_terms("run running runner cat") == [
+    '"run"', '"running"*', '"runner"*', '"cat"',
+]
 
 # The option uses an inclusive relative boundary, preserves ties at ratio 1,
 # and treats invalid or disabled values as no filter.
