@@ -17,9 +17,9 @@
   },
   "files": {
     "hermes_memory_provider/__init__.py": {
-      "sha256": "-vE1AXS0hgll569IwjjgAoDtIBVyphwuufkWfAwsEww",
-      "bytes": 298981,
-      "lines": 6268
+      "sha256": "5mGPCYHUfSy1i-OvZwp1WIlEfMvSiIT9KV2cmjjDXGQ",
+      "bytes": 299148,
+      "lines": 6274
     },
     "hermes_memory_provider/audit.py": {
       "sha256": "D9GLkqzg6Nd--AdouH1YIe731WhXpFwvgZEKgGRcAdg",
@@ -118,7 +118,8 @@
       "P59 prefetch overfetch defaults to ten candidates, twice the default five-row output",
       "P61 prefetch may reserve one slot for the most recent session-scoped user row when it shares a meaningful query token; MNEMOSYNE_PREFETCH_RECENT_USER=0 disables",
       "P62 prefetch recent-session continuity defaults to two lexically connected user rows; MNEMOSYNE_PREFETCH_RECENT_USER_LIMIT is clamped to 0..3 and included in cache identity",
-      "P63 recent-session continuity also admits rows with local cosine similarity >= MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY (default 0.6); lexical fallback and session/global guards remain"
+      "P63 recent-session continuity also admits rows with local cosine similarity >= MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY (default 0.6); lexical fallback and session/global guards remain",
+      "P64 calibrate semantic recent-session continuity default from 0.6 to 0.55; retain P63 local cosine path and session/global guards, and declare the P63/P64 site marker"
     ],
     "hermes_memory_provider/cli.py": [
       "P4 doctor names the required engine and the install command on failure",

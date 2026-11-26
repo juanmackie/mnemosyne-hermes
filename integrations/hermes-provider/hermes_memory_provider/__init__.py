@@ -331,23 +331,29 @@ def _prefetch_recent_session_user_limit() -> int:
         return 2
 
 
+# LOCAL PATCH: P63/P64 semantic recent-session continuity uses a 0.55 default.
 def _prefetch_recent_user_similarity() -> float:
     """Minimum cosine similarity for semantic recent-session continuity."""
-    raw = os.environ.get("MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY", "0.6").strip()
+    default = 0.55
+    raw = os.environ.get(
+        "MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY", str(default)
+    ).strip()
     try:
         value = float(raw)
     except ValueError:
         logger.warning(
-            "Invalid MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY=%r; using default 0.6",
+            "Invalid MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY=%r; using default %s",
             raw,
+            default,
         )
-        return 0.6
+        return default
     if not 0.0 <= value <= 1.0:
         logger.warning(
-            "Out-of-range MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY=%r; using default 0.6",
+            "Out-of-range MNEMOSYNE_PREFETCH_RECENT_USER_MIN_SIMILARITY=%r; using default %s",
             raw,
+            default,
         )
-        return 0.6
+        return default
     return value
 
 
