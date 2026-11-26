@@ -40,6 +40,9 @@ unrelated CPU-saturated test shards measured 88.2 ms before this commit change,
 so latency is host-load dependent. nDCG@5 rose from 0.3383 to 0.3564, precision@5
 from 0.116 to 0.124, and prefetch recall from 0.24 to 0.26. On holdout, the
 commit change reduced p50 from 42.7 ms to 31.4 ms with identical relevance.
+A precompiled lexical separator regex provided a further paired dev p50
+reduction from 40.7 ms to 39.2 ms and holdout p50 from 30.9 ms to 29.8 ms,
+with identical relevance; one holdout run had a noisier/worse p99 tail.
 Retained ranking changes left holdout recall unchanged; proposed dense-inference
 and vector-budget changes that lost holdout recall were reverted. Public
 PrecisionMemBench remains 43/43.
