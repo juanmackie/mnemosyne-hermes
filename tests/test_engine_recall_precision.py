@@ -281,6 +281,23 @@ assert [row["id"] for row in again] == baseline_ids, (baseline, again)
 os.environ["MNEMOSYNE_RECALL_SCORE_FLOOR"] = "0.6"
 assert owner.recall("qzxwvv no matching stored memory", top_k=10, _cross_session=False) == []
 
+# Strong FTS evidence avoids dense inference; a zero-candidate query still
+# enters the hybrid path and requests an embedding.
+os.environ["MNEMOSYNE_RECALL_SCORE_FLOOR"] = "0"
+from unittest.mock import patch
+with patch.object(beam_module._embeddings, "available", return_value=True), patch.object(
+    beam_module._embeddings, "embed_query", side_effect=AssertionError("dense inference called")
+):
+    strong_rows = owner.recall(
+        "Kubernetes deployment GitHub Actions", top_k=1, _cross_session=False
+    )
+assert expected_working in {row["id"] for row in strong_rows}
+with patch.object(beam_module._embeddings, "available", return_value=True), patch.object(
+    beam_module._embeddings, "embed_query", return_value=None
+) as weak_embed:
+    owner.recall("qzxwvv no matching stored memory", top_k=1, _cross_session=False)
+assert weak_embed.call_count == 1
+
 other_session.conn.close()
 owner.conn.close()
 print("baseline scores:", [(r["id"], r["tier"], r["score"]) for r in baseline])
