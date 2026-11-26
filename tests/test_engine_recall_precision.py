@@ -115,6 +115,19 @@ assert _recall_tokens("Cached recall tokens") is tokens
 assert _recall_tokens.cache_info().maxsize == 4096
 assert _is_meaningful_recall_token.cache_info().maxsize == 65536
 
+from mnemosyne.core import embeddings as embedding_module
+from unittest.mock import patch
+with patch.dict(os.environ, {"MNEMOSYNE_EMBEDDING_THREADS": ""}), patch.object(
+    embedding_module.os, "cpu_count", return_value=64
+):
+    assert embedding_module._embedding_threads() == 4
+with patch.dict(os.environ, {"MNEMOSYNE_EMBEDDING_THREADS": ""}), patch.object(
+    embedding_module.os, "cpu_count", return_value=2
+):
+    assert embedding_module._embedding_threads() == 2
+with patch.dict(os.environ, {"MNEMOSYNE_EMBEDDING_THREADS": "7"}):
+    assert embedding_module._embedding_threads() == 7
+
 # The option uses an inclusive relative boundary, preserves ties at ratio 1,
 # and treats invalid or disabled values as no filter.
 sample = [{"score": 0.8}, {"score": 0.4}, {"score": 0.1}]

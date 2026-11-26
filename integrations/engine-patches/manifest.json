@@ -36,6 +36,12 @@
         "e8bd89e3dde27eeea4bb8b5577dceff5accd24905d9772dc1bd33c5ec8f4908d"
       ]
     },
+    "core/embeddings.py": {
+      "original_sha256": "2587b63b0f8a74eea8061e10732af2817c0d723baa31b1111b4014ddcfbf0976",
+      "patch": "core-embeddings.py.patch",
+      "patch_sha256": "7f627bd3e6717d4a78543d8d945c13835310026a809746f336989b16a7bd3e13",
+      "patched_sha256": "a72c4d5c0f1fb8729e34c4ed9643efea16dd7f0a649e15739c8d1dc563e1b40b"
+    },
     "core/config.py": {
       "original_sha256": "3adac4825d8495036945e873f7d9b43700166729e6a09b4876049fe56b116929",
       "patch": "core-config.py.patch",

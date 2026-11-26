@@ -1,0 +1,24 @@
+--- a/core/embeddings.py
++++ b/core/embeddings.py
+@@ -189,9 +189,9 @@
+ def _embedding_threads() -> int:
+     """Return the thread count for the onnxruntime embedding model.
+ 
+-    Defaults to os.cpu_count() or 4.  Explicitly passing a thread count
+-    prevents onnxruntime from calling pthread_setaffinity_np(), which
+-    fails with EINVAL in unprivileged LXC containers (#453).
++    Defaults to the lesser of os.cpu_count() and four.  Explicitly passing
++    a thread count prevents onnxruntime from calling pthread_setaffinity_np(),
++    which fails with EINVAL in unprivileged LXC containers (#453).
+     The MNEMOSYNE_EMBEDDING_THREADS env var overrides the default.
+     """
+     try:
+@@ -200,7 +200,7 @@
+             return int(from_env)
+     except (ValueError, TypeError):
+         pass
+-    return max(int(os.cpu_count() or 4), 1)
++    return min(4, max(int(os.cpu_count() or 4), 1))
+ 
+ 
+ def _get_model():
