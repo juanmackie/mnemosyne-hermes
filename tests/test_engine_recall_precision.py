@@ -99,6 +99,7 @@ import mnemosyne.core.beam as beam_module
 from mnemosyne.core.beam import (
     BeamMemory,
     _apply_recall_score_floor,
+    _bounded_recall_attribution,
     _fts_query_terms,
     _is_meaningful_recall_token,
     _recall_tokens,
@@ -127,6 +128,32 @@ with patch.dict(os.environ, {"MNEMOSYNE_EMBEDDING_THREADS": ""}), patch.object(
     assert embedding_module._embedding_threads() == 2
 with patch.dict(os.environ, {"MNEMOSYNE_EMBEDDING_THREADS": "7"}):
     assert embedding_module._embedding_threads() == 7
+
+# Diagnostic recall counters avoid a per-call fsync and restore durability.
+import sqlite3
+attribution_db = sqlite3.connect(":memory:")
+attribution_db.execute("PRAGMA synchronous=FULL")
+attribution_db.execute("CREATE TABLE counters (value INTEGER)")
+attribution_db.execute("INSERT INTO counters VALUES (0)")
+attribution_db.commit()
+statements = []
+class RecordingConnection:
+    def __init__(self, connection):
+        self.connection = connection
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+    def execute(self, sql, parameters=()):
+        statements.append(sql)
+        return self.connection.execute(sql, parameters)
+recorded_db = RecordingConnection(attribution_db)
+with beam_module._bounded_recall_attribution(recorded_db):
+    recorded_db.execute("UPDATE counters SET value = value + 1")
+    recorded_db.commit()
+assert attribution_db.execute("PRAGMA synchronous").fetchone()[0] == 2
+assert attribution_db.execute("SELECT value FROM counters").fetchone()[0] == 1
+assert any("PRAGMA synchronous=NORMAL" in statement for statement in statements)
+assert any("PRAGMA synchronous=2" in statement for statement in statements)
+attribution_db.close()
 
 # The option uses an inclusive relative boundary, preserves ties at ratio 1,
 # and treats invalid or disabled values as no filter.
