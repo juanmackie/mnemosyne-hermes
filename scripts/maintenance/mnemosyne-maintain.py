@@ -269,16 +269,23 @@ def memory_telemetry(con: sqlite3.Connection) -> dict:
     except sqlite3.Error:
         return telemetry
 
-    # Embeddings live in ``memory_embeddings`` keyed by memory id; the vec0
-    # shadow tables mirror them but cannot be read without the extension.
+    # Embeddings live in ``memory_embeddings`` keyed by memory id, but that is
+    # only the working-memory store and the *fallback* for episodic rows: with
+    # sqlite-vec available the engine writes episodic vectors to ``vec_episodes``
+    # and skips ``memory_embeddings`` entirely. A vec0 row count needs the
+    # extension loaded, so a healthy store would otherwise read as 0/N (or as
+    # partial when a few stale fallback rows remain) and raise a false alarm.
     coverage: dict = {}
+    episodic_vectors_in_vec = "vec_episodes" in tables
     for table in ("working_memory", "episodic_memory"):
         if table not in tables or "memory_embeddings" not in tables:
+            continue
+        if table == "episodic_memory" and episodic_vectors_in_vec:
             continue
         try:
             total = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             covered = con.execute(
-                f"SELECT COUNT(*) FROM {table} AS t "
+                f"SELECT COUNT(DISTINCT t.id) FROM {table} AS t "
                 "JOIN memory_embeddings AS me ON me.memory_id = t.id"
             ).fetchone()[0]
         except sqlite3.Error:

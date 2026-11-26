@@ -324,6 +324,7 @@ def make_engine_db(
     working: int = 200,
     embedded: int = 150,
     consolidated: int = 10,
+    vec_episodes: bool = False,
 ) -> pathlib.Path:
     """A store shaped like mnemosyne-memory 3.15.1's BEAM schema, without the engine."""
     con = sqlite3.connect(path)
@@ -376,6 +377,12 @@ def make_engine_db(
         ],
     )
     con.commit()
+    if vec_episodes:
+        # A real vec0 table is unreadable without the extension loaded; the
+        # telemetry probe keys on the name in sqlite_master (virtual tables are
+        # type='table' there), so a plain table stands in for it here.
+        con.execute("CREATE TABLE vec_episodes (rowid INTEGER PRIMARY KEY, embedding BLOB)")
+        con.commit()
     con.close()
     return path
 
@@ -422,3 +429,29 @@ def test_verify_stays_quiet_when_no_vectors_exist_at_all(tmp_path):
     result = run("verify", "--db-path", str(db))
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == ""
+
+
+def test_episodic_coverage_is_omitted_when_sqlite_vec_owns_the_vectors(tmp_path):
+    """With vec_episodes present the engine skips memory_embeddings for episodic rows.
+
+    Counting the fallback table there reads a healthy store as 0/N, or as partial
+    coverage when a few stale rows remain — so the metric must be omitted and no
+    verify warning may fire.
+    """
+    db = make_engine_db(tmp_path / "mnemosyne.db", embedded=200, vec_episodes=True)
+    con = sqlite3.connect(db)
+    con.executemany(
+        "INSERT INTO memory_embeddings (memory_id, embedding_json) VALUES (?, '[0.0]')",
+        [("em-1",), ("em-2",)],
+    )
+    con.commit()
+    con.close()
+
+    report = run("report", "--db-path", str(db))
+    assert report.returncode == 0, report.stderr
+    assert "working-embeddings=200/200(100%)" in report.stdout
+    assert "episodic-embeddings" not in report.stdout, "unreadable vec0 rows are not a count"
+
+    verify = run("verify", "--db-path", str(db))
+    assert verify.returncode == 0, verify.stderr
+    assert verify.stdout.strip() == "", "no false episodic coverage warning"
