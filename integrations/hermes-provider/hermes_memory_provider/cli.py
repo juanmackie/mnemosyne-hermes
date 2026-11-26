@@ -492,6 +492,62 @@ def _repair_engine_patches(dry_run=False, *, engine_root=None, manifest_path=Non
     return True, report
 
 
+def _embedding_dim_mismatch_note(db_path: str | None) -> str | None:
+    """Return an informational note when MNEMOSYNE_EMBEDDING_DIM disagrees with stored vec tables.
+
+    LOCAL PATCH: P60 read-only inspection via sqlite_master (mode=ro) so an
+    embedding-model switch surfaces a clear reindex hint without opening or
+    mutating the store.
+    """
+    raw_dim = os.environ.get("MNEMOSYNE_EMBEDDING_DIM", "").strip()
+    if not raw_dim or not db_path:
+        return None
+    try:
+        configured = int(raw_dim)
+    except ValueError:
+        return None
+    if configured <= 0:
+        return None
+    target = Path(db_path).expanduser()
+    if not target.is_file():
+        return None
+    import re
+    import sqlite3
+    from urllib.parse import quote
+
+    resolved = target.resolve().as_posix()
+    if not resolved.startswith("/"):
+        resolved = "/" + resolved
+    uri = f"file:{quote(resolved, safe='/:')}?mode=ro"
+    conn = None
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        rows = conn.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type = 'table' AND name IN ('vec_working', 'vec_episodes')"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    mismatches = []
+    for table_name, ddl in rows:
+        if not isinstance(ddl, str):
+            continue
+        match = re.search(r"\b(?:float(?:32)?|int8|bit)\[(\d+)\]", ddl, re.IGNORECASE)
+        if match:
+            stored = int(match.group(1))
+            if stored != configured:
+                mismatches.append(f"{table_name}={stored}")
+    if not mismatches:
+        return None
+    return (
+        f"embedding dimension mismatch: MNEMOSYNE_EMBEDDING_DIM={configured} "
+        f"but store has {', '.join(sorted(mismatches))}; run `mnemosyne reindex` before querying"
+    )
+
+
 def register_cli(subparser):
     """Register CLI subcommands for ``hermes mnemosyne``."""
     mn_cmds = subparser.add_subparsers(dest="mnemosyne_cmd")
@@ -1100,6 +1156,10 @@ def mnemosyne_command(args):
             )
             if freshness:
                 notes.append(freshness)
+        # LOCAL PATCH: P60 informational embedding-dimension mismatch note (read-only).
+        dim_note = _embedding_dim_mismatch_note(db_path)
+        if dim_note:
+            notes.append(dim_note)
 
         critical_ok = all(ok for _, ok, _ in critical)
 

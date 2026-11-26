@@ -1799,3 +1799,145 @@ def test_sleep_demote_sources_explicit_opt_out_keeps_verified_summary(monkeypatc
         assert row["importance"] == 0.8
     finally:
         memory.conn.close()
+
+
+def test_sleep_coverage_accepts_paraphrased_llm_summary_and_demotes(monkeypatch, tmp_path):
+    """Genuine paraphrased LLM summaries that keep entities/numbers/polarity verify."""
+    try:
+        from mnemosyne.core import local_llm, model_refresh
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_VERIFY", "1")
+    monkeypatch.setenv("MNEMOSYNE_SLEEP_DEMOTE_SOURCES", "1")
+    monkeypatch.setattr(local_llm, "llm_available", lambda: True)
+    monkeypatch.setattr(
+        local_llm,
+        "summarize_memories",
+        lambda *_args, **_kwargs: (
+            "Orion cluster NVMe capacity is capped at 40 terabytes; "
+            "nightly backups run at 02:30 UTC."
+        ),
+    )
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", lambda _items: [])
+    memory = BeamMemory(
+        session_id="paraphrase-ok", db_path=str(tmp_path / "paraphrase-ok.db"), seed_config=False
+    )
+    try:
+        id1 = memory.remember(
+            "The Orion cluster storage limit is 40 terabytes on NVMe.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        id2 = memory.remember(
+            "Orion backup snapshots run nightly at 02:30 UTC.",
+            source="user_note",
+            scope="session",
+            importance=0.8,
+        )
+        graph_calls = []
+        monkeypatch.setattr(
+            memory, "_ingest_graph_and_veracity", lambda *_args, **_kwargs: graph_calls.append(True)
+        )
+        result = memory.sleep(force=True)
+        assert result["status"] == "consolidated"
+        episodic = memory.conn.execute(
+            "SELECT metadata_json FROM episodic_memory WHERE source = 'sleep_consolidation'"
+        ).fetchone()
+        assert json.loads(episodic["metadata_json"])["verified"] is True
+        assert graph_calls == [True], "verified paraphrased LLM summary must feed graph ingestion"
+        assert result["demoted_rows"] == 2
+        for sid in (id1, id2):
+            imp = memory.conn.execute(
+                "SELECT importance FROM working_memory WHERE id = ?", (sid,)
+            ).fetchone()["importance"]
+            assert imp == 0.25
+    finally:
+        memory.conn.close()
+
+
+def test_sleep_coverage_rejects_fabricated_numbers_and_dropped_negations():
+    """Paraphrase mode still rejects invented numbers and dropped negations."""
+    try:
+        from mnemosyne.core.beam import BeamMemory
+    except ImportError:
+        if os.environ.get("MNEMOSYNE_REQUIRE_ENGINE") == "1":
+            raise
+        pytest.skip("requires the audited engine")
+    num_item = [{"content": "The Orion limit is 40 terabytes.", "scope": "session"}]
+    assert BeamMemory._sleep_coverage_complete(
+        num_item, "Orion limit: 40 terabytes.", allow_paraphrase=True
+    )
+    assert not BeamMemory._sleep_coverage_complete(
+        num_item, "Orion limit: 400 terabytes.", allow_paraphrase=True
+    )
+    assert not BeamMemory._sleep_coverage_complete(
+        num_item, "Orion limit is 40 terabytes (up from 20).", allow_paraphrase=True
+    )
+    neg_item = [{"content": "Never deploy Orion on Fridays.", "scope": "session"}]
+    assert BeamMemory._sleep_coverage_complete(
+        neg_item, "Do not deploy Orion on Fridays.", allow_paraphrase=True
+    )
+    assert not BeamMemory._sleep_coverage_complete(
+        neg_item, "Deploy Orion on Fridays.", allow_paraphrase=True
+    )
+    # Curly apostrophe and contractions must not silently flip negation.
+    assert not BeamMemory._sleep_coverage_complete(
+        [{"content": "The Orion API isn\u2019t stable yet.", "scope": "session"}],
+        "The Orion API is stable now.",
+        allow_paraphrase=True,
+    )
+    assert not BeamMemory._sleep_coverage_complete(
+        [{"content": "You shouldn't run Orion migrations on prod.", "scope": "session"}],
+        "Run Orion migrations on prod.",
+        allow_paraphrase=True,
+    )
+    assert not BeamMemory._sleep_coverage_complete(
+        [
+            {"content": "Orion writes are not allowed in read-only mode.", "scope": "session"},
+            {"content": "We never skip Orion tests.", "scope": "session"},
+        ],
+        "Orion writes are not allowed in read-only mode; we skip Orion tests.",
+        allow_paraphrase=True,
+    )
+    # Multi-item batches containing any negation fail closed on paraphrase
+    # (preventing cross-item polarity swaps with equal total counts).
+    assert not BeamMemory._sleep_coverage_complete(
+        [
+            {"content": "Postgres is enabled.", "scope": "session"},
+            {"content": "MySQL is not enabled.", "scope": "session"},
+        ],
+        "Postgres is not enabled; MySQL is enabled.",
+        allow_paraphrase=True,
+    )
+    # Negation/restriction words like nothing/only cannot be invented or dropped.
+    assert not BeamMemory._sleep_coverage_complete(
+        [{"content": "Deploy only from the release branch.", "scope": "session"}],
+        "Deploy from any branch.",
+        allow_paraphrase=True,
+    )
+    assert not BeamMemory._sleep_coverage_complete(
+        [{"content": "Ship the build.", "scope": "session"}],
+        "Ship nothing.",
+        allow_paraphrase=True,
+    )
+    # Unclosed <think> tail must not count as summary coverage.
+    assert not BeamMemory._sleep_coverage_complete(
+        [{"content": "Orion listens on port 8080.", "scope": "session"}],
+        "<think>Orion listens on port 8080",
+        allow_paraphrase=True,
+    )
+    # Non-ASCII rows with no ASCII tokens fail closed rather than matching anything.
+    assert not BeamMemory._sleep_coverage_complete(
+        [{"content": "我住在东京", "scope": "session"}],
+        "我住在大阪",
+        allow_paraphrase=True,
+    )
+    assert BeamMemory._sleep_coverage_complete(
+        [{"content": "我住在东京", "scope": "session"}],
+        "我住在东京",
+        allow_paraphrase=True,
+    )

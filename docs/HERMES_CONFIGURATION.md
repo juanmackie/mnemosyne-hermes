@@ -62,6 +62,8 @@ memory:
 | `MNEMOSYNE_PREFETCH_CONTENT_CHARS` | profile limit | Optional per-item cap in addition to the total cap. |
 | `MNEMOSYNE_PREFETCH_INCLUDE_RAW_TOOL_CAPTURE` | `false` | Explicit opt-in to silently inject raw tool/delegation captures. Capture and manual recall remain available independently. |
 | `MNEMOSYNE_PREFETCH_CACHE_ENABLED` | `false` | Experimental bounded exact-query cache and `queue_prefetch` warming on Hermes' existing serialized worker. Enable only after measuring useful hits for your sessions. |
+| `MNEMOSYNE_LABEL_STRICT_ABSTAIN` | `true` | Controls P51 abstention on fully labeled recall sets with zero label evidence. Set `0`/`false` to opt out and keep raw engine results for label-disjoint paraphrases. |
+| `MNEMOSYNE_RECALL_CONFIDENCE_ENABLED` | `false` | Opt-in multi-signal confidence verdict (`HIGH`/`MODERATE`/`LOW`/`NONE`, `answerable`, `top_score`, `score_margin`, `reason`) in `mnemosyne_recall` responses and per-band counters in diagnostics. |
 
 Cache keys include the exact-query digest, session, profile, canonical owner,
 runtime visibility, render controls, and local/external SQLite generation.

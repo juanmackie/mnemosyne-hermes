@@ -44,22 +44,20 @@ python bench/hermes_prefetch_eval.py --cache --require-pass --output .evals/herm
 
 Each JSON report has a companion HTML report with the actual injected synthetic context, grading outcomes, source counters, lock wait/recall time, first-call latency and warm p50/p95. Results are ignored under `.evals/`; no live configuration or memory is read. Provider source hashes are included in the run metadata.
 
-## Current-tree rerun (2026-11-10)
+## Current-tree rerun (2026-11-26)
 
-The current 14-case fixture was rerun against the working-tree provider and the
-patched `mnemosyne-memory 3.15.1` engine on Python 3.13, with embeddings and LLM
-work disabled. The evaluation completed without execution errors and graded
-**12/14 cases passing**. All five held-out cases found all 9 required labels,
-returned none of 24 forbidden labels, and stayed within the context budget.
-The two held-out-case failures were over-retrieval: `held-distractor`
-included an irrelevant `raw_user` label, and `held-correction-retirement`
-included an irrelevant `preference` label. Thus held-out label recall is strong,
-but the complete fixture does not pass its precision/allowed-label gate.
+With P58's relative adjusted-score floor (`PrefetchProfile.min_relative_score = 0.45`),
+the 14-case fixture was rerun against the working-tree provider and the patched
+`mnemosyne-memory 3.15.1` engine on Python 3.13, with embeddings and LLM work
+disabled. The evaluation completed with **14/14 cases passing** and 0 execution
+errors, closing the two prior held-out over-retrieval failures (`held-distractor`
+and `held-correction-retirement`, which had scored 12/14 on 2026-11-10) while
+retaining all required labels and budget bounds. This gate now runs in the
+`engine-contract` CI job (`bench/hermes_prefetch_eval.py --require-pass`).
 
-This is a fresh synthetic provider-hook run, not a live Hermes turn or a
-production traffic sample. The result JSON was kept in ignored `.evals/` during
-inspection and removed after recording the summary; rerun the commands above
-to regenerate per-case output and timings.
+This is a synthetic provider-hook run, not a live Hermes turn or a production
+traffic sample. Re-run the commands above to regenerate per-case output and
+timings.
 
 The corpus covers greetings, short follow-ups, direct fact queries, topic switches, no-match, raw operational captures, stale rows, foreign contacts, canonical profile ownership and oversized identity. Graders check required/allowed/forbidden labels, duplicate markers and size; oracle, empty, wrong, sensitive and oversized responses validate grader discrimination. Labels are content-based fixture oracles, not ranked engine-ID precision@5/MRR or semantic answer scoring. Character/4 token estimates are explicitly proxies.
 

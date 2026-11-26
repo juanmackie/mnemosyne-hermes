@@ -750,6 +750,9 @@ class PrefetchProfile:
     min_importance: float = 0.65
     min_topic_signal: float = 0.08
     raw_min_topic_signal: float = 0.18
+    # LOCAL PATCH: P58 relative floor against the top quality-adjusted hit so
+    # weak trailing distractors and raw transcript echoes do not enter context.
+    min_relative_score: float = 0.45
     content_char_limit: int = 0                  # 0 -> use env / untruncated
     drop_low_quality: bool = True
     dedup: bool = True
@@ -1675,6 +1678,49 @@ def _parse_env_bool(key: str, default: bool) -> bool:
     return _coerce_bool(os.environ.get(key), default)
 
 
+# LOCAL PATCH: P54 explicit opt-out parser (matches engine _env_disabled).
+def _env_disabled(key: str) -> bool:
+    """True only for an explicit 0/false/no/off opt-out."""
+    raw = os.environ.get(key)
+    return raw is not None and raw.strip().lower() in ("0", "false", "no", "off")
+
+
+# LOCAL PATCH: P59 multi-signal recall confidence assessment (opt-in via
+# MNEMOSYNE_RECALL_CONFIDENCE_ENABLED=1). Deterministic and content-free.
+def _assess_recall_confidence(query: str, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not results:
+        return {
+            "band": "NONE",
+            "answerable": False,
+            "top_score": 0.0,
+            "score_margin": 0.0,
+            "reason": "no_matching_memories",
+        }
+    top = results[0]
+    top_score = float(top.get("score") or 0.0)
+    second_score = float(results[1].get("score") or 0.0) if len(results) > 1 else 0.0
+    margin = max(0.0, top_score - second_score)
+    topic_signal = _prefetch_topic_signal(top)
+    q_tokens = _prefetch_tokens(query)
+    c_tokens = _prefetch_tokens(str(top.get("content") or ""))
+    token_overlap = (len(q_tokens & c_tokens) / len(q_tokens)) if q_tokens else 0.0
+    if top_score >= 0.55 and (topic_signal >= 0.50 or token_overlap >= 0.50):
+        band, answerable, reason = "HIGH", True, "strong_top_match"
+    elif top_score >= 0.35 and (topic_signal >= 0.25 or token_overlap >= 0.25):
+        band, answerable, reason = "MODERATE", True, "moderate_top_match"
+    elif top_score >= 0.20 and (topic_signal > 0.0 or token_overlap > 0.0):
+        band, answerable, reason = "LOW", False, "weak_evidence_verify_before_stating"
+    else:
+        band, answerable, reason = "NONE", False, "insufficient_evidence"
+    return {
+        "band": band,
+        "answerable": answerable,
+        "top_score": round(top_score, 4),
+        "score_margin": round(margin, 4),
+        "reason": reason,
+    }
+
+
 def _coerce_optional_int(value: Any, default: Optional[int]) -> Optional[int]:
     """Coerce config/env values to a non-negative int; negative means unlimited."""
     if value is None:
@@ -2541,6 +2587,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # LOCAL PATCH: P55 a reinitialization re-reads the host identifiers that
         # provenance stamping records (a profile switch can move the engine).
         self._provenance_runtime_cache = None
+        # LOCAL PATCH: P57 reset the bounded label index on reinitialization so
+        # a profile switch never retains labels from a previous store.
+        self._search_label_index = {}
 
         self._agent_context = kwargs.get("agent_context", "primary")
         self._platform = kwargs.get("platform", "cli")
@@ -2646,6 +2695,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             self._beam.agent_context = self._agent_context
             self._activate_in_module()
             self._init_audit_log()
+            # LOCAL PATCH: P57 hydrate bounded structured-label index so P50/P53
+            # typo recovery survives process restarts.
+            self._hydrate_search_label_index()
 
 
     def system_prompt_block(self) -> str:
@@ -2795,6 +2847,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 "MNEMOSYNE_PREFETCH_CACHE_TTL_SECONDS",
                 # LOCAL PATCH: P33 cutoff changes invalidate broad cached recall.
                 "MNEMOSYNE_RECALL_SCORE_FLOOR",
+                # LOCAL PATCH: P54/P59 recall-guard and confidence flags invalidate
+                # cached prefetch when toggled at runtime.
+                "MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS",
+                "MNEMOSYNE_CAPTURE_TEMPORAL",
+                "MNEMOSYNE_RECALL_CORRECTION_PRIORITY",
+                "MNEMOSYNE_LABEL_STRICT_ABSTAIN",
+                "MNEMOSYNE_RECALL_CONFIDENCE_ENABLED",
             )
         )
         query_digest = hashlib.sha256(query.encode("utf-8", errors="replace")).hexdigest()
@@ -2824,6 +2883,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         snapshot["bank"] = dict(getattr(self, "_prefetch_last_bank_counts", {}))
         snapshot["last_source_chars"] = dict(getattr(self, "_prefetch_last_source_chars", {}))
         snapshot["errors_by_source"] = dict(getattr(self, "_prefetch_errors", {}))
+        # LOCAL PATCH: P59 PII-safe recall confidence band counts.
+        conf_counts = getattr(self, "_recall_confidence_counts", None)
+        if isinstance(conf_counts, dict) and conf_counts:
+            snapshot["recall_confidence_bands"] = dict(conf_counts)
         return snapshot
 
     # LOCAL PATCH: P23 diagnose provider failures without storing query or
@@ -3254,6 +3317,15 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 filtered.append(r)
 
             filtered.sort(key=_prefetch_adjusted_score, reverse=True)
+            # LOCAL PATCH: P58 drop weak trailing distractors relative to the
+            # strongest quality-adjusted candidate for silent automatic context.
+            if profile.min_relative_score > 0.0 and len(filtered) > 1:
+                best_adjusted = _prefetch_adjusted_score(filtered[0])
+                if best_adjusted > 0.0:
+                    cutoff = best_adjusted * profile.min_relative_score
+                    kept = [r for r in filtered if _prefetch_adjusted_score(r) >= cutoff]
+                    counts["skipped_relevance"] += len(filtered) - len(kept)
+                    filtered = kept
             if profile.semantic_dedup:
                 filtered = _semantic_dedup_prefetch(filtered)
             # Cap back to the intended injection size after over-fetch+filter.
@@ -3263,6 +3335,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             self._prefetch_last_bank_counts = counts
             if not filtered:
                 return ""
+            # LOCAL PATCH: P57 batch-fetch metadata once under the Beam lock so
+            # P55 provenance rendering avoids N+1 beam.get() calls outside lock.
+            with self._ensure_beam_access_lock():
+                prefetch_meta = self._batch_row_metadata(filtered)
             lines = ["## Mnemosyne Context"]
             content_limit = _prefetch_content_char_limit() or profile.content_char_limit
             for r in filtered:
@@ -3280,7 +3356,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 lines.append(f"  [{ts}] (importance {imp:.2f}{source_tag}){trust_tag} {content}")
                 # LOCAL PATCH: P55 at most one extra short line per row, and none
                 # at all for a row written before provenance existed.
-                provenance_line = self._row_provenance_line(r)
+                provenance_line = self._row_provenance_line(r, metadata_cache=prefetch_meta)
                 if provenance_line:
                     lines.append(f"    {provenance_line}")
             return "\n".join(lines)
@@ -4051,15 +4127,15 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         recall_payload = self._beam.recall(query, **recall_kwargs)
         # LOCAL PATCH: P50 if the engine found nothing and structured labels are
         # available, retry once with near-label tokens restored. Post-filtering
-        # cannot recover a row the engine never returned.
+        # cannot recover a row the engine never returned. Expansion is computed
+        # lazily only on zero-result or P53 retry paths to avoid per-recall work.
         first_rows = recall_payload.get("results") if explain else recall_payload
         expanded = None
-        if getattr(self, "_search_label_index", None):
+        if not first_rows and getattr(self, "_search_label_index", None):
             candidate = self._expand_query_with_labels(query)
             if candidate != query:
                 expanded = candidate
-        if not first_rows and expanded is not None:
-            recall_payload = self._beam.recall(expanded, **recall_kwargs)
+                recall_payload = self._beam.recall(expanded, **recall_kwargs)
         explain_payload = None
         used_query = expanded if (not first_rows and expanded is not None) else query
         if explain:
@@ -4068,10 +4144,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         else:
             results = recall_payload
 
+        # LOCAL PATCH: P57 batch-fetch metadata once for both P48/P49 label
+        # evidence and P55 provenance rendering (avoids 2*top_k beam.get() calls).
+        metadata_cache = self._batch_row_metadata(results)
+
         # LOCAL PATCH: P48/P49 structured-label evidence. Narrowing applies
         # only to fully labeled private recall sets; legacy rows keep
-        # semantic order. P51 abstains when no row matches.
-        matched, all_labeled = self._label_matched_rows(results, query)
+        # semantic order. P51 abstains when no row matches unless P54 opts out
+        # via MNEMOSYNE_LABEL_STRICT_ABSTAIN=0.
+        strict_label_abstain = not _env_disabled("MNEMOSYNE_LABEL_STRICT_ABSTAIN")
+        matched, all_labeled = self._label_matched_rows(
+            results, query, metadata_cache=metadata_cache
+        )
         if all_labeled:
             if matched:
                 results = matched
@@ -4081,6 +4165,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 # right row last or not at all, so retry once with the
                 # P50-restored query before abstaining. Evidence is checked
                 # against the original query, as in P50.
+                if used_query == query and getattr(self, "_search_label_index", None):
+                    candidate = self._expand_query_with_labels(query)
+                    if candidate != query:
+                        expanded = candidate
                 if expanded is not None and used_query == query:
                     retry_payload = self._beam.recall(expanded, **recall_kwargs)
                     retry_results = (
@@ -4088,16 +4176,24 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         if explain
                         else retry_payload
                     )
-                    retry_matched, retry_all = self._label_matched_rows(retry_results, query)
+                    missing_retry = [
+                        row for row in retry_results
+                        if isinstance(row.get("id"), str) and row["id"] not in metadata_cache
+                    ]
+                    if missing_retry:
+                        metadata_cache.update(self._batch_row_metadata(missing_retry))
+                    retry_matched, retry_all = self._label_matched_rows(
+                        retry_results, query, metadata_cache=metadata_cache
+                    )
                     if retry_matched:
                         results = retry_matched
                         if explain:
                             explain_payload = retry_payload.get("explain", {})
                     elif retry_results and not retry_all:
                         results = retry_results
-                    else:
+                    elif strict_label_abstain:
                         results = []
-                else:
+                elif strict_label_abstain:
                     results = []
 
         # Tag private results with their bank so callers can distinguish from
@@ -4134,7 +4230,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         for r in results:
             if r.get("shared_surface"):
                 continue
-            provenance_line = self._row_provenance_line(r)
+            provenance_line = self._row_provenance_line(r, metadata_cache=metadata_cache)
             if provenance_line:
                 r["learned_under"] = provenance_line
 
@@ -4145,6 +4241,16 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             "shared_surface_read": self._shared_surface_read,
             "results": results,
         }
+        # LOCAL PATCH: P59 opt-in multi-signal recall confidence verdict.
+        if _parse_env_bool("MNEMOSYNE_RECALL_CONFIDENCE_ENABLED", False):
+            confidence = _assess_recall_confidence(query, results)
+            response["confidence"] = confidence
+            band = confidence["band"]
+            counts = getattr(self, "_recall_confidence_counts", None)
+            if not isinstance(counts, dict):
+                counts = {}
+                self._recall_confidence_counts = counts
+            counts[band] = counts.get(band, 0) + 1
         if explain_payload is not None:
             response["explain"] = explain_payload
         return json.dumps(response)
@@ -4182,21 +4288,72 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             logger.debug("Mnemosyne: active model id unavailable: %s", exc)
             return None
 
-    def _row_metadata(self, row: Dict[str, Any]) -> Optional[Any]:
-        """Stored metadata for one recall row, without inventing a value.
+    def _batch_row_metadata(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """LOCAL PATCH: P57 resolve stored metadata for a batch of recall rows
+        in one SQL query (falling back to beam.get for test doubles / non-SQLite
+        beams), so P48/P49 label narrowing and P55 provenance share one lookup."""
+        resolved: Dict[str, Any] = {}
+        missing_ids: List[str] = []
+        seen_missing: Set[str] = set()
+        for row in rows:
+            if row.get("shared_surface"):
+                continue
+            memory_id = row.get("id")
+            if not isinstance(memory_id, str) or not memory_id:
+                continue
+            inline_meta = row.get("metadata")
+            if isinstance(inline_meta, dict):
+                resolved[memory_id] = inline_meta
+                continue
+            if memory_id not in seen_missing:
+                seen_missing.add(memory_id)
+                missing_ids.append(memory_id)
+        if not missing_ids or self._beam is None:
+            return resolved
+        conn = getattr(self._beam, "conn", None)
+        remaining = list(missing_ids)
+        execute = getattr(conn, "execute", None)
+        if callable(execute):
+            import sqlite3 as _sqlite3
+            for table in ("working_memory", "episodic_memory"):
+                if not remaining:
+                    break
+                placeholders = ",".join("?" * len(remaining))
+                try:
+                    fetched = execute(
+                        f"SELECT id, metadata_json FROM {table} WHERE id IN ({placeholders})",
+                        tuple(remaining),
+                    ).fetchall()
+                except (_sqlite3.Error, AttributeError, TypeError):
+                    break
+                found_here: Set[str] = set()
+                for db_row in fetched:
+                    row_id = db_row[0]
+                    raw_meta = db_row[1]
+                    found_here.add(row_id)
+                    resolved[row_id] = _parse_metadata(raw_meta)
+                if found_here:
+                    remaining = [mid for mid in remaining if mid not in found_here]
+        if remaining:
+            get_memory = getattr(self._beam, "get", None)
+            if callable(get_memory):
+                for memory_id in remaining:
+                    stored = get_memory(memory_id)
+                    resolved[memory_id] = _parse_metadata(
+                        stored.get("metadata") if isinstance(stored, dict) else None
+                    )
+        return resolved
 
-        Engine recall rows carry no `metadata` key at all (measured on the pinned
-        engine), so a row without one costs exactly one indexed read-only `get`
-        when its provenance line is rendered. Measured on that engine: one extra
-        `get` per injected row, prefetch total 0.9 ms; ten `get`s inside a
-        15.8 ms five-result recall (the P48 label pass already paid half of
-        them). Bounded by `top_k` on both surfaces. A missing, malformed or
-        oversized blob yields None rather than a guess.
-        """
+    def _row_metadata(
+        self, row: Dict[str, Any], metadata_cache: Optional[Dict[str, Any]] = None
+    ) -> Optional[Any]:
+        """Stored metadata for one recall row, without inventing a value."""
         metadata = row.get("metadata")
         if isinstance(metadata, dict):
             return metadata
         memory_id = row.get("id")
+        if isinstance(memory_id, str) and metadata_cache is not None and memory_id in metadata_cache:
+            return metadata_cache[memory_id]
         get_memory = getattr(self._beam, "get", None)
         stored = (
             get_memory(memory_id)
@@ -4205,15 +4362,20 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         )
         return _parse_metadata(stored.get("metadata") if isinstance(stored, dict) else None)
 
-    def _row_provenance_line(self, row: Dict[str, Any]) -> Optional[str]:
+    def _row_provenance_line(
+        self, row: Dict[str, Any], metadata_cache: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
         try:
-            return _provenance_line(self._row_metadata(row))
+            return _provenance_line(self._row_metadata(row, metadata_cache=metadata_cache))
         except Exception as exc:
             logger.debug("Mnemosyne: provenance read failed: %s", exc)
             return None
 
     def _label_matched_rows(
-        self, results: List[Dict[str, Any]], query: str
+        self,
+        results: List[Dict[str, Any]],
+        query: str,
+        metadata_cache: Optional[Dict[str, Any]] = None,
     ) -> "tuple[List[Dict[str, Any]], bool]":
         """P48/P49 evidence pass: return (matching rows, all-labeled).
 
@@ -4223,21 +4385,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         labeled_results = []
         all_labeled = bool(results)
         for result in results:
-            metadata = result.get("metadata")
-            if not isinstance(metadata, dict):
-                memory_id = result.get("id")
-                get_memory = getattr(self._beam, "get", None)
-                stored = (
-                    get_memory(memory_id)
-                    if isinstance(memory_id, str) and callable(get_memory)
-                    else None
-                )
-                metadata = stored.get("metadata") if isinstance(stored, dict) else None
-                if isinstance(metadata, str) and len(metadata) <= 32768:
-                    try:
-                        metadata = json.loads(metadata)
-                    except (TypeError, ValueError, RecursionError):
-                        metadata = None
+            metadata = self._row_metadata(result, metadata_cache=metadata_cache)
             labels = self._metadata_search_labels(metadata)
             if not labels:
                 all_labeled = False
@@ -4283,6 +4431,40 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             tokens = re.findall(r"[^\W_]+", label.casefold())
             if len(tokens) == 1 and len(tokens[0]) >= 4:
                 self._search_label_index.setdefault(tokens[0], label)
+
+    # LOCAL PATCH: P57 hydrate the bounded label index from existing store rows
+    # on initialize() so P50/P53 typo recovery survives process restarts.
+    def _hydrate_search_label_index(self) -> None:
+        beam = self._beam
+        conn = getattr(beam, "conn", None) if beam is not None else None
+        execute = getattr(conn, "execute", None)
+        if not callable(execute):
+            return
+        import sqlite3 as _sqlite3
+        session_id = getattr(beam, "session_id", self._session_id)
+        for table in ("working_memory", "episodic_memory"):
+            if len(self._search_label_index) >= 2048:
+                break
+            try:
+                rows = execute(
+                    f"SELECT metadata_json FROM ("
+                    f"SELECT metadata_json FROM {table} "
+                    "WHERE (session_id = ? OR scope = 'global') "
+                    "ORDER BY rowid DESC LIMIT 2048"
+                    ") WHERE metadata_json IS NOT NULL AND metadata_json != '' "
+                    "AND (metadata_json LIKE '%\"canonical_name\"%' "
+                    "OR metadata_json LIKE '%\"aliases\"%')",
+                    (session_id,),
+                ).fetchall()
+            except (_sqlite3.Error, AttributeError, TypeError) as exc:
+                logger.debug("Mnemosyne: label index hydration skipped for %s: %s", table, exc)
+                continue
+            for db_row in rows:
+                if len(self._search_label_index) >= 2048:
+                    break
+                parsed = _parse_metadata(db_row[0])
+                if parsed is not None:
+                    self._index_search_labels(parsed)
 
     def _expand_query_with_labels(self, query: str) -> str:
         out: List[str] = []
@@ -4990,12 +5172,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         from mnemosyne.core.recall_diagnostics import get_recall_diagnostics, reset_recall_diagnostics
         snapshot = get_recall_diagnostics()
         do_reset = bool(args.get("reset", False))
+        # LOCAL PATCH: P59 expose content-free per-band recall confidence counts.
+        conf_counts = dict(getattr(self, "_recall_confidence_counts", {}) or {})
         if do_reset:
             reset_recall_diagnostics()
-        return json.dumps({
+            self._recall_confidence_counts = {}
+        payload: Dict[str, Any] = {
             "diagnostics": snapshot,
             "reset": do_reset,
-        }, indent=2, default=str)
+        }
+        if conf_counts:
+            payload["recall_confidence_bands"] = conf_counts
+        return json.dumps(payload, indent=2, default=str)
 
     def _handle_task_progress(self, args: Dict[str, Any]) -> str:
         """Track and recall cross-session task progression.

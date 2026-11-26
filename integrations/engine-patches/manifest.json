@@ -4,8 +4,8 @@
     "core/beam.py": {
       "original_sha256": "00d79c0642a01b666473fd6e36749ed012802930ea8694eb24f3b17593a20aa0",
       "patch": "core-beam.py.patch",
-      "patch_sha256": "ba964d19cfc088586551d18abf14f0f9931203dcf8057bdb817c5806e9a66e98",
-      "patched_sha256": "07f428972c580bb43b35b9601fa470885c8e27325d40f46d9694a497682bbb60",
+      "patch_sha256": "be68bbfc9fa2224d09c6de3408c421285e404ee9ee9ddfaf9cd5b9a33f62cf06",
+      "patched_sha256": "daf870115d2f6fd3defab8d953d7e5e6a7cdd20a09d0dc40331decc7b963229a",
       "previous_patched_sha256": [
         "d19a27c6a9ae60e70f37f4e5c3e4d6e56a238c2fc56dc5fad9e8e888191ba4da",
         "287e030cc7f45aa0db3f4c7a00c742bd4de699c5e9af6e68ba35fd25c0608836",
@@ -30,7 +30,8 @@
         "9b4fe3362f893f5984ac426b1793a70d4d39a1c038f4bdb8ae64961797ace7ba",
         "b98ee5207c20a9bccda51048877434afd84c885def2f7d798144612beb97a574",
         "273614c8376ced6ee148b74e7553ad0ad34b2ae095ad64fcf5172953f4fe123f",
-        "e8bd89e3dde27eeea4bb8b5577dceff5accd24905d9772dc1bd33c5ec8f4908d"
+        "e8bd89e3dde27eeea4bb8b5577dceff5accd24905d9772dc1bd33c5ec8f4908d",
+        "07f428972c580bb43b35b9601fa470885c8e27325d40f46d9694a497682bbb60"
       ]
     },
     "core/config.py": {

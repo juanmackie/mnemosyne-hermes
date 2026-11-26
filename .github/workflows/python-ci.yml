@@ -131,6 +131,11 @@ jobs:
         shell: bash
         run: bash scripts/checks.sh
 
+      - name: Hermes prefetch precision evaluation (14/14 required)
+        shell: bash
+        run: |
+          "$PYTHON_BIN" bench/hermes_prefetch_eval.py --require-pass --output .evals/hermes-prefetch/ci.json
+
   hermes-onboarding:
     name: onboarding (${{ matrix.os }}, newest hermes)
     runs-on: ${{ matrix.os }}

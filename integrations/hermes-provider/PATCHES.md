@@ -696,4 +696,59 @@ doctor hash audit is unavailable. Regression coverage is in
 | Behaviour | Doctor compares the newest engine source mtime (excluding `__pycache__`) against the running gateway's boot time (`gateway.pid` record, `/proc/<pid>/stat` starttime, `/proc/stat` btime). When engine files are newer it prints one `[note]` line recommending a restart. Informational only: the exit status is unchanged, and unreadable inputs (no `gateway.pid`, dead pid, non-Linux) yield no note. |
 | Verification | `tests/test_provider_doctor_freshness.py` (engine-free): mtime comparison including `__pycache__` exclusion, missing/garbage records fail soft, live-process note on Linux. `tests/test_vendored_provider.py` gates the snapshot hashes and this entry. |
 | Upstream | Not sent. Depot-specific: reads Hermes' `gateway.pid` record and Linux `/proc`. |
-| Numbering | P54 stays reserved for the P51 opt-out switch; P55 landed, so this patch takes P56. |
+| Numbering | P54 was reserved for the P51 opt-out switch and is now landed below; P55 landed; P56 took the next slot. |
+
+### P54 — opt-out switch for P51 strict label abstention and complete prefetch cache keys
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_env_disabled`, `_handle_recall`, `_prefetch_cache_key`) |
+| Date | 2026-11-26 |
+| Reason | P51 abstains on fully labeled recall sets with zero label evidence, which yields 43/43 on PrecisionMemBench at the cost of 0/21 on label-disjoint paraphrase queries (`research/paraphrase_probe.py`). Operators on labeled stores need an explicit opt-out switch without reverting the snapshot. Separately, `_prefetch_cache_key` included only `MNEMOSYNE_RECALL_SCORE_FLOOR` and could serve stale cached context when `MNEMOSYNE_RECALL_ABSTAIN_IDENTIFIERS`, `MNEMOSYNE_CAPTURE_TEMPORAL`, `MNEMOSYNE_RECALL_CORRECTION_PRIORITY`, or label/confidence flags were toggled. |
+| Behaviour | `MNEMOSYNE_LABEL_STRICT_ABSTAIN` defaults on (preserving P51); setting `0`/`false`/`no`/`off` disables strict label abstention and preserves engine results when no label matches. `_prefetch_cache_key` now includes all five recall-guard/confidence env flags. |
+| Verification | `tests/test_provider_label_recall.py`, `tests/test_provider_prefetch.py`, `research/evaluate.py` (43/43 default), and `research/paraphrase_probe.py` (recovers raw engine hits with `MNEMOSYNE_LABEL_STRICT_ABSTAIN=0`). |
+| Upstream | Not sent. Local label-narrowing policy and cache-key hygiene. |
+
+### P57 — hydrate P50 label index on initialize and batch recall/prefetch metadata reads
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_initialize_session`, `_hydrate_search_label_index`, `_batch_row_metadata`, `_row_metadata`, `_row_provenance_line`, `_label_matched_rows`, `_handle_recall`, `_prefetch_bank`) |
+| Date | 2026-11-26 |
+| Reason | `_search_label_index` (P50) was populated only in memory during `_handle_remember`, so typo-recovery expansion silently stopped working after every gateway restart. Separately, `_handle_recall` called `self._beam.get(id)` per candidate in `_label_matched_rows` and a second time per row in `_row_provenance_line` (10 queries per 5-row recall), and `_prefetch_bank` called `beam.get(id)` per row outside `_beam_access_lock`. |
+| Behaviour | `_initialize_session` resets `_search_label_index` and hydrates up to 2,048 single-token structured labels from the newest 2,048 visible `working_memory`/`episodic_memory` rows per table (trade-off: labels present only in rows older than the newest 2,048 per table are not preloaded on restart, avoiding full-table startup scans). `_batch_row_metadata` resolves metadata in one batched SQL query per table (falling back to `beam.get` for non-SQLite test doubles) under the Beam lock in prefetch, and shares the parsed metadata dict across label matching and P55 provenance rendering. |
+| Verification | `tests/test_provider_label_recall.py` (restart hydration and single-pass metadata lookup count), `tests/test_provider_provenance.py`, and real-engine contract/prefetch suites. |
+| Upstream | Not sent. |
+
+### P58 — prefetch relative adjusted-score floor drops weak trailing distractors
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`PrefetchProfile`, `_prefetch_bank`) |
+| Date | 2026-11-26 |
+| Reason | Automatic `prefetch()` let weak trailing single-token distractors and raw transcript echoes enter prompt context alongside strong answers, causing `bench/hermes_prefetch_eval.py` to fail `held-distractor` and `held-correction-retirement` (12/14). |
+| Behaviour | `PrefetchProfile.min_relative_score` (default `0.45`) filters candidates whose `_prefetch_adjusted_score` falls below `0.45 * best_adjusted_score` after quality-adjusted sorting, while retaining strong multi-answer hits. |
+| Verification | `bench/hermes_prefetch_eval.py --require-pass` passes 14/14 (up from 12/14); `tests/test_provider_prefetch.py` and `bench/scorecard/gate.py` stay green. |
+| Upstream | Not sent. |
+
+### P59 — opt-in multi-signal recall confidence verdict and diagnostics counters
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/__init__.py` (`_assess_recall_confidence`, `_handle_recall`, `_prefetch_cache_snapshot`, `_handle_recall_diagnostics`) |
+| Date | 2026-11-26 |
+| Reason | Explicit recall returns ranked rows with no structured trust signal, forcing the model to guess whether weak/unrelated matches are answerable. |
+| Behaviour | Behind `MNEMOSYNE_RECALL_CONFIDENCE_ENABLED=1` (default off so existing response contracts stay unchanged), `_handle_recall` attaches a deterministic `confidence` object (`band`: `HIGH`/`MODERATE`/`LOW`/`NONE`, `answerable`, `top_score`, `score_margin`, `reason`) derived from score, topic signal, margin, and token overlap, and records content-free per-band counts in prefetch and recall diagnostics. |
+| Verification | `tests/test_provider_prefetch.py` covers all four bands, default-off preservation, and PII-safe diagnostics counters. |
+| Upstream | Not sent. |
+
+### P60 — doctor read-only embedding-dimension mismatch note
+
+| | |
+| --- | --- |
+| File | `hermes_memory_provider/cli.py` (`_embedding_dim_mismatch_note`, `doctor`) |
+| Date | 2026-11-26 |
+| Reason | Changing `MNEMOSYNE_EMBEDDING_DIM` (e.g., evaluating a 768-dim model against an existing 384-dim `vec_working`/`vec_episodes` table) fails silently or errors at query time unless the store is reindexed. |
+| Behaviour | When `MNEMOSYNE_EMBEDDING_DIM` is set and the resolved DB exists, `doctor` inspects `sqlite_master` read-only (`mode=ro`) for `vec_working`/`vec_episodes` vector dimensions and emits an informational `[note]` naming any mismatch and `mnemosyne reindex`. Never creates files, writes to the DB, or changes the exit code. |
+| Verification | `tests/test_provider_db_path.py` covers matching, mismatching, unset, and missing-DB cases. |
+| Upstream | Not sent. |
